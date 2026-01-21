@@ -161,16 +161,8 @@ function render() {
     .append("g")
     .attr("transform", `translate(${margin.left},${margin.top})`);
 
-  const xAxis = d3
-    .axisBottom(x)
-    .ticks(10)
-    .tickSize(0)
-    .tickPadding(10);
-  const yAxis = d3
-    .axisLeft(y)
-    .ticks(6)
-    .tickSize(0)
-    .tickPadding(10);
+  const xAxis = d3.axisBottom(x).ticks(10).tickSize(0).tickPadding(10);
+  const yAxis = d3.axisLeft(y).ticks(6).tickSize(0).tickPadding(10);
 
   const axisStyle = (axisG) => {
     axisG.selectAll("line").remove();
@@ -212,9 +204,11 @@ function render() {
     .join("circle")
     .attr("cx", (d) => x(d.date))
     .attr("cy", (d) => y(d.mark_price_close))
-    .attr("r", 3.8)
+    .attr("r", 4.4)
     .attr("fill", (d) => colorForBasis(d.basis_pct))
-    .attr("opacity", 0.95);
+    .attr("stroke", "royalblue")
+    .attr("stroke-width", 0.3)
+    .attr("opacity", 0.9);
 
   const focusCircle = g
     .append("circle")

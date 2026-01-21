@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
+import * as d3 from "d3";
 import BasisChart from "./components/BasisChart.vue";
 import {
   computeBasisSeries,
@@ -9,6 +10,8 @@ import {
   fetchMarkHistory,
   indexNameFromInstrumentName,
 } from "./lib/thalex.js";
+
+const MIN_POINTS_FOR_RESOLUTION = 50;
 
 const RESOLUTIONS = [
   { label: "1m", value: "1m", seconds: 60 },
@@ -23,6 +26,21 @@ const POINTS = 500;
 const resolution = ref("1h");
 const futureInstruments = ref([]);
 const instrumentName = ref("");
+const availableResolutions = computed(() => {
+  const current = futureInstruments.value.find(
+    (i) => i.instrument_name === instrumentName.value,
+  );
+  if (!current) {
+    return RESOLUTIONS;
+  }
+  const createTimeMs = parseInstrumentCreateTime(current);
+  const ageMs = Math.max(0, Date.now() - createTimeMs);
+  const allowed = RESOLUTIONS.filter((r) => {
+    const requirementMs = r.seconds * MIN_POINTS_FOR_RESOLUTION * 1000;
+    return ageMs >= requirementMs;
+  });
+  return allowed.length ? allowed : RESOLUTIONS;
+});
 
 const range = ref(null);
 const data = ref([]);
@@ -44,12 +62,7 @@ function computeRange() {
   };
 }
 
-const rangeText = computed(() => {
-  if (!range.value) return "";
-  const from = new Date(range.value.from * 1000).toISOString();
-  const to = new Date(range.value.to * 1000).toISOString();
-  return `${from} → ${to}`;
-});
+const rangeLabelFormatter = d3.utcFormat("%d %b %y %H:%M");
 
 async function load() {
   if (!instrumentName.value) return;
@@ -57,6 +70,15 @@ async function load() {
   loading.value = true;
   error.value = "";
   data.value = [];
+
+  const allowed = availableResolutions.value;
+  const resolutionAllowed = allowed.some((r) => r.value === resolution.value);
+  if (!resolutionAllowed) {
+    const fallback =
+      allowed.find((r) => r.value === "1d") ?? allowed[0] ?? RESOLUTIONS[0];
+    resolution.value = fallback.value;
+    return;
+  }
 
   const nextRange = computeRange();
   range.value = nextRange;
@@ -107,26 +129,54 @@ async function load() {
   }
 }
 
+function parseInstrumentCreateTime(instrument) {
+  if (!instrument) return 0;
+  const raw = instrument.create_time;
+  if (raw === undefined || raw === null) return 0;
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) {
+    return numeric > 1e12 ? numeric : numeric * 1000;
+  }
+  const parsed = Date.parse(String(raw));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 onMounted(async () => {
   try {
     const list = await fetchInstruments();
     const now = Math.floor(Date.now() / 1000);
 
-    futureInstruments.value = list
-      .filter((i) => i?.type === "future" && i?.underlying === "BTCUSD")
-      .sort((a, b) => a.expiration_timestamp - b.expiration_timestamp);
-
-    const active = futureInstruments.value.find(
-      (i) => i.expiration_timestamp > now,
+    const filtered = list.filter(
+      (i) => i?.type === "future" && i?.underlying === "BTCUSD",
     );
 
+    const prepared = filtered
+      .map((instrument) => ({
+        ...instrument,
+        createTimeMs: parseInstrumentCreateTime(instrument),
+      }))
+      .sort((a, b) => a.expiration_timestamp - b.expiration_timestamp);
+
+    futureInstruments.value = prepared;
+
+    const earliestByCreate = prepared.reduce((best, candidate) => {
+      if (!best) return candidate;
+      if (candidate.createTimeMs < best.createTimeMs) return candidate;
+      return best;
+    }, null);
+
+    const active = prepared.find((i) => i.expiration_timestamp > now);
+
+    const initialInstrument =
+      earliestByCreate || active || prepared[0] || null;
+
     instrumentName.value =
-      active?.instrument_name ||
-      futureInstruments.value[0]?.instrument_name ||
-      "BTC-30JAN26";
+      initialInstrument?.instrument_name || "BTC-30JAN26";
+    resolution.value = "1d";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
     instrumentName.value = "BTC-30JAN26";
+    resolution.value = "1d";
   }
 });
 
@@ -138,25 +188,29 @@ watch(
   },
   { immediate: true },
 );
+
+watch(
+  () => availableResolutions.value,
+  (allowed) => {
+    if (!allowed.length) return;
+    if (!allowed.some((r) => r.value === resolution.value)) {
+      const fallback =
+        allowed.find((r) => r.value === "1d") ?? allowed[0] ?? RESOLUTIONS[0];
+      resolution.value = fallback.value;
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
   <div class="app">
     <header class="header">
       <div class="titleRow">
-        <h1>Mark Future Basis (Thalex)</h1>
+        <h1>Future basis - thalex</h1>
       </div>
 
       <div class="controls">
-        <div class="field">
-          <label for="resolution">Resolution</label>
-          <select id="resolution" v-model="resolution">
-            <option v-for="r in RESOLUTIONS" :key="r.value" :value="r.value">
-              {{ r.label }}
-            </option>
-          </select>
-        </div>
-
         <div class="field">
           <label for="instrument">Instrument</label>
           <select id="instrument" v-model="instrumentName">
@@ -172,11 +226,19 @@ watch(
             </option>
           </select>
         </div>
-      </div>
 
-      <div class="meta">
-        <div>Range: {{ rangeText }}</div>
-        <div v-if="data.length">Points plotted: {{ data.length }}</div>
+        <div class="field">
+          <label for="resolution">Resolution</label>
+          <select id="resolution" v-model="resolution">
+            <option
+              v-for="r in availableResolutions"
+              :key="r.value"
+              :value="r.value"
+            >
+              {{ r.label }}
+            </option>
+          </select>
+        </div>
       </div>
 
       <div v-if="error" class="error">{{ error }}</div>
