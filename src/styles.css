@@ -71,6 +71,7 @@ a {
   gap: 12px;
   flex-wrap: wrap;
   margin-top: 10px;
+  align-items: flex-end;
 }
 
 .field {
@@ -100,6 +101,22 @@ a {
 
 .field select:focus {
   outline: none;
+}
+
+.saveButton {
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
+  color: var(--text);
+  font-size: 13px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  height: 40px;
+}
+
+.saveButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .meta {

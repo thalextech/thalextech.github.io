@@ -29,6 +29,8 @@ const formatMarkValue = (value) =>
   Number.isFinite(value) ? value.toFixed(2) : "n/a";
 const formatBasisValue = (value) =>
   Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "n/a";
+const SVG_FONT_FAMILY =
+  'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
 
 const subtitle = computed(() => {
   const from = props.range?.from ? new Date(props.range.from * 1000) : null;
@@ -37,6 +39,73 @@ const subtitle = computed(() => {
   const fmt = d3.utcFormat("%d %b %y %H:%M");
   return `${fmt(from)} — ${fmt(to)}`;
 });
+
+function exportPng({
+  filename = "basis-chart.png",
+  scale = 2,
+  padding = 16,
+} = {}) {
+  const svgEl = svgRef.value;
+  if (!svgEl) return;
+
+  const viewBox = svgEl.getAttribute("viewBox");
+  let width = 1200;
+  let height = 650;
+  if (viewBox) {
+    const [, , vbWidth, vbHeight] = viewBox.split(" ").map(Number);
+    if (Number.isFinite(vbWidth) && Number.isFinite(vbHeight)) {
+      width = vbWidth;
+      height = vbHeight;
+    }
+  }
+
+  const svgClone = svgEl.cloneNode(true);
+  if (!svgClone.getAttribute("xmlns")) {
+    svgClone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  }
+  svgClone.setAttribute("width", String(width));
+  svgClone.setAttribute("height", String(height));
+
+  const serializer = new XMLSerializer();
+  const source = serializer.serializeToString(svgClone);
+  const blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+
+  const image = new Image();
+  image.onload = () => {
+    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    const safePadding =
+      Number.isFinite(padding) && padding >= 0 ? padding : 0;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round((width + safePadding * 2) * safeScale);
+    canvas.height = Math.round((height + safePadding * 2) * safeScale);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    ctx.scale(safeScale, safeScale);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, width + safePadding * 2, height + safePadding * 2);
+    ctx.drawImage(image, safePadding, safePadding, width, height);
+    canvas.toBlob((pngBlob) => {
+      if (!pngBlob) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      const downloadUrl = URL.createObjectURL(pngBlob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(downloadUrl);
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  };
+  image.src = url;
+}
+
+defineExpose({ exportPng });
 
 function render() {
   const svgEl = svgRef.value;
@@ -54,7 +123,10 @@ function render() {
 
   const svg = d3.select(svgEl);
   svg.selectAll("*").remove();
-  svg.attr("viewBox", `0 0 ${width} ${height}`).attr("role", "img");
+  svg
+    .attr("viewBox", `0 0 ${width} ${height}`)
+    .attr("role", "img")
+    .style("font-family", SVG_FONT_FAMILY);
 
   svg
     .append("rect")
@@ -72,6 +144,7 @@ function render() {
     .attr("text-anchor", "middle")
     .style("font-size", "18px")
     .style("font-weight", 650)
+    .style("font-family", SVG_FONT_FAMILY)
     .text(`${props.instrumentName || "Instrument"} Basis`);
 
   svg
@@ -81,6 +154,7 @@ function render() {
     .attr("fill", "#c9c9cf")
     .attr("text-anchor", "middle")
     .style("font-size", "13px")
+    .style("font-family", SVG_FONT_FAMILY)
     .text(subtitle.value);
 
   if (!data.length) {
@@ -91,6 +165,7 @@ function render() {
       .attr("fill", "#c9c9cf")
       .attr("text-anchor", "middle")
       .style("font-size", "14px")
+      .style("font-family", SVG_FONT_FAMILY)
       .text("No data for this range.");
     return;
   }
@@ -167,7 +242,10 @@ function render() {
   const axisStyle = (axisG) => {
     axisG.selectAll("line").remove();
     axisG.selectAll("path").remove();
-    axisG.selectAll("text").attr("fill", "#d6d7de");
+    axisG
+      .selectAll("text")
+      .attr("fill", "#d6d7de")
+      .style("font-family", SVG_FONT_FAMILY);
   };
 
   g.append("g")
@@ -186,6 +264,7 @@ function render() {
     .attr("text-anchor", "middle")
     .style("font-size", "12px")
     .style("font-weight", 700)
+    .style("font-family", SVG_FONT_FAMILY)
     .text("Date (UTC)");
 
   g.append("text")
@@ -196,6 +275,7 @@ function render() {
     .attr("text-anchor", "middle")
     .style("font-size", "12px")
     .style("font-weight", 700)
+    .style("font-family", SVG_FONT_FAMILY)
     .text("Mark Price (Close)");
 
   g.append("g")
@@ -278,6 +358,7 @@ function render() {
     .attr("y", -6)
     .attr("fill", "#d6d7de")
     .style("font-size", "12px")
+    .style("font-family", SVG_FONT_FAMILY)
     .text("Annualized basis");
 
   legend
@@ -295,6 +376,7 @@ function render() {
     .attr("y", legendHeight + 18)
     .attr("fill", "#a9abb6")
     .style("font-size", "11px")
+    .style("font-family", SVG_FONT_FAMILY)
     .text(formatBasisPct(extentMin));
 
   legend
@@ -304,6 +386,7 @@ function render() {
     .attr("fill", "#a9abb6")
     .attr("text-anchor", "end")
     .style("font-size", "11px")
+    .style("font-family", SVG_FONT_FAMILY)
     .text(formatBasisPct(extentMax));
 }
 
@@ -362,6 +445,16 @@ svg {
   display: block;
   width: 100%;
   height: auto;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    Helvetica,
+    Arial,
+    "Apple Color Emoji",
+    "Segoe UI Emoji";
 }
 
 .overlay {

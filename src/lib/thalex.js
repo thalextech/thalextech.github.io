@@ -36,6 +36,15 @@ function toNumberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function normalizeTimestampMs(value) {
+  const numeric = toNumberOrNull(value);
+  if (Number.isFinite(numeric)) {
+    return numeric > 1e12 ? numeric : numeric * 1000;
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function readCache(key) {
   const storage = getLocalStorage();
   if (!storage) return null;
@@ -180,7 +189,13 @@ export async function fetchInstruments() {
   const json = await getJson(url);
   const result = json?.result;
   if (!Array.isArray(result)) return [];
-  return result;
+  return result.map((instrument) => {
+    if (!instrument || typeof instrument !== "object") return instrument;
+    return {
+      ...instrument,
+      create_time_ms: normalizeTimestampMs(instrument.create_time),
+    };
+  });
 }
 
 export async function fetchInstrument(instrument_name) {

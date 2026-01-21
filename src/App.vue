@@ -26,6 +26,7 @@ const POINTS = 500;
 const resolution = ref("1h");
 const futureInstruments = ref([]);
 const instrumentName = ref("");
+const chartRef = ref(null);
 const availableResolutions = computed(() => {
   const current = futureInstruments.value.find(
     (i) => i.instrument_name === instrumentName.value,
@@ -33,7 +34,9 @@ const availableResolutions = computed(() => {
   if (!current) {
     return RESOLUTIONS;
   }
-  const createTimeMs = parseInstrumentCreateTime(current);
+  const createTimeMs = Number.isFinite(current?.create_time_ms)
+    ? current.create_time_ms
+    : 0;
   const ageMs = Math.max(0, Date.now() - createTimeMs);
   const allowed = RESOLUTIONS.filter((r) => {
     const requirementMs = r.seconds * MIN_POINTS_FOR_RESOLUTION * 1000;
@@ -61,8 +64,6 @@ function computeRange() {
     resolution: resolution.value,
   };
 }
-
-const rangeLabelFormatter = d3.utcFormat("%d %b %y %H:%M");
 
 async function load() {
   if (!instrumentName.value) return;
@@ -129,16 +130,13 @@ async function load() {
   }
 }
 
-function parseInstrumentCreateTime(instrument) {
-  if (!instrument) return 0;
-  const raw = instrument.create_time;
-  if (raw === undefined || raw === null) return 0;
-  const numeric = Number(raw);
-  if (Number.isFinite(numeric)) {
-    return numeric > 1e12 ? numeric : numeric * 1000;
-  }
-  const parsed = Date.parse(String(raw));
-  return Number.isFinite(parsed) ? parsed : 0;
+function handleSavePng() {
+  if (!chartRef.value) return;
+  const base = instrumentName.value || "basis-chart";
+  const filename = resolution.value
+    ? `${base}-${resolution.value}.png`
+    : `${base}.png`;
+  chartRef.value.exportPng({ filename });
 }
 
 onMounted(async () => {
@@ -150,28 +148,29 @@ onMounted(async () => {
       (i) => i?.type === "future" && i?.underlying === "BTCUSD",
     );
 
-    const prepared = filtered
-      .map((instrument) => ({
-        ...instrument,
-        createTimeMs: parseInstrumentCreateTime(instrument),
-      }))
-      .sort((a, b) => a.expiration_timestamp - b.expiration_timestamp);
+    const prepared = [...filtered].sort(
+      (a, b) => a.expiration_timestamp - b.expiration_timestamp,
+    );
 
     futureInstruments.value = prepared;
 
+    const getCreateTimeMs = (instrument) =>
+      Number.isFinite(instrument?.create_time_ms)
+        ? instrument.create_time_ms
+        : Number.POSITIVE_INFINITY;
+
     const earliestByCreate = prepared.reduce((best, candidate) => {
       if (!best) return candidate;
-      if (candidate.createTimeMs < best.createTimeMs) return candidate;
-      return best;
+      return getCreateTimeMs(candidate) < getCreateTimeMs(best)
+        ? candidate
+        : best;
     }, null);
 
     const active = prepared.find((i) => i.expiration_timestamp > now);
 
-    const initialInstrument =
-      earliestByCreate || active || prepared[0] || null;
+    const initialInstrument = earliestByCreate || active || prepared[0] || null;
 
-    instrumentName.value =
-      initialInstrument?.instrument_name || "BTC-30JAN26";
+    instrumentName.value = initialInstrument?.instrument_name || "BTC-30JAN26";
     resolution.value = "1d";
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
@@ -239,12 +238,22 @@ watch(
             </option>
           </select>
         </div>
+
+        <button
+          class="saveButton"
+          type="button"
+          @click="handleSavePng"
+          :disabled="loading || !data.length"
+        >
+          Save PNG
+        </button>
       </div>
 
       <div v-if="error" class="error">{{ error }}</div>
     </header>
 
     <BasisChart
+      ref="chartRef"
       :data="data"
       :instrument-name="instrumentName"
       :range="range"
