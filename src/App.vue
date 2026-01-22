@@ -25,6 +25,14 @@ const resolution = ref("1h");
 const instruments = ref([]);
 const instrumentName = ref("");
 const chartRef = ref(null);
+const range = ref(null);
+const data = ref([]);
+const detailData = ref([]);
+const detailRange = ref(null);
+const detailResolution = ref("1h");
+const loading = ref(false);
+const error = ref("");
+
 
 const selectedInstrument = computed(() =>
   findInstrument(instruments.value, instrumentName.value),
@@ -43,14 +51,6 @@ const availableResolutions = computed(() => {
   });
   return allowed.length ? allowed : RESOLUTIONS;
 });
-
-const range = ref(null);
-const data = ref([]);
-const detailData = ref([]);
-const detailRange = ref(null);
-const detailResolution = ref("1h");
-const loading = ref(false);
-const error = ref("");
 
 function getIndexName(instrument) {
   return (
@@ -72,36 +72,36 @@ async function load() {
   detailData.value = [];
   detailRange.value = null;
 
+  const resolutionConfig = RESOLUTIONS.find(
+    (r) => r.value === resolution.value,
+  );
+
   const now = Math.floor(Date.now() / 1000);
-  const seconds =
-    RESOLUTIONS.find((r) => r.value === resolution.value)?.seconds ?? 3600;
-  const nextRange = {
+  const seconds = resolutionConfig.seconds ?? 3600;
+  const timestampRange = {
     from: now - seconds * POINTS,
     to: now,
   };
-  range.value = nextRange;
+  range.value = timestampRange;
 
   try {
     const { instrument, indexName } = await getInstrumentAndIndexName();
 
     detailRange.value = null;
-    const resolutionConfig = RESOLUTIONS.find(
-      (r) => r.value === resolution.value,
-    );
     detailResolution.value = resolutionConfig?.detail || "1h";
 
     const p1 = Promise.all([
       fetchMarkHistory({
         instrument_name: instrumentName.value,
         resolution: resolution.value,
-        from: nextRange.from,
-        to: nextRange.to,
+        from: timestampRange.from,
+        to: timestampRange.to,
       }),
       fetchIndexHistory({
         index_name: indexName,
         resolution: resolution.value,
-        from: nextRange.from,
-        to: nextRange.to,
+        from: timestampRange.from,
+        to: timestampRange.to,
       }),
     ]);
 
@@ -109,14 +109,14 @@ async function load() {
       fetchMarkHistory({
         instrument_name: instrumentName.value,
         resolution: detailResolution.value,
-        from: nextRange.from,
-        to: nextRange.to,
+        from: timestampRange.from,
+        to: timestampRange.to,
       }),
       fetchIndexHistory({
         index_name: indexName,
         resolution: detailResolution.value,
-        from: nextRange.from,
-        to: nextRange.to,
+        from: timestampRange.from,
+        to: timestampRange.to,
       }),
     ]);
 
@@ -170,7 +170,6 @@ const filteredDetailData = computed(() => {
 
   const { from, to } = detailRange.value;
 
-  // Filter the high-res data locally (no API call)
   return detailData.value.filter((point) => {
     const ts = point.timestamp;
     return ts >= from && ts <= to;
