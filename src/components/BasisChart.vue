@@ -121,14 +121,17 @@ function render() {
   tooltip.visible = false;
   tooltip.datum = null;
 
-  const width = 1200;
+  const mainWidth = 1200;
   const panelHeight = 650;
-  const panelGap = 90;
-  const height = panelHeight * 2 + panelGap;
   const margin = { top: 74, right: 38, bottom: 54, left: 74 };
-  const innerWidth = width - margin.left - margin.right;
+  const innerWidth = mainWidth - margin.left - margin.right;
   const innerHeight = panelHeight - margin.top - margin.bottom;
-  const detailOffsetY = panelHeight + panelGap;
+  const scatterInnerWidth = innerHeight;
+  const scatterWidth = scatterInnerWidth + margin.left + margin.right;
+  const panelGap = 90;
+  const width = mainWidth + panelGap + scatterWidth;
+  const height = panelHeight;
+  const scatterOffsetX = mainWidth + panelGap;
 
   const svg = d3.select(svgEl);
   svg.selectAll("*").remove();
@@ -147,7 +150,7 @@ function render() {
 
   svg
     .append("text")
-    .attr("x", width / 2)
+    .attr("x", mainWidth / 2)
     .attr("y", 30)
     .attr("fill", "#fff")
     .attr("text-anchor", "middle")
@@ -158,7 +161,7 @@ function render() {
 
   svg
     .append("text")
-    .attr("x", width / 2)
+    .attr("x", mainWidth / 2)
     .attr("y", 54)
     .attr("fill", "#c9c9cf")
     .attr("text-anchor", "middle")
@@ -166,19 +169,31 @@ function render() {
     .style("font-family", SVG_FONT_FAMILY)
     .text(subtitle.value);
 
-  const detailLabel = props.detailResolution
+  const detailTitle = "Basis vs Price";
+  const detailSubtitle = props.detailResolution
     ? `${props.detailResolution} resolution`
-    : "Detail resolution";
+    : "";
 
   svg
     .append("text")
-    .attr("x", width / 2)
-    .attr("y", detailOffsetY + 30)
+    .attr("x", scatterOffsetX + scatterWidth / 2)
+    .attr("y", 30)
+    .attr("fill", "#fff")
+    .attr("text-anchor", "middle")
+    .style("font-size", "16px")
+    .style("font-weight", 600)
+    .style("font-family", SVG_FONT_FAMILY)
+    .text(detailTitle);
+
+  svg
+    .append("text")
+    .attr("x", scatterOffsetX + scatterWidth / 2)
+    .attr("y", 54)
     .attr("fill", "#c9c9cf")
     .attr("text-anchor", "middle")
-    .style("font-size", "13px")
+    .style("font-size", "12px")
     .style("font-family", SVG_FONT_FAMILY)
-    .text(detailLabel);
+    .text(detailSubtitle);
 
   if (!data.length) {
     svg
@@ -314,10 +329,10 @@ function render() {
 
   const detailG = svg
     .append("g")
-    .attr("transform", `translate(${margin.left},${detailOffsetY + margin.top})`);
+    .attr("transform", `translate(${scatterOffsetX + margin.left},${margin.top})`);
 
   const detailLayer = detailG.append("g");
-  const detailBaseY = detailOffsetY + margin.top;
+  const detailBaseY = margin.top;
   const detailSource = detailData.length ? detailData : data;
   const detailDomainFull = d3.extent(detailSource, (d) => d.date);
 
@@ -329,7 +344,7 @@ function render() {
     if (!detailSource.length || !detailDomainFull[0] || !detailDomainFull[1]) {
       detailLayer
         .append("text")
-        .attr("x", innerWidth / 2)
+        .attr("x", scatterInnerWidth / 2)
         .attr("y", innerHeight / 2)
         .attr("fill", "#c9c9cf")
         .attr("text-anchor", "middle")
@@ -352,7 +367,7 @@ function render() {
     if (!detailPoints.length) {
       detailLayer
         .append("text")
-        .attr("x", innerWidth / 2)
+        .attr("x", scatterInnerWidth / 2)
         .attr("y", innerHeight / 2)
         .attr("fill", "#c9c9cf")
         .attr("text-anchor", "middle")
@@ -369,7 +384,7 @@ function render() {
       .scaleLinear()
       .domain(detailXDomain)
       .nice()
-      .range([0, innerWidth]);
+      .range([0, scatterInnerWidth]);
     const detailY = d3
       .scaleLinear()
       .domain(detailYDomain)
@@ -398,7 +413,7 @@ function render() {
 
     detailLayer
       .append("text")
-      .attr("x", innerWidth / 2)
+      .attr("x", scatterInnerWidth / 2)
       .attr("y", innerHeight + 42 + axisTitlePadding)
       .attr("fill", "#d6d7de")
       .attr("text-anchor", "middle")
@@ -443,7 +458,7 @@ function render() {
 
     detailLayer
       .append("rect")
-      .attr("width", innerWidth)
+      .attr("width", scatterInnerWidth)
       .attr("height", innerHeight)
       .attr("fill", "transparent")
       .attr("pointer-events", "all")
@@ -475,7 +490,8 @@ function render() {
           .attr("opacity", 1);
 
         tooltip.visible = true;
-        tooltip.left = margin.left + detailX(selection.mark_price_close);
+        tooltip.left =
+          scatterOffsetX + margin.left + detailX(selection.mark_price_close);
         tooltip.top = detailBaseY + detailY(selection.basis_pct);
         tooltip.datum = selection;
       });
@@ -547,7 +563,7 @@ function render() {
 
   const legendWidth = 220;
   const legendHeight = 10;
-  const legendX = width - margin.right - legendWidth;
+  const legendX = mainWidth - margin.right - legendWidth;
   const legendY = margin.top - 52;
 
   const legend = svg
