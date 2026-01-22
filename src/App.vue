@@ -26,7 +26,7 @@ const instrumentName = ref("");
 const chartRef = ref(null);
 
 const availableResolutions = computed(() => {
-  const MIN_POINTS_FOR_RESOLUTION = 100;
+  const MIN_POINTS_NEEDED_FOR_RESOLUTION = 100;
   const selectedInstrument = instruments.value.find(
     (i) => i.instrument_name === instrumentName.value,
   );
@@ -38,7 +38,7 @@ const availableResolutions = computed(() => {
     : 0;
   const ageMs = Math.max(0, Date.now() - createTimeMs);
   const allowed = RESOLUTIONS.filter((r) => {
-    const requirementMs = r.seconds * MIN_POINTS_FOR_RESOLUTION * 1000;
+    const requirementMs = r.seconds * MIN_POINTS_NEEDED_FOR_RESOLUTION * 1000;
     return ageMs >= requirementMs;
   });
   return allowed.length ? allowed : RESOLUTIONS;
