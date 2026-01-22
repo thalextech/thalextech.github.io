@@ -63,17 +63,6 @@ function computeRange() {
   };
 }
 
-function ensureResolutionAllowed() {
-  const allowed = availableResolutions.value;
-  if (!allowed.length || allowed.some((r) => r.value === resolution.value)) {
-    return true;
-  }
-  const fallback =
-    allowed.find((r) => r.value === "1d") ?? allowed[0] ?? RESOLUTIONS[0];
-  resolution.value = fallback.value;
-  return false;
-}
-
 function getIndexName(instrument) {
   return (
     instrument?.underlying || indexNameFromInstrumentName(instrumentName.value)
@@ -155,8 +144,6 @@ async function load() {
   detailData.value = [];
   detailRange.value = null;
 
-  if (!ensureResolutionAllowed()) return;
-
   const nextRange = computeRange();
   range.value = nextRange;
 
@@ -229,43 +216,37 @@ async function handleDetailBrush(brushRange) {
 }
 
 onMounted(async () => {
-  try {
-    const list = await fetchInstruments();
-    const now = Math.floor(Date.now() / 1000);
+  const list = await fetchInstruments();
+  const now = Math.floor(Date.now() / 1000);
 
-    const filtered = list.filter(
-      (i) => i?.type === "future" && i?.underlying === "BTCUSD",
-    );
+  const filtered = list.filter(
+    (i) => i?.type === "future" && i?.underlying === "BTCUSD",
+  );
 
-    const prepared = [...filtered].sort(
-      (a, b) => a.expiration_timestamp - b.expiration_timestamp,
-    );
+  const prepared = [...filtered].sort(
+    (a, b) => a.expiration_timestamp - b.expiration_timestamp,
+  );
 
-    instruments.value = prepared;
+  instruments.value = prepared;
 
-    const getCreateTimeMs = (instrument) =>
-      Number.isFinite(instrument?.create_time_ms)
-        ? instrument.create_time_ms
-        : Number.POSITIVE_INFINITY;
+  const getCreateTimeMs = (instrument) =>
+    Number.isFinite(instrument?.create_time_ms)
+      ? instrument.create_time_ms
+      : Number.POSITIVE_INFINITY;
 
-    const earliestByCreate = prepared.reduce((best, candidate) => {
-      if (!best) return candidate;
-      return getCreateTimeMs(candidate) < getCreateTimeMs(best)
-        ? candidate
-        : best;
-    }, null);
+  const earliestByCreate = prepared.reduce((best, candidate) => {
+    if (!best) return candidate;
+    return getCreateTimeMs(candidate) < getCreateTimeMs(best)
+      ? candidate
+      : best;
+  }, null);
 
-    const active = prepared.find((i) => i.expiration_timestamp > now);
+  const active = prepared.find((i) => i.expiration_timestamp > now);
 
-    const initialInstrument = earliestByCreate || active || prepared[0] || null;
+  const initialInstrument = earliestByCreate || active || prepared[0] || null;
 
-    instrumentName.value = initialInstrument?.instrument_name || "BTC-30JAN26";
-    resolution.value = "1d";
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-    instrumentName.value = "BTC-30JAN26";
-    resolution.value = "1d";
-  }
+  instrumentName.value = initialInstrument?.instrument_name;
+  resolution.value = "1d";
 });
 
 watch(
@@ -277,13 +258,7 @@ watch(
   { immediate: true },
 );
 
-watch(
-  () => availableResolutions.value,
-  () => {
-    ensureResolutionAllowed();
-  },
-  { immediate: true },
-);
+watch(() => availableResolutions.value, { immediate: true });
 </script>
 
 <template>
@@ -305,7 +280,7 @@ watch(
               {{ i.instrument_name }}
             </option>
             <option v-if="!instruments.length" :value="instrumentName">
-              {{ instrumentName || "BTC-26DEC25" }}
+              {{ instrumentName }}
             </option>
           </select>
         </div>
