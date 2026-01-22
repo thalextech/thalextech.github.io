@@ -10,8 +10,6 @@ import {
   indexNameFromInstrumentName,
 } from "./lib/thalex.js";
 
-const MIN_POINTS_FOR_RESOLUTION = 100;
-
 const RESOLUTIONS = [
   { label: "1m", value: "1m", seconds: 60 },
   { label: "5m", value: "5m", seconds: 5 * 60 },
@@ -23,11 +21,13 @@ const RESOLUTIONS = [
 const POINTS = 500;
 
 const resolution = ref("1h");
-const futureInstruments = ref([]);
+const instruments = ref([]);
 const instrumentName = ref("");
 const chartRef = ref(null);
+
 const availableResolutions = computed(() => {
-  const selectedInstrument = futureInstruments.value.find(
+  const MIN_POINTS_FOR_RESOLUTION = 100;
+  const selectedInstrument = instruments.value.find(
     (i) => i.instrument_name === instrumentName.value,
   );
   if (!selectedInstrument) {
@@ -76,8 +76,7 @@ function ensureResolutionAllowed() {
 
 function getIndexName(instrument) {
   return (
-    instrument?.underlying ||
-    indexNameFromInstrumentName(instrumentName.value)
+    instrument?.underlying || indexNameFromInstrumentName(instrumentName.value)
   );
 }
 
@@ -242,7 +241,7 @@ onMounted(async () => {
       (a, b) => a.expiration_timestamp - b.expiration_timestamp,
     );
 
-    futureInstruments.value = prepared;
+    instruments.value = prepared;
 
     const getCreateTimeMs = (instrument) =>
       Number.isFinite(instrument?.create_time_ms)
@@ -299,13 +298,13 @@ watch(
           <label for="instrument">Instrument</label>
           <select id="instrument" v-model="instrumentName">
             <option
-              v-for="i in futureInstruments"
+              v-for="i in instruments"
               :key="i.instrument_name"
               :value="i.instrument_name"
             >
               {{ i.instrument_name }}
             </option>
-            <option v-if="!futureInstruments.length" :value="instrumentName">
+            <option v-if="!instruments.length" :value="instrumentName">
               {{ instrumentName || "BTC-26DEC25" }}
             </option>
           </select>
