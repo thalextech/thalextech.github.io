@@ -16,8 +16,7 @@ function getLocalStorage() {
 
 function isCacheFresh(timestamp) {
   return (
-    typeof timestamp === "number" &&
-    Date.now() - timestamp <= CACHE_TTL_MS
+    typeof timestamp === "number" && Date.now() - timestamp <= CACHE_TTL_MS
   );
 }
 
@@ -269,14 +268,10 @@ export async function fetchMarkHistory({
   };
 }
 
-export function computeBasisSeries({
-  mark,
-  index,
-  instrument,
-  instrument_name,
-} = {}) {
+export function computeBasisSeries({ mark, index, instrument } = {}) {
   const indexByTs = new Map((index || []).map((row) => [row.ts, row]));
   const expiration = instrument?.expiration_timestamp;
+  const instrumentName = instrument.instrument_name;
 
   const merged = [];
   for (const m of mark || []) {
@@ -303,7 +298,7 @@ export function computeBasisSeries({
     merged.push({
       ...m,
       ...i,
-      instrument_name,
+      instrumentName,
       date: new Date(m.ts * 1000),
       tte,
       basis_open,
@@ -323,4 +318,9 @@ export function computeBasisSeries({
   }
 
   return merged;
+}
+
+export function findInstrument(instruments, instrumentName) {
+  if (!Array.isArray(instruments) || !instrumentName) return null;
+  return instruments.find((i) => i.instrument_name === instrumentName) || null;
 }

@@ -79,8 +79,7 @@ function exportPng({
   const image = new Image();
   image.onload = () => {
     const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-    const safePadding =
-      Number.isFinite(padding) && padding >= 0 ? padding : 0;
+    const safePadding = Number.isFinite(padding) && padding >= 0 ? padding : 0;
     const canvas = document.createElement("canvas");
     canvas.width = Math.round((width + safePadding * 2) * safeScale);
     canvas.height = Math.round((height + safePadding * 2) * safeScale);
@@ -323,13 +322,16 @@ function render() {
     .attr("cy", (d) => y(d.mark_price_close))
     .attr("r", 4.4)
     .attr("fill", (d) => colorForBasis(d.basis_pct))
-    .attr("stroke", "royalblue")
-    .attr("stroke-width", 0.3)
+    .attr("stroke", "whitesmoke")
+    .attr("stroke-width", 0.2)
     .attr("opacity", 0.9);
 
   const detailG = svg
     .append("g")
-    .attr("transform", `translate(${scatterOffsetX + margin.left},${margin.top})`);
+    .attr(
+      "transform",
+      `translate(${scatterOffsetX + margin.left},${margin.top})`,
+    );
 
   const detailLayer = detailG.append("g");
   const detailBaseY = margin.top;
@@ -361,8 +363,7 @@ function render() {
     );
     const detailPoints = detailView.filter(
       (d) =>
-        Number.isFinite(d.mark_price_close) &&
-        Number.isFinite(d.basis_pct),
+        Number.isFinite(d.mark_price_close) && Number.isFinite(d.basis_pct),
     );
     if (!detailPoints.length) {
       detailLayer
@@ -441,11 +442,11 @@ function render() {
       .join("circle")
       .attr("cx", (d) => detailX(d.mark_price_close))
       .attr("cy", (d) => detailY(d.basis_pct))
-      .attr("r", 4.4)
+      .attr("r", 3.6)
       .attr("fill", (d) => colorForBasis(d.basis_pct))
-      .attr("stroke", "royalblue")
-      .attr("stroke-width", 0.3)
-      .attr("opacity", 0.9);
+      .attr("stroke", "black")
+      .attr("stroke-width", 0.2)
+      .attr("opacity", 0.7);
 
     const detailFocus = detailLayer
       .append("circle")

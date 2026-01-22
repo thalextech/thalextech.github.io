@@ -7,15 +7,16 @@ import {
   fetchInstrument,
   fetchInstruments,
   fetchMarkHistory,
+  findInstrument,
   indexNameFromInstrumentName,
 } from "./lib/thalex.js";
 
 const RESOLUTIONS = [
-  { label: "1m", value: "1m", seconds: 60 },
-  { label: "5m", value: "5m", seconds: 5 * 60 },
-  { label: "15m", value: "15m", seconds: 15 * 60 },
-  { label: "1h", value: "1h", seconds: 60 * 60 },
-  { label: "1d", value: "1d", seconds: 24 * 60 * 60 },
+  { label: "1m", value: "1m", seconds: 60, detail: "1m" },
+  { label: "5m", value: "5m", seconds: 5 * 60, detail: "1m" },
+  { label: "15m", value: "15m", seconds: 15 * 60, detail: "5m" },
+  { label: "1h", value: "1h", seconds: 60 * 60, detail: "15m" },
+  { label: "1d", value: "1d", seconds: 24 * 60 * 60, detail: "1h" },
 ];
 
 const POINTS = 500;
@@ -25,17 +26,16 @@ const instruments = ref([]);
 const instrumentName = ref("");
 const chartRef = ref(null);
 
+const selectedInstrument = computed(() =>
+  findInstrument(instruments.value, instrumentName.value),
+);
+
 const availableResolutions = computed(() => {
   const MIN_POINTS_NEEDED_FOR_RESOLUTION = 100;
-  const selectedInstrument = instruments.value.find(
-    (i) => i.instrument_name === instrumentName.value,
-  );
-  if (!selectedInstrument) {
+  const createTimeMs = selectedInstrument.value?.create_time_ms;
+  if (!Number.isFinite(createTimeMs)) {
     return RESOLUTIONS;
   }
-  const createTimeMs = Number.isFinite(selectedInstrument?.create_time_ms)
-    ? selectedInstrument.create_time_ms
-    : 0;
   const ageMs = Math.max(0, Date.now() - createTimeMs);
   const allowed = RESOLUTIONS.filter((r) => {
     const requirementMs = r.seconds * MIN_POINTS_NEEDED_FOR_RESOLUTION * 1000;
@@ -52,87 +52,15 @@ const detailResolution = ref("1h");
 const loading = ref(false);
 const error = ref("");
 
-function computeRange() {
-  const now = Math.floor(Date.now() / 1000);
-  const seconds =
-    RESOLUTIONS.find((r) => r.value === resolution.value)?.seconds ?? 3600;
-  return {
-    from: now - seconds * POINTS,
-    to: now,
-    resolution: resolution.value,
-  };
-}
-
 function getIndexName(instrument) {
   return (
     instrument?.underlying || indexNameFromInstrumentName(instrumentName.value)
   );
 }
 
-function pickDetailResolution(baseResolution = resolution.value) {
-  const allowed = availableResolutions.value.length
-    ? availableResolutions.value.map((r) => r.value)
-    : RESOLUTIONS.map((r) => r.value);
-  const baseIndex = RESOLUTIONS.findIndex((r) => r.value === baseResolution);
-  if (baseIndex <= 0) {
-    return baseResolution;
-  }
-  const candidate = RESOLUTIONS[baseIndex - 1]?.value;
-  if (candidate && allowed.includes(candidate)) {
-    return candidate;
-  }
-  return baseResolution;
-}
-
 async function getInstrumentAndIndexName() {
   const instrument = await fetchInstrument(instrumentName.value);
   return { instrument, indexName: getIndexName(instrument) };
-}
-
-async function fetchMarkIndex({ indexName, resolutionValue, range }) {
-  const [markResult, index] = await Promise.all([
-    fetchMarkHistory({
-      instrument_name: instrumentName.value,
-      resolution: resolutionValue,
-      from: range.from,
-      to: range.to,
-    }),
-    fetchIndexHistory({
-      index_name: indexName,
-      resolution: resolutionValue,
-      from: range.from,
-      to: range.to,
-    }),
-  ]);
-  return { markResult, index };
-}
-
-const toBasisSeries = (mark, index, instrument) =>
-  computeBasisSeries({
-    mark,
-    index,
-    instrument,
-    instrument_name: instrumentName.value,
-  });
-
-async function loadDetail(range) {
-  if (!instrumentName.value || !range) return;
-  const { instrument, indexName } = await getInstrumentAndIndexName();
-  const detailResolutionValue = pickDetailResolution(resolution.value);
-  detailResolution.value = detailResolutionValue;
-
-  const { markResult: detailMarkResult, index: detailIndex } =
-    await fetchMarkIndex({
-      indexName,
-      resolutionValue: detailResolutionValue,
-      range,
-    });
-
-  detailData.value = toBasisSeries(
-    detailMarkResult?.data || [],
-    detailIndex || [],
-    instrument,
-  );
 }
 
 async function load() {
@@ -144,43 +72,70 @@ async function load() {
   detailData.value = [];
   detailRange.value = null;
 
-  const nextRange = computeRange();
+  const now = Math.floor(Date.now() / 1000);
+  const seconds =
+    RESOLUTIONS.find((r) => r.value === resolution.value)?.seconds ?? 3600;
+  const nextRange = {
+    from: now - seconds * POINTS,
+    to: now,
+  };
   range.value = nextRange;
 
   try {
     const { instrument, indexName } = await getInstrumentAndIndexName();
 
     detailRange.value = null;
-    const detailResolutionValue = pickDetailResolution(resolution.value);
-    detailResolution.value = detailResolutionValue;
-    const [{ markResult, index }, detail] = await Promise.all([
-      fetchMarkIndex({
-        indexName,
-        resolutionValue: resolution.value,
-        range: nextRange,
+    const resolutionConfig = RESOLUTIONS.find(
+      (r) => r.value === resolution.value,
+    );
+    detailResolution.value = resolutionConfig?.detail || "1h";
+
+    const p1 = Promise.all([
+      fetchMarkHistory({
+        instrument_name: instrumentName.value,
+        resolution: resolution.value,
+        from: nextRange.from,
+        to: nextRange.to,
       }),
-      fetchMarkIndex({
-        indexName,
-        resolutionValue: detailResolutionValue,
-        range: nextRange,
+      fetchIndexHistory({
+        index_name: indexName,
+        resolution: resolution.value,
+        from: nextRange.from,
+        to: nextRange.to,
       }),
     ]);
-    const { markResult: detailMarkResult, index: detailIndex } = detail;
 
-    const { instrument_type, data: mark } = markResult;
+    const p2 = Promise.all([
+      fetchMarkHistory({
+        instrument_name: instrumentName.value,
+        resolution: detailResolution.value,
+        from: nextRange.from,
+        to: nextRange.to,
+      }),
+      fetchIndexHistory({
+        index_name: indexName,
+        resolution: detailResolution.value,
+        from: nextRange.from,
+        to: nextRange.to,
+      }),
+    ]);
 
-    if (instrument_type !== "future") {
-      throw new Error(
-        `Instrument type is '${instrument_type}'. Pick a future instrument.`,
-      );
-    }
+    const [markResult, index] = await p1;
+    const [detailMarkResult, detailIndex] = await p2;
 
-    data.value = toBasisSeries(mark, index, instrument);
-    detailData.value = toBasisSeries(
-      detailMarkResult?.data || [],
-      detailIndex || [],
+    const { data: mark } = markResult;
+
+    data.value = computeBasisSeries({
+      mark,
+      index,
       instrument,
-    );
+    });
+
+    detailData.value = computeBasisSeries({
+      mark: detailMarkResult?.data || [],
+      index: detailIndex || [],
+      instrument,
+    });
 
     if (!data.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
@@ -203,47 +158,38 @@ function handleSavePng() {
   chartRef.value.exportPng({ filename });
 }
 
-async function handleDetailBrush(brushRange) {
-  const nextRange = brushRange || range.value;
+function handleDetailBrush(brushRange) {
   detailRange.value = brushRange || null;
-  if (!nextRange) return;
-  try {
-    await loadDetail(nextRange);
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-    detailData.value = [];
-  }
 }
+
+const filteredDetailData = computed(() => {
+  // If no brush is active, show the full high-res dataset
+  if (!detailRange.value) {
+    return detailData.value;
+  }
+
+  const { from, to } = detailRange.value;
+
+  // Filter the high-res data locally (no API call)
+  return detailData.value.filter((point) => {
+    const ts = point.timestamp;
+    return ts >= from && ts <= to;
+  });
+});
 
 onMounted(async () => {
   const list = await fetchInstruments();
   const now = Math.floor(Date.now() / 1000);
 
-  const filtered = list.filter(
-    (i) => i?.type === "future" && i?.underlying === "BTCUSD",
-  );
-
-  const prepared = [...filtered].sort(
-    (a, b) => a.expiration_timestamp - b.expiration_timestamp,
-  );
+  const prepared = list
+    .filter((i) => i?.type === "future" && i?.underlying === "BTCUSD")
+    .sort((a, b) => a.expiration_timestamp - b.expiration_timestamp);
 
   instruments.value = prepared;
 
-  const getCreateTimeMs = (instrument) =>
-    Number.isFinite(instrument?.create_time_ms)
-      ? instrument.create_time_ms
-      : Number.POSITIVE_INFINITY;
-
-  const earliestByCreate = prepared.reduce((best, candidate) => {
-    if (!best) return candidate;
-    return getCreateTimeMs(candidate) < getCreateTimeMs(best)
-      ? candidate
-      : best;
-  }, null);
-
   const active = prepared.find((i) => i.expiration_timestamp > now);
 
-  const initialInstrument = earliestByCreate || active || prepared[0] || null;
+  const initialInstrument = active || prepared[0] || null;
 
   instrumentName.value = initialInstrument?.instrument_name;
   resolution.value = "1d";
@@ -257,8 +203,6 @@ watch(
   },
   { immediate: true },
 );
-
-watch(() => availableResolutions.value, { immediate: true });
 </script>
 
 <template>
@@ -314,7 +258,7 @@ watch(() => availableResolutions.value, { immediate: true });
     <BasisChart
       ref="chartRef"
       :data="data"
-      :detail-data="detailData"
+      :detail-data="filteredDetailData"
       :detail-range="detailRange"
       :detail-resolution="detailResolution"
       :instrument-name="instrumentName"
