@@ -193,8 +193,6 @@ onMounted(async () => {
 
   instruments.value = futuresByExpiration;
 
-  const active = futuresByExpiration.find((i) => i.expiration_timestamp > now);
-
   const futuresByCreateTime = [...futures].sort(
     (a, b) =>
       (Number.isFinite(a.create_time_ms) ? a.create_time_ms : Infinity) -
