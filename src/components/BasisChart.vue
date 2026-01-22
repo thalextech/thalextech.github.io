@@ -4,10 +4,15 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 
 const props = defineProps({
   data: { type: Array, default: () => [] },
+  detailData: { type: Array, default: () => [] },
+  detailRange: { type: Object, default: null },
+  detailResolution: { type: String, default: "" },
   instrumentName: { type: String, default: "" },
   range: { type: Object, default: null },
   loading: { type: Boolean, default: false },
 });
+
+const emit = defineEmits(["brush"]);
 
 const svgRef = ref(null);
 const tooltip = reactive({
@@ -112,14 +117,18 @@ function render() {
   if (!svgEl) return;
 
   const data = props.data || [];
+  const detailData = props.detailData || [];
   tooltip.visible = false;
   tooltip.datum = null;
 
   const width = 1200;
-  const height = 650;
+  const panelHeight = 650;
+  const panelGap = 90;
+  const height = panelHeight * 2 + panelGap;
   const margin = { top: 74, right: 38, bottom: 54, left: 74 };
   const innerWidth = width - margin.left - margin.right;
-  const innerHeight = height - margin.top - margin.bottom;
+  const innerHeight = panelHeight - margin.top - margin.bottom;
+  const detailOffsetY = panelHeight + panelGap;
 
   const svg = d3.select(svgEl);
   svg.selectAll("*").remove();
@@ -157,6 +166,20 @@ function render() {
     .style("font-family", SVG_FONT_FAMILY)
     .text(subtitle.value);
 
+  const detailLabel = props.detailResolution
+    ? `${props.detailResolution} resolution`
+    : "Detail resolution";
+
+  svg
+    .append("text")
+    .attr("x", width / 2)
+    .attr("y", detailOffsetY + 30)
+    .attr("fill", "#c9c9cf")
+    .attr("text-anchor", "middle")
+    .style("font-size", "13px")
+    .style("font-family", SVG_FONT_FAMILY)
+    .text(detailLabel);
+
   if (!data.length) {
     svg
       .append("text")
@@ -175,10 +198,9 @@ function render() {
 
   const x = d3.scaleUtc().domain(xDomain).range([0, innerWidth]);
   const y = d3.scaleLinear().domain(yDomain).nice().range([innerHeight, 0]);
-  const bisectDate = d3.bisector((d) => d.date).left;
 
-  const basisValues = data
-    .map((d) => d.basis_pct)
+  const basisValues = [...data, ...detailData]
+    .map((d) => d?.basis_pct)
     .filter((v) => typeof v === "number" && Number.isFinite(v));
   const [extentMin, extentMax] = d3.extent(basisValues);
   const hasValidExtent =
@@ -290,58 +312,238 @@ function render() {
     .attr("stroke-width", 0.3)
     .attr("opacity", 0.9);
 
-  const focusCircle = g
-    .append("circle")
-    .attr("r", 7)
-    .attr("stroke", "#fff")
-    .attr("stroke-width", 2)
-    .attr("fill", "rgba(8, 9, 16, 0.8)")
-    .attr("opacity", 0)
-    .attr("pointer-events", "none");
+  const detailG = svg
+    .append("g")
+    .attr("transform", `translate(${margin.left},${detailOffsetY + margin.top})`);
 
-  const interactionRect = g
-    .append("rect")
-    .attr("width", innerWidth)
-    .attr("height", innerHeight)
-    .attr("fill", "transparent")
-    .attr("pointer-events", "all")
-    .on("pointerleave", () => {
-      focusCircle.attr("opacity", 0);
-      tooltip.visible = false;
-      tooltip.datum = null;
-    })
-    .on("pointermove", (event) => {
-      const [mx] = d3.pointer(event);
-      const x0 = x.invert(mx);
-      let index = bisectDate(data, x0);
-      if (index >= data.length) index = data.length - 1;
-      const candidate = data[index];
-      const previous = data[index - 1];
-      let selection = candidate ?? previous;
-      if (previous && candidate) {
-        selection =
-          Math.abs(x0 - previous.date) <= Math.abs(x0 - candidate.date)
-            ? previous
-            : candidate;
-      }
-      if (!selection) {
-        focusCircle.attr("opacity", 0);
-        tooltip.value.visible = false;
-        return;
-      }
+  const detailLayer = detailG.append("g");
+  const detailBaseY = detailOffsetY + margin.top;
+  const detailSource = detailData.length ? detailData : data;
+  const detailDomainFull = d3.extent(detailSource, (d) => d.date);
 
-      focusCircle
-        .attr("cx", x(selection.date))
-        .attr("cy", y(selection.mark_price_close))
-        .attr("opacity", 1);
+  const renderDetail = (domain) => {
+    detailLayer.selectAll("*").remove();
+    tooltip.visible = false;
+    tooltip.datum = null;
 
-      tooltip.visible = true;
-      tooltip.left = margin.left + x(selection.date);
-      tooltip.top = margin.top + y(selection.mark_price_close);
-      tooltip.datum = selection;
+    if (!detailSource.length || !detailDomainFull[0] || !detailDomainFull[1]) {
+      detailLayer
+        .append("text")
+        .attr("x", innerWidth / 2)
+        .attr("y", innerHeight / 2)
+        .attr("fill", "#c9c9cf")
+        .attr("text-anchor", "middle")
+        .style("font-size", "13px")
+        .style("font-family", SVG_FONT_FAMILY)
+        .text("No detail data available.");
+      return;
+    }
+
+    const domainStart = domain?.[0] || detailDomainFull[0];
+    const domainEnd = domain?.[1] || detailDomainFull[1];
+    const detailView = detailSource.filter(
+      (d) => d.date >= domainStart && d.date <= domainEnd,
+    );
+    const detailPoints = detailView.filter(
+      (d) =>
+        Number.isFinite(d.mark_price_close) &&
+        Number.isFinite(d.basis_pct),
+    );
+    if (!detailPoints.length) {
+      detailLayer
+        .append("text")
+        .attr("x", innerWidth / 2)
+        .attr("y", innerHeight / 2)
+        .attr("fill", "#c9c9cf")
+        .attr("text-anchor", "middle")
+        .style("font-size", "13px")
+        .style("font-family", SVG_FONT_FAMILY)
+        .text("No basis data available.");
+      return;
+    }
+
+    const detailXDomain = d3.extent(detailPoints, (d) => d.mark_price_close);
+    const detailYDomain = d3.extent(detailPoints, (d) => d.basis_pct);
+
+    const detailX = d3
+      .scaleLinear()
+      .domain(detailXDomain)
+      .nice()
+      .range([0, innerWidth]);
+    const detailY = d3
+      .scaleLinear()
+      .domain(detailYDomain)
+      .nice()
+      .range([innerHeight, 0]);
+    const detailXAxis = d3
+      .axisBottom(detailX)
+      .ticks(8)
+      .tickSize(0)
+      .tickPadding(10)
+      .tickFormat(d3.format(","));
+    const detailYAxis = d3
+      .axisLeft(detailY)
+      .ticks(6)
+      .tickSize(0)
+      .tickPadding(10)
+      .tickFormat(d3.format(".2%"));
+
+    detailLayer
+      .append("g")
+      .attr("transform", `translate(0,${innerHeight})`)
+      .call(detailXAxis)
+      .call(axisStyle);
+
+    detailLayer.append("g").call(detailYAxis).call(axisStyle);
+
+    detailLayer
+      .append("text")
+      .attr("x", innerWidth / 2)
+      .attr("y", innerHeight + 42 + axisTitlePadding)
+      .attr("fill", "#d6d7de")
+      .attr("text-anchor", "middle")
+      .style("font-size", "12px")
+      .style("font-weight", 700)
+      .style("font-family", SVG_FONT_FAMILY)
+      .text("Mark Price (Close)");
+
+    detailLayer
+      .append("text")
+      .attr("transform", "rotate(-90)")
+      .attr("x", -innerHeight / 2)
+      .attr("y", -52 - axisTitlePadding)
+      .attr("fill", "#d6d7de")
+      .attr("text-anchor", "middle")
+      .style("font-size", "12px")
+      .style("font-weight", 700)
+      .style("font-family", SVG_FONT_FAMILY)
+      .text("Annualized Basis");
+
+    detailLayer
+      .append("g")
+      .selectAll("circle")
+      .data(detailPoints)
+      .join("circle")
+      .attr("cx", (d) => detailX(d.mark_price_close))
+      .attr("cy", (d) => detailY(d.basis_pct))
+      .attr("r", 4.4)
+      .attr("fill", (d) => colorForBasis(d.basis_pct))
+      .attr("stroke", "royalblue")
+      .attr("stroke-width", 0.3)
+      .attr("opacity", 0.9);
+
+    const detailFocus = detailLayer
+      .append("circle")
+      .attr("r", 7)
+      .attr("stroke", "#fff")
+      .attr("stroke-width", 2)
+      .attr("fill", "rgba(8, 9, 16, 0.8)")
+      .attr("opacity", 0)
+      .attr("pointer-events", "none");
+
+    detailLayer
+      .append("rect")
+      .attr("width", innerWidth)
+      .attr("height", innerHeight)
+      .attr("fill", "transparent")
+      .attr("pointer-events", "all")
+      .on("pointerleave", () => {
+        detailFocus.attr("opacity", 0);
+        tooltip.visible = false;
+        tooltip.datum = null;
+      })
+      .on("pointermove", (event) => {
+        const [mx] = d3.pointer(event);
+        const x0 = detailX.invert(mx);
+        const selection = detailPoints.reduce((best, candidate) => {
+          if (!best) return candidate;
+          return Math.abs(candidate.mark_price_close - x0) <
+            Math.abs(best.mark_price_close - x0)
+            ? candidate
+            : best;
+        }, null);
+        if (!selection) {
+          detailFocus.attr("opacity", 0);
+          tooltip.visible = false;
+          tooltip.datum = null;
+          return;
+        }
+
+        detailFocus
+          .attr("cx", detailX(selection.mark_price_close))
+          .attr("cy", detailY(selection.basis_pct))
+          .attr("opacity", 1);
+
+        tooltip.visible = true;
+        tooltip.left = margin.left + detailX(selection.mark_price_close);
+        tooltip.top = detailBaseY + detailY(selection.basis_pct);
+        tooltip.datum = selection;
+      });
+  };
+
+  const initialDomain = props.detailRange?.from
+    ? [
+        new Date(props.detailRange.from * 1000),
+        new Date(props.detailRange.to * 1000),
+      ]
+    : detailDomainFull;
+  renderDetail(initialDomain);
+
+  const handleBrush = (event) => {
+    const selection = event.selection;
+    const domain = selection ? selection.map(x.invert) : x.domain();
+    renderDetail(domain);
+  };
+
+  const handleBrushEnd = (event) => {
+    handleBrush(event);
+    if (!event.sourceEvent) return;
+    const selection = event.selection;
+    if (!selection) {
+      emit("brush", null);
+      return;
+    }
+    const [from, to] = selection.map(x.invert);
+    emit("brush", {
+      from: Math.floor(from.getTime() / 1000),
+      to: Math.floor(to.getTime() / 1000),
     });
+  };
 
-  focusCircle.raise();
+  const brush = d3
+    .brushX()
+    .extent([
+      [0, 0],
+      [innerWidth, innerHeight],
+    ])
+    .filter((event) => !event.ctrlKey && !event.button && event.detail < 2)
+    .on("brush", handleBrush)
+    .on("end", handleBrushEnd);
+
+  const brushGroup = g.append("g").attr("class", "brush").call(brush);
+  if (props.detailRange?.from != null && props.detailRange?.to != null) {
+    brushGroup.call(brush.move, [
+      x(new Date(props.detailRange.from * 1000)),
+      x(new Date(props.detailRange.to * 1000)),
+    ]);
+  }
+
+  const clearBrush = (event) => {
+    event?.preventDefault?.();
+    brushGroup.call(brush.move, null);
+    emit("brush", null);
+  };
+
+  const overlay = brushGroup.selectAll(".overlay");
+
+  brushGroup.on("dblclick", clearBrush);
+  brushGroup.selectAll(".selection,.handle").on("dblclick", clearBrush);
+  overlay.on("dblclick", clearBrush);
+  overlay.on("click", (event) => {
+    if (!event?.defaultPrevented) {
+      clearBrush(event);
+    }
+  });
 
   const legendWidth = 220;
   const legendHeight = 10;
@@ -391,7 +593,14 @@ function render() {
 }
 
 watch(
-  () => [props.data, props.instrumentName, props.range],
+  () => [
+    props.data,
+    props.detailData,
+    props.detailRange,
+    props.detailResolution,
+    props.instrumentName,
+    props.range,
+  ],
   () => render(),
   { deep: false },
 );
