@@ -1,4 +1,5 @@
 <script setup>
+import * as d3 from "d3";
 import { computed, onMounted, ref, watch } from "vue";
 import BasisChart from "./components/BasisChart.vue";
 import {
@@ -33,24 +34,26 @@ const detailResolution = ref("1h");
 const loading = ref(false);
 const error = ref("");
 
-
 const selectedInstrument = computed(() =>
   findInstrument(instruments.value, instrumentName.value),
 );
 
-const availableResolutions = computed(() => {
-  const MIN_POINTS_NEEDED_FOR_RESOLUTION = 100;
-  const createTimeMs = selectedInstrument.value?.create_time_ms;
-  if (!Number.isFinite(createTimeMs)) {
-    return RESOLUTIONS;
-  }
-  const ageMs = Math.max(0, Date.now() - createTimeMs);
-  const allowed = RESOLUTIONS.filter((r) => {
-    const requirementMs = r.seconds * MIN_POINTS_NEEDED_FOR_RESOLUTION * 1000;
-    return ageMs >= requirementMs;
-  });
-  return allowed.length ? allowed : RESOLUTIONS;
+const mainTitle = computed(
+  () => `${instrumentName.value || "Instrument"} Basis`,
+);
+
+const mainSubtitle = computed(() => {
+  const from = range.value?.from ? new Date(range.value.from * 1000) : null;
+  const to = range.value?.to ? new Date(range.value.to * 1000) : null;
+  if (!from || !to) return "";
+  const fmt = d3.utcFormat("%d %b %y %H:%M");
+  return `${fmt(from)} — ${fmt(to)}`;
 });
+
+const detailTitle = computed(() => "Basis vs Price");
+const detailSubtitle = computed(() =>
+  detailResolution.value ? `${detailResolution.value} resolution` : "",
+);
 
 function getIndexName(instrument) {
   return (
@@ -177,18 +180,28 @@ const filteredDetailData = computed(() => {
 });
 
 onMounted(async () => {
-  const list = await fetchInstruments();
+  const all_instruments = await fetchInstruments();
   const now = Math.floor(Date.now() / 1000);
 
-  const prepared = list
-    .filter((i) => i?.type === "future" && i?.underlying === "BTCUSD")
-    .sort((a, b) => a.expiration_timestamp - b.expiration_timestamp);
+  const futures = all_instruments.filter(
+    (i) => i?.type === "future" && i?.underlying === "BTCUSD",
+  );
 
-  instruments.value = prepared;
+  const futuresByExpiration = [...futures].sort(
+    (a, b) => a.expiration_timestamp - b.expiration_timestamp,
+  );
 
-  const active = prepared.find((i) => i.expiration_timestamp > now);
+  instruments.value = futuresByExpiration;
 
-  const initialInstrument = active || prepared[0] || null;
+  const active = futuresByExpiration.find((i) => i.expiration_timestamp > now);
+
+  const futuresByCreateTime = [...futures].sort(
+    (a, b) =>
+      (Number.isFinite(a.create_time_ms) ? a.create_time_ms : Infinity) -
+      (Number.isFinite(b.create_time_ms) ? b.create_time_ms : Infinity),
+  );
+
+  const initialInstrument = futuresByCreateTime[0] || null;
 
   instrumentName.value = initialInstrument?.instrument_name;
   resolution.value = "1d";
@@ -231,11 +244,7 @@ watch(
         <div class="field">
           <label for="resolution">Resolution</label>
           <select id="resolution" v-model="resolution">
-            <option
-              v-for="r in availableResolutions"
-              :key="r.value"
-              :value="r.value"
-            >
+            <option v-for="r in RESOLUTIONS" :key="r.value" :value="r.value">
               {{ r.label }}
             </option>
           </select>
@@ -259,7 +268,10 @@ watch(
       :data="data"
       :detail-data="filteredDetailData"
       :detail-range="detailRange"
-      :detail-resolution="detailResolution"
+      :main-title="mainTitle"
+      :main-subtitle="mainSubtitle"
+      :detail-title="detailTitle"
+      :detail-subtitle="detailSubtitle"
       :instrument-name="instrumentName"
       :range="range"
       :loading="loading"

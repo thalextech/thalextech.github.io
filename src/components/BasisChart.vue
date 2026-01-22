@@ -6,7 +6,10 @@ const props = defineProps({
   data: { type: Array, default: () => [] },
   detailData: { type: Array, default: () => [] },
   detailRange: { type: Object, default: null },
-  detailResolution: { type: String, default: "" },
+  mainTitle: { type: String, default: "" },
+  mainSubtitle: { type: String, default: "" },
+  detailTitle: { type: String, default: "" },
+  detailSubtitle: { type: String, default: "" },
   instrumentName: { type: String, default: "" },
   range: { type: Object, default: null },
   loading: { type: Boolean, default: false },
@@ -38,6 +41,9 @@ const SVG_FONT_FAMILY =
   'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
 
 const subtitle = computed(() => {
+  if (props.mainSubtitle) {
+    return props.mainSubtitle;
+  }
   const from = props.range?.from ? new Date(props.range.from * 1000) : null;
   const to = props.range?.to ? new Date(props.range.to * 1000) : null;
   if (!from || !to) return "";
@@ -156,7 +162,9 @@ function render() {
     .style("font-size", "18px")
     .style("font-weight", 650)
     .style("font-family", SVG_FONT_FAMILY)
-    .text(`${props.instrumentName || "Instrument"} Basis`);
+    .text(
+      props.mainTitle || `${props.instrumentName || "Instrument"} Basis`,
+    );
 
   svg
     .append("text")
@@ -168,10 +176,8 @@ function render() {
     .style("font-family", SVG_FONT_FAMILY)
     .text(subtitle.value);
 
-  const detailTitle = "Basis vs Price";
-  const detailSubtitle = props.detailResolution
-    ? `${props.detailResolution} resolution`
-    : "";
+  const detailTitle = props.detailTitle || "Basis vs Price";
+  const detailSubtitle = props.detailSubtitle || "";
 
   svg
     .append("text")
@@ -614,7 +620,10 @@ watch(
     props.data,
     props.detailData,
     props.detailRange,
-    props.detailResolution,
+    props.mainTitle,
+    props.mainSubtitle,
+    props.detailTitle,
+    props.detailSubtitle,
     props.instrumentName,
     props.range,
   ],
