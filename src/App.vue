@@ -12,47 +12,46 @@ import {
   indexNameFromInstrumentName,
 } from "./lib/thalex.js";
 
-const RESOLUTIONS = [
-  { label: "1m", value: "1m", seconds: 60, detail: "1m" },
-  { label: "5m", value: "5m", seconds: 5 * 60, detail: "1m" },
-  { label: "15m", value: "15m", seconds: 15 * 60, detail: "5m" },
-  { label: "1h", value: "1h", seconds: 60 * 60, detail: "15m" },
-  { label: "1d", value: "1d", seconds: 24 * 60 * 60, detail: "1h" },
-];
+const RESOLUTIONS = {
+  "1m": { label: "1m", seconds: 60, detail: "1m" },
+  "5m": { label: "5m", seconds: 5 * 60, detail: "1m" },
+  "15m": { label: "15m", seconds: 15 * 60, detail: "5m" },
+  "1h": { label: "1h", seconds: 60 * 60, detail: "15m" },
+  "1d": { label: "1d", seconds: 24 * 60 * 60, detail: "1h" },
+};
+const RESOLUTION_KEYS = ["1m", "5m", "15m", "1h", "1d"];
 
 const POINTS = 500;
 
-const resolution = ref("1h");
+const resolution = ref("1d");
+const scatterResolution = ref("");
 const instruments = ref([]);
 const instrumentName = ref("");
 const chartRef = ref(null);
-const range = ref(null);
 const data = ref([]);
-const detailData = ref([]);
+const scatterData = ref([]);
 const detailRange = ref(null);
-const detailResolution = ref("1h");
 const loading = ref(false);
 const error = ref("");
-
-const selectedInstrument = computed(() =>
-  findInstrument(instruments.value, instrumentName.value),
-);
 
 const mainTitle = computed(
   () => `${instrumentName.value || "Instrument"} Basis`,
 );
 
 const mainSubtitle = computed(() => {
-  const from = range.value?.from ? new Date(range.value.from * 1000) : null;
-  const to = range.value?.to ? new Date(range.value.to * 1000) : null;
-  if (!from || !to) return "";
   const fmt = d3.utcFormat("%d %b %y %H:%M");
-  return `${fmt(from)} — ${fmt(to)}`;
+
+  const dateFromData = data.value[0]?.date;
+  const dateToData = data.value[data.value.length - 1]?.date;
+  if (dateFromData && dateToData) {
+    return `${fmt(dateFromData)} — ${fmt(dateToData)}`;
+  }
+  return "";
 });
 
 const detailTitle = computed(() => "Basis vs Price");
 const detailSubtitle = computed(() =>
-  detailResolution.value ? `${detailResolution.value} resolution` : "",
+  scatterResolution.value ? `${scatterResolution.value} resolution` : "",
 );
 
 function getIndexName(instrument) {
@@ -72,26 +71,22 @@ async function load() {
   loading.value = true;
   error.value = "";
   data.value = [];
-  detailData.value = [];
+  scatterData.value = [];
   detailRange.value = null;
 
-  const resolutionConfig = RESOLUTIONS.find(
-    (r) => r.value === resolution.value,
-  );
+  const resolutionConfig = RESOLUTIONS[resolution.value];
 
   const now = Math.floor(Date.now() / 1000);
-  const seconds = resolutionConfig.seconds ?? 3600;
+  const seconds = resolutionConfig?.seconds ?? 3600;
   const timestampRange = {
     from: now - seconds * POINTS,
     to: now,
   };
-  range.value = timestampRange;
-
   try {
     const { instrument, indexName } = await getInstrumentAndIndexName();
 
     detailRange.value = null;
-    detailResolution.value = resolutionConfig?.detail || "1h";
+    scatterResolution.value = resolutionConfig?.detail || "1h";
 
     const p1 = Promise.all([
       fetchMarkHistory({
@@ -111,13 +106,13 @@ async function load() {
     const p2 = Promise.all([
       fetchMarkHistory({
         instrument_name: instrumentName.value,
-        resolution: detailResolution.value,
+        resolution: scatterResolution.value,
         from: timestampRange.from,
         to: timestampRange.to,
       }),
       fetchIndexHistory({
         index_name: indexName,
-        resolution: detailResolution.value,
+        resolution: scatterResolution.value,
         from: timestampRange.from,
         to: timestampRange.to,
       }),
@@ -134,7 +129,7 @@ async function load() {
       instrument,
     });
 
-    detailData.value = computeBasisSeries({
+    scatterData.value = computeBasisSeries({
       mark: detailMarkResult?.data || [],
       index: detailIndex || [],
       instrument,
@@ -146,7 +141,7 @@ async function load() {
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
     data.value = [];
-    detailData.value = [];
+    scatterData.value = [];
   } finally {
     loading.value = false;
   }
@@ -164,20 +159,6 @@ function handleSavePng() {
 function handleDetailBrush(brushRange) {
   detailRange.value = brushRange || null;
 }
-
-const filteredDetailData = computed(() => {
-  // If no brush is active, show the full high-res dataset
-  if (!detailRange.value) {
-    return detailData.value;
-  }
-
-  const { from, to } = detailRange.value;
-
-  return detailData.value.filter((point) => {
-    const ts = point.timestamp;
-    return ts >= from && ts <= to;
-  });
-});
 
 onMounted(async () => {
   const all_instruments = await fetchInstruments();
@@ -242,8 +223,8 @@ watch(
         <div class="field">
           <label for="resolution">Resolution</label>
           <select id="resolution" v-model="resolution">
-            <option v-for="r in RESOLUTIONS" :key="r.value" :value="r.value">
-              {{ r.label }}
+            <option v-for="key in RESOLUTION_KEYS" :key="key" :value="key">
+              {{ RESOLUTIONS[key].label }}
             </option>
           </select>
         </div>
@@ -264,14 +245,13 @@ watch(
     <BasisChart
       ref="chartRef"
       :data="data"
-      :detail-data="filteredDetailData"
+      :detail-data="scatterData"
       :detail-range="detailRange"
       :main-title="mainTitle"
       :main-subtitle="mainSubtitle"
       :detail-title="detailTitle"
       :detail-subtitle="detailSubtitle"
       :instrument-name="instrumentName"
-      :range="range"
       :loading="loading"
       @brush="handleDetailBrush"
     />

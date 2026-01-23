@@ -11,7 +11,6 @@ const props = defineProps({
   detailTitle: { type: String, default: "" },
   detailSubtitle: { type: String, default: "" },
   instrumentName: { type: String, default: "" },
-  range: { type: Object, default: null },
   loading: { type: Boolean, default: false },
 });
 
@@ -44,11 +43,15 @@ const subtitle = computed(() => {
   if (props.mainSubtitle) {
     return props.mainSubtitle;
   }
-  const from = props.range?.from ? new Date(props.range.from * 1000) : null;
-  const to = props.range?.to ? new Date(props.range.to * 1000) : null;
-  if (!from || !to) return "";
   const fmt = d3.utcFormat("%d %b %y %H:%M");
-  return `${fmt(from)} — ${fmt(to)}`;
+  const data = props.data || [];
+  if (!data.length) return "";
+  const dateFromData = data[0]?.date;
+  const dateToData = data[data.length - 1]?.date;
+  if (dateFromData && dateToData) {
+    return `${fmt(dateFromData)} — ${fmt(dateToData)}`;
+  }
+  return "";
 });
 
 function exportPng({
@@ -362,8 +365,28 @@ function render() {
       return;
     }
 
-    const domainStart = domain?.[0] || detailDomainFull[0];
-    const domainEnd = domain?.[1] || detailDomainFull[1];
+    const hasValidDomain =
+      Array.isArray(domain) &&
+      domain.length === 2 &&
+      domain[0] instanceof Date &&
+      domain[1] instanceof Date &&
+      domain[0] <= domain[1];
+
+    if (!hasValidDomain) {
+      detailLayer
+        .append("text")
+        .attr("x", scatterInnerWidth / 2)
+        .attr("y", innerHeight / 2)
+        .attr("fill", "#c9c9cf")
+        .attr("text-anchor", "middle")
+        .style("font-size", "13px")
+        .style("font-family", SVG_FONT_FAMILY)
+        .text("Select a range on the main chart.");
+      return;
+    }
+
+    const domainStart = domain[0];
+    const domainEnd = domain[1];
     const detailView = detailSource.filter(
       (d) => d.date >= domainStart && d.date <= domainEnd,
     );
@@ -509,12 +532,12 @@ function render() {
         new Date(props.detailRange.from * 1000),
         new Date(props.detailRange.to * 1000),
       ]
-    : detailDomainFull;
+    : null;
   renderDetail(initialDomain);
 
   const handleBrush = (event) => {
     const selection = event.selection;
-    const domain = selection ? selection.map(x.invert) : x.domain();
+    const domain = selection ? selection.map(x.invert) : null;
     renderDetail(domain);
   };
 
@@ -625,7 +648,6 @@ watch(
     props.detailTitle,
     props.detailSubtitle,
     props.instrumentName,
-    props.range,
   ],
   () => render(),
   { deep: false },
