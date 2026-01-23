@@ -39,6 +39,34 @@ const formatBasisValue = (value) =>
 const SVG_FONT_FAMILY =
   'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
 
+const layout = {
+  mainWidth: 1200,
+  panelHeight: 650,
+  margin: { top: 74, right: 38, bottom: 54, left: 74 },
+  panelGap: 90,
+};
+
+const chartState = {
+  svg: null,
+  mainGroup: null,
+  xAxisGroup: null,
+  yAxisGroup: null,
+  pointsGroup: null,
+  detailGroup: null,
+  detailLayer: null,
+  detailTitleText: null,
+  detailSubtitleText: null,
+  detailBrush: null,
+  brushGroup: null,
+  gradient: null,
+  legendMinText: null,
+  legendMaxText: null,
+  noDataText: null,
+  currentXScale: null,
+  detailSource: null,
+  detailDomainFull: null,
+};
+
 const subtitle = computed(() => {
   if (props.mainSubtitle) {
     return props.mainSubtitle;
@@ -129,23 +157,20 @@ function render() {
   tooltip.visible = false;
   tooltip.datum = null;
 
-  const baseMainWidth = 1200;
-  const expandedMainWidth = 1500;
-  const panelHeight = 650;
-  const margin = { top: 74, right: 38, bottom: 54, left: 74 };
+  const panelHeight = layout.panelHeight;
+  const margin = layout.margin;
   const detailActive =
     typeof props.detailRange?.from === "number" &&
     typeof props.detailRange?.to === "number";
-  const mainWidth = detailActive ? baseMainWidth : expandedMainWidth;
+  const mainWidth = layout.mainWidth;
   const innerWidth = mainWidth - margin.left - margin.right;
   const innerHeight = panelHeight - margin.top - margin.bottom;
   const scatterInnerWidth = innerHeight;
-  const panelGap = detailActive ? 90 : 0;
+  const panelGap = detailActive ? layout.panelGap : 0;
   const scatterWidth = detailActive
     ? scatterInnerWidth + margin.left + margin.right
     : 0;
-  const width =
-    mainWidth + (detailActive ? panelGap + scatterWidth : 0);
+  const width = mainWidth + panelGap + scatterWidth;
   const height = panelHeight;
   const scatterOffsetX = mainWidth + panelGap;
 
@@ -173,9 +198,7 @@ function render() {
     .style("font-size", "18px")
     .style("font-weight", 650)
     .style("font-family", SVG_FONT_FAMILY)
-    .text(
-      props.mainTitle || `${props.instrumentName || "Instrument"} Basis`,
-    );
+    .text(props.mainTitle || `${props.instrumentName || "Instrument"} Basis`);
 
   svg
     .append("text")
@@ -424,7 +447,7 @@ function render() {
       .range([innerHeight, 0]);
     const detailXAxis = d3
       .axisBottom(detailX)
-      .ticks(8)
+      .ticks(5)
       .tickSize(0)
       .tickPadding(10)
       .tickFormat(d3.format(","));
@@ -498,7 +521,7 @@ function render() {
         detailFocus.attr("opacity", 0);
         tooltip.visible = false;
         tooltip.datum = null;
-      })
+    })
       .on("pointermove", (event) => {
         const [mx] = d3.pointer(event);
         const x0 = detailX.invert(mx);
@@ -529,22 +552,63 @@ function render() {
       });
   };
 
+  const BRUSH_THROTTLE_MS = 40;
+  let brushPendingDomain = null;
+  let brushTimer = null;
+  let lastBrushTime = 0;
+
+  const getNow = () =>
+    typeof performance !== "undefined" ? performance.now() : Date.now();
+
+  const runBrushUpdate = () => {
+    brushTimer = null;
+    lastBrushTime = getNow();
+    const domain = brushPendingDomain;
+    brushPendingDomain = null;
+    renderDetail(domain);
+  };
+
+  const scheduleBrushUpdate = (domain) => {
+    brushPendingDomain = domain;
+    const now = getNow();
+    const elapsed = now - lastBrushTime;
+    if (elapsed >= BRUSH_THROTTLE_MS && !brushTimer) {
+      runBrushUpdate();
+      return;
+    }
+    const delay = Math.max(0, BRUSH_THROTTLE_MS - elapsed);
+    if (brushTimer) {
+      clearTimeout(brushTimer);
+    }
+    brushTimer = setTimeout(runBrushUpdate, delay);
+  };
+
+  const flushBrushUpdate = () => {
+    if (brushTimer) {
+      clearTimeout(brushTimer);
+      brushTimer = null;
+    }
+    if (brushPendingDomain !== null) {
+      runBrushUpdate();
+    }
+  };
+
   const initialDomain = props.detailRange?.from
     ? [
-        new Date(props.detailRange.from * 1000),
-        new Date(props.detailRange.to * 1000),
-      ]
+      new Date(props.detailRange.from * 1000),
+      new Date(props.detailRange.to * 1000),
+    ]
     : null;
   renderDetail(initialDomain);
-
   const handleBrush = (event) => {
     const selection = event.selection;
     const domain = selection ? selection.map(x.invert) : null;
-    renderDetail(domain);
+    scheduleBrushUpdate(domain);
   };
 
   const handleBrushEnd = (event) => {
     handleBrush(event);
+    flushBrushUpdate();
     if (!event.sourceEvent) return;
     const selection = event.selection;
     if (!selection) {
