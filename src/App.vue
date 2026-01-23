@@ -161,29 +161,21 @@ function handleDetailBrush(brushRange) {
 }
 
 onMounted(async () => {
-  const all_instruments = await fetchInstruments();
-  const now = Math.floor(Date.now() / 1000);
+  const all = await fetchInstruments();
 
-  const futures = all_instruments.filter(
-    (i) => i?.type === "future" && i?.underlying === "BTCUSD",
-  );
+  instruments.value = all
+    .filter((i) => i?.type === "future" && i?.underlying === "BTCUSD")
+    .sort((a, b) => a.expiration_timestamp - b.expiration_timestamp);
 
-  const futuresByExpiration = [...futures].sort(
-    (a, b) => a.expiration_timestamp - b.expiration_timestamp,
-  );
-
-  instruments.value = futuresByExpiration;
-
-  const futuresByCreateTime = [...futures].sort(
-    (a, b) =>
-      (Number.isFinite(a.create_time_ms) ? a.create_time_ms : Infinity) -
-      (Number.isFinite(b.create_time_ms) ? b.create_time_ms : Infinity),
-  );
-
-  const initialInstrument = futuresByCreateTime[0] || null;
-
-  instrumentName.value = initialInstrument?.instrument_name;
-  resolution.value = "1d";
+  if (!instrumentName.value && instruments.value.length) {
+    const oldest =
+      [...instruments.value].sort(
+        (a, b) =>
+          (Number.isFinite(a.create_time_ms) ? a.create_time_ms : Infinity) -
+          (Number.isFinite(b.create_time_ms) ? b.create_time_ms : Infinity),
+      )[0] || null;
+    instrumentName.value = oldest?.instrument_name;
+  }
 });
 
 watch(

@@ -129,15 +129,23 @@ function render() {
   tooltip.visible = false;
   tooltip.datum = null;
 
-  const mainWidth = 1200;
+  const baseMainWidth = 1200;
+  const expandedMainWidth = 1500;
   const panelHeight = 650;
   const margin = { top: 74, right: 38, bottom: 54, left: 74 };
+  const detailActive =
+    typeof props.detailRange?.from === "number" &&
+    typeof props.detailRange?.to === "number";
+  const mainWidth = detailActive ? baseMainWidth : expandedMainWidth;
   const innerWidth = mainWidth - margin.left - margin.right;
   const innerHeight = panelHeight - margin.top - margin.bottom;
   const scatterInnerWidth = innerHeight;
-  const scatterWidth = scatterInnerWidth + margin.left + margin.right;
-  const panelGap = 90;
-  const width = mainWidth + panelGap + scatterWidth;
+  const panelGap = detailActive ? 90 : 0;
+  const scatterWidth = detailActive
+    ? scatterInnerWidth + margin.left + margin.right
+    : 0;
+  const width =
+    mainWidth + (detailActive ? panelGap + scatterWidth : 0);
   const height = panelHeight;
   const scatterOffsetX = mainWidth + panelGap;
 
@@ -182,26 +190,28 @@ function render() {
   const detailTitle = props.detailTitle || "Basis vs Price";
   const detailSubtitle = props.detailSubtitle || "";
 
-  svg
-    .append("text")
-    .attr("x", scatterOffsetX + scatterWidth / 2)
-    .attr("y", 30)
-    .attr("fill", "#fff")
-    .attr("text-anchor", "middle")
-    .style("font-size", "16px")
-    .style("font-weight", 600)
-    .style("font-family", SVG_FONT_FAMILY)
-    .text(detailTitle);
+  if (detailActive) {
+    svg
+      .append("text")
+      .attr("x", scatterOffsetX + scatterWidth / 2)
+      .attr("y", 30)
+      .attr("fill", "#fff")
+      .attr("text-anchor", "middle")
+      .style("font-size", "16px")
+      .style("font-weight", 600)
+      .style("font-family", SVG_FONT_FAMILY)
+      .text(detailTitle);
 
-  svg
-    .append("text")
-    .attr("x", scatterOffsetX + scatterWidth / 2)
-    .attr("y", 54)
-    .attr("fill", "#c9c9cf")
-    .attr("text-anchor", "middle")
-    .style("font-size", "12px")
-    .style("font-family", SVG_FONT_FAMILY)
-    .text(detailSubtitle);
+    svg
+      .append("text")
+      .attr("x", scatterOffsetX + scatterWidth / 2)
+      .attr("y", 54)
+      .attr("fill", "#c9c9cf")
+      .attr("text-anchor", "middle")
+      .style("font-size", "12px")
+      .style("font-family", SVG_FONT_FAMILY)
+      .text(detailSubtitle);
+  }
 
   if (!data.length) {
     svg
@@ -335,19 +345,22 @@ function render() {
     .attr("stroke-width", 0.2)
     .attr("opacity", 0.9);
 
-  const detailG = svg
-    .append("g")
-    .attr(
-      "transform",
-      `translate(${scatterOffsetX + margin.left},${margin.top})`,
-    );
+  const detailG = detailActive
+    ? svg
+        .append("g")
+        .attr(
+          "transform",
+          `translate(${scatterOffsetX + margin.left},${margin.top})`,
+        )
+    : null;
 
-  const detailLayer = detailG.append("g");
+  const detailLayer = detailG ? detailG.append("g") : null;
   const detailBaseY = margin.top;
   const detailSource = detailData.length ? detailData : data;
   const detailDomainFull = d3.extent(detailSource, (d) => d.date);
 
   const renderDetail = (domain) => {
+    if (!detailLayer) return;
     detailLayer.selectAll("*").remove();
     tooltip.visible = false;
     tooltip.datum = null;
@@ -365,28 +378,17 @@ function render() {
       return;
     }
 
-    const hasValidDomain =
-      Array.isArray(domain) &&
-      domain.length === 2 &&
-      domain[0] instanceof Date &&
-      domain[1] instanceof Date &&
-      domain[0] <= domain[1];
-
-    if (!hasValidDomain) {
-      detailLayer
-        .append("text")
-        .attr("x", scatterInnerWidth / 2)
-        .attr("y", innerHeight / 2)
-        .attr("fill", "#c9c9cf")
-        .attr("text-anchor", "middle")
-        .style("font-size", "13px")
-        .style("font-family", SVG_FONT_FAMILY)
-        .text("Select a range on the main chart.");
+    if (
+      !Array.isArray(domain) ||
+      domain.length !== 2 ||
+      !(domain[0] instanceof Date) ||
+      !(domain[1] instanceof Date) ||
+      domain[0] > domain[1]
+    ) {
       return;
     }
 
-    const domainStart = domain[0];
-    const domainEnd = domain[1];
+    const [domainStart, domainEnd] = domain;
     const detailView = detailSource.filter(
       (d) => d.date >= domainStart && d.date <= domainEnd,
     );
