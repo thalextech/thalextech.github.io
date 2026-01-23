@@ -6,11 +6,8 @@ const props = defineProps({
   data: { type: Array, default: () => [] },
   detailData: { type: Array, default: () => [] },
   detailRange: { type: Object, default: null },
-  mainTitle: { type: String, default: "" },
-  mainSubtitle: { type: String, default: "" },
-  detailTitle: { type: String, default: "" },
-  detailSubtitle: { type: String, default: "" },
   instrumentName: { type: String, default: "" },
+  detailResolution: { type: String, default: "" },
   loading: { type: Boolean, default: false },
 });
 
@@ -93,10 +90,11 @@ const chartState = {
 
 let detailRenderContext = null;
 
+const mainTitle = computed(
+  () => `${props.instrumentName || "Instrument"} Basis`,
+);
+
 const subtitle = computed(() => {
-  if (props.mainSubtitle) {
-    return props.mainSubtitle;
-  }
   const fmt = d3.utcFormat("%d %b %y %H:%M");
   const data = normalizeArray(props.data);
   if (!data.length) return "";
@@ -676,14 +674,16 @@ function render() {
   chartState.mainTitleText
     .attr("x", mainWidth / 2)
     .attr("y", 30)
-    .text(props.mainTitle || `${props.instrumentName || "Instrument"} Basis`);
+    .text(mainTitle.value);
   chartState.mainSubtitleText
     .attr("x", mainWidth / 2)
     .attr("y", 54)
     .text(subtitle.value);
 
-  const detailTitle = props.detailTitle || "Basis vs Price";
-  const detailSubtitle = props.detailSubtitle || "";
+  const detailTitle = "Basis vs Price";
+  const detailSubtitle = props.detailResolution
+    ? `${props.detailResolution} resolution`
+    : "";
   chartState.detailTitleText
     .attr("x", scatterOffsetX + scatterWidth / 2)
     .attr("y", 30)
@@ -888,11 +888,8 @@ watch(
     props.data,
     props.detailData,
     props.detailRange,
-    props.mainTitle,
-    props.mainSubtitle,
-    props.detailTitle,
-    props.detailSubtitle,
     props.instrumentName,
+    props.detailResolution,
   ],
   () => render(),
   { deep: false },

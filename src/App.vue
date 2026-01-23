@@ -1,6 +1,5 @@
 <script setup>
-import * as d3 from "d3";
-import { computed, onMounted, ref, watch } from "vue";
+import { onMounted, ref, watch } from "vue";
 import BasisChart from "./components/BasisChart.vue";
 import {
   computeBasisSeries,
@@ -8,7 +7,6 @@ import {
   fetchInstrument,
   fetchInstruments,
   fetchMarkHistory,
-  findInstrument,
   indexNameFromInstrumentName,
 } from "./lib/thalex.js";
 
@@ -33,26 +31,6 @@ const scatterData = ref([]);
 const detailRange = ref(null);
 const loading = ref(false);
 const error = ref("");
-
-const mainTitle = computed(
-  () => `${instrumentName.value || "Instrument"} Basis`,
-);
-
-const mainSubtitle = computed(() => {
-  const fmt = d3.utcFormat("%d %b %y %H:%M");
-
-  const dateFromData = data.value[0]?.date;
-  const dateToData = data.value[data.value.length - 1]?.date;
-  if (dateFromData && dateToData) {
-    return `${fmt(dateFromData)} — ${fmt(dateToData)}`;
-  }
-  return "";
-});
-
-const detailTitle = computed(() => "Basis vs Price");
-const detailSubtitle = computed(() =>
-  scatterResolution.value ? `${scatterResolution.value} resolution` : "",
-);
 
 function getIndexName(instrument) {
   return (
@@ -249,11 +227,8 @@ watch(
       :data="data"
       :detail-data="scatterData"
       :detail-range="detailRange"
-      :main-title="mainTitle"
-      :main-subtitle="mainSubtitle"
-      :detail-title="detailTitle"
-      :detail-subtitle="detailSubtitle"
       :instrument-name="instrumentName"
+      :detail-resolution="scatterResolution"
       :loading="loading"
       @brush="handleDetailBrush"
     />
