@@ -21,7 +21,7 @@ const RESOLUTIONS = {
 };
 const RESOLUTION_KEYS = ["1m", "5m", "15m", "1h", "1d"];
 
-const POINTS = 500;
+const MAIN_POINT_LIMIT = 400;
 
 const resolution = ref("1d");
 const scatterResolution = ref("");
@@ -79,7 +79,7 @@ async function load() {
   const now = Math.floor(Date.now() / 1000);
   const seconds = resolutionConfig?.seconds ?? 3600;
   const timestampRange = {
-    from: now - seconds * POINTS,
+    from: now - seconds * MAIN_POINT_LIMIT,
     to: now,
   };
   try {
@@ -123,11 +123,12 @@ async function load() {
 
     const { data: mark } = markResult;
 
-    data.value = computeBasisSeries({
+    const mainSeries = computeBasisSeries({
       mark,
       index,
       instrument,
     });
+    data.value = mainSeries.slice(-MAIN_POINT_LIMIT);
 
     scatterData.value = computeBasisSeries({
       mark: detailMarkResult?.data || [],
@@ -159,6 +160,15 @@ function handleSavePng() {
 function handleDetailBrush(brushRange) {
   detailRange.value = brushRange || null;
 }
+
+watch(
+  resolution,
+  () => {
+    detailRange.value = null;
+    chartRef.value?.clearBrush?.();
+  },
+  { immediate: false },
+);
 
 onMounted(async () => {
   const all = await fetchInstruments();
