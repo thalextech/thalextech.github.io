@@ -1,6 +1,6 @@
 import { csvFormatRows, csvParseRows } from "d3-dsv";
 
-const DEFAULT_API_BASE = "/api/v2/public";
+const API_BASE = "/api/v2/public";
 const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_PREFIX = "thalex-cache";
@@ -18,10 +18,6 @@ function isCacheFresh(timestamp) {
   return (
     typeof timestamp === "number" && Date.now() - timestamp <= CACHE_TTL_MS
   );
-}
-
-function buildCacheKey(type, name, resolution) {
-  return `${CACHE_PREFIX}:${type}:${name}:${resolution}`;
 }
 
 function normalizeTimestampMs(value) {
@@ -72,10 +68,6 @@ function writeCache(key, rows, meta) {
   }
 }
 
-function getApiBase() {
-  return import.meta.env.VITE_THALEX_API_BASE || DEFAULT_API_BASE;
-}
-
 async function getJson(url, { timeoutMs = 20_000 } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -96,14 +88,14 @@ async function getJson(url, { timeoutMs = 20_000 } = {}) {
   }
 }
 
-function makeUrl(path, params) {
-  const base = getApiBase();
-  const url = new URL(`${base}${path}`, window.location.origin);
-  Object.entries(params || {}).forEach(([key, value]) => {
-    if (value === undefined || value === null) return;
-    url.searchParams.set(key, String(value));
-  });
-  return url.toString();
+function getApiBase() {
+  return API_BASE;
+}
+
+function makeUrl(path, params = {}) {
+  const baseUrl = getApiBase();
+  const search = new URLSearchParams(params);
+  return `${baseUrl}${path}?${search}`;
 }
 
 export async function fetchInstruments() {
@@ -126,7 +118,7 @@ export async function fetchIndexHistory({
   from,
   to,
 } = {}) {
-  const cacheKey = buildCacheKey("index", index_name, resolution);
+  const cacheKey = `${CACHE_PREFIX}:index:${index_name}:${resolution}`;
   const cached = readCache(cacheKey);
   if (cached) {
     return (cached.rows || []).map((row) => ({
@@ -165,7 +157,7 @@ export async function fetchMarkHistory({
   from,
   to,
 } = {}) {
-  const cacheKey = buildCacheKey("mark", instrument_name, resolution);
+  const cacheKey = `${CACHE_PREFIX}:mark:${instrument_name}:${resolution}`;
   const cached = readCache(cacheKey);
   if (cached) {
     return {
