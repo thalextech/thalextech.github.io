@@ -1,6 +1,6 @@
 <script setup>
 import * as d3 from "d3";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const props = defineProps({
   data: { type: Array, default: () => [] },
@@ -369,6 +369,14 @@ const flushBrushUpdate = () => {
     renderDetail(pending);
   }
 };
+
+onBeforeUnmount(() => {
+  if (brushRafId != null) {
+    cancelAnimationFrame(brushRafId);
+    brushRafId = null;
+  }
+  brushPendingDomain = null;
+});
 
 const handleBrush = (event) => {
   const xScale = chartState.currentXScale;
