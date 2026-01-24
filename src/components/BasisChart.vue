@@ -23,6 +23,19 @@ const layout = {
   panelGap: 60,
 };
 
+const TEXT_STYLES = {
+  axisText: { fill: "#d6d7de" },
+  axisLabel: { fill: "#d6d7de", size: "12px", weight: 700 },
+  mainTitle: { fill: "#fff", size: "18px", weight: 650 },
+  mainSubtitle: { fill: "#c9c9cf", size: "13px" },
+  detailTitle: { fill: "#fff", size: "16px", weight: 600 },
+  detailSubtitle: { fill: "#c9c9cf", size: "12px" },
+  legendTitle: { fill: "#d6d7de", size: "12px" },
+  legendLabel: { fill: "#a9abb6", size: "11px" },
+  noData: { fill: "#c9c9cf", size: "14px" },
+  detailMessage: { fill: "#c9c9cf", size: "13px" },
+};
+
 const chartState = {
   gradient: null,
   background: null,
@@ -69,13 +82,20 @@ const subtitle = computed(() => {
   return `${fmt(start)} — ${fmt(end)}`;
 });
 
+const applyTextStyle = (node, styleKey) => {
+  const style = TEXT_STYLES[styleKey];
+  if (!style) return node;
+  node.style("font-family", SVG_FONT_FAMILY);
+  if (style.fill) node.attr("fill", style.fill);
+  if (style.size) node.style("font-size", style.size);
+  if (style.weight != null) node.style("font-weight", style.weight);
+  return node;
+};
+
 const axisStyle = (axisG) => {
   axisG.selectAll("line").remove();
   axisG.selectAll("path").remove();
-  axisG
-    .selectAll("text")
-    .attr("fill", "#d6d7de")
-    .style("font-family", SVG_FONT_FAMILY);
+  applyTextStyle(axisG.selectAll("text"), "axisText");
 };
 
 const ensureChartElements = () => {
@@ -83,26 +103,16 @@ const ensureChartElements = () => {
   if (!svgEl) return null;
   const svg = d3.select(svgEl);
 
-  const appendText = (parent, { fill, size, weight, anchor, text }) => {
-    const node = parent
-      .append("text")
-      .attr("fill", fill)
-      .style("font-size", size)
-      .style("font-family", SVG_FONT_FAMILY);
+  const appendText = (parent, styleKey, { anchor, text } = {}) => {
+    const node = parent.append("text");
+    applyTextStyle(node, styleKey);
     if (anchor) node.attr("text-anchor", anchor);
-    if (weight != null) node.style("font-weight", weight);
     if (text != null) node.text(text);
     return node;
   };
 
   const appendAxisLabel = (parent, text) =>
-    appendText(parent, {
-      fill: "#d6d7de",
-      size: "12px",
-      weight: 700,
-      anchor: "middle",
-      text,
-    });
+    appendText(parent, "axisLabel", { anchor: "middle", text });
 
   if (!chartState.gradient) {
     const defs = svg.append("defs");
@@ -120,66 +130,50 @@ const ensureChartElements = () => {
   }
 
   if (!chartState.mainTitleText) {
-    chartState.mainTitleText = appendText(svg, {
-      fill: "#fff",
-      size: "18px",
-      weight: 650,
+    chartState.mainTitleText = appendText(svg, "mainTitle", {
       anchor: "middle",
     });
   }
 
   if (!chartState.mainSubtitleText) {
-    chartState.mainSubtitleText = appendText(svg, {
-      fill: "#c9c9cf",
-      size: "13px",
+    chartState.mainSubtitleText = appendText(svg, "mainSubtitle", {
       anchor: "middle",
     });
   }
 
   if (!chartState.detailTitleText) {
-    chartState.detailTitleText = appendText(svg, {
-      fill: "#fff",
-      size: "16px",
-      weight: 600,
+    chartState.detailTitleText = appendText(svg, "detailTitle", {
       anchor: "middle",
     });
   }
 
   if (!chartState.detailSubtitleText) {
-    chartState.detailSubtitleText = appendText(svg, {
-      fill: "#c9c9cf",
-      size: "12px",
+    chartState.detailSubtitleText = appendText(svg, "detailSubtitle", {
       anchor: "middle",
     });
   }
 
   if (!chartState.legendGroup) {
     chartState.legendGroup = svg.append("g");
-    chartState.legendTitle = appendText(chartState.legendGroup, {
-      fill: "#d6d7de",
-      size: "12px",
+    chartState.legendTitle = appendText(chartState.legendGroup, "legendTitle", {
       text: "Annualized basis",
     });
     chartState.legendRect = chartState.legendGroup
       .append("rect")
       .attr("stroke", "#2e3040");
-    chartState.legendMinText = appendText(chartState.legendGroup, {
-      fill: "#a9abb6",
-      size: "11px",
-    });
-    chartState.legendMaxText = appendText(chartState.legendGroup, {
-      fill: "#a9abb6",
-      size: "11px",
-      anchor: "end",
-    });
+    chartState.legendMinText = appendText(
+      chartState.legendGroup,
+      "legendLabel",
+    );
+    chartState.legendMaxText = appendText(
+      chartState.legendGroup,
+      "legendLabel",
+      { anchor: "end" },
+    );
   }
 
   if (!chartState.noDataText) {
-    chartState.noDataText = appendText(svg, {
-      fill: "#c9c9cf",
-      size: "14px",
-      anchor: "middle",
-    });
+    chartState.noDataText = appendText(svg, "noData", { anchor: "middle" });
   }
 
   if (!chartState.mainGroup) {
@@ -206,11 +200,11 @@ const ensureChartElements = () => {
     chartState.detailXAxisGroup = chartState.detailLayer.append("g");
     chartState.detailYAxisGroup = chartState.detailLayer.append("g");
     chartState.detailPointsGroup = chartState.detailLayer.append("g");
-    chartState.detailMessageText = appendText(chartState.detailLayer, {
-      fill: "#c9c9cf",
-      size: "13px",
-      anchor: "middle",
-    });
+    chartState.detailMessageText = appendText(
+      chartState.detailLayer,
+      "detailMessage",
+      { anchor: "middle" },
+    );
     chartState.detailXAxisLabel = appendAxisLabel(
       chartState.detailLayer,
       "Mark Price (Close)",
@@ -535,8 +529,7 @@ function render() {
 
   svg
     .attr("viewBox", `0 0 ${width} ${height}`)
-    .attr("role", "img")
-    .style("font-family", SVG_FONT_FAMILY);
+    .attr("role", "img");
   chartState.background
     .attr("x", 0)
     .attr("y", 0)
@@ -808,16 +801,6 @@ svg {
   display: block;
   width: 100%;
   height: auto;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    "Apple Color Emoji",
-    "Segoe UI Emoji";
 }
 
 .overlay {
