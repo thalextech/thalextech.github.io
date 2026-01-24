@@ -28,6 +28,10 @@ function readCache(key) {
     storage.removeItem(key);
     return null;
   }
+  if (!Array.isArray(parsed.rows)) {
+    storage.removeItem(key);
+    return null;
+  }
   return {
     rows: parsed.rows,
     meta: parsed.meta,

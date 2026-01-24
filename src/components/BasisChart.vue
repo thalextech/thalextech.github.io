@@ -63,12 +63,9 @@ const subtitle = computed(() => {
   const fmt = d3.utcFormat("%d %b %y %H:%M");
   const data = props.data;
   if (!data.length) return "";
-  const dateFromData = data[0]?.date;
-  const dateToData = data[data.length - 1]?.date;
-  if (dateFromData && dateToData) {
-    return `${fmt(dateFromData)} — ${fmt(dateToData)}`;
-  }
-  return "";
+  const start = data[0].date;
+  const end = data[data.length - 1].date;
+  return `${fmt(start)} — ${fmt(end)}`;
 });
 
 const axisStyle = (axisG) => {
@@ -352,7 +349,6 @@ function renderDetail(domain) {
     .attr("cx", (d) => detailX(d.mark_price_close))
     .attr("cy", (d) => detailY(d.basis_pct))
     .attr("fill", (d) => colorForBasis(d.basis_pct));
-
 }
 
 const BRUSH_THROTTLE_MS = 10;
