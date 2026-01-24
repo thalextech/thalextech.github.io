@@ -178,11 +178,6 @@ function makeUrl(path, params) {
   return url.toString();
 }
 
-export function indexNameFromInstrumentName(instrumentName) {
-  const prefix = instrumentName.split("-")[0];
-  return `${prefix}USD`;
-}
-
 export async function fetchInstruments() {
   const url = makeUrl("/instruments", {});
   const json = await getJson(url);
@@ -195,16 +190,6 @@ export async function fetchInstruments() {
       create_time_ms: normalizeTimestampMs(instrument.create_time),
     };
   });
-}
-
-export async function fetchInstrument(instrument_name) {
-  const url = makeUrl("/instrument", { instrument_name });
-  const json = await getJson(url);
-  const result = json?.result;
-  if (!result || typeof result !== "object") {
-    throw new Error("Unexpected instrument response");
-  }
-  return result;
 }
 
 export async function fetchIndexHistory({
@@ -318,9 +303,4 @@ export function computeBasisSeries({ mark, index, instrument } = {}) {
   }
 
   return merged;
-}
-
-export function findInstrument(instruments, instrumentName) {
-  if (!Array.isArray(instruments) || !instrumentName) return null;
-  return instruments.find((i) => i.instrument_name === instrumentName) || null;
 }

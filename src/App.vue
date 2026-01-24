@@ -4,7 +4,6 @@ import BasisChart from "./components/BasisChart.vue";
 import {
   computeBasisSeries,
   fetchIndexHistory,
-  fetchInstrument,
   fetchInstruments,
   fetchMarkHistory,
 } from "./lib/thalex.js";
@@ -45,7 +44,7 @@ const mainSeries = computed(() => {
 });
 
 const detailSeries = computed(() => {
-  const resolutionKey = RESOLUTION_CONFIG[ui.resolution]?.detail || "1h";
+  const resolutionKey = RESOLUTION_CONFIG[ui.resolution].detail;
   const mark = data.mark[resolutionKey] || [];
   const index = data.index[resolutionKey] || [];
   return computeBasisSeries({
@@ -65,17 +64,14 @@ async function load() {
   data.index = {};
 
   const now = Math.floor(Date.now() / 1000);
-  const seconds = RESOLUTION_CONFIG[ui.resolution]?.seconds ?? 3600;
+  const seconds = RESOLUTION_CONFIG[ui.resolution].seconds;
   const timestampRange = {
     from: now - seconds * MAIN_POINT_LIMIT,
     to: now,
   };
-  const detailResolution = RESOLUTION_CONFIG[ui.resolution]?.detail || "1h";
 
   try {
-    const instrument = await fetchInstrument(ui.instrumentName);
-    const indexName = instrument?.underlying;
-    data.instrument = instrument;
+    const instrument = data.instrument;
     const [mainMarkResult, mainIndex] = await Promise.all([
       fetchMarkHistory({
         instrument_name: ui.instrumentName,
@@ -84,12 +80,14 @@ async function load() {
         to: now,
       }),
       fetchIndexHistory({
-        index_name: indexName,
+        index_name: instrument?.underlying,
         resolution: ui.resolution,
         from: timestampRange.from,
         to: timestampRange.to,
       }),
     ]);
+
+    const detailResolution = RESOLUTION_CONFIG[ui.resolution].detail;
 
     const [detailMarkResult, detailIndex] = await Promise.all([
       fetchMarkHistory({
@@ -99,7 +97,7 @@ async function load() {
         to: timestampRange.to,
       }),
       fetchIndexHistory({
-        index_name: indexName,
+        index_name: instrument?.underlying,
         resolution: detailResolution,
         from: timestampRange.from,
         to: timestampRange.to,
@@ -132,19 +130,25 @@ function handleSavePng() {
   chartRef.value.exportPng({ filename });
 }
 
-// longest running expiry is top of list and selected by default
 onMounted(async () => {
-  const all = await fetchInstruments();
-  data.instruments = all
+  const all_instruments = await fetchInstruments();
+  data.instruments = all_instruments
     .filter((i) => i?.type === "future" && i?.underlying === "BTCUSD")
     .sort((a, b) => a.create_time_ms - b.create_time_ms);
-  ui.instrumentName = data.instruments[0].instrument_name;
+  // longest running expiry is top of list and selected by default
+  if (data.instruments.length) {
+    data.instrument = data.instruments[0];
+    ui.instrumentName = data.instruments[0].instrument_name;
+  }
 });
 
 watch(
   () => [ui.resolution, ui.instrumentName],
   async () => {
     if (!ui.instrumentName) return;
+    data.instrument =
+      data.instruments.find((i) => i.instrument_name === ui.instrumentName) ||
+      null;
     ui.detailRange = null;
     await load();
   },
@@ -208,7 +212,7 @@ watch(
       :detail-data="detailSeries"
       v-model:detailRange="ui.detailRange"
       :instrument-name="ui.instrumentName"
-      :detail-resolution="RESOLUTION_CONFIG[ui.resolution]?.detail || '1h'"
+      :detail-resolution="RESOLUTION_CONFIG[ui.resolution].detail"
       :loading="ui.loading"
     />
   </div>
