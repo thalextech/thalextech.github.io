@@ -135,10 +135,6 @@ function handleSavePng() {
   chartRef.value.exportPng({ filename });
 }
 
-function handleDetailBrush(brushRange) {
-  detailRange.value = brushRange || null;
-}
-
 watch(
   resolution,
   () => {
@@ -226,11 +222,10 @@ watch(
       ref="chartRef"
       :data="data"
       :detail-data="scatterData"
-      :detail-range="detailRange"
+      v-model:detailRange="detailRange"
       :instrument-name="instrumentName"
       :detail-resolution="scatterResolution"
       :loading="loading"
-      @brush="handleDetailBrush"
     />
   </div>
 </template>

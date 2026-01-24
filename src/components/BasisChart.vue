@@ -11,7 +11,7 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(["brush"]);
+const emit = defineEmits(["update:detailRange", "brush"]);
 
 const svgRef = ref(null);
 const tooltip = reactive({
@@ -467,7 +467,7 @@ function renderDetail(domain) {
     });
 }
 
-const BRUSH_THROTTLE_MS = 40;
+const BRUSH_THROTTLE_MS = 10;
 let brushPendingDomain = null;
 let brushTimer = null;
 let lastBrushTime = 0;
@@ -522,19 +522,23 @@ const handleBrushEnd = (event) => {
   if (!event.sourceEvent) return;
   const selection = event.selection;
   if (!selection) {
+    emit("update:detailRange", null);
     emit("brush", null);
     return;
   }
   const xScale = chartState.currentXScale;
   if (!xScale) {
+    emit("update:detailRange", null);
     emit("brush", null);
     return;
   }
   const [from, to] = selection.map(xScale.invert);
-  emit("brush", {
+  const range = {
     from: Math.floor(from.getTime() / 1000),
     to: Math.floor(to.getTime() / 1000),
-  });
+  };
+  emit("update:detailRange", range);
+  emit("brush", range);
 };
 
 const brush = d3
@@ -552,6 +556,7 @@ const clearBrush = (event) => {
   if (chartState.brushGroup) {
     chartState.brushGroup.call(brush.move, null);
   }
+  emit("update:detailRange", null);
   emit("brush", null);
 };
 
