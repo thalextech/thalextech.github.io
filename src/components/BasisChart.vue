@@ -42,16 +42,6 @@ const layout = {
   margin: { top: 74, right: 38, bottom: 54, left: 74 },
   panelGap: 90,
 };
-layout.innerWidth =
-  layout.mainWidth - layout.margin.left - layout.margin.right;
-layout.innerHeight =
-  layout.panelHeight - layout.margin.top - layout.margin.bottom;
-layout.scatterInnerWidth = layout.innerHeight;
-layout.scatterWidth =
-  layout.scatterInnerWidth + layout.margin.left + layout.margin.right;
-layout.width = layout.mainWidth + layout.panelGap + layout.scatterWidth;
-layout.height = layout.panelHeight;
-layout.scatterOffsetX = layout.mainWidth + layout.panelGap;
 
 const chartState = {
   svg: null,
