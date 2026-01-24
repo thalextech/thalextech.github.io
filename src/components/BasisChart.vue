@@ -240,8 +240,6 @@ function renderDetail(domain) {
     colorForBasis,
     detailSource,
     detailDomainFull,
-    margin,
-    scatterOffsetX,
   } = ctx;
 
   if (!detailSource.length || !detailDomainFull[0] || !detailDomainFull[1]) {
@@ -254,13 +252,7 @@ function renderDetail(domain) {
     return;
   }
 
-  if (
-    !Array.isArray(domain) ||
-    domain.length !== 2 ||
-    !(domain[0] instanceof Date) ||
-    !(domain[1] instanceof Date) ||
-    domain[0] > domain[1]
-  ) {
+  if (!Array.isArray(domain)) {
     return;
   }
 
