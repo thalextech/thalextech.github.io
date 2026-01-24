@@ -14,12 +14,20 @@ const props = defineProps({
 const emit = defineEmits(["update:detailRange", "brush"]);
 
 const svgRef = ref(null);
+const internalDetailRange = ref(props.detailRange ?? null);
 const tooltip = reactive({
   visible: false,
   left: 0,
   top: 0,
   datum: null,
 });
+
+watch(
+  () => props.detailRange,
+  (next) => {
+    internalDetailRange.value = next ?? null;
+  },
+);
 
 const tooltipStyles = computed(() => ({
   left: `${tooltip.left}px`,
@@ -504,12 +512,14 @@ const handleBrushEnd = (event) => {
   if (!event.sourceEvent) return;
   const selection = event.selection;
   if (!selection) {
+    internalDetailRange.value = null;
     emit("update:detailRange", null);
     emit("brush", null);
     return;
   }
   const xScale = chartState.currentXScale;
   if (!xScale) {
+    internalDetailRange.value = null;
     emit("update:detailRange", null);
     emit("brush", null);
     return;
@@ -519,6 +529,7 @@ const handleBrushEnd = (event) => {
     from: Math.floor(from.getTime() / 1000),
     to: Math.floor(to.getTime() / 1000),
   };
+  internalDetailRange.value = range;
   emit("update:detailRange", range);
   emit("brush", range);
 };
@@ -535,9 +546,11 @@ const brush = d3
 
 const clearBrush = (event) => {
   event?.preventDefault?.();
-  if (chartState.brushGroup) {
+  const brushNode = chartState.brushGroup?.node?.();
+  if (brushNode?.__brush) {
     chartState.brushGroup.call(brush.move, null);
   }
+  internalDetailRange.value = null;
   emit("update:detailRange", null);
   emit("brush", null);
 };
@@ -634,8 +647,8 @@ function render() {
   const panelHeight = layout.panelHeight;
   const margin = layout.margin;
   const detailActive =
-    typeof props.detailRange?.from === "number" &&
-    typeof props.detailRange?.to === "number";
+    typeof internalDetailRange.value?.from === "number" &&
+    typeof internalDetailRange.value?.to === "number";
   const mainWidth = layout.mainWidth;
   const innerWidth = mainWidth - margin.left - margin.right;
   const innerHeight = panelHeight - margin.top - margin.bottom;
@@ -852,19 +865,22 @@ function render() {
   chartState.brushGroup.call(brush);
   bindBrushHandlers();
 
-  if (props.detailRange?.from != null && props.detailRange?.to != null) {
+  if (
+    internalDetailRange.value?.from != null &&
+    internalDetailRange.value?.to != null
+  ) {
     chartState.brushGroup.call(brush.move, [
-      x(new Date(props.detailRange.from * 1000)),
-      x(new Date(props.detailRange.to * 1000)),
+      x(new Date(internalDetailRange.value.from * 1000)),
+      x(new Date(internalDetailRange.value.to * 1000)),
     ]);
   } else {
     chartState.brushGroup.call(brush.move, null);
   }
 
-  const initialDomain = props.detailRange?.from
+  const initialDomain = internalDetailRange.value?.from
     ? [
-        new Date(props.detailRange.from * 1000),
-        new Date(props.detailRange.to * 1000),
+        new Date(internalDetailRange.value.from * 1000),
+        new Date(internalDetailRange.value.to * 1000),
       ]
     : null;
   renderDetail(initialDomain);
@@ -874,12 +890,19 @@ watch(
   () => [
     props.data,
     props.detailData,
-    props.detailRange,
     props.instrumentName,
     props.detailResolution,
+    internalDetailRange.value,
   ],
   () => render(),
   { deep: false },
+);
+
+watch(
+  () => [props.instrumentName, props.detailResolution],
+  () => {
+    clearBrush();
+  },
 );
 
 onMounted(() => render());
