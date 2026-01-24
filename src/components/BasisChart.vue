@@ -1,6 +1,6 @@
 <script setup>
 import * as d3 from "d3";
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 
 const props = defineProps({
   data: { type: Array, default: () => [] },
@@ -12,25 +12,6 @@ const props = defineProps({
 
 const svgRef = ref(null);
 const internalDetailRange = ref(null);
-const tooltip = reactive({
-  visible: false,
-  left: 0,
-  top: 0,
-  datum: null,
-});
-
-const tooltipStyles = computed(() => ({
-  left: `${tooltip.left}px`,
-  top: `${tooltip.top}px`,
-  opacity: tooltip.visible ? 1 : 0,
-  visibility: tooltip.visible ? "visible" : "hidden",
-}));
-
-const formatTooltipDate = d3.utcFormat("%Y-%m-%d %H:%M");
-const formatMarkValue = (value) =>
-  Number.isFinite(value) ? value.toFixed(2) : "n/a";
-const formatBasisValue = (value) =>
-  Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "n/a";
 const SVG_FONT_FAMILY =
   'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
 
@@ -38,7 +19,7 @@ const layout = {
   mainWidth: 1200,
   panelHeight: 650,
   margin: { top: 74, right: 38, bottom: 54, left: 74 },
-  panelGap: 90,
+  panelGap: 60,
 };
 
 const chartState = {
@@ -109,6 +90,27 @@ const ensureChartElements = () => {
   const svg = d3.select(svgEl);
   chartState.svg = svg;
 
+  const appendText = (parent, { fill, size, weight, anchor, text }) => {
+    const node = parent
+      .append("text")
+      .attr("fill", fill)
+      .style("font-size", size)
+      .style("font-family", SVG_FONT_FAMILY);
+    if (anchor) node.attr("text-anchor", anchor);
+    if (weight != null) node.style("font-weight", weight);
+    if (text != null) node.text(text);
+    return node;
+  };
+
+  const appendAxisLabel = (parent, text) =>
+    appendText(parent, {
+      fill: "#d6d7de",
+      size: "12px",
+      weight: 700,
+      anchor: "middle",
+      text,
+    });
+
   if (!chartState.defs) {
     chartState.defs = svg.append("defs");
     chartState.gradient = chartState.defs
@@ -125,74 +127,66 @@ const ensureChartElements = () => {
   }
 
   if (!chartState.mainTitleText) {
-    chartState.mainTitleText = svg
-      .append("text")
-      .attr("fill", "#fff")
-      .attr("text-anchor", "middle")
-      .style("font-size", "18px")
-      .style("font-weight", 650)
-      .style("font-family", SVG_FONT_FAMILY);
+    chartState.mainTitleText = appendText(svg, {
+      fill: "#fff",
+      size: "18px",
+      weight: 650,
+      anchor: "middle",
+    });
   }
 
   if (!chartState.mainSubtitleText) {
-    chartState.mainSubtitleText = svg
-      .append("text")
-      .attr("fill", "#c9c9cf")
-      .attr("text-anchor", "middle")
-      .style("font-size", "13px")
-      .style("font-family", SVG_FONT_FAMILY);
+    chartState.mainSubtitleText = appendText(svg, {
+      fill: "#c9c9cf",
+      size: "13px",
+      anchor: "middle",
+    });
   }
 
   if (!chartState.detailTitleText) {
-    chartState.detailTitleText = svg
-      .append("text")
-      .attr("fill", "#fff")
-      .attr("text-anchor", "middle")
-      .style("font-size", "16px")
-      .style("font-weight", 600)
-      .style("font-family", SVG_FONT_FAMILY);
+    chartState.detailTitleText = appendText(svg, {
+      fill: "#fff",
+      size: "16px",
+      weight: 600,
+      anchor: "middle",
+    });
   }
 
   if (!chartState.detailSubtitleText) {
-    chartState.detailSubtitleText = svg
-      .append("text")
-      .attr("fill", "#c9c9cf")
-      .attr("text-anchor", "middle")
-      .style("font-size", "12px")
-      .style("font-family", SVG_FONT_FAMILY);
+    chartState.detailSubtitleText = appendText(svg, {
+      fill: "#c9c9cf",
+      size: "12px",
+      anchor: "middle",
+    });
   }
 
   if (!chartState.legendGroup) {
     chartState.legendGroup = svg.append("g");
-    chartState.legendTitle = chartState.legendGroup
-      .append("text")
-      .attr("fill", "#d6d7de")
-      .style("font-size", "12px")
-      .style("font-family", SVG_FONT_FAMILY)
-      .text("Annualized basis");
+    chartState.legendTitle = appendText(chartState.legendGroup, {
+      fill: "#d6d7de",
+      size: "12px",
+      text: "Annualized basis",
+    });
     chartState.legendRect = chartState.legendGroup
       .append("rect")
       .attr("stroke", "#2e3040");
-    chartState.legendMinText = chartState.legendGroup
-      .append("text")
-      .attr("fill", "#a9abb6")
-      .style("font-size", "11px")
-      .style("font-family", SVG_FONT_FAMILY);
-    chartState.legendMaxText = chartState.legendGroup
-      .append("text")
-      .attr("text-anchor", "end")
-      .attr("fill", "#a9abb6")
-      .style("font-size", "11px")
-      .style("font-family", SVG_FONT_FAMILY);
+    chartState.legendMinText = appendText(chartState.legendGroup, {
+      fill: "#a9abb6",
+      size: "11px",
+    });
+    chartState.legendMaxText = appendText(chartState.legendGroup, {
+      fill: "#a9abb6",
+      size: "11px",
+      anchor: "end",
+    });
   }
 
   if (!chartState.noDataText) {
-    chartState.noDataText = svg
-      .append("text")
-      .attr("fill", "#c9c9cf")
-      .attr("text-anchor", "middle")
-      .style("font-size", "14px")
-      .style("font-family", SVG_FONT_FAMILY);
+    chartState.noDataText = appendText(svg, {
+      fill: "#c9c9cf",
+      size: "14px",
+      anchor: "middle",
+    });
   }
 
   if (!chartState.mainGroup) {
@@ -200,22 +194,14 @@ const ensureChartElements = () => {
     chartState.xAxisGroup = chartState.mainGroup.append("g");
     chartState.yAxisGroup = chartState.mainGroup.append("g");
     chartState.pointsGroup = chartState.mainGroup.append("g");
-    chartState.mainXAxisLabel = chartState.mainGroup
-      .append("text")
-      .attr("fill", "#d6d7de")
-      .attr("text-anchor", "middle")
-      .style("font-size", "12px")
-      .style("font-weight", 700)
-      .style("font-family", SVG_FONT_FAMILY)
-      .text("Date (UTC)");
-    chartState.mainYAxisLabel = chartState.mainGroup
-      .append("text")
-      .attr("fill", "#d6d7de")
-      .attr("text-anchor", "middle")
-      .style("font-size", "12px")
-      .style("font-weight", 700)
-      .style("font-family", SVG_FONT_FAMILY)
-      .text("Mark Price (Close)");
+    chartState.mainXAxisLabel = appendAxisLabel(
+      chartState.mainGroup,
+      "Date (UTC)",
+    );
+    chartState.mainYAxisLabel = appendAxisLabel(
+      chartState.mainGroup,
+      "Mark Price (Close)",
+    );
     chartState.brushGroup = chartState.mainGroup
       .append("g")
       .attr("class", "brush");
@@ -223,14 +209,10 @@ const ensureChartElements = () => {
 
   if (!chartState.detailContainer) {
     chartState.detailContainer = svg.append("g");
-    chartState.detailLayer = chartState.detailContainer
-      .append("g");
-    chartState.detailXAxisGroup = chartState.detailLayer
-      .append("g");
-    chartState.detailYAxisGroup = chartState.detailLayer
-      .append("g");
-    chartState.detailPointsGroup = chartState.detailLayer
-      .append("g");
+    chartState.detailLayer = chartState.detailContainer.append("g");
+    chartState.detailXAxisGroup = chartState.detailLayer.append("g");
+    chartState.detailYAxisGroup = chartState.detailLayer.append("g");
+    chartState.detailPointsGroup = chartState.detailLayer.append("g");
     chartState.detailFocus = chartState.detailPointsGroup
       .append("circle")
       .attr("r", 7)
@@ -239,32 +221,23 @@ const ensureChartElements = () => {
       .attr("fill", "rgba(8, 9, 16, 0.8)")
       .attr("opacity", 0)
       .attr("pointer-events", "none");
-    chartState.detailMessageText = chartState.detailLayer
-      .append("text")
-      .attr("fill", "#c9c9cf")
-      .attr("text-anchor", "middle")
-      .style("font-size", "13px")
-      .style("font-family", SVG_FONT_FAMILY);
+    chartState.detailMessageText = appendText(chartState.detailLayer, {
+      fill: "#c9c9cf",
+      size: "13px",
+      anchor: "middle",
+    });
     chartState.detailOverlay = chartState.detailLayer
       .append("rect")
       .attr("fill", "transparent")
       .attr("pointer-events", "all");
-    chartState.detailXAxisLabel = chartState.detailLayer
-      .append("text")
-      .attr("fill", "#d6d7de")
-      .attr("text-anchor", "middle")
-      .style("font-size", "12px")
-      .style("font-weight", 700)
-      .style("font-family", SVG_FONT_FAMILY)
-      .text("Mark Price (Close)");
-    chartState.detailYAxisLabel = chartState.detailLayer
-      .append("text")
-      .attr("fill", "#d6d7de")
-      .attr("text-anchor", "middle")
-      .style("font-size", "12px")
-      .style("font-weight", 700)
-      .style("font-family", SVG_FONT_FAMILY)
-      .text("Annualized Basis");
+    chartState.detailXAxisLabel = appendAxisLabel(
+      chartState.detailLayer,
+      "Mark Price (Close)",
+    );
+    chartState.detailYAxisLabel = appendAxisLabel(
+      chartState.detailLayer,
+      "Annualized Basis",
+    );
   }
 
   return svg;
@@ -273,8 +246,6 @@ const ensureChartElements = () => {
 function renderDetail(domain) {
   const ctx = detailRenderContext;
   if (!ctx || !ctx.detailActive) return;
-  tooltip.visible = false;
-  tooltip.datum = null;
 
   const {
     detailPointsGroup,
@@ -387,64 +358,28 @@ function renderDetail(domain) {
 
   const detailPointsSelection = detailPointsGroup
     .selectAll("circle.detail-point")
-    .data(detailPoints, (d) => (d.date ? d.date.getTime() : d.mark_price_close));
+    .data(detailPoints, (d) =>
+      d.date ? d.date.getTime() : d.mark_price_close,
+    );
 
   detailPointsSelection
-    .join(
-      (enter) =>
-        enter
-          .append("circle")
-          .attr("class", "detail-point")
-          .attr("r", 3.6)
-          .attr("stroke", "black")
-          .attr("stroke-width", 0.2)
-          .attr("opacity", 0.7),
+    .join((enter) =>
+      enter
+        .append("circle")
+        .attr("class", "detail-point")
+        .attr("r", 3.6)
+        .attr("stroke", "black")
+        .attr("stroke-width", 0.2)
+        .attr("opacity", 0.7),
     )
     .attr("cx", (d) => detailX(d.mark_price_close))
     .attr("cy", (d) => detailY(d.basis_pct))
     .attr("fill", (d) => colorForBasis(d.basis_pct));
 
-  const bisectMarkPrice = d3.bisector((d) => d.mark_price_close).left;
   detailOverlay
     .attr("width", scatterInnerWidth)
     .attr("height", innerHeight)
-    .attr("pointer-events", "all")
-    .on("pointerleave", () => {
-      detailFocus.attr("opacity", 0);
-      tooltip.visible = false;
-      tooltip.datum = null;
-    })
-    .on("pointermove", (event) => {
-      const [mx] = d3.pointer(event);
-      const x0 = detailX.invert(mx);
-      const idx = bisectMarkPrice(detailPoints, x0);
-      const candidates = [];
-      if (idx < detailPoints.length) candidates.push(detailPoints[idx]);
-      if (idx > 0) candidates.push(detailPoints[idx - 1]);
-      const selection = candidates.reduce((best, candidate) => {
-        if (!candidate) return best;
-        if (!best) return candidate;
-        return Math.abs(candidate.mark_price_close - x0) <
-          Math.abs(best.mark_price_close - x0)
-          ? candidate
-          : best;
-      }, null);
-      if (!selection) {
-        detailFocus.attr("opacity", 0);
-        tooltip.visible = false;
-        tooltip.datum = null;
-        return;
-      }
-      detailFocus
-        .attr("cx", detailX(selection.mark_price_close))
-        .attr("cy", detailY(selection.basis_pct))
-        .attr("opacity", 1);
-      tooltip.visible = true;
-      tooltip.left =
-        scatterOffsetX + margin.left + detailX(selection.mark_price_close);
-      tooltip.top = margin.top + detailY(selection.basis_pct);
-      tooltip.datum = selection;
-    });
+    .attr("pointer-events", "none");
 }
 
 const BRUSH_THROTTLE_MS = 10;
@@ -539,7 +474,9 @@ const clearBrush = (event) => {
 
 const bindBrushHandlers = () => {
   if (!chartState.brushGroup) return;
-  chartState.brushGroup.selectAll(".selection,.handle").on("dblclick", clearBrush);
+  chartState.brushGroup
+    .selectAll(".selection,.handle")
+    .on("dblclick", clearBrush);
   const overlay = chartState.brushGroup.selectAll(".overlay");
   overlay.on("dblclick", clearBrush);
   overlay.on("click", (event) => {
@@ -620,8 +557,6 @@ function render() {
   if (!svgEl) return;
   const data = props.data;
   const detailData = props.detailData;
-  tooltip.visible = false;
-  tooltip.datum = null;
 
   const svg = ensureChartElements();
   if (!svg) return;
@@ -683,7 +618,10 @@ function render() {
       .attr("y", height / 2)
       .attr("visibility", props.loading ? "hidden" : "visible")
       .text("No data for this range.");
-    chartState.pointsGroup.selectAll("circle.main-point").data([]).join("circle");
+    chartState.pointsGroup
+      .selectAll("circle.main-point")
+      .data([])
+      .join("circle");
     chartState.legendGroup.attr("display", "none");
     chartState.detailContainer.attr("display", "none");
     detailRenderContext = null;
@@ -693,7 +631,10 @@ function render() {
   chartState.noDataText.attr("visibility", "hidden");
   chartState.legendGroup.attr("display", null);
 
-  chartState.mainGroup.attr("transform", `translate(${margin.left},${margin.top})`);
+  chartState.mainGroup.attr(
+    "transform",
+    `translate(${margin.left},${margin.top})`,
+  );
 
   const xDomain = d3.extent(data, (d) => d.date);
   const yDomain = d3.extent(data, (d) => d.mark_price_close);
@@ -751,15 +692,14 @@ function render() {
     .data(data, (d) => (d.date ? d.date.getTime() : d.mark_price_close));
 
   mainPoints
-    .join(
-      (enter) =>
-        enter
-          .append("circle")
-          .attr("class", "main-point")
-          .attr("r", 4.4)
-          .attr("stroke", "whitesmoke")
-          .attr("stroke-width", 0.2)
-          .attr("opacity", 0.9),
+    .join((enter) =>
+      enter
+        .append("circle")
+        .attr("class", "main-point")
+        .attr("r", 4.4)
+        .attr("stroke", "whitesmoke")
+        .attr("stroke-width", 0.2)
+        .attr("opacity", 0.9),
     )
     .attr("cx", (d) => x(d.date))
     .attr("cy", (d) => y(d.mark_price_close))
@@ -793,9 +733,7 @@ function render() {
   const legendBarTop = legendTitleY + 14;
   const legendLabelY = legendBarTop + legendHeight + 16;
 
-  chartState.legendTitle
-    ?.attr("x", 0)
-    .attr("y", legendTitleY);
+  chartState.legendTitle?.attr("x", 0).attr("y", legendTitleY);
   chartState.legendRect
     .attr("x", 0)
     .attr("y", legendBarTop)
@@ -814,7 +752,10 @@ function render() {
   chartState.detailContainer
     .attr("transform", `translate(${scatterOffsetX},0)`)
     .attr("display", detailActive ? null : "none");
-  chartState.detailLayer.attr("transform", `translate(${margin.left},${margin.top})`);
+  chartState.detailLayer.attr(
+    "transform",
+    `translate(${margin.left},${margin.top})`,
+  );
 
   const detailSource = detailData.length ? detailData : data;
   const detailDomainFull = d3.extent(detailSource, (d) => d.date);
@@ -834,7 +775,6 @@ function render() {
     axisTitlePadding,
     margin,
     scatterOffsetX,
-    tooltip,
     colorForBasis,
     detailSource,
     detailDomainFull,
@@ -894,33 +834,6 @@ onMounted(() => render());
   <div class="chartWrap">
     <svg ref="svgRef" />
     <div v-if="loading" class="overlay">Loading…</div>
-    <div
-      class="tooltip"
-      v-show="tooltip.visible && tooltip.datum"
-      :style="tooltipStyles"
-    >
-      <div class="tooltip-time">
-        {{ tooltip.datum?.date ? formatTooltipDate(tooltip.datum.date) : "" }}
-      </div>
-      <div class="tooltip-row">
-        <span class="tooltip-label">Instrument</span>
-        <span class="tooltip-value">
-          {{ tooltip.datum?.instrument_name || "n/a" }}
-        </span>
-      </div>
-      <div class="tooltip-row">
-        <span class="tooltip-label">Mark Close</span>
-        <span class="tooltip-value">
-          {{ formatMarkValue(tooltip.datum?.mark_price_close) }}
-        </span>
-      </div>
-      <div class="tooltip-row">
-        <span class="tooltip-label">Basis</span>
-        <span class="tooltip-value">
-          {{ formatBasisValue(tooltip.datum?.basis_pct) }}
-        </span>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -956,41 +869,5 @@ svg {
   color: #fff;
   background: color-mix(in oklab, #000, transparent 40%);
   font-size: 14px;
-}
-
-.tooltip {
-  position: absolute;
-  padding: 8px 12px;
-  border-radius: 10px;
-  font-size: 12px;
-  line-height: 1.3;
-  background: rgba(5, 6, 10, 0.95);
-  border: 1px solid #3c3f54;
-  box-shadow: 0 12px 25px rgba(0, 0, 0, 0.45);
-  pointer-events: none;
-  transform: translate(-50%, -110%);
-  transition: opacity 0.15s ease;
-  white-space: nowrap;
-}
-
-.tooltip-time {
-  font-weight: 600;
-  margin-bottom: 4px;
-  color: #f5f7ff;
-}
-
-.tooltip-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.tooltip-label {
-  color: #9ea1be;
-}
-
-.tooltip-value {
-  font-weight: 700;
-  color: #f5f7ff;
 }
 </style>
