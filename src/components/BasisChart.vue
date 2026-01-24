@@ -591,8 +591,12 @@ function render() {
     `translate(${margin.left},${margin.top})`,
   );
 
-  const xDomain = d3.extent(data, (d) => d.date);
-  const yDomain = d3.extent(data, (d) => d.mark_price_close);
+  const validDates = data.map((d) => d.date).filter((d) => d instanceof Date);
+  const validMarks = data
+    .map((d) => d.mark_price_close)
+    .filter((v) => Number.isFinite(v));
+  const xDomain = d3.extent(validDates);
+  const yDomain = d3.extent(validMarks);
 
   const x = d3.scaleUtc().domain(xDomain).range([0, innerWidth]);
   const y = d3.scaleLinear().domain(yDomain).nice().range([innerHeight, 0]);
