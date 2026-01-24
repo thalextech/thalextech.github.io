@@ -24,19 +24,8 @@ function buildCacheKey(type, name, resolution) {
   return `${CACHE_PREFIX}:${type}:${name}:${resolution}`;
 }
 
-function toNumberOrNull(value) {
-  if (value === null || value === undefined) return null;
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : null;
-  }
-  const normalized = String(value).trim();
-  if (!normalized) return null;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function normalizeTimestampMs(value) {
-  const numeric = toNumberOrNull(value);
+  const numeric = Number(value);
   if (Number.isFinite(numeric)) {
     return numeric > 1e12 ? numeric : numeric * 1000;
   }
@@ -57,7 +46,7 @@ function readCache(key) {
     }
     if (typeof parsed.rows !== "string") return null;
     const rows = csvParseRows(parsed.rows).map((row) =>
-      row.map((value) => toNumberOrNull(value)),
+      row.map((value) => Number(value)),
     );
     return {
       rows,
@@ -81,31 +70,6 @@ function writeCache(key, rows, meta) {
   } catch (error) {
     // intentionally ignore caching failures
   }
-}
-
-function normalizeIndexRows(rows) {
-  if (!Array.isArray(rows)) return [];
-  return rows
-    .map((row) => {
-      if (!Array.isArray(row) || row.length < 5) return null;
-
-      const ts = toNumberOrNull(row[0]);
-      if (!Number.isFinite(ts)) return null;
-
-      const index_price_open = toNumberOrNull(row[1]);
-      const index_price_high = toNumberOrNull(row[2]);
-      const index_price_low = toNumberOrNull(row[3]);
-      const index_price_close = toNumberOrNull(row[4]);
-
-      return {
-        ts,
-        index_price_open,
-        index_price_high,
-        index_price_low,
-        index_price_close,
-      };
-    })
-    .filter(Boolean);
 }
 
 function getApiBase() {
@@ -165,7 +129,13 @@ export async function fetchIndexHistory({
   const cacheKey = buildCacheKey("index", index_name, resolution);
   const cached = readCache(cacheKey);
   if (cached) {
-    return normalizeIndexRows(cached.rows);
+    return (cached.rows || []).map((row) => ({
+      ts: row[0],
+      index_price_open: row[1],
+      index_price_high: row[2],
+      index_price_low: row[3],
+      index_price_close: row[4],
+    }));
   }
 
   const url = makeUrl("/index_price_historical_data", {
@@ -180,7 +150,13 @@ export async function fetchIndexHistory({
 
   writeCache(cacheKey, rows, null);
 
-  return normalizeIndexRows(rows);
+  return rows.map((row) => ({
+    ts: row[0],
+    index_price_open: row[1],
+    index_price_high: row[2],
+    index_price_low: row[3],
+    index_price_close: row[4],
+  }));
 }
 
 export async function fetchMarkHistory({
@@ -193,27 +169,13 @@ export async function fetchMarkHistory({
   const cached = readCache(cacheKey);
   if (cached) {
     return {
-      data: (cached.rows || [])
-        .map((row) => {
-          if (!Array.isArray(row) || row.length < 5) return null;
-
-          const ts = toNumberOrNull(row[0]);
-          if (!Number.isFinite(ts)) return null;
-
-          const mark_price_open = toNumberOrNull(row[1]);
-          const mark_price_high = toNumberOrNull(row[2]);
-          const mark_price_low = toNumberOrNull(row[3]);
-          const mark_price_close = toNumberOrNull(row[4]);
-
-          return {
-            ts,
-            mark_price_open,
-            mark_price_high,
-            mark_price_low,
-            mark_price_close,
-          };
-        })
-        .filter(Boolean),
+      data: (cached.rows || []).map((row) => ({
+        ts: row[0],
+        mark_price_open: row[1],
+        mark_price_high: row[2],
+        mark_price_low: row[3],
+        mark_price_close: row[4],
+      })),
     };
   }
 
@@ -225,32 +187,19 @@ export async function fetchMarkHistory({
   });
   const json = await getJson(url);
   const rows = json?.result?.mark;
+
   if (!Array.isArray(rows)) return { data: [] };
 
   writeCache(cacheKey, rows, null);
 
   return {
-    data: rows
-      .map((row) => {
-        if (!Array.isArray(row) || row.length < 5) return null;
-
-        const ts = toNumberOrNull(row[0]);
-        if (!Number.isFinite(ts)) return null;
-
-        const mark_price_open = toNumberOrNull(row[1]);
-        const mark_price_high = toNumberOrNull(row[2]);
-        const mark_price_low = toNumberOrNull(row[3]);
-        const mark_price_close = toNumberOrNull(row[4]);
-
-        return {
-          ts,
-          mark_price_open,
-          mark_price_high,
-          mark_price_low,
-          mark_price_close,
-        };
-      })
-      .filter(Boolean),
+    data: rows.map((row) => ({
+      ts: row[0],
+      mark_price_open: row[1],
+      mark_price_high: row[2],
+      mark_price_low: row[3],
+      mark_price_close: row[4],
+    })),
   };
 }
 
