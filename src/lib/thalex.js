@@ -126,7 +126,7 @@ export async function fetchIndexHistory({
   const rows = json?.result?.index;
   if (!Array.isArray(rows)) return [];
 
-  writeCache(cacheKey, rows, null);
+  writeCache(cacheKey, rows, { index_name, resolution });
 
   return rows.map((row) => ({
     ts: row[0],
@@ -168,7 +168,7 @@ export async function fetchMarkHistory({
 
   if (!Array.isArray(rows)) return { data: [] };
 
-  writeCache(cacheKey, rows, null);
+  writeCache(cacheKey, rows, { instrument_name, resolution });
 
   return {
     data: rows.map((row) => ({
