@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import BasisChart from "./components/BasisChart.vue";
 import {
   computeBasisSeries,
@@ -18,134 +18,139 @@ const RESOLUTIONS = {
 };
 const MAIN_POINT_LIMIT = 400;
 
-// UI inputs & states
-const resolution = ref("1d");
-const instruments = ref([]);
-const instrumentName = ref("");
+const ui = reactive({
+  resolution: "1d",
+  instrumentName: "",
+  detailRange: null,
+  loading: false,
+  error: "",
+});
+const data = reactive({
+  instruments: [],
+  instrument: null,
+  mark: {},
+  index: {},
+});
 const chartRef = ref(null);
-const data = ref([]);
-const scatterData = ref([]);
-const detailRange = ref(null);
-const loading = ref(false);
-const error = ref("");
 
 const resolutionConfig = computed(
-  () => RESOLUTIONS[resolution.value] || RESOLUTIONS["1h"],
+  () => RESOLUTIONS[ui.resolution] || RESOLUTIONS["1h"],
 );
 const scatterResolution = computed(() => resolutionConfig.value.detail || "1h");
 
-function makeTimestampRange({ seconds, points }) {
-  const now = Math.floor(Date.now() / 1000);
-  const safeSeconds = Number.isFinite(seconds) ? seconds : 3600;
-  const safePoints = Number.isFinite(points) ? points : MAIN_POINT_LIMIT;
-  return {
-    from: now - safeSeconds * safePoints,
-    to: now,
-  };
-}
-
-async function fetchSeries({ instrument, indexName, resolutionKey, range }) {
-  const [markResult, index] = await Promise.all([
-    fetchMarkHistory({
-      instrument_name: instrumentName.value,
-      resolution: resolutionKey,
-      from: range.from,
-      to: range.to,
-    }),
-    fetchIndexHistory({
-      index_name: indexName,
-      resolution: resolutionKey,
-      from: range.from,
-      to: range.to,
-    }),
-  ]);
-
-  return computeBasisSeries({
-    mark: markResult?.data || [],
-    index: index || [],
-    instrument,
+const mainSeries = computed(() => {
+  const mark = data.mark[ui.resolution] || [];
+  const index = data.index[ui.resolution] || [];
+  const series = computeBasisSeries({
+    mark,
+    index,
+    instrument: data.instrument || {},
   });
-}
+  return series.slice(-MAIN_POINT_LIMIT);
+});
+
+const detailSeries = computed(() => {
+  const resolutionKey = scatterResolution.value;
+  const mark = data.mark[resolutionKey] || [];
+  const index = data.index[resolutionKey] || [];
+  return computeBasisSeries({
+    mark,
+    index,
+    instrument: data.instrument || {},
+  });
+});
 
 async function load() {
-  if (!instrumentName.value) return;
+  if (!ui.instrumentName) return;
 
-  loading.value = true;
-  error.value = "";
-  data.value = [];
-  scatterData.value = [];
-  detailRange.value = null;
+  ui.loading = true;
+  ui.error = "";
+  ui.detailRange = null;
+  data.mark = {};
+  data.index = {};
 
-  const mainRange = makeTimestampRange({
-    seconds: resolutionConfig.value.seconds,
-    points: MAIN_POINT_LIMIT,
-  });
+  const now = Math.floor(Date.now() / 1000);
+  const seconds = resolutionConfig.value.seconds ?? 3600;
+  const mainRange = {
+    from: now - seconds * MAIN_POINT_LIMIT,
+    to: now,
+  };
 
+  console.log({ dataState: data });
   try {
-    const instrument = await fetchInstrument(instrumentName.value);
+    const instrument = await fetchInstrument(ui.instrumentName);
     const indexName = instrument?.underlying;
-
-    const [mainSeries, detailSeries] = await Promise.all([
-      fetchSeries({
-        instrument,
-        indexName,
-        resolutionKey: resolution.value,
-        range: mainRange,
+    data.instrument = instrument;
+    const [mainMarkResult, mainIndex] = await Promise.all([
+      fetchMarkHistory({
+        instrument_name: ui.instrumentName,
+        resolution: ui.resolution,
+        from: mainRange.from,
+        to: mainRange.to,
       }),
-      fetchSeries({
-        instrument,
-        indexName,
-        resolutionKey: scatterResolution.value,
-        range: mainRange,
+      fetchIndexHistory({
+        index_name: indexName,
+        resolution: ui.resolution,
+        from: mainRange.from,
+        to: mainRange.to,
       }),
     ]);
 
-    data.value = mainSeries.slice(-MAIN_POINT_LIMIT);
-    scatterData.value = detailSeries;
+    const [detailMarkResult, detailIndex] = await Promise.all([
+      fetchMarkHistory({
+        instrument_name: ui.instrumentName,
+        resolution: scatterResolution.value,
+        from: mainRange.from,
+        to: mainRange.to,
+      }),
+      fetchIndexHistory({
+        index_name: indexName,
+        resolution: scatterResolution.value,
+        from: mainRange.from,
+        to: mainRange.to,
+      }),
+    ]);
 
-    if (!data.value.length) {
+    data.mark[ui.resolution] = mainMarkResult?.data || [];
+    data.index[ui.resolution] = mainIndex || [];
+    data.mark[scatterResolution.value] = detailMarkResult?.data || [];
+    data.index[scatterResolution.value] = detailIndex || [];
+
+    if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
     }
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-    data.value = [];
-    scatterData.value = [];
+    ui.error = e instanceof Error ? e.message : String(e);
+    data.mark = {};
+    data.index = {};
   } finally {
-    loading.value = false;
+    ui.loading = false;
   }
 }
 
 function handleSavePng() {
   if (!chartRef.value) return;
-  const base = instrumentName.value || "basis-chart";
-  const filename = resolution.value
-    ? `${base}-${resolution.value}.png`
+  const base = ui.instrumentName || "basis-chart";
+  const filename = ui.resolution
+    ? `${base}-${ui.resolution}.png`
     : `${base}.png`;
   chartRef.value.exportPng({ filename });
 }
 
-watch(
-  resolution,
-  () => {
-    detailRange.value = null;
-    chartRef.value?.clearBrush?.();
-  },
-  { immediate: false },
-);
-
+// longest running expiry is top of list and selected by default
 onMounted(async () => {
   const all = await fetchInstruments();
-  instruments.value = all
+  data.instruments = all
     .filter((i) => i?.type === "future" && i?.underlying === "BTCUSD")
     .sort((a, b) => a.create_time_ms - b.create_time_ms);
-  // longest running expiry is top of list and selected by default
-  instrumentName.value = instruments.value[0].instrument_name;
+  ui.instrumentName = data.instruments[0].instrument_name;
 });
 
 watch(
-  () => [resolution.value, instrumentName.value],
+  () => [ui.resolution, ui.instrumentName],
   async () => {
-    if (!instrumentName.value) return;
+    if (!ui.instrumentName) return;
+    ui.detailRange = null;
     await load();
   },
   { immediate: true },
@@ -162,23 +167,26 @@ watch(
       <div class="controls">
         <div class="field">
           <label for="instrument">Instrument</label>
-          <select id="instrument" v-model="instrumentName">
+          <select id="instrument" v-model="ui.instrumentName">
             <option
-              v-for="i in instruments"
+              v-for="i in data.instruments"
               :key="i.instrument_name"
               :value="i.instrument_name"
             >
               {{ i.instrument_name }}
             </option>
-            <option v-if="!instruments.length" :value="instrumentName">
-              {{ instrumentName }}
+            <option
+              v-if="!data.instruments.length"
+              :value="ui.instrumentName"
+            >
+              {{ ui.instrumentName }}
             </option>
           </select>
         </div>
 
         <div class="field">
           <label for="resolution">Resolution</label>
-          <select id="resolution" v-model="resolution">
+          <select id="resolution" v-model="ui.resolution">
             <option
               v-for="key in Object.keys(RESOLUTIONS)"
               :key="key"
@@ -193,23 +201,23 @@ watch(
           class="saveButton"
           type="button"
           @click="handleSavePng"
-          :disabled="loading || !data.length"
+          :disabled="ui.loading || !mainSeries.length"
         >
           Save PNG
         </button>
       </div>
 
-      <div v-if="error" class="error">{{ error }}</div>
+      <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
     <BasisChart
       ref="chartRef"
-      :data="data"
-      :detail-data="scatterData"
-      v-model:detailRange="detailRange"
-      :instrument-name="instrumentName"
+      :data="mainSeries"
+      :detail-data="detailSeries"
+      v-model:detailRange="ui.detailRange"
+      :instrument-name="ui.instrumentName"
       :detail-resolution="scatterResolution"
-      :loading="loading"
+      :loading="ui.loading"
     />
   </div>
 </template>
