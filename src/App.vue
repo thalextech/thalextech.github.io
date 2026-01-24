@@ -7,7 +7,6 @@ import {
   fetchInstrument,
   fetchInstruments,
   fetchMarkHistory,
-  indexNameFromInstrumentName,
 } from "./lib/thalex.js";
 
 const RESOLUTIONS = {
@@ -17,10 +16,9 @@ const RESOLUTIONS = {
   "1h": { label: "1h", seconds: 60 * 60, detail: "15m" },
   "1d": { label: "1d", seconds: 24 * 60 * 60, detail: "1h" },
 };
-const RESOLUTION_KEYS = ["1m", "5m", "15m", "1h", "1d"];
-
 const MAIN_POINT_LIMIT = 400;
 
+// UI inputs & states
 const resolution = ref("1d");
 const instruments = ref([]);
 const instrumentName = ref("");
@@ -36,12 +34,6 @@ const resolutionConfig = computed(
 );
 const scatterResolution = computed(() => resolutionConfig.value.detail || "1h");
 
-function getIndexName(instrument) {
-  return (
-    instrument?.underlying || indexNameFromInstrumentName(instrumentName.value)
-  );
-}
-
 function makeTimestampRange({ seconds, points }) {
   const now = Math.floor(Date.now() / 1000);
   const safeSeconds = Number.isFinite(seconds) ? seconds : 3600;
@@ -50,11 +42,6 @@ function makeTimestampRange({ seconds, points }) {
     from: now - safeSeconds * safePoints,
     to: now,
   };
-}
-
-async function getInstrumentAndIndexName() {
-  const instrument = await fetchInstrument(instrumentName.value);
-  return { instrument, indexName: getIndexName(instrument) };
 }
 
 async function fetchSeries({ instrument, indexName, resolutionKey, range }) {
@@ -95,7 +82,8 @@ async function load() {
   });
 
   try {
-    const { instrument, indexName } = await getInstrumentAndIndexName();
+    const instrument = await fetchInstrument(instrumentName.value);
+    const indexName = instrument?.underlying;
 
     const [mainSeries, detailSeries] = await Promise.all([
       fetchSeries({
@@ -200,7 +188,11 @@ watch(
         <div class="field">
           <label for="resolution">Resolution</label>
           <select id="resolution" v-model="resolution">
-            <option v-for="key in RESOLUTION_KEYS" :key="key" :value="key">
+            <option
+              v-for="key in Object.keys(RESOLUTIONS)"
+              :key="key"
+              :value="key"
+            >
               {{ RESOLUTIONS[key].label }}
             </option>
           </select>
