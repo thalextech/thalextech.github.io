@@ -88,14 +88,9 @@ async function getJson(url, { timeoutMs = 20_000 } = {}) {
   }
 }
 
-function getApiBase() {
-  return API_BASE;
-}
-
 function makeUrl(path, params = {}) {
-  const baseUrl = getApiBase();
   const search = new URLSearchParams(params);
-  return `${baseUrl}${path}?${search}`;
+  return `${API_BASE}${path}?${search}`;
 }
 
 export async function fetchInstruments() {
