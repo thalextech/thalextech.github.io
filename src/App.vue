@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import BasisChart from "./components/BasisChart.vue";
 import {
   computeBasisSeries,
@@ -22,7 +22,6 @@ const RESOLUTION_KEYS = ["1m", "5m", "15m", "1h", "1d"];
 const MAIN_POINT_LIMIT = 400;
 
 const resolution = ref("1d");
-const scatterResolution = ref("");
 const instruments = ref([]);
 const instrumentName = ref("");
 const chartRef = ref(null);
@@ -32,15 +31,53 @@ const detailRange = ref(null);
 const loading = ref(false);
 const error = ref("");
 
+const resolutionConfig = computed(
+  () => RESOLUTIONS[resolution.value] || RESOLUTIONS["1h"],
+);
+const scatterResolution = computed(() => resolutionConfig.value.detail || "1h");
+
 function getIndexName(instrument) {
   return (
     instrument?.underlying || indexNameFromInstrumentName(instrumentName.value)
   );
 }
 
+function makeTimestampRange({ seconds, points }) {
+  const now = Math.floor(Date.now() / 1000);
+  const safeSeconds = Number.isFinite(seconds) ? seconds : 3600;
+  const safePoints = Number.isFinite(points) ? points : MAIN_POINT_LIMIT;
+  return {
+    from: now - safeSeconds * safePoints,
+    to: now,
+  };
+}
+
 async function getInstrumentAndIndexName() {
   const instrument = await fetchInstrument(instrumentName.value);
   return { instrument, indexName: getIndexName(instrument) };
+}
+
+async function fetchSeries({ instrument, indexName, resolutionKey, range }) {
+  const [markResult, index] = await Promise.all([
+    fetchMarkHistory({
+      instrument_name: instrumentName.value,
+      resolution: resolutionKey,
+      from: range.from,
+      to: range.to,
+    }),
+    fetchIndexHistory({
+      index_name: indexName,
+      resolution: resolutionKey,
+      from: range.from,
+      to: range.to,
+    }),
+  ]);
+
+  return computeBasisSeries({
+    mark: markResult?.data || [],
+    index: index || [],
+    instrument,
+  });
 }
 
 async function load() {
@@ -52,67 +89,31 @@ async function load() {
   scatterData.value = [];
   detailRange.value = null;
 
-  const resolutionConfig = RESOLUTIONS[resolution.value];
+  const mainRange = makeTimestampRange({
+    seconds: resolutionConfig.value.seconds,
+    points: MAIN_POINT_LIMIT,
+  });
 
-  const now = Math.floor(Date.now() / 1000);
-  const seconds = resolutionConfig?.seconds ?? 3600;
-  const timestampRange = {
-    from: now - seconds * MAIN_POINT_LIMIT,
-    to: now,
-  };
   try {
     const { instrument, indexName } = await getInstrumentAndIndexName();
 
-    detailRange.value = null;
-    scatterResolution.value = resolutionConfig?.detail || "1h";
-
-    const p1 = Promise.all([
-      fetchMarkHistory({
-        instrument_name: instrumentName.value,
-        resolution: resolution.value,
-        from: timestampRange.from,
-        to: timestampRange.to,
+    const [mainSeries, detailSeries] = await Promise.all([
+      fetchSeries({
+        instrument,
+        indexName,
+        resolutionKey: resolution.value,
+        range: mainRange,
       }),
-      fetchIndexHistory({
-        index_name: indexName,
-        resolution: resolution.value,
-        from: timestampRange.from,
-        to: timestampRange.to,
+      fetchSeries({
+        instrument,
+        indexName,
+        resolutionKey: scatterResolution.value,
+        range: mainRange,
       }),
     ]);
 
-    const p2 = Promise.all([
-      fetchMarkHistory({
-        instrument_name: instrumentName.value,
-        resolution: scatterResolution.value,
-        from: timestampRange.from,
-        to: timestampRange.to,
-      }),
-      fetchIndexHistory({
-        index_name: indexName,
-        resolution: scatterResolution.value,
-        from: timestampRange.from,
-        to: timestampRange.to,
-      }),
-    ]);
-
-    const [markResult, index] = await p1;
-    const [detailMarkResult, detailIndex] = await p2;
-
-    const { data: mark } = markResult;
-
-    const mainSeries = computeBasisSeries({
-      mark,
-      index,
-      instrument,
-    });
     data.value = mainSeries.slice(-MAIN_POINT_LIMIT);
-
-    scatterData.value = computeBasisSeries({
-      mark: detailMarkResult?.data || [],
-      index: detailIndex || [],
-      instrument,
-    });
+    scatterData.value = detailSeries;
 
     if (!data.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
