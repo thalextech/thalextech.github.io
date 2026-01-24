@@ -47,9 +47,7 @@ const chartState = {
   detailXAxisGroup: null,
   detailYAxisGroup: null,
   detailPointsGroup: null,
-  detailFocus: null,
   detailMessageText: null,
-  detailOverlay: null,
   detailXAxisLabel: null,
   detailYAxisLabel: null,
   brushGroup: null,
@@ -213,23 +211,11 @@ const ensureChartElements = () => {
     chartState.detailXAxisGroup = chartState.detailLayer.append("g");
     chartState.detailYAxisGroup = chartState.detailLayer.append("g");
     chartState.detailPointsGroup = chartState.detailLayer.append("g");
-    chartState.detailFocus = chartState.detailPointsGroup
-      .append("circle")
-      .attr("r", 7)
-      .attr("stroke", "#fff")
-      .attr("stroke-width", 2)
-      .attr("fill", "rgba(8, 9, 16, 0.8)")
-      .attr("opacity", 0)
-      .attr("pointer-events", "none");
     chartState.detailMessageText = appendText(chartState.detailLayer, {
       fill: "#c9c9cf",
       size: "13px",
       anchor: "middle",
     });
-    chartState.detailOverlay = chartState.detailLayer
-      .append("rect")
-      .attr("fill", "transparent")
-      .attr("pointer-events", "all");
     chartState.detailXAxisLabel = appendAxisLabel(
       chartState.detailLayer,
       "Mark Price (Close)",
@@ -251,8 +237,6 @@ function renderDetail(domain) {
     detailPointsGroup,
     detailXAxisGroup,
     detailYAxisGroup,
-    detailFocus,
-    detailOverlay,
     detailMessageText,
     detailXAxisLabel,
     detailYAxisLabel,
@@ -273,8 +257,6 @@ function renderDetail(domain) {
       .text("No detail data available.")
       .attr("display", null);
     detailPointsGroup.selectAll("circle.detail-point").data([]).join("circle");
-    detailOverlay.attr("pointer-events", "none");
-    detailFocus.attr("opacity", 0);
     return;
   }
 
@@ -306,8 +288,6 @@ function renderDetail(domain) {
       .text("No basis data available.")
       .attr("display", null);
     detailPointsGroup.selectAll("circle.detail-point").data([]).join("circle");
-    detailOverlay.attr("pointer-events", "none");
-    detailFocus.attr("opacity", 0);
     return;
   }
 
@@ -376,10 +356,6 @@ function renderDetail(domain) {
     .attr("cy", (d) => detailY(d.basis_pct))
     .attr("fill", (d) => colorForBasis(d.basis_pct));
 
-  detailOverlay
-    .attr("width", scatterInnerWidth)
-    .attr("height", innerHeight)
-    .attr("pointer-events", "none");
 }
 
 const BRUSH_THROTTLE_MS = 10;
@@ -765,9 +741,7 @@ function render() {
     detailPointsGroup: chartState.detailPointsGroup,
     detailXAxisGroup: chartState.detailXAxisGroup,
     detailYAxisGroup: chartState.detailYAxisGroup,
-    detailFocus: chartState.detailFocus,
     detailMessageText: chartState.detailMessageText,
-    detailOverlay: chartState.detailOverlay,
     detailXAxisLabel: chartState.detailXAxisLabel,
     detailYAxisLabel: chartState.detailYAxisLabel,
     scatterInnerWidth,
