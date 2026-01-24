@@ -21,23 +21,17 @@ function isCacheFresh(timestamp) {
 function readCache(key) {
   const storage = getLocalStorage();
   if (!storage) return null;
-  try {
-    const raw = storage.getItem(key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || !isCacheFresh(parsed.timestamp)) {
-      storage.removeItem(key);
-      return null;
-    }
-    if (!Array.isArray(parsed.rows)) return null;
-    const rows = parsed.rows;
-    return {
-      rows,
-      meta: parsed.meta ?? null,
-    };
-  } catch (error) {
+  const raw = storage.getItem(key);
+  if (!raw) return null;
+  const parsed = JSON.parse(raw);
+  if (!isCacheFresh(parsed.timestamp)) {
+    storage.removeItem(key);
     return null;
   }
+  return {
+    rows: parsed.rows,
+    meta: parsed.meta,
+  };
 }
 
 function writeCache(key, rows, meta) {
@@ -51,7 +45,7 @@ function writeCache(key, rows, meta) {
     };
     storage.setItem(key, JSON.stringify(payload));
   } catch (error) {
-    // intentionally ignore caching failures
+    console.error("Failed to write cache", error);
   }
 }
 
