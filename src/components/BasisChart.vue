@@ -11,6 +11,7 @@ const props = defineProps({
 });
 
 const svgRef = ref(null);
+const scatterCanvasRef = ref(null);
 const internalDetailRange = ref(null);
 const gradientId = `basis-gradient-${Math.random().toString(16).slice(2)}`;
 const SVG_FONT_FAMILY =
@@ -58,7 +59,6 @@ const chartState = {
   detailLayer: null,
   detailXAxisGroup: null,
   detailYAxisGroup: null,
-  detailPointsGroup: null,
   detailMessageText: null,
   detailXAxisLabel: null,
   detailYAxisLabel: null,
@@ -90,6 +90,38 @@ const applyTextStyle = (node, styleKey) => {
   if (style.size) node.style("font-size", style.size);
   if (style.weight != null) node.style("font-weight", style.weight);
   return node;
+};
+
+let scatterCanvasScaleX = 1;
+let scatterCanvasScaleY = 1;
+let scatterCanvasRatio = 1;
+
+const syncScatterCanvas = (viewWidth, viewHeight) => {
+  const canvas = scatterCanvasRef.value;
+  if (!canvas) return;
+  let rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    const svgRect = svgRef.value?.getBoundingClientRect();
+    if (!svgRect?.width || !svgRect?.height) return;
+    rect = svgRect;
+  }
+  const ratio = window.devicePixelRatio || 1;
+  const nextWidth = Math.round(rect.width * ratio);
+  const nextHeight = Math.round(rect.height * ratio);
+  if (canvas.width !== nextWidth) canvas.width = nextWidth;
+  if (canvas.height !== nextHeight) canvas.height = nextHeight;
+  scatterCanvasScaleX = rect.width / viewWidth;
+  scatterCanvasScaleY = rect.height / viewHeight;
+  scatterCanvasRatio = ratio;
+};
+
+const clearScatterCanvas = () => {
+  const canvas = scatterCanvasRef.value;
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
 };
 
 const axisStyle = (axisG) => {
@@ -126,7 +158,7 @@ const ensureChartElements = () => {
   }
 
   if (!chartState.background) {
-    chartState.background = svg.append("rect").attr("fill", "#000");
+    chartState.background = svg.append("rect").attr("fill", "none");
   }
 
   if (!chartState.mainTitleText) {
@@ -199,7 +231,6 @@ const ensureChartElements = () => {
     chartState.detailLayer = chartState.detailContainer.append("g");
     chartState.detailXAxisGroup = chartState.detailLayer.append("g");
     chartState.detailYAxisGroup = chartState.detailLayer.append("g");
-    chartState.detailPointsGroup = chartState.detailLayer.append("g");
     chartState.detailMessageText = appendText(
       chartState.detailLayer,
       "detailMessage",
@@ -223,7 +254,6 @@ function renderDetail(domain) {
   if (!ctx || !ctx.detailActive) return;
 
   const {
-    detailPointsGroup,
     detailXAxisGroup,
     detailYAxisGroup,
     detailMessageText,
@@ -235,6 +265,10 @@ function renderDetail(domain) {
     colorForBasis,
     detailSource,
     detailDomainFull,
+    margin,
+    scatterOffsetX,
+    viewWidth,
+    viewHeight,
   } = ctx;
 
   if (!detailSource.length || !detailDomainFull[0] || !detailDomainFull[1]) {
@@ -243,11 +277,12 @@ function renderDetail(domain) {
       .attr("y", innerHeight / 2)
       .text("No detail data available.")
       .attr("display", null);
-    detailPointsGroup.selectAll("circle.detail-point").data([]).join("circle");
+    clearScatterCanvas();
     return;
   }
 
   if (!Array.isArray(domain)) {
+    clearScatterCanvas();
     return;
   }
 
@@ -268,7 +303,7 @@ function renderDetail(domain) {
       .attr("y", innerHeight / 2)
       .text("No basis data available.")
       .attr("display", null);
-    detailPointsGroup.selectAll("circle.detail-point").data([]).join("circle");
+    clearScatterCanvas();
     return;
   }
 
@@ -317,25 +352,32 @@ function renderDetail(domain) {
     .attr("y", -52 - axisTitlePadding)
     .attr("display", null);
 
-  const detailPointsSelection = detailPointsGroup
-    .selectAll("circle.detail-point")
-    .data(detailPoints, (d) =>
-      d.date ? d.date.getTime() : d.mark_price_close,
-    );
-
-  detailPointsSelection
-    .join((enter) =>
-      enter
-        .append("circle")
-        .attr("class", "detail-point")
-        .attr("r", 3.6)
-        .attr("stroke", "black")
-        .attr("stroke-width", 0.2)
-        .attr("opacity", 0.7),
-    )
-    .attr("cx", (d) => detailX(d.mark_price_close))
-    .attr("cy", (d) => detailY(d.basis_pct))
-    .attr("fill", (d) => colorForBasis(d.basis_pct));
+  syncScatterCanvas(viewWidth, viewHeight);
+  const canvas = scatterCanvasRef.value;
+  const canvasCtx = canvas ? canvas.getContext("2d") : null;
+  if (!canvasCtx || !canvas) return;
+  canvasCtx.setTransform(1, 0, 0, 1, 0, 0);
+  canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+  canvasCtx.setTransform(
+    scatterCanvasScaleX * scatterCanvasRatio,
+    0,
+    0,
+    scatterCanvasScaleY * scatterCanvasRatio,
+    0,
+    0,
+  );
+  canvasCtx.globalAlpha = 0.7;
+  canvasCtx.lineWidth = 0.2;
+  canvasCtx.strokeStyle = "black";
+  for (const point of detailPoints) {
+    const x = scatterOffsetX + margin.left + detailX(point.mark_price_close);
+    const y = margin.top + detailY(point.basis_pct);
+    canvasCtx.beginPath();
+    canvasCtx.arc(x, y, 3.6, 0, Math.PI * 2);
+    canvasCtx.fillStyle = colorForBasis(point.basis_pct);
+    canvasCtx.fill();
+    canvasCtx.stroke();
+  }
 }
 
 let brushPendingDomain = null;
@@ -530,6 +572,10 @@ function render() {
   svg
     .attr("viewBox", `0 0 ${width} ${height}`)
     .attr("role", "img");
+  syncScatterCanvas(width, height);
+  if (!detailActive) {
+    clearScatterCanvas();
+  }
   chartState.background
     .attr("x", 0)
     .attr("y", 0)
@@ -572,6 +618,7 @@ function render() {
       .join("circle");
     chartState.legendGroup.attr("display", "none");
     chartState.detailContainer.attr("display", "none");
+    clearScatterCanvas();
     detailRenderContext = null;
     return;
   }
@@ -716,7 +763,6 @@ function render() {
   detailRenderContext = {
     detailActive,
     detailLayer: chartState.detailLayer,
-    detailPointsGroup: chartState.detailPointsGroup,
     detailXAxisGroup: chartState.detailXAxisGroup,
     detailYAxisGroup: chartState.detailYAxisGroup,
     detailMessageText: chartState.detailMessageText,
@@ -730,6 +776,8 @@ function render() {
     colorForBasis,
     detailSource,
     detailDomainFull,
+    viewWidth: width,
+    viewHeight: height,
   };
 
   brush.extent([
@@ -784,6 +832,7 @@ onMounted(() => render());
 
 <template>
   <div class="chartWrap">
+    <canvas ref="scatterCanvasRef" class="scatterCanvas" />
     <svg ref="svgRef" />
     <div v-if="loading" class="overlay">Loading…</div>
   </div>
@@ -801,6 +850,17 @@ svg {
   display: block;
   width: 100%;
   height: auto;
+  position: relative;
+  z-index: 1;
+}
+
+.scatterCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
 }
 
 .overlay {
@@ -811,5 +871,6 @@ svg {
   color: #fff;
   background: color-mix(in oklab, #000, transparent 40%);
   font-size: 14px;
+  z-index: 2;
 }
 </style>
