@@ -23,8 +23,6 @@ const layout = {
 };
 
 const chartState = {
-  svg: null,
-  defs: null,
   gradient: null,
   background: null,
   mainTitleText: null,
@@ -86,7 +84,6 @@ const ensureChartElements = () => {
   const svgEl = svgRef.value;
   if (!svgEl) return null;
   const svg = d3.select(svgEl);
-  chartState.svg = svg;
 
   const appendText = (parent, { fill, size, weight, anchor, text }) => {
     const node = parent
@@ -109,9 +106,9 @@ const ensureChartElements = () => {
       text,
     });
 
-  if (!chartState.defs) {
-    chartState.defs = svg.append("defs");
-    chartState.gradient = chartState.defs
+  if (!chartState.gradient) {
+    const defs = svg.append("defs");
+    chartState.gradient = defs
       .append("linearGradient")
       .attr("id", "basis-gradient")
       .attr("x1", "0%")
