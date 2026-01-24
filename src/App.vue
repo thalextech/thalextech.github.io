@@ -9,7 +9,7 @@ import {
   fetchMarkHistory,
 } from "./lib/thalex.js";
 
-const RESOLUTIONS = {
+const RESOLUTION_CONFIG = {
   "1m": { label: "1m", seconds: 60, detail: "1m" },
   "5m": { label: "5m", seconds: 5 * 60, detail: "1m" },
   "15m": { label: "15m", seconds: 15 * 60, detail: "5m" },
@@ -33,11 +33,6 @@ const data = reactive({
 });
 const chartRef = ref(null);
 
-const resolutionConfig = computed(
-  () => RESOLUTIONS[ui.resolution] || RESOLUTIONS["1h"],
-);
-const scatterResolution = computed(() => resolutionConfig.value.detail || "1h");
-
 const mainSeries = computed(() => {
   const mark = data.mark[ui.resolution] || [];
   const index = data.index[ui.resolution] || [];
@@ -50,7 +45,7 @@ const mainSeries = computed(() => {
 });
 
 const detailSeries = computed(() => {
-  const resolutionKey = scatterResolution.value;
+  const resolutionKey = RESOLUTION_CONFIG[ui.resolution]?.detail || "1h";
   const mark = data.mark[resolutionKey] || [];
   const index = data.index[resolutionKey] || [];
   return computeBasisSeries({
@@ -70,13 +65,13 @@ async function load() {
   data.index = {};
 
   const now = Math.floor(Date.now() / 1000);
-  const seconds = resolutionConfig.value.seconds ?? 3600;
-  const mainRange = {
+  const seconds = RESOLUTION_CONFIG[ui.resolution]?.seconds ?? 3600;
+  const timestampRange = {
     from: now - seconds * MAIN_POINT_LIMIT,
     to: now,
   };
+  const detailResolution = RESOLUTION_CONFIG[ui.resolution]?.detail || "1h";
 
-  console.log({ dataState: data });
   try {
     const instrument = await fetchInstrument(ui.instrumentName);
     const indexName = instrument?.underlying;
@@ -85,36 +80,36 @@ async function load() {
       fetchMarkHistory({
         instrument_name: ui.instrumentName,
         resolution: ui.resolution,
-        from: mainRange.from,
-        to: mainRange.to,
+        from: now - seconds * MAIN_POINT_LIMIT,
+        to: now,
       }),
       fetchIndexHistory({
         index_name: indexName,
         resolution: ui.resolution,
-        from: mainRange.from,
-        to: mainRange.to,
+        from: timestampRange.from,
+        to: timestampRange.to,
       }),
     ]);
 
     const [detailMarkResult, detailIndex] = await Promise.all([
       fetchMarkHistory({
         instrument_name: ui.instrumentName,
-        resolution: scatterResolution.value,
-        from: mainRange.from,
-        to: mainRange.to,
+        resolution: detailResolution,
+        from: timestampRange.from,
+        to: timestampRange.to,
       }),
       fetchIndexHistory({
         index_name: indexName,
-        resolution: scatterResolution.value,
-        from: mainRange.from,
-        to: mainRange.to,
+        resolution: detailResolution,
+        from: timestampRange.from,
+        to: timestampRange.to,
       }),
     ]);
 
     data.mark[ui.resolution] = mainMarkResult?.data || [];
     data.index[ui.resolution] = mainIndex || [];
-    data.mark[scatterResolution.value] = detailMarkResult?.data || [];
-    data.index[scatterResolution.value] = detailIndex || [];
+    data.mark[detailResolution] = detailMarkResult?.data || [];
+    data.index[detailResolution] = detailIndex || [];
 
     if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
@@ -175,10 +170,7 @@ watch(
             >
               {{ i.instrument_name }}
             </option>
-            <option
-              v-if="!data.instruments.length"
-              :value="ui.instrumentName"
-            >
+            <option v-if="!data.instruments.length" :value="ui.instrumentName">
               {{ ui.instrumentName }}
             </option>
           </select>
@@ -188,11 +180,11 @@ watch(
           <label for="resolution">Resolution</label>
           <select id="resolution" v-model="ui.resolution">
             <option
-              v-for="key in Object.keys(RESOLUTIONS)"
+              v-for="key in Object.keys(RESOLUTION_CONFIG)"
               :key="key"
               :value="key"
             >
-              {{ RESOLUTIONS[key].label }}
+              {{ RESOLUTION_CONFIG[key].label }}
             </option>
           </select>
         </div>
@@ -216,7 +208,7 @@ watch(
       :detail-data="detailSeries"
       v-model:detailRange="ui.detailRange"
       :instrument-name="ui.instrumentName"
-      :detail-resolution="scatterResolution"
+      :detail-resolution="RESOLUTION_CONFIG[ui.resolution]?.detail || '1h'"
       :loading="ui.loading"
     />
   </div>
