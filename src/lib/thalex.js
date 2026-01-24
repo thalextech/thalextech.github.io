@@ -20,15 +20,6 @@ function isCacheFresh(timestamp) {
   );
 }
 
-function normalizeTimestampMs(value) {
-  const numeric = Number(value);
-  if (Number.isFinite(numeric)) {
-    return numeric > 1e12 ? numeric : numeric * 1000;
-  }
-  const parsed = Date.parse(String(value));
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function readCache(key) {
   const storage = getLocalStorage();
   if (!storage) return null;
@@ -102,7 +93,7 @@ export async function fetchInstruments() {
     if (!instrument || typeof instrument !== "object") return instrument;
     return {
       ...instrument,
-      create_time_ms: normalizeTimestampMs(instrument.create_time),
+      create_time_ms: instrument.create_time,
     };
   });
 }
