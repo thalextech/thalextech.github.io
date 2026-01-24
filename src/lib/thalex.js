@@ -1,5 +1,3 @@
-import { csvFormatRows, csvParseRows } from "d3-dsv";
-
 const API_BASE = "/api/v2/public";
 const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -31,10 +29,8 @@ function readCache(key) {
       storage.removeItem(key);
       return null;
     }
-    if (typeof parsed.rows !== "string") return null;
-    const rows = csvParseRows(parsed.rows).map((row) =>
-      row.map((value) => Number(value)),
-    );
+    if (!Array.isArray(parsed.rows)) return null;
+    const rows = parsed.rows;
     return {
       rows,
       meta: parsed.meta ?? null,
@@ -50,7 +46,7 @@ function writeCache(key, rows, meta) {
   try {
     const payload = {
       timestamp: Date.now(),
-      rows: csvFormatRows(rows),
+      rows,
       meta,
     };
     storage.setItem(key, JSON.stringify(payload));
