@@ -344,44 +344,29 @@ function renderDetail(domain) {
     .attr("fill", (d) => colorForBasis(d.basis_pct));
 }
 
-const BRUSH_THROTTLE_MS = 10;
 let brushPendingDomain = null;
-let brushTimer = null;
-let lastBrushTime = 0;
-
-const getNow = () =>
-  typeof performance !== "undefined" ? performance.now() : Date.now();
-
-const runBrushUpdate = () => {
-  brushTimer = null;
-  lastBrushTime = getNow();
-  const domain = brushPendingDomain;
-  brushPendingDomain = null;
-  renderDetail(domain);
-};
+let brushRafId = null;
 
 const scheduleBrushUpdate = (domain) => {
   brushPendingDomain = domain;
-  const now = getNow();
-  const elapsed = now - lastBrushTime;
-  if (elapsed >= BRUSH_THROTTLE_MS && !brushTimer) {
-    runBrushUpdate();
-    return;
-  }
-  const delay = Math.max(0, BRUSH_THROTTLE_MS - elapsed);
-  if (brushTimer) {
-    clearTimeout(brushTimer);
-  }
-  brushTimer = setTimeout(runBrushUpdate, delay);
+  if (brushRafId != null) return;
+  brushRafId = requestAnimationFrame(() => {
+    brushRafId = null;
+    const pending = brushPendingDomain;
+    brushPendingDomain = null;
+    renderDetail(pending);
+  });
 };
 
 const flushBrushUpdate = () => {
-  if (brushTimer) {
-    clearTimeout(brushTimer);
-    brushTimer = null;
+  if (brushRafId != null) {
+    cancelAnimationFrame(brushRafId);
+    brushRafId = null;
   }
   if (brushPendingDomain !== null) {
-    runBrushUpdate();
+    const pending = brushPendingDomain;
+    brushPendingDomain = null;
+    renderDetail(pending);
   }
 };
 
