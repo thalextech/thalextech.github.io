@@ -5,29 +5,19 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 const props = defineProps({
   data: { type: Array, default: () => [] },
   detailData: { type: Array, default: () => [] },
-  detailRange: { type: Object, default: null },
   instrumentName: { type: String, default: "" },
   detailResolution: { type: String, default: "" },
   loading: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(["update:detailRange", "brush"]);
-
 const svgRef = ref(null);
-const internalDetailRange = ref(props.detailRange ?? null);
+const internalDetailRange = ref(null);
 const tooltip = reactive({
   visible: false,
   left: 0,
   top: 0,
   datum: null,
 });
-
-watch(
-  () => props.detailRange,
-  (next) => {
-    internalDetailRange.value = next ?? null;
-  },
-);
 
 const tooltipStyles = computed(() => ({
   left: `${tooltip.left}px`,
@@ -513,15 +503,11 @@ const handleBrushEnd = (event) => {
   const selection = event.selection;
   if (!selection) {
     internalDetailRange.value = null;
-    emit("update:detailRange", null);
-    emit("brush", null);
     return;
   }
   const xScale = chartState.currentXScale;
   if (!xScale) {
     internalDetailRange.value = null;
-    emit("update:detailRange", null);
-    emit("brush", null);
     return;
   }
   const [from, to] = selection.map(xScale.invert);
@@ -530,8 +516,6 @@ const handleBrushEnd = (event) => {
     to: Math.floor(to.getTime() / 1000),
   };
   internalDetailRange.value = range;
-  emit("update:detailRange", range);
-  emit("brush", range);
 };
 
 const brush = d3
@@ -551,8 +535,6 @@ const clearBrush = (event) => {
     chartState.brushGroup.call(brush.move, null);
   }
   internalDetailRange.value = null;
-  emit("update:detailRange", null);
-  emit("brush", null);
 };
 
 const bindBrushHandlers = () => {
@@ -631,7 +613,7 @@ function exportPng({
   image.src = url;
 }
 
-defineExpose({ exportPng, clearBrush });
+defineExpose({ exportPng });
 
 function render() {
   const svgEl = svgRef.value;

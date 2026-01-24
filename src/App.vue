@@ -20,7 +20,6 @@ const MAIN_POINT_LIMIT = 400;
 const ui = reactive({
   resolution: "1d",
   instrumentName: "",
-  detailRange: null,
   loading: false,
   error: "",
 });
@@ -59,7 +58,6 @@ async function load() {
 
   ui.loading = true;
   ui.error = "";
-  ui.detailRange = null;
   data.mark = {};
   data.index = {};
 
@@ -149,7 +147,6 @@ watch(
     data.instrument =
       data.instruments.find((i) => i.instrument_name === ui.instrumentName) ||
       null;
-    ui.detailRange = null;
     await load();
   },
   { immediate: true },
@@ -210,7 +207,6 @@ watch(
       ref="chartRef"
       :data="mainSeries"
       :detail-data="detailSeries"
-      v-model:detailRange="ui.detailRange"
       :instrument-name="ui.instrumentName"
       :detail-resolution="RESOLUTION_CONFIG[ui.resolution].detail"
       :loading="ui.loading"
