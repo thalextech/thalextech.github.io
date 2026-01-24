@@ -83,33 +83,6 @@ function writeCache(key, rows, meta) {
   }
 }
 
-function normalizeMarkRows(rows, instrument_type) {
-  if (!Array.isArray(rows)) return [];
-  return rows
-    .map((row) => {
-      if (!Array.isArray(row) || row.length < 5) return null;
-
-      const ts = toNumberOrNull(row[0]);
-      if (!Number.isFinite(ts)) return null;
-
-      const mark_price_open = toNumberOrNull(row[1]);
-      const mark_price_high = toNumberOrNull(row[2]);
-      const mark_price_low = toNumberOrNull(row[3]);
-      const mark_price_close = toNumberOrNull(row[4]);
-      let tob;
-
-      return {
-        ts,
-        mark_price_open,
-        mark_price_high,
-        mark_price_low,
-        mark_price_close,
-        tob,
-      };
-    })
-    .filter(Boolean);
-}
-
 function normalizeIndexRows(rows) {
   if (!Array.isArray(rows)) return [];
   return rows
@@ -220,8 +193,27 @@ export async function fetchMarkHistory({
   const cached = readCache(cacheKey);
   if (cached) {
     return {
-      instrument_type: cached.meta?.instrument_type,
-      data: normalizeMarkRows(cached.rows, cached.meta?.instrument_type),
+      data: (cached.rows || [])
+        .map((row) => {
+          if (!Array.isArray(row) || row.length < 5) return null;
+
+          const ts = toNumberOrNull(row[0]);
+          if (!Number.isFinite(ts)) return null;
+
+          const mark_price_open = toNumberOrNull(row[1]);
+          const mark_price_high = toNumberOrNull(row[2]);
+          const mark_price_low = toNumberOrNull(row[3]);
+          const mark_price_close = toNumberOrNull(row[4]);
+
+          return {
+            ts,
+            mark_price_open,
+            mark_price_high,
+            mark_price_low,
+            mark_price_close,
+          };
+        })
+        .filter(Boolean),
     };
   }
 
@@ -232,15 +224,33 @@ export async function fetchMarkHistory({
     to,
   });
   const json = await getJson(url);
-  const instrument_type = json?.result?.instrument_type;
   const rows = json?.result?.mark;
-  if (!Array.isArray(rows)) return { instrument_type, data: [] };
+  if (!Array.isArray(rows)) return { data: [] };
 
-  writeCache(cacheKey, rows, { instrument_type });
+  writeCache(cacheKey, rows, null);
 
   return {
-    instrument_type,
-    data: normalizeMarkRows(rows, instrument_type),
+    data: rows
+      .map((row) => {
+        if (!Array.isArray(row) || row.length < 5) return null;
+
+        const ts = toNumberOrNull(row[0]);
+        if (!Number.isFinite(ts)) return null;
+
+        const mark_price_open = toNumberOrNull(row[1]);
+        const mark_price_high = toNumberOrNull(row[2]);
+        const mark_price_low = toNumberOrNull(row[3]);
+        const mark_price_close = toNumberOrNull(row[4]);
+
+        return {
+          ts,
+          mark_price_open,
+          mark_price_high,
+          mark_price_low,
+          mark_price_close,
+        };
+      })
+      .filter(Boolean),
   };
 }
 
