@@ -653,15 +653,17 @@ function render() {
     .data(data, (d) => (d.date ? d.date.getTime() : d.mark_price_close));
 
   mainPoints
-    .join((enter) =>
-      enter
+    .join((enter) => {
+      const circles = enter
         .append("circle")
         .attr("class", "main-point")
-        .attr("r", 4.4)
+        .attr("r", 0)
         .attr("stroke", "whitesmoke")
         .attr("stroke-width", 0.2)
-        .attr("opacity", 0.9),
-    )
+        .attr("opacity", 0.9);
+      circles.transition().duration(250).attr("r", 4.4);
+      return circles;
+    })
     .attr("cx", (d) => x(d.date))
     .attr("cy", (d) => y(d.mark_price_close))
     .attr("fill", (d) => colorForBasis(d.basis_pct));
