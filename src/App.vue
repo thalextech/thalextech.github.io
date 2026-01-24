@@ -135,20 +135,11 @@ watch(
 
 onMounted(async () => {
   const all = await fetchInstruments();
-
   instruments.value = all
     .filter((i) => i?.type === "future" && i?.underlying === "BTCUSD")
-    .sort((a, b) => a.expiration_timestamp - b.expiration_timestamp);
-
-  if (!instrumentName.value && instruments.value.length) {
-    const oldest =
-      [...instruments.value].sort(
-        (a, b) =>
-          (Number.isFinite(a.create_time_ms) ? a.create_time_ms : Infinity) -
-          (Number.isFinite(b.create_time_ms) ? b.create_time_ms : Infinity),
-      )[0] || null;
-    instrumentName.value = oldest?.instrument_name;
-  }
+    .sort((a, b) => a.create_time_ms - b.create_time_ms);
+  // longest running expiry is top of list and selected by default
+  instrumentName.value = instruments.value[0].instrument_name;
 });
 
 watch(
