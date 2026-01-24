@@ -96,15 +96,7 @@ function normalizeMarkRows(rows, instrument_type) {
       const mark_price_high = toNumberOrNull(row[2]);
       const mark_price_low = toNumberOrNull(row[3]);
       const mark_price_close = toNumberOrNull(row[4]);
-
-      let funding;
       let tob;
-      if (instrument_type === "perpetual") {
-        funding = toNumberOrNull(row[5]);
-        tob = toNumberOrNull(row[6]);
-      } else if (instrument_type === "future") {
-        tob = toNumberOrNull(row[5]);
-      }
 
       return {
         ts,
@@ -112,7 +104,6 @@ function normalizeMarkRows(rows, instrument_type) {
         mark_price_high,
         mark_price_low,
         mark_price_close,
-        funding,
         tob,
       };
     })
