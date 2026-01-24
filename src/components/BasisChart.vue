@@ -1,6 +1,6 @@
 <script setup>
 import * as d3 from "d3";
-import { computed, onMounted, reactive, ref, toRaw, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 
 const props = defineProps({
   data: { type: Array, default: () => [] },
@@ -96,7 +96,7 @@ const mainTitle = computed(
 
 const subtitle = computed(() => {
   const fmt = d3.utcFormat("%d %b %y %H:%M");
-  const data = normalizeArray(props.data);
+  const data = props.data;
   if (!data.length) return "";
   const dateFromData = data[0]?.date;
   const dateToData = data[data.length - 1]?.date;
@@ -113,14 +113,6 @@ const axisStyle = (axisG) => {
     .selectAll("text")
     .attr("fill", "#d6d7de")
     .style("font-family", SVG_FONT_FAMILY);
-};
-
-const normalizeArray = (value) => {
-  if (!value) return [];
-  const raw = toRaw(value);
-  if (Array.isArray(raw)) return raw;
-  if (Array.isArray(value)) return value;
-  return [];
 };
 
 const ensureChartElements = () => {
@@ -641,8 +633,8 @@ defineExpose({ exportPng, clearBrush });
 function render() {
   const svgEl = svgRef.value;
   if (!svgEl) return;
-  const data = normalizeArray(props.data);
-  const detailData = normalizeArray(props.detailData);
+  const data = props.data;
+  const detailData = props.detailData;
   tooltip.visible = false;
   tooltip.datum = null;
 
