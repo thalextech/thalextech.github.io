@@ -12,6 +12,7 @@ const props = defineProps({
 
 const svgRef = ref(null);
 const internalDetailRange = ref(null);
+const gradientId = `basis-gradient-${Math.random().toString(16).slice(2)}`;
 const SVG_FONT_FAMILY =
   'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
 
@@ -107,7 +108,7 @@ const ensureChartElements = () => {
     const defs = svg.append("defs");
     chartState.gradient = defs
       .append("linearGradient")
-      .attr("id", "basis-gradient")
+      .attr("id", gradientId)
       .attr("x1", "0%")
       .attr("x2", "100%")
       .attr("y1", "0%")
@@ -661,7 +662,7 @@ function render() {
         .attr("stroke", "whitesmoke")
         .attr("stroke-width", 0.2)
         .attr("opacity", 0.9);
-      circles.transition().duration(250).attr("r", 4.4);
+      circles.transition().duration(300).attr("r", 4.4);
       return circles;
     })
     .attr("cx", (d) => x(d.date))
@@ -702,7 +703,7 @@ function render() {
     .attr("y", legendBarTop)
     .attr("width", legendWidth)
     .attr("height", legendHeight)
-    .attr("fill", "url(#basis-gradient)");
+    .attr("fill", `url(#${gradientId})`);
   chartState.legendMinText
     .attr("x", 0)
     .attr("y", legendLabelY)
