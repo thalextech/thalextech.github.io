@@ -253,7 +253,7 @@ export async function fetchMarkHistory({
   };
 }
 
-export function computeBasisSeries({ mark, index, instrument } = {}) {
+export function computeBasisSeries({ mark, index, instrument }) {
   const indexByTs = new Map((index || []).map((row) => [row.ts, row]));
   const expiration = instrument?.expiration_timestamp;
   const instrumentName = instrument.instrument_name;
@@ -263,19 +263,11 @@ export function computeBasisSeries({ mark, index, instrument } = {}) {
     const i = indexByTs.get(m.ts);
     if (!i) continue;
 
-    const tte =
-      typeof expiration === "number" && Number.isFinite(expiration)
-        ? expiration - m.ts
-        : null;
-
+    const tte = expiration - m.ts;
     const basis_open = m.mark_price_open - i.index_price_open;
     const basis_close = m.mark_price_close - i.index_price_close;
 
     const basis_pct =
-      typeof tte === "number" &&
-      Number.isFinite(tte) &&
-      tte !== 0 &&
-      Number.isFinite(i.index_price_close) &&
       i.index_price_close !== 0
         ? (basis_close / i.index_price_close) * (SECONDS_PER_YEAR / tte)
         : null;
@@ -292,15 +284,5 @@ export function computeBasisSeries({ mark, index, instrument } = {}) {
       basis_pct,
     });
   }
-
-  merged.sort((a, b) => a.ts - b.ts);
-
-  if (merged.length) {
-    const initial_basis = merged[0].basis_open;
-    for (const row of merged) {
-      row.basis_cumul = initial_basis - row.basis_close;
-    }
-  }
-
   return merged;
 }
