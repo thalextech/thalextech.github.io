@@ -94,7 +94,6 @@ const applyTextStyle = (node, styleKey) => {
 
 let scatterCanvasScaleX = 1;
 let scatterCanvasScaleY = 1;
-let scatterCanvasRatio = 1;
 
 const syncScatterCanvas = (viewWidth, viewHeight) => {
   const canvas = scatterCanvasRef.value;
@@ -110,9 +109,8 @@ const syncScatterCanvas = (viewWidth, viewHeight) => {
   const nextHeight = Math.round(rect.height * ratio);
   if (canvas.width !== nextWidth) canvas.width = nextWidth;
   if (canvas.height !== nextHeight) canvas.height = nextHeight;
-  scatterCanvasScaleX = rect.width / viewWidth;
-  scatterCanvasScaleY = rect.height / viewHeight;
-  scatterCanvasRatio = ratio;
+  scatterCanvasScaleX = (rect.width * ratio) / viewWidth;
+  scatterCanvasScaleY = (rect.height * ratio) / viewHeight;
 };
 
 const clearScatterCanvas = () => {
@@ -358,14 +356,7 @@ function renderDetail(domain) {
   if (!canvasCtx || !canvas) return;
   canvasCtx.setTransform(1, 0, 0, 1, 0, 0);
   canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
-  canvasCtx.setTransform(
-    scatterCanvasScaleX * scatterCanvasRatio,
-    0,
-    0,
-    scatterCanvasScaleY * scatterCanvasRatio,
-    0,
-    0,
-  );
+  canvasCtx.setTransform(scatterCanvasScaleX, 0, 0, scatterCanvasScaleY, 0, 0);
   canvasCtx.globalAlpha = 0.6;
   canvasCtx.lineWidth = 0.06;
   canvasCtx.strokeStyle = "blue";
