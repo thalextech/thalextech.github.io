@@ -523,6 +523,10 @@ function exportPng({
     ctx.scale(safeScale, safeScale);
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, width + safePadding * 2, height + safePadding * 2);
+    const scatterCanvas = scatterCanvasRef.value;
+    if (scatterCanvas && scatterCanvas.width && scatterCanvas.height) {
+      ctx.drawImage(scatterCanvas, safePadding, safePadding, width, height);
+    }
     ctx.drawImage(image, safePadding, safePadding, width, height);
     canvas.toBlob((pngBlob) => {
       if (!pngBlob) {
