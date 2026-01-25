@@ -357,7 +357,7 @@ function renderDetail(domain) {
   canvasCtx.setTransform(1, 0, 0, 1, 0, 0);
   canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
   canvasCtx.setTransform(scatterCanvasScaleX, 0, 0, scatterCanvasScaleY, 0, 0);
-  canvasCtx.globalAlpha = 0.6;
+  canvasCtx.globalAlpha = 0.5;
   canvasCtx.lineWidth = 0;
   for (const point of detailPoints) {
     const x = scatterOffsetX + margin.left + detailX(point.mark_price_close);
