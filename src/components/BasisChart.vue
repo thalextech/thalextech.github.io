@@ -366,9 +366,9 @@ function renderDetail(domain) {
     0,
     0,
   );
-  canvasCtx.globalAlpha = 0.7;
-  canvasCtx.lineWidth = 0.2;
-  canvasCtx.strokeStyle = "black";
+  canvasCtx.globalAlpha = 0.6;
+  canvasCtx.lineWidth = 0.06;
+  canvasCtx.strokeStyle = "blue";
   for (const point of detailPoints) {
     const x = scatterOffsetX + margin.left + detailX(point.mark_price_close);
     const y = margin.top + detailY(point.basis_pct);
@@ -573,9 +573,7 @@ function render() {
   const height = panelHeight;
   const scatterOffsetX = mainWidth + panelGap;
 
-  svg
-    .attr("viewBox", `0 0 ${width} ${height}`)
-    .attr("role", "img");
+  svg.attr("viewBox", `0 0 ${width} ${height}`).attr("role", "img");
   syncScatterCanvas(width, height);
   if (!detailActive) {
     clearScatterCanvas();
