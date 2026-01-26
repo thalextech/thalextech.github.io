@@ -1,0 +1,135 @@
+:root {
+  color-scheme: dark;
+  --bg: black;
+  --panel: #0b0d13;
+  --text: #e8e8ea;
+  --muted: #a9abb6;
+  --border: #222532;
+  --accent: #7aa2ff;
+  --danger: #ff6b6b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    Helvetica,
+    Arial,
+    "Apple Color Emoji",
+    "Segoe UI Emoji";
+  background: var(--bg);
+  color: var(--text);
+}
+
+a {
+  color: var(--accent);
+}
+
+.app {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 28px 18px 40px;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.titleRow {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.titleRow h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+}
+
+.controls {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  align-items: flex-end;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.field label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.field select {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font-size: 13px;
+  padding: 0 18px 0 0;
+  cursor: pointer;
+}
+
+.field select:focus {
+  outline: none;
+}
+
+.saveButton {
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
+  color: var(--text);
+  font-size: 13px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  height: 40px;
+}
+
+.saveButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.meta {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 13px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--danger), transparent 55%);
+  background: color-mix(in oklab, var(--danger), transparent 92%);
+  border-radius: 10px;
+}

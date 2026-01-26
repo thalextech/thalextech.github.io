@@ -28,16 +28,14 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - name: Install
-        run: npm ci
       - name: Build
-        run: npm run build
+        run: ./build_apps.sh
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: apps_deployment
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

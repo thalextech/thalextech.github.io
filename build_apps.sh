@@ -1,0 +1,15 @@
+REPO_ROOT="$(pwd)"
+
+APPS_ROOT="${REPO_ROOT}/apps"
+APPS_DEPLOY_DIR="${REPO_ROOT}/apps_deployment"
+
+rm -rf "${APPS_DEPLOY_DIR}"
+mkdir -p "${APPS_DEPLOY_DIR}"
+
+for app in $(ls "${APPS_ROOT}"); do
+    cd apps/"$app"
+    npm ci
+    npm run build
+    cp -r dist "${APPS_DEPLOY_DIR}/${app}"
+    cd -
+done
