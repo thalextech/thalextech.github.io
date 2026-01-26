@@ -3,12 +3,4 @@ import vue from "@vitejs/plugin-vue";
 
 export default defineConfig({
   plugins: [vue()],
-  server: {
-    proxy: {
-      "/api": {
-        target: "https://thalex.com",
-        changeOrigin: true,
-      },
-    },
-  },
 });
