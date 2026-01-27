@@ -2,6 +2,7 @@ const API_BASE = "https://thalex.com/api/v2/public"
 const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_PREFIX = "thalex-cache";
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
 function getLocalStorage() {
   if (typeof window === "undefined") return null;
@@ -53,23 +54,60 @@ function writeCache(key, rows, meta) {
   }
 }
 
-async function getJson(url, { timeoutMs = 20_000 } = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+function isRetryableStatus(status) {
+  return RETRYABLE_STATUS.has(status);
+}
 
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const message =
-        json?.error?.message ||
-        json?.message ||
-        `Request failed (${res.status})`;
-      throw new Error(message);
+function isRetryableError(error) {
+  if (!error) return false;
+  if (error.name === "AbortError") return true;
+  if (error instanceof TypeError) return true;
+  return false;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getJson(
+  url,
+  { timeoutMs = 20_000, maxRetries = 2, retryDelayMs = 500 } = {},
+) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      const json = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const message =
+          json?.error?.message ||
+          json?.message ||
+          `Request failed (${res.status})`;
+        const error = new Error(message);
+        error.status = res.status;
+
+        if (attempt < maxRetries && isRetryableStatus(res.status)) {
+          const delay = retryDelayMs * Math.pow(2, attempt);
+          await sleep(delay);
+          continue;
+        }
+        throw error;
+      }
+
+      return json;
+    } catch (error) {
+      if (attempt < maxRetries && isRetryableError(error)) {
+        const delay = retryDelayMs * Math.pow(2, attempt);
+        await sleep(delay);
+        continue;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-    return json;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
