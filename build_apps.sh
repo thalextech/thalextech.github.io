@@ -8,8 +8,10 @@ APPS_DEPLOY_DIR="${REPO_ROOT}/apps_deployment"
 rm -rf "${APPS_DEPLOY_DIR}"
 mkdir -p "${APPS_DEPLOY_DIR}"
 
-for app in $(find "${APPS_ROOT}" -type d -depth 1); do
-    cd apps/"$app"
+cd apps
+for app in $(find . -mindepth 1 -maxdepth 1 -type d); do
+    cd "${app}"
+    echo "Building ${app}"
     npm ci
     VITE_BASE_PATH=/$app/ npm run build
     cp -r dist "${APPS_DEPLOY_DIR}/${app}"
