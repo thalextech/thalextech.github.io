@@ -1,6 +1,7 @@
 <script setup>
 import * as d3 from "d3";
 import { computed, onMounted, ref, watch } from "vue";
+import { SECONDS_PER_YEAR } from "../../../../lib/thalex.js";
 
 const props = defineProps({
   data: { type: Array, default: () => [] },
@@ -14,6 +15,7 @@ const tooltipRef = ref(null);
 const gradientId = `funding-gradient-${Math.random().toString(16).slice(2)}`;
 const SVG_FONT_FAMILY =
   'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const layout = {
   mainWidth: 860,
@@ -82,7 +84,6 @@ const POINT_RADIUS = 4;
 const POINT_RADIUS_DIMMED = 2.8;
 const POINT_RADIUS_HOVER = 10;
 const LAYOUT_TRANSITION_MS = 260;
-const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 let hoveredDatum = null;
 let selectedDatums = [];
 let detailActive = false;
@@ -201,8 +202,7 @@ const updateSelectionLine = () => {
       .attr("x2", x2)
       .attr("y2", y2)
       .attr("opacity", 0.8);
-    const days =
-      Math.abs(lineEnd.date - lineStart.date) / (24 * 60 * 60 * 1000);
+    const days = Math.abs(lineEnd.date - lineStart.date) / MS_PER_DAY;
     label
       .attr("x", (x1 + x2) / 2)
       .attr("y", (y1 + y2) / 2 - 10)
@@ -588,8 +588,7 @@ function render() {
     const second = selectedDatums[1];
     const start = first.date <= second.date ? first.date : second.date;
     const end = first.date <= second.date ? second.date : first.date;
-    const msPerDay = 24 * 60 * 60 * 1000;
-    const days = (end - start) / msPerDay;
+    const days = (end - start) / MS_PER_DAY;
     detailRangeLabel = `${formatDate(start)} - ${formatDate(end)} (${days.toFixed(
       1,
     )} days)`;
@@ -615,7 +614,6 @@ function render() {
   const legendLineLength = 18;
   const legendLabelOffset = 6;
   const legendRowGap = 16;
-  const legendBlockWidth = 150;
   const detailLegendX = margin.left;
   const detailLegendY = 92;
   chartState.detailLegendGroup.attr(
