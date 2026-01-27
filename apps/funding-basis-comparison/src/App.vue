@@ -199,11 +199,7 @@ async function load() {
 
 function handleSavePng() {
   if (!chartRef.value) return;
-  const base = ui.instrumentName || "funding-chart";
-  const filename = ui.resolution
-    ? `${base}-${ui.resolution}.png`
-    : `${base}.png`;
-  chartRef.value.exportPng({ filename });
+  chartRef.value.exportPng({ filename: "cost_of_carry_comparison.png" });
 }
 
 onMounted(async () => {
