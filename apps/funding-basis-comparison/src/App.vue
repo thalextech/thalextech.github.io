@@ -2,12 +2,12 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import FundingChart from "./components/FundingChart.vue";
 import {
-  computeBasisSeries,
+  buildFundingSeries,
+  buildBasisSeries,
   fetchIndexHistory,
   fetchInstruments,
   fetchMarkHistory,
 } from "../../../lib/thalex.js";
-import { computeFundingSeries } from "./composables/thalex.js";
 
 const RESOLUTION_CONFIG = {
   60: { label: "1m", resolution: "1m", interval_seconds: 60 },
@@ -42,7 +42,7 @@ const mainSeries = computed(() => {
   const index = data.index[ui.resolution] || [];
   const intervalSeconds =
     RESOLUTION_CONFIG[ui.resolution]?.interval_seconds ?? Number(ui.resolution);
-  const series = computeFundingSeries({
+  const series = buildFundingSeries({
     mark,
     index,
     intervalSeconds,
@@ -56,7 +56,7 @@ const mainSeries = computed(() => {
 const basisSeries = computed(() => {
   const mark = data.futureMark[ui.resolution] || [];
   const index = data.index[ui.resolution] || [];
-  const series = computeBasisSeries({
+  const series = buildBasisSeries({
     mark,
     index,
     instrument: data.futureInstrument || {},
@@ -95,7 +95,6 @@ async function load() {
     const [mainMarkResult, mainIndex, futureMarkResult] = await Promise.all([
       fetchMarkHistory({
         instrument_name: ui.instrumentName,
-        instrument_type: 'perpetual',
         resolution,
         from: timestampRange.from,
         to: timestampRange.to,
@@ -109,7 +108,6 @@ async function load() {
       futureName
         ? fetchMarkHistory({
             instrument_name: futureName,
-            instrument_type: 'future',
             resolution,
             from: timestampRange.from,
             to: timestampRange.to,
