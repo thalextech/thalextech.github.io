@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import BasisChart from "./components/BasisChart.vue";
 import {
-  computeBasisSeries,
+  buildBasisSeries,
   fetchIndexHistory,
   fetchInstruments,
   fetchMarkHistory,
@@ -34,7 +34,7 @@ const chartRef = ref(null);
 const mainSeries = computed(() => {
   const mark = data.mark[ui.resolution] || [];
   const index = data.index[ui.resolution] || [];
-  const series = computeBasisSeries({
+  const series = buildBasisSeries({
     mark,
     index,
     instrument: data.instrument || {},
@@ -46,7 +46,7 @@ const detailSeries = computed(() => {
   const resolutionKey = RESOLUTION_CONFIG[ui.resolution].detail;
   const mark = data.mark[resolutionKey] || [];
   const index = data.index[resolutionKey] || [];
-  return computeBasisSeries({
+  return buildBasisSeries({
     mark,
     index,
     instrument: data.instrument || {},
