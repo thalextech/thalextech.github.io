@@ -9,7 +9,7 @@ mkdir -p "${APPS_DEPLOY_DIR}"
 for app in $(ls "${APPS_ROOT}"); do
     cd apps/"$app"
     npm ci
-    npm run build
+    VITE_BASE_PATH=/$app/ npm run build
     cp -r dist "${APPS_DEPLOY_DIR}/${app}"
     cd -
 done

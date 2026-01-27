@@ -5,7 +5,7 @@ Vue 3 + D3 app that mirrors `mark_future_basis.py`: it fetches Thalex index + ma
 ## Run
 
 ```bash
-cd mark-future-basis-vue
+cd apps/mark-future-basis-vue
 npm install
 npm run dev
 ```

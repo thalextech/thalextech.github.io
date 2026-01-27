@@ -1,6 +1,7 @@
-node_modules
-dist
 .DS_Store
 .env
 .env.*
+.idea
 apps_deployment
+dist
+node_modules
