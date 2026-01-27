@@ -178,15 +178,13 @@ export async function fetchMarkHistory({
   const cacheKey = `${CACHE_PREFIX}:mark:${instrument_name}:${resolution}`;
   const cached = readCache(cacheKey);
   if (cached) {
-    return {
-      data: (cached.rows || []).map((row) => ({
-        ts: row[0],
-        mark_price_open: row[1],
-        mark_price_high: row[2],
-        mark_price_low: row[3],
-        mark_price_close: row[4],
-      })),
-    };
+    return (cached.rows || []).map((row) => ({
+      ts: row[0],
+      mark_price_open: row[1],
+      mark_price_high: row[2],
+      mark_price_low: row[3],
+      mark_price_close: row[4],
+    }));
   }
 
   const url = makeUrl("/mark_price_historical_data", {
@@ -198,19 +196,17 @@ export async function fetchMarkHistory({
   const json = await getJson(url);
   const rows = json?.result?.mark;
 
-  if (!Array.isArray(rows)) return { data: [] };
+  if (!Array.isArray(rows)) return [];
 
   writeCache(cacheKey, rows, { instrument_name, resolution });
 
-  return {
-    data: rows.map((row) => ({
-      ts: row[0],
-      mark_price_open: row[1],
-      mark_price_high: row[2],
-      mark_price_low: row[3],
-      mark_price_close: row[4],
-    })),
-  };
+  return rows.map((row) => ({
+    ts: row[0],
+    mark_price_open: row[1],
+    mark_price_high: row[2],
+    mark_price_low: row[3],
+    mark_price_close: row[4],
+  }));
 }
 
 export function computeBasisSeries({ mark, index, instrument }) {

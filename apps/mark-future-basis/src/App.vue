@@ -102,9 +102,9 @@ async function load() {
       }),
     ]);
 
-    data.mark[ui.resolution] = mainMarkResult?.data || [];
+    data.mark[ui.resolution] = mainMarkResult || [];
     data.index[ui.resolution] = mainIndex || [];
-    data.mark[detailResolution] = detailMarkResult?.data || [];
+    data.mark[detailResolution] = detailMarkResult || [];
     data.index[detailResolution] = detailIndex || [];
 
     if (!mainSeries.value.length) {
