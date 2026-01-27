@@ -6,7 +6,7 @@ import {
   fetchIndexHistory,
   fetchInstruments,
   fetchMarkHistory,
-} from "./lib/thalex.js";
+} from "../../../lib/thalex.js";
 
 const RESOLUTION_CONFIG = {
   "1m": { label: "1m", seconds: 60, detail: "1m" },
