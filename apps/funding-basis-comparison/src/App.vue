@@ -3,11 +3,11 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import FundingChart from "./components/FundingChart.vue";
 import {
   computeBasisSeries,
-  computeFundingSeries,
   fetchIndexHistory,
   fetchInstruments,
   fetchMarkHistory,
-} from "./lib/thalex.js";
+} from "../../../lib/thalex.js";
+import { computeFundingSeries } from "./composables/thalex.js";
 
 const RESOLUTION_CONFIG = {
   60: { label: "1m", resolution: "1m", interval_seconds: 60 },
@@ -95,6 +95,7 @@ async function load() {
     const [mainMarkResult, mainIndex, futureMarkResult] = await Promise.all([
       fetchMarkHistory({
         instrument_name: ui.instrumentName,
+        instrument_type: 'perpetual',
         resolution,
         from: timestampRange.from,
         to: timestampRange.to,
@@ -108,16 +109,17 @@ async function load() {
       futureName
         ? fetchMarkHistory({
             instrument_name: futureName,
+            instrument_type: 'future',
             resolution,
             from: timestampRange.from,
             to: timestampRange.to,
           })
-        : Promise.resolve({ data: [] }),
+        : Promise.resolve([]),
     ]);
 
-    data.mark[ui.resolution] = mainMarkResult?.data || [];
+    data.mark[ui.resolution] = mainMarkResult || [];
     data.index[ui.resolution] = mainIndex || [];
-    data.futureMark[ui.resolution] = futureMarkResult?.data || [];
+    data.futureMark[ui.resolution] = futureMarkResult || [];
 
     if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
