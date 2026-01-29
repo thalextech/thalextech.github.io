@@ -2,12 +2,11 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import BasisChart from "./components/BasisChart.vue";
 import {
-  computeBasisSeries,
-  computeFundingSeries,
+  buildBasisSeries,
   fetchIndexHistory,
   fetchInstruments,
   fetchMarkHistory,
-} from "./lib/thalex.js";
+} from "../../../lib/thalex.js";
 
 const RESOLUTION_CONFIG = {
   "1m": { label: "1m", seconds: 60, detail: "1m" },
@@ -23,10 +22,8 @@ const ui = reactive({
   instrumentName: "",
   loading: false,
   error: "",
-  visualizationMode: "basis", // "basis" or "funding"
 });
 const data = reactive({
-  allInstruments: [],
   instruments: [],
   instrument: null,
   mark: {},
@@ -36,12 +33,8 @@ const chartRef = ref(null);
 
 const mainSeries = computed(() => {
   const mark = data.mark[ui.resolution] || [];
-  if (ui.visualizationMode === "funding") {
-    const series = computeFundingSeries({ mark, resolution: ui.resolution });
-    return series.slice(-MAIN_POINT_LIMIT);
-  }
   const index = data.index[ui.resolution] || [];
-  const series = computeBasisSeries({
+  const series = buildBasisSeries({
     mark,
     index,
     instrument: data.instrument || {},
@@ -52,11 +45,8 @@ const mainSeries = computed(() => {
 const detailSeries = computed(() => {
   const resolutionKey = RESOLUTION_CONFIG[ui.resolution].detail;
   const mark = data.mark[resolutionKey] || [];
-  if (ui.visualizationMode === "funding") {
-    return computeFundingSeries({ mark, resolution: resolutionKey });
-  }
   const index = data.index[resolutionKey] || [];
-  return computeBasisSeries({
+  return buildBasisSeries({
     mark,
     index,
     instrument: data.instrument || {},
@@ -80,74 +70,45 @@ async function load() {
 
   try {
     const instrument = data.instrument;
-    
-    if (ui.visualizationMode === "funding") {
-      // For funding mode, we only need mark price data
-      const mainMarkResult = await fetchMarkHistory({
+    const [mainMarkResult, mainIndex] = await Promise.all([
+      fetchMarkHistory({
         instrument_name: ui.instrumentName,
         resolution: ui.resolution,
         from: now - seconds * MAIN_POINT_LIMIT,
         to: now,
-      });
+      }),
+      fetchIndexHistory({
+        index_name: instrument?.underlying,
+        resolution: ui.resolution,
+        from: timestampRange.from,
+        to: timestampRange.to,
+      }),
+    ]);
 
-      const detailResolution = RESOLUTION_CONFIG[ui.resolution].detail;
-      const detailMarkResult = await fetchMarkHistory({
+    const detailResolution = RESOLUTION_CONFIG[ui.resolution].detail;
+
+    const [detailMarkResult, detailIndex] = await Promise.all([
+      fetchMarkHistory({
         instrument_name: ui.instrumentName,
         resolution: detailResolution,
         from: timestampRange.from,
         to: timestampRange.to,
-      });
+      }),
+      fetchIndexHistory({
+        index_name: instrument?.underlying,
+        resolution: detailResolution,
+        from: timestampRange.from,
+        to: timestampRange.to,
+      }),
+    ]);
 
-      data.mark[ui.resolution] = mainMarkResult?.data || [];
-      data.mark[detailResolution] = detailMarkResult?.data || [];
-      data.index[ui.resolution] = [];
-      data.index[detailResolution] = [];
+    data.mark[ui.resolution] = mainMarkResult || [];
+    data.index[ui.resolution] = mainIndex || [];
+    data.mark[detailResolution] = detailMarkResult || [];
+    data.index[detailResolution] = detailIndex || [];
 
-      if (!data.mark[ui.resolution]?.length) {
-        throw new Error("No mark price data returned for this time range.");
-      }
-    } else {
-      // For basis mode, we need both mark and index data
-      const [mainMarkResult, mainIndex] = await Promise.all([
-        fetchMarkHistory({
-          instrument_name: ui.instrumentName,
-          resolution: ui.resolution,
-          from: now - seconds * MAIN_POINT_LIMIT,
-          to: now,
-        }),
-        fetchIndexHistory({
-          index_name: instrument?.underlying,
-          resolution: ui.resolution,
-          from: timestampRange.from,
-          to: timestampRange.to,
-        }),
-      ]);
-
-      const detailResolution = RESOLUTION_CONFIG[ui.resolution].detail;
-
-      const [detailMarkResult, detailIndex] = await Promise.all([
-        fetchMarkHistory({
-          instrument_name: ui.instrumentName,
-          resolution: detailResolution,
-          from: timestampRange.from,
-          to: timestampRange.to,
-        }),
-        fetchIndexHistory({
-          index_name: instrument?.underlying,
-          resolution: detailResolution,
-          from: timestampRange.from,
-          to: timestampRange.to,
-        }),
-      ]);
-
-      data.mark[ui.resolution] = mainMarkResult?.data || [];
-      data.index[ui.resolution] = mainIndex || [];
-      data.mark[detailResolution] = detailMarkResult?.data || [];
-      data.index[detailResolution] = detailIndex || [];
-
-      if (!mainSeries.value.length) {
-        throw new Error("No merged datapoints returned for this time range.");
-      }
+    if (!mainSeries.value.length) {
+      throw new Error("No merged datapoints returned for this time range.");
     }
   } catch (e) {
     ui.error = e instanceof Error ? e.message : String(e);
@@ -167,54 +128,20 @@ function handleSavePng() {
   chartRef.value.exportPng({ filename });
 }
 
-function updateInstruments() {
-  if (ui.visualizationMode === "funding") {
-    // For funding mode, show perpetual contracts
-    data.instruments = data.allInstruments
-      .filter((i) => {
-        const name = (i?.instrument_name || "").toUpperCase();
-        return (i?.type === "perpetual" || name.includes("PERPETUAL")) && 
-               (i?.underlying === "BTCUSD" || name.includes("BTC"));
-      })
-      .sort((a, b) => (a.create_time_ms || 0) - (b.create_time_ms || 0));
-  } else {
-    // For basis mode, show futures contracts
-    data.instruments = data.allInstruments
-      .filter((i) => i?.type === "future" && i?.underlying === "BTCUSD")
-      .sort((a, b) => (a.create_time_ms || 0) - (b.create_time_ms || 0));
-  }
-  
-  // Select first instrument if current selection is not in the filtered list
-  if (data.instruments.length) {
-    const currentInList = data.instruments.find(
-      (i) => i.instrument_name === ui.instrumentName
-    );
-    if (!currentInList) {
-      data.instrument = data.instruments[0];
-      ui.instrumentName = data.instruments[0].instrument_name;
-    }
-  } else if (ui.instrumentName) {
-    // Clear selection if no instruments available
-    ui.instrumentName = "";
-    data.instrument = null;
-  }
-}
-
 onMounted(async () => {
-  data.allInstruments = await fetchInstruments();
-  updateInstruments();
+  const all_instruments = await fetchInstruments();
+  data.instruments = all_instruments
+    .filter((i) => i?.type === "future" && i?.underlying === "BTCUSD")
+    .sort((a, b) => a.create_time_ms - b.create_time_ms);
+  // longest running expiry is top of list and selected by default
+  if (data.instruments.length) {
+    data.instrument = data.instruments[0];
+    ui.instrumentName = data.instruments[0].instrument_name;
+  }
 });
 
-// Watch for visualization mode changes and update instruments
 watch(
-  () => ui.visualizationMode,
-  () => {
-    updateInstruments();
-  }
-);
-
-watch(
-  () => [ui.resolution, ui.instrumentName, ui.visualizationMode],
+  () => [ui.resolution, ui.instrumentName],
   async () => {
     if (!ui.instrumentName) return;
     data.instrument =
@@ -230,7 +157,7 @@ watch(
   <div class="app">
     <header class="header">
       <div class="titleRow">
-        <h1>Future Annualized Basis - thalex</h1>
+        <h1>Future basis - thalex</h1>
       </div>
 
       <div class="controls">
@@ -263,14 +190,6 @@ watch(
           </select>
         </div>
 
-        <div class="field">
-          <label for="visualization-mode">View</label>
-          <select id="visualization-mode" v-model="ui.visualizationMode">
-            <option value="basis">Gradient</option>
-            <option value="funding">Histogram</option>
-          </select>
-        </div>
-
         <button
           class="saveButton"
           type="button"
@@ -291,7 +210,6 @@ watch(
       :instrument-name="ui.instrumentName"
       :detail-resolution="RESOLUTION_CONFIG[ui.resolution].detail"
       :loading="ui.loading"
-      :visualization-mode="ui.visualizationMode"
     />
   </div>
 </template>
