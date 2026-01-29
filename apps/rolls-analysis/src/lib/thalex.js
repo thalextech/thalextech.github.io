@@ -102,6 +102,153 @@ export async function fetchTicker(instrument_name) {
   };
 }
 
+function isRollInstrument(instrument) {
+  if (!instrument || instrument.product !== "FBTCUSD") {
+    return false;
+  }
+
+  const name = (instrument.instrument_name || "").toUpperCase();
+  const instType = instrument.type || instrument.instrument_type;
+  const legs = instrument.legs || [];
+
+  if (instType === "combination" && legs.length > 0) {
+    let hasPerp = false;
+    let hasDated = false;
+
+    legs.forEach((leg) => {
+      const legName = (leg.instrument_name || "").toUpperCase();
+      if (legName.includes("PERPETUAL")) {
+        hasPerp = true;
+      } else if (legName) {
+        hasDated = true;
+      }
+    });
+
+    if (hasPerp && hasDated) {
+      return true;
+    }
+  }
+
+  if (name.includes("PERPETUAL") && name !== "BTC-PERPETUAL") {
+    const datePattern = /\d{2}[A-Z]{3}\d{2}|\d{4}-\d{2}-\d{2}|\d{8}/;
+    return datePattern.test(name);
+  }
+
+  return false;
+}
+
+function parseExpirationDate(instrument) {
+  const expiration =
+    instrument.expiration_timestamp ??
+    instrument.expiry_date ??
+    instrument.expiration;
+
+  if (typeof expiration === "number") {
+    return new Date(expiration * 1000);
+  }
+
+  if (typeof expiration === "string") {
+    const parsed = new Date(expiration);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+
+  const name = instrument.instrument_name || "";
+  const match = name.match(/(\d{2}[A-Z]{3}\d{2})/);
+  if (match) {
+    const dateStr = match[1];
+    const day = parseInt(dateStr.slice(0, 2), 10);
+    const monthStr = dateStr.slice(2, 5);
+    const year = 2000 + parseInt(dateStr.slice(5, 7), 10);
+    const monthMap = {
+      JAN: 0,
+      FEB: 1,
+      MAR: 2,
+      APR: 3,
+      MAY: 4,
+      JUN: 5,
+      JUL: 6,
+      AUG: 7,
+      SEP: 8,
+      OCT: 9,
+      NOV: 10,
+      DEC: 11,
+    };
+    const month = monthMap[monthStr];
+    if (month !== undefined) {
+      return new Date(Date.UTC(year, month, day));
+    }
+  }
+
+  return null;
+}
+
+export async function fetchRollsData() {
+  const allInstruments = await fetchInstruments();
+  
+  const rolls = allInstruments
+    .filter(isRollInstrument)
+    .map((instrument) => ({
+      instrument,
+      expirationDate: parseExpirationDate(instrument),
+    }))
+    .filter(({ expirationDate }) => expirationDate);
+
+  const now = new Date();
+  const upcomingRolls = rolls
+    .map(({ instrument, expirationDate }) => ({
+      instrument,
+      expirationDate,
+      daysToExpiration: Math.ceil(
+        (expirationDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)
+      ),
+    }))
+    .filter(({ daysToExpiration }) => daysToExpiration > 0)
+    .sort((a, b) => a.expirationDate - b.expirationDate);
+
+  // Get index price from BTC-PERPETUAL
+  let indexPrice = null;
+  try {
+    const perpTicker = await fetchTicker("BTC-PERPETUAL");
+    indexPrice = perpTicker.index_price;
+  } catch (e) {
+    console.warn("Failed to fetch index price", e);
+  }
+
+  const rollRows = await Promise.all(
+    upcomingRolls.map(async ({ instrument, expirationDate, daysToExpiration }) => {
+      try {
+        const ticker = await fetchTicker(instrument.instrument_name);
+        const markPrice = Number(ticker.mark_price);
+        const tickerIndex = Number(ticker.index_price);
+        const currentIndex = Number.isFinite(tickerIndex) ? tickerIndex : indexPrice;
+
+        let impliedBasis = null;
+        if (currentIndex && markPrice && daysToExpiration > 0 && currentIndex > 0) {
+          // Implied annualized basis: (markPrice / indexPrice) * (365 / daysToExpiration) * 100
+          // This matches the calculation used in thalex-notebooks
+          impliedBasis = (markPrice / currentIndex) * (365 / daysToExpiration) * 100;
+        }
+
+        return {
+          instrument: instrument.instrument_name,
+          markPrice,
+          indexPrice: currentIndex,
+          expirationDate,
+          daysToExpiration,
+          impliedBasis,
+        };
+      } catch (e) {
+        console.warn(`Failed to fetch ticker for ${instrument.instrument_name}`, e);
+        return null;
+      }
+    })
+  );
+
+  return rollRows.filter((row) => row && row.markPrice);
+}
+
 export async function fetchIndexHistory({
   index_name,
   resolution,

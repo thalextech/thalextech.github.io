@@ -133,3 +133,102 @@ a {
   background: color-mix(in oklab, var(--danger), transparent 92%);
   border-radius: 10px;
 }
+
+.rolls-section {
+  margin-top: 32px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+}
+
+.rolls-header {
+  margin-bottom: 16px;
+}
+
+.rolls-header h2 {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.rolls-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.rolls-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.rolls-table thead th {
+  text-align: left;
+  padding: 12px 10px;
+  color: var(--muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.rolls-table tbody td {
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.rolls-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.rolls-table .status {
+  text-align: center;
+  color: var(--muted);
+  padding: 24px 0;
+}
+
+.rolls-table .positive {
+  color: #00d4aa;
+}
+
+.rolls-table .negative {
+  color: #ff6b6b;
+}
+
+.rolls-table .action-buy {
+  color: #00d4aa;
+  font-weight: 600;
+}
+
+.rolls-table .action-sell {
+  color: #ff6b6b;
+  font-weight: 600;
+}
+
+.rolls-table .action-neutral {
+  color: var(--muted);
+}
+
+.rolls-table .z-positive {
+  color: #00d4aa;
+}
+
+.rolls-table .z-negative {
+  color: #ff6b6b;
+}
+
+.rolls-table .z-extreme {
+  font-weight: 600;
+}
+
+.rolls-table .z-extreme-indicator {
+  margin-left: 4px;
+  font-size: 12px;
+}

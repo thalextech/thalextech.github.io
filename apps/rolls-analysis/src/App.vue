@@ -7,6 +7,7 @@ import {
   fetchIndexHistory,
   fetchInstruments,
   fetchMarkHistory,
+  fetchRollsData,
 } from "./lib/thalex.js";
 
 const RESOLUTION_CONFIG = {
@@ -31,6 +32,7 @@ const data = reactive({
   instrument: null,
   mark: {},
   index: {},
+  rolls: [],
 });
 const chartRef = ref(null);
 
@@ -60,6 +62,94 @@ const detailSeries = computed(() => {
     mark,
     index,
     instrument: data.instrument || {},
+  });
+});
+
+const averageAnnualizedBasis = computed(() => {
+  const series = mainSeries.value;
+  if (!series || series.length === 0) return null;
+  
+  let basisValues = [];
+  if (ui.visualizationMode === "funding") {
+    basisValues = series
+      .map((d) => d?.funding_rate_annual)
+      .filter((v) => typeof v === "number" && Number.isFinite(v));
+  } else {
+    basisValues = series
+      .map((d) => d?.basis_pct)
+      .filter((v) => typeof v === "number" && Number.isFinite(v))
+      .map((v) => v * 100); // Convert to percentage
+  }
+  
+  if (basisValues.length === 0) return null;
+  
+  const mean = basisValues.reduce((sum, val) => sum + val, 0) / basisValues.length;
+  
+  // Calculate standard deviation
+  const variance = basisValues.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / basisValues.length;
+  const stdDev = Math.sqrt(variance);
+  
+  return { mean, stdDev };
+});
+
+const rollsWithDifference = computed(() => {
+  const stats = averageAnnualizedBasis.value;
+  if (!stats || stats.stdDev === 0) {
+    // Fallback to simple difference if no stats available
+    return data.rolls.map((roll) => {
+      const difference = roll.impliedBasis !== null && Number.isFinite(roll.impliedBasis)
+        ? roll.impliedBasis - stats?.mean
+        : null;
+      return {
+        ...roll,
+        difference,
+        zScore: null,
+        action: null,
+      };
+    });
+  }
+  
+  return data.rolls.map((roll) => {
+    const difference = roll.impliedBasis !== null && Number.isFinite(roll.impliedBasis)
+      ? roll.impliedBasis - stats.mean
+      : null;
+    
+    // Calculate z-score: (x - μ) / σ
+    const zScore = roll.impliedBasis !== null && Number.isFinite(roll.impliedBasis) && stats.stdDev > 0
+      ? (roll.impliedBasis - stats.mean) / stats.stdDev
+      : null;
+    
+    // Determine action based on z-score:
+    // When you BUY a roll, you lock in the implied rate and profit if perpetual funding > implied rate
+    // Buy if z < -1 (more than 1 SD below average - good opportunity to lock in lower rate)
+    // Sell if z > 1 (more than 1 SD above average - avoid locking in high rate)
+    // Neutral if within 1 SD
+    let action = null;
+    if (zScore !== null) {
+      if (zScore < -1) {
+        action = "Buy"; // More than 1 SD below average - good buy opportunity
+      } else if (zScore > 1) {
+        action = "Sell"; // More than 1 SD above average - avoid
+      } else {
+        action = "Neutral"; // Within 1 SD - neutral
+      }
+    } else if (difference !== null) {
+      // Fallback to difference-based logic if z-score unavailable
+      if (difference < 0) {
+        action = "Buy";
+      } else if (difference > 0) {
+        action = "Sell";
+      } else {
+        action = "Neutral";
+      }
+    }
+    
+    return {
+      ...roll,
+      difference,
+      zScore,
+      action,
+    };
   });
 });
 
@@ -200,9 +290,42 @@ function updateInstruments() {
   }
 }
 
+async function loadRolls() {
+  try {
+    data.rolls = await fetchRollsData();
+  } catch (e) {
+    console.error("Failed to load rolls data:", e);
+    data.rolls = [];
+  }
+}
+
+function formatCurrency(value) {
+  if (!value || !Number.isFinite(value)) return "N/A";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatPercent(value) {
+  if (!value || !Number.isFinite(value)) return "N/A";
+  return `${value.toFixed(2)}%`;
+}
+
+function formatDate(date) {
+  if (!date) return "N/A";
+  return new Date(date).toLocaleDateString("en-US", {
+    month: "short",
+    day: "2-digit",
+    year: "numeric",
+  });
+}
+
 onMounted(async () => {
   data.allInstruments = await fetchInstruments();
   updateInstruments();
+  await loadRolls();
 });
 
 // Watch for visualization mode changes and update instruments
@@ -230,7 +353,7 @@ watch(
   <div class="app">
     <header class="header">
       <div class="titleRow">
-        <h1>Future Annualized Basis - thalex</h1>
+        <h1>Rolls Analysis - thalex</h1>
       </div>
 
       <div class="controls">
@@ -293,5 +416,65 @@ watch(
       :loading="ui.loading"
       :visualization-mode="ui.visualizationMode"
     />
+
+    <section class="rolls-section">
+      <div class="rolls-header">
+        <h2>Annualized Returns of the Rolls</h2>
+        <p class="rolls-hint">Implied annualized basis based on roll mark price vs index.</p>
+      </div>
+      <div class="table-wrap">
+        <table class="rolls-table">
+          <thead>
+            <tr>
+              <th>Instrument</th>
+              <th>Mark Price</th>
+              <th>Index Price</th>
+              <th>Expiration</th>
+              <th>Days to Expiration</th>
+              <th>Implied Annualized Basis</th>
+              <th>Difference from Avg</th>
+              <th>Z-Score</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="rollsWithDifference.length === 0">
+              <td colspan="9" class="status">No roll data available.</td>
+            </tr>
+            <tr v-for="roll in rollsWithDifference" :key="roll.instrument">
+              <td>{{ roll.instrument }}</td>
+              <td>{{ formatCurrency(roll.markPrice) }}</td>
+              <td>{{ formatCurrency(roll.indexPrice) }}</td>
+              <td>{{ formatDate(roll.expirationDate) }}</td>
+              <td>{{ roll.daysToExpiration }}</td>
+              <td>{{ formatPercent(roll.impliedBasis) }}</td>
+              <td :class="{ 'positive': roll.difference > 0, 'negative': roll.difference < 0 }">
+                <span v-if="roll.difference !== null">
+                  {{ roll.difference > 0 ? '+' : '' }}{{ formatPercent(roll.difference) }}
+                </span>
+                <span v-else>N/A</span>
+              </td>
+              <td :class="{ 
+                'z-positive': roll.zScore !== null && roll.zScore > 0,
+                'z-negative': roll.zScore !== null && roll.zScore < 0,
+                'z-extreme': roll.zScore !== null && Math.abs(roll.zScore) > 2
+              }">
+                <span v-if="roll.zScore !== null">
+                  {{ roll.zScore.toFixed(2) }}
+                  <span v-if="Math.abs(roll.zScore) > 2" class="z-extreme-indicator" title="More than 2 standard deviations from mean">⚠</span>
+                </span>
+                <span v-else>N/A</span>
+              </td>
+              <td>
+                <span v-if="roll.action === 'Buy'" class="action-buy">Buy</span>
+                <span v-else-if="roll.action === 'Sell'" class="action-sell">Sell</span>
+                <span v-else-if="roll.action === 'Neutral'" class="action-neutral">Neutral</span>
+                <span v-else>N/A</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </div>
 </template>
