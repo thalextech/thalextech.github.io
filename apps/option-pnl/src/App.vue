@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from "vue";
-import OptionPnlChart from "./components/OptionPnLChart.vue";
+import OptionPnlChart from "./components/OptionPnlChart.vue";
 import {
   computeGreeksPnlSeries,
   fetchIndexHistory,
