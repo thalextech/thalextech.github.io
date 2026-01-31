@@ -192,12 +192,10 @@ onMounted(async () => {
     ui.futureInstrumentName = "";
   }
 
-  const instrument = data.instrument;
-  const futureInstrument = data.futureInstrument;
-  if (instrument) {
+  if (data.instrument) {
     await load({
-      instrument,
-      futureInstrument,
+      instrument: data.instrument,
+      futureInstrument: data.futureInstrument,
       resolutionKey: ui.resolution,
     });
   }
