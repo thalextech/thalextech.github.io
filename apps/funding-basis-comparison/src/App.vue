@@ -30,14 +30,29 @@ const ui = reactive({
 });
 const data = reactive({
   instruments: [],
-  instrument: null,
   futureInstruments: [],
-  futureInstrument: null,
   mark: {},
   futureMark: {},
   index: {},
 });
 const chartRef = ref(null);
+
+const selectedInstrument = computed(() => {
+  if (!ui.instrumentName) return null;
+  return (
+    data.instruments.find((i) => i.instrument_name === ui.instrumentName) ||
+    null
+  );
+});
+
+const selectedFuture = computed(() => {
+  if (!ui.futureInstrumentName) return null;
+  return (
+    data.futureInstruments.find(
+      (i) => i.instrument_name === ui.futureInstrumentName,
+    ) || null
+  );
+});
 
 function findClosestFuture(futures, nowSeconds) {
   if (!futures.length) return null;
@@ -68,13 +83,9 @@ const mainSeries = computed(() => {
     index,
     intervalSeconds,
   });
-  const result = [];
-  for (const point of series) {
-    if (!(point.date instanceof Date)) continue;
-    if (point.date < MIN_DATA_DATE) continue;
-    result.push(point);
-  }
-  return result.slice(-MAIN_POINT_LIMIT);
+  return series
+    .filter((point) => point.date >= MIN_DATA_DATE)
+    .slice(-MAIN_POINT_LIMIT);
 });
 
 const basisSeries = computed(() => {
@@ -83,15 +94,11 @@ const basisSeries = computed(() => {
   const series = buildBasisSeries({
     mark,
     index,
-    instrument: data.futureInstrument || {},
+    instrument: selectedFuture.value || {},
   });
-  const result = [];
-  for (const point of series) {
-    if (!(point.date instanceof Date)) continue;
-    if (point.date < MIN_DATA_DATE) continue;
-    result.push(point);
-  }
-  return result.slice(-MAIN_POINT_LIMIT);
+  return series
+    .filter((point) => point.date >= MIN_DATA_DATE)
+    .slice(-MAIN_POINT_LIMIT);
 });
 
 async function load({ instrument, futureInstrument, resolutionKey }) {
@@ -178,24 +185,22 @@ onMounted(async () => {
   data.instruments = perps;
   data.futureInstruments = futures;
 
-  data.instrument = data.instruments[0] || null;
-  ui.instrumentName = data.instrument?.instrument_name || "";
+  ui.instrumentName = data.instruments[0]?.instrument_name || "";
 
-  // Set initial future selection (closest to 7 days from now)
   if (futures.length) {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const closest = findClosestFuture(futures, nowSeconds);
-    data.futureInstrument = closest;
     ui.futureInstrumentName = closest.instrument_name;
   } else {
-    data.futureInstrument = null;
     ui.futureInstrumentName = "";
   }
 
-  if (data.instrument) {
+  const instrument = selectedInstrument.value;
+  const futureInstrument = selectedFuture.value;
+  if (instrument) {
     await load({
-      instrument: data.instrument,
-      futureInstrument: data.futureInstrument,
+      instrument,
+      futureInstrument,
       resolutionKey: ui.resolution,
     });
   }
@@ -206,17 +211,12 @@ watch(
   async () => {
     if (!ui.instrumentName) return;
 
-    data.instrument =
-      data.instruments.find((i) => i.instrument_name === ui.instrumentName) ||
-      null;
-    data.futureInstrument =
-      data.futureInstruments.find(
-        (i) => i.instrument_name === ui.futureInstrumentName,
-      ) || null;
+    const instrument = selectedInstrument.value;
+    const futureInstrument = selectedFuture.value;
 
     await load({
-      instrument: data.instrument,
-      futureInstrument: data.futureInstrument,
+      instrument,
+      futureInstrument,
       resolutionKey: ui.resolution,
     });
   },

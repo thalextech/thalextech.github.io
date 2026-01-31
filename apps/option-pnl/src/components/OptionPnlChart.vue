@@ -82,6 +82,7 @@ const chartState = {
   detailTitleText: null,
   detailSubtitleText: null,
   detailMetricText: null,
+  detailRoiText: null,
   detailMessageText: null,
   detailLegendGroup: null,
   detailSeriesGroup: null,
@@ -407,6 +408,11 @@ const ensureChartElements = () => {
       "detailMetric",
       { anchor: "middle" },
     );
+    chartState.detailRoiText = appendText(
+      chartState.detailGroup,
+      "detailMetric",
+      { anchor: "end" },
+    );
     chartState.detailLegendGroup = chartState.detailGroup.append("g");
     chartState.detailLayer = chartState.detailGroup.append("g");
     chartState.detailXAxisGroup = chartState.detailLayer.append("g");
@@ -567,6 +573,9 @@ function render() {
     .attr("y", 54)
     .text(detailRangeLabel);
   chartState.detailMetricText.attr("x", detailWidth / 2).attr("y", 72);
+  chartState.detailRoiText
+    .attr("x", detailWidth - margin.right)
+    .attr("y", 30);
 
   const legendLineLength = 18;
   const legendLabelOffset = 6;
@@ -674,6 +683,7 @@ function render() {
       chartState.detailLegendGroup.attr("display", "none");
       chartState.detailMessageText.attr("display", "none");
       chartState.detailMetricText.attr("display", "none");
+      chartState.detailRoiText.attr("display", "none");
       return;
     }
 
@@ -706,6 +716,7 @@ function render() {
       chartState.detailXAxisLabel.attr("display", "none");
       chartState.detailYAxisLabel.attr("display", "none");
       chartState.detailMetricText.attr("display", "none");
+      chartState.detailRoiText.attr("display", "none");
       chartState.detailMessageText
         .attr("x", detailInnerWidth / 2)
         .attr("y", innerHeight / 2)
@@ -933,6 +944,20 @@ function render() {
     chartState.detailMetricText
       .text(`Total P&L: ${totalLabel}`)
       .attr("display", null);
+
+    const initialOptionMark = window[0]?.option_mark_price;
+    if (
+      Number.isFinite(cumulative.total) &&
+      Number.isFinite(initialOptionMark) &&
+      initialOptionMark !== 0
+    ) {
+      const roi = cumulative.total / initialOptionMark;
+      chartState.detailRoiText
+        .text(`ROI: ${formatVol(roi)}`)
+        .attr("display", null);
+    } else {
+      chartState.detailRoiText.attr("display", "none");
+    }
   };
 
   const mainPoints = chartState.pointsGroup
