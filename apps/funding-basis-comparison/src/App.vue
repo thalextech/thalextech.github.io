@@ -31,13 +31,14 @@ const ui = reactive({
 const data = reactive({
   instruments: [],
   futureInstruments: [],
-  mark: {},
+  perpetualMark: {},
   futureMark: {},
   index: {},
 });
 const chartRef = ref(null);
+let lastLoadKey = "";
 
-const selectedInstrument = computed(() => {
+const selectedPerpetual = computed(() => {
   if (!ui.instrumentName) return null;
   return (
     data.instruments.find((i) => i.instrument_name === ui.instrumentName) ||
@@ -74,7 +75,7 @@ function findClosestFuture(futures, nowSeconds) {
 }
 
 const mainSeries = computed(() => {
-  const mark = data.mark[ui.resolution] || [];
+  const mark = data.perpetualMark[ui.resolution] || [];
   const index = data.index[ui.resolution] || [];
   const intervalSeconds =
     RESOLUTION_CONFIG[ui.resolution]?.interval_seconds ?? Number(ui.resolution);
@@ -101,12 +102,16 @@ const basisSeries = computed(() => {
     .slice(-MAIN_POINT_LIMIT);
 });
 
-async function load({ instrument, futureInstrument, resolutionKey }) {
-  if (!instrument) return;
+async function load({ perpetualInstrument, futureInstrument, resolutionKey }) {
+  if (!perpetualInstrument) return;
+
+  const futureName = futureInstrument?.instrument_name || "";
+  const loadKey = `${resolutionKey}:${perpetualInstrument.instrument_name}:${futureName}`;
+  lastLoadKey = loadKey;
 
   ui.loading = true;
   ui.error = "";
-  data.mark = {};
+  data.perpetualMark = {};
   data.futureMark = {};
   data.index = {};
 
@@ -122,11 +127,10 @@ async function load({ instrument, futureInstrument, resolutionKey }) {
 
   try {
     const indexName =
-      instrument?.underlying || futureInstrument?.underlying || "BTCUSD";
-    const futureName = futureInstrument?.instrument_name || "";
-    const [mainMarkResult, mainIndex, futureMarkResult] = await Promise.all([
+      perpetualInstrument?.underlying || futureInstrument?.underlying || "BTCUSD";
+    const [perpetualData, mainIndex, futureMarkResult] = await Promise.all([
       fetchMarkHistory({
-        instrument_name: instrument.instrument_name,
+        instrument_name: perpetualInstrument.instrument_name,
         resolution,
         from: timestampRange.from,
         to: timestampRange.to,
@@ -147,19 +151,27 @@ async function load({ instrument, futureInstrument, resolutionKey }) {
         : Promise.resolve([]),
     ]);
 
-    data.mark[resolutionKey] = mainMarkResult || [];
+    if (loadKey !== lastLoadKey) return;
+
+    data.perpetualMark[resolutionKey] = perpetualData || [];
     data.index[resolutionKey] = mainIndex || [];
-    data.futureMark[resolutionKey] = futureMarkResult || [];
+    if (futureName) {
+      data.futureMark[resolutionKey] = futureMarkResult || [];
+    }
 
     if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
     }
   } catch (e) {
+    if (loadKey !== lastLoadKey) return;
     ui.error = e instanceof Error ? e.message : String(e);
-    data.mark = {};
+    data.perpetualMark = {};
     data.index = {};
+    data.futureMark = {};
   } finally {
-    ui.loading = false;
+    if (loadKey === lastLoadKey) {
+      ui.loading = false;
+    }
   }
 }
 
@@ -195,11 +207,11 @@ onMounted(async () => {
     ui.futureInstrumentName = "";
   }
 
-  const instrument = selectedInstrument.value;
+  const perpetualInstrument = selectedPerpetual.value;
   const futureInstrument = selectedFuture.value;
-  if (instrument) {
+  if (perpetualInstrument) {
     await load({
-      instrument,
+      perpetualInstrument,
       futureInstrument,
       resolutionKey: ui.resolution,
     });
@@ -211,11 +223,12 @@ watch(
   async () => {
     if (!ui.instrumentName) return;
 
-    const instrument = selectedInstrument.value;
+    const perpetualInstrument = selectedPerpetual.value;
     const futureInstrument = selectedFuture.value;
+    if (!futureInstrument) return;
 
     await load({
-      instrument,
+      perpetualInstrument,
       futureInstrument,
       resolutionKey: ui.resolution,
     });
