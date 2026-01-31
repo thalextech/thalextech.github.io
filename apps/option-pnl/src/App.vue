@@ -319,7 +319,7 @@ watch(
   <div class="app">
     <header class="header">
       <div class="titleRow">
-        <h1>Mark Options</h1>
+        <h1>Option P&amp;L Analyzer</h1>
       </div>
 
       <div class="controls">
