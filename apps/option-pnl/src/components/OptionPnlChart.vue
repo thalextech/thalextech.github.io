@@ -406,12 +406,12 @@ const ensureChartElements = () => {
     chartState.detailMetricText = appendText(
       chartState.detailGroup,
       "detailMetric",
-      { anchor: "middle" },
+      { anchor: "end" },
     );
     chartState.detailRoiText = appendText(
       chartState.detailGroup,
       "detailMetric",
-      { anchor: "end" },
+      { anchor: "start" },
     );
     chartState.detailLegendGroup = chartState.detailGroup.append("g");
     chartState.detailLayer = chartState.detailGroup.append("g");
@@ -572,10 +572,14 @@ function render() {
     .attr("x", detailWidth / 2)
     .attr("y", 54)
     .text(detailRangeLabel);
-  chartState.detailMetricText.attr("x", detailWidth / 2).attr("y", 72);
+  chartState.detailMetricText
+    .attr("x", detailWidth / 2 - 8)
+    .attr("y", 72)
+    .attr("text-anchor", "end");
   chartState.detailRoiText
-    .attr("x", detailWidth - margin.right)
-    .attr("y", 30);
+    .attr("x", detailWidth / 2 + 8)
+    .attr("y", 72)
+    .attr("text-anchor", "start");
 
   const legendLineLength = 18;
   const legendLabelOffset = 6;
