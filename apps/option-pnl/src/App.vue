@@ -149,23 +149,19 @@ const mainSeries = computed(() => {
     if (optionMinTs == null || ts < optionMinTs) optionMinTs = ts;
     if (optionMaxTs == null || ts > optionMaxTs) optionMaxTs = ts;
   }
-  const optionTsRange = { min: optionMinTs, max: optionMaxTs };
-  const optionMinDate =
-    optionTsRange.min != null ? new Date(optionTsRange.min * 1000) : null;
-  const optionMaxDate =
-    optionTsRange.max != null ? new Date(optionTsRange.max * 1000) : null;
   const result = [];
   for (const point of index) {
-    const date = new Date(point.ts * 1000);
-    if (!(date instanceof Date)) continue;
-    if (date < MIN_DATA_DATE) continue;
+    const ts = point.ts;
+    if (!Number.isFinite(ts)) continue;
+    if (ts * 1000 < MIN_DATA_DATE.getTime()) continue;
     if (
-      optionMinDate &&
-      optionMaxDate &&
-      (date < optionMinDate || date > optionMaxDate)
+      Number.isFinite(optionMinTs) &&
+      Number.isFinite(optionMaxTs) &&
+      (ts < optionMinTs || ts > optionMaxTs)
     ) {
       continue;
     }
+    const date = new Date(ts * 1000);
     const optionData = optionDataByTs.get(point.ts);
     result.push({
       ...point,
