@@ -16,6 +16,7 @@ const RESOLUTION_CONFIG = {
   "1d": { label: "1d", seconds: 24 * 60 * 60, detail: "1h" },
 };
 const MAIN_POINT_LIMIT = 400;
+const DETAIL_POINT_LIMIT = 24 * MAIN_POINT_LIMIT;
 
 const ui = reactive({
   resolution: "1d",
@@ -62,32 +63,54 @@ async function load({ instrument, resolutionKey }) {
   data.index = {};
 
   const now = Math.floor(Date.now() / 1000);
-  const seconds = RESOLUTION_CONFIG[resolutionKey].seconds;
-  const timestampRange = {
+  const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
+  const seconds = resolutionConfig.seconds;
+  const detailResolution = resolutionConfig.detail;
+  const detailSeconds = RESOLUTION_CONFIG[detailResolution]?.seconds ?? seconds;
+  const mainRange = {
     from: now - seconds * MAIN_POINT_LIMIT,
     to: now,
   };
-
-  const detailResolution = RESOLUTION_CONFIG[resolutionKey].detail;
+  const detailRange = {
+    from: now - detailSeconds * DETAIL_POINT_LIMIT,
+    to: now,
+  };
 
   try {
     const [mainMarkResult, mainIndex] = await Promise.all([
       fetchMarkHistory({
         instrument_name: instrument.instrument_name,
         resolution: resolutionKey,
-        from: timestampRange.from,
-        to: timestampRange.to,
+        from: mainRange.from,
+        to: mainRange.to,
       }),
       fetchIndexHistory({
         index_name: instrument?.underlying,
         resolution: resolutionKey,
-        from: timestampRange.from,
-        to: timestampRange.to,
+        from: mainRange.from,
+        to: mainRange.to,
+      }),
+    ]);
+
+    const [detailMarkResult, detailIndex] = await Promise.all([
+      fetchMarkHistory({
+        instrument_name: instrument.instrument_name,
+        resolution: detailResolution,
+        from: detailRange.from,
+        to: detailRange.to,
+      }),
+      fetchIndexHistory({
+        index_name: instrument?.underlying,
+        resolution: detailResolution,
+        from: detailRange.from,
+        to: detailRange.to,
       }),
     ]);
 
     data.mark[resolutionKey] = mainMarkResult || [];
     data.index[resolutionKey] = mainIndex || [];
+    data.mark[detailResolution] = detailMarkResult || [];
+    data.index[detailResolution] = detailIndex || [];
 
     if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
@@ -99,25 +122,6 @@ async function load({ instrument, resolutionKey }) {
   } finally {
     ui.loading = false;
   }
-
-  // Fetch detail data in background
-  Promise.all([
-    fetchMarkHistory({
-      instrument_name: instrument.instrument_name,
-      resolution: detailResolution,
-      from: timestampRange.from,
-      to: timestampRange.to,
-    }),
-    fetchIndexHistory({
-      index_name: instrument?.underlying,
-      resolution: detailResolution,
-      from: timestampRange.from,
-      to: timestampRange.to,
-    }),
-  ]).then(([detailMarkResult, detailIndex]) => {
-    data.mark[detailResolution] = detailMarkResult || [];
-    data.index[detailResolution] = detailIndex || [];
-  });
 }
 
 function handleSavePng() {

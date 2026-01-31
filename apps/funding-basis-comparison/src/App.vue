@@ -19,86 +19,73 @@ const RESOLUTION_CONFIG = {
 const MAIN_POINT_LIMIT = 300;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 
-const UNDERLYING = "BTCUSD";
+const DEFAULT_INSTRUMENT = "BTC-PERPETUAL";
+const DEFAULT_UNDERLYING = "BTCUSD";
+const INSTRUMENT_TYPE = {
+  PERPETUAL: "perpetual",
+  FUTURE: "future",
+};
+const SECONDS_PER_DAY = 24 * 60 * 60;
+const DAYS_UNTIL_TARGET_FUTURE = 7;
 
 const ui = reactive({
   resolution: "3600",
-  perpetualInstrumentName: "",
+  instrumentName: "",
   futureInstrumentName: "",
   loading: false,
   error: "",
 });
 const data = reactive({
   instruments: [],
+  instrument: null,
   futureInstruments: [],
-  perpetualMark: {},
+  futureInstrument: null,
+  mark: {},
   futureMark: {},
   index: {},
 });
 const chartRef = ref(null);
-const cache = {
-  loadReqId: 0,
-  lastIndexKey: "",
-  lastPerpetualKey: "",
-};
 
-const selectedPerpetual = computed(() => {
-  if (!ui.perpetualInstrumentName) return null;
+function findInstrument(instruments, name, fallback = null) {
   return (
-    data.instruments.find(
-      (i) => i.instrument_name === ui.perpetualInstrumentName,
-    ) || null
+    instruments.find((i) => i.instrument_name === name) ||
+    (name === DEFAULT_INSTRUMENT
+      ? { instrument_name: DEFAULT_INSTRUMENT, underlying: DEFAULT_UNDERLYING }
+      : fallback)
   );
-});
-
-const selectedFuture = computed(() => {
-  if (!ui.futureInstrumentName) return null;
-  return (
-    data.futureInstruments.find(
-      (i) => i.instrument_name === ui.futureInstrumentName,
-    ) || null
-  );
-});
-
-function getTimestampRange(resolutionKey) {
-  const now = Math.floor(Date.now() / 1000);
-  const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
-  const resolution = resolutionConfig?.resolution;
-  const seconds = resolutionConfig.interval_seconds;
-  return {
-    now,
-    resolution,
-    range: {
-      from: now - seconds * MAIN_POINT_LIMIT,
-      to: now,
-    },
-  };
 }
 
-function getIndexRangeOrFallback(resolutionKey, fallbackRange) {
-  const rows = data.index[resolutionKey] || [];
-  if (!rows.length) return fallbackRange;
+function findDefaultPerpetual(instruments, allInstruments) {
+  const btcPerp = instruments.find(
+    (i) => i.instrument_name === DEFAULT_INSTRUMENT,
+  );
+  if (btcPerp) return btcPerp;
 
-  const firstTs = rows[0]?.ts;
-  const lastTs = rows[rows.length - 1]?.ts;
-  if (
-    Number.isFinite(firstTs) &&
-    Number.isFinite(lastTs) &&
-    lastTs >= firstTs
-  ) {
-    return { from: firstTs, to: lastTs };
-  }
-  return fallbackRange;
+  // Fallback: search in all instruments
+  const fromAll = allInstruments.find(
+    (i) => i?.instrument_name === DEFAULT_INSTRUMENT,
+  );
+  if (fromAll) return fromAll;
+
+  // Last resort: create synthetic default
+  return {
+    instrument_name: DEFAULT_INSTRUMENT,
+    underlying: DEFAULT_UNDERLYING,
+  };
 }
 
 function findClosestFuture(futures, nowSeconds) {
   if (!futures.length) return null;
 
+  const target = nowSeconds + DAYS_UNTIL_TARGET_FUTURE * SECONDS_PER_DAY;
   const validFutures = futures.filter(
-    (i) => i.expiration_timestamp && i.expiration_timestamp > nowSeconds,
+    (i) =>
+      Number.isFinite(i.expiration_timestamp) &&
+      i.expiration_timestamp > nowSeconds,
   );
 
-  const target = nowSeconds + 7 * 24 * 60 * 60;
+  if (!validFutures.length) return futures[0];
+
   const byDistance = (a, b) =>
     Math.abs(a.expiration_timestamp - target) -
     Math.abs(b.expiration_timestamp - target);
@@ -107,17 +94,22 @@ function findClosestFuture(futures, nowSeconds) {
 }
 
 const mainSeries = computed(() => {
-  const mark = data.perpetualMark[ui.resolution] || [];
+  const mark = data.mark[ui.resolution] || [];
   const index = data.index[ui.resolution] || [];
-  const intervalSeconds = RESOLUTION_CONFIG[ui.resolution].interval_seconds;
+  const intervalSeconds =
+    RESOLUTION_CONFIG[ui.resolution]?.interval_seconds ?? Number(ui.resolution);
   const series = buildFundingSeries({
     mark,
     index,
     intervalSeconds,
   });
-  return series
-    .filter((point) => point.date >= MIN_DATA_DATE)
-    .slice(-MAIN_POINT_LIMIT);
+  const result = [];
+  for (const point of series) {
+    if (!(point.date instanceof Date)) continue;
+    if (point.date < MIN_DATA_DATE) continue;
+    result.push(point);
+  }
+  return result.slice(-MAIN_POINT_LIMIT);
 });
 
 const basisSeries = computed(() => {
@@ -126,87 +118,73 @@ const basisSeries = computed(() => {
   const series = buildBasisSeries({
     mark,
     index,
-    instrument: selectedFuture.value || {},
+    instrument: data.futureInstrument || {},
   });
-  return series
-    .filter((point) => point.date >= MIN_DATA_DATE)
-    .slice(-MAIN_POINT_LIMIT);
+  const result = [];
+  for (const point of series) {
+    if (!(point.date instanceof Date)) continue;
+    if (point.date < MIN_DATA_DATE) continue;
+    result.push(point);
+  }
+  return result.slice(-MAIN_POINT_LIMIT);
 });
 
-async function load({ resolutionKey, perpetualInstrument, futureName }) {
-  if (!perpetualInstrument || !futureName) return;
-
-  const reqId = ++cache.loadReqId;
-  const { resolution, range } = getTimestampRange(resolutionKey);
+async function load({ instrument, futureInstrument, resolutionKey }) {
+  if (!instrument) return;
 
   ui.loading = true;
   ui.error = "";
 
+  const now = Math.floor(Date.now() / 1000);
+  const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
+  const resolution = resolutionConfig?.resolution;
+  const seconds =
+    resolutionConfig?.interval_seconds ?? Number(resolutionKey) ?? 0;
+  const timestampRange = {
+    from: now - seconds * MAIN_POINT_LIMIT,
+    to: now,
+  };
+
   try {
-    const indexName = perpetualInstrument?.underlying || "BTCUSD";
-    const indexKey = `${resolutionKey}:${indexName}`;
-    const perpetualKey = `${resolutionKey}:${perpetualInstrument.instrument_name}`;
-    const shouldFetchIndex = indexKey !== cache.lastIndexKey;
-    const shouldFetchPerpetual = perpetualKey !== cache.lastPerpetualKey;
-    const indexRange = getIndexRangeOrFallback(resolutionKey, range);
-
-    const indexPromise = shouldFetchIndex
-      ? fetchIndexHistory({
-          index_name: indexName,
-          resolution,
-          from: range.from,
-          to: range.to,
-        })
-      : Promise.resolve(data.index[resolutionKey] || []);
-
-    const perpetualPromise = shouldFetchPerpetual
-      ? fetchMarkHistory({
-          instrument_name: perpetualInstrument.instrument_name,
-          resolution,
-          from: range.from,
-          to: range.to,
-        })
-      : Promise.resolve(data.perpetualMark[resolutionKey] || []);
-
-    const futurePromise = fetchMarkHistory({
-      instrument_name: futureName,
-      resolution,
-      from: indexRange.from,
-      to: indexRange.to,
-    });
-
-    const [perpetualData, indexData, futureData] = await Promise.all([
-      perpetualPromise,
-      indexPromise,
-      futurePromise,
+    const indexName =
+      instrument?.underlying || futureInstrument?.underlying || "BTCUSD";
+    const futureName = futureInstrument?.instrument_name || "";
+    const [mainMarkResult, mainIndex, futureMarkResult] = await Promise.all([
+      fetchMarkHistory({
+        instrument_name: instrument.instrument_name,
+        resolution,
+        from: timestampRange.from,
+        to: timestampRange.to,
+      }),
+      fetchIndexHistory({
+        index_name: indexName,
+        resolution,
+        from: timestampRange.from,
+        to: timestampRange.to,
+      }),
+      futureName
+        ? fetchMarkHistory({
+            instrument_name: futureName,
+            resolution,
+            from: timestampRange.from,
+            to: timestampRange.to,
+          })
+        : Promise.resolve([]),
     ]);
 
-    if (reqId !== cache.loadReqId) return;
+    data.mark[resolutionKey] = mainMarkResult || [];
+    data.index[resolutionKey] = mainIndex || [];
+    data.futureMark[resolutionKey] = futureMarkResult || [];
 
-    if (shouldFetchPerpetual) {
-      data.perpetualMark[resolutionKey] = perpetualData || [];
-      cache.lastPerpetualKey = perpetualKey;
-    }
-    if (shouldFetchIndex) {
-      data.index[resolutionKey] = indexData || [];
-      cache.lastIndexKey = indexKey;
-    }
-    // always fetch future
-    data.futureMark[resolutionKey] = futureData || [];
-
-    if (
-      (shouldFetchPerpetual || shouldFetchIndex) &&
-      !mainSeries.value.length
-    ) {
+    if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
     }
   } catch (e) {
-    if (reqId !== cache.loadReqId) return;
     ui.error = e instanceof Error ? e.message : String(e);
+    data.mark = {};
+    data.index = {};
   } finally {
-    if (reqId === cache.loadReqId) {
-      ui.loading = false;
-    }
+    ui.loading = false;
   }
 }
 
@@ -218,43 +196,69 @@ function handleSavePng() {
 onMounted(async () => {
   const allInstruments = await fetchInstruments();
 
+  // Filter perpetuals and futures for BTC
   const perps = allInstruments.filter(
-    (i) => i?.type === "perpetual" && i?.underlying === UNDERLYING,
+    (i) =>
+      i?.type === INSTRUMENT_TYPE.PERPETUAL &&
+      i?.underlying === DEFAULT_UNDERLYING,
   );
   const futures = allInstruments
-    .filter((i) => i?.type === "future" && i?.underlying === UNDERLYING)
+    .filter(
+      (i) =>
+        i?.type === INSTRUMENT_TYPE.FUTURE &&
+        i?.underlying === DEFAULT_UNDERLYING,
+    )
     .sort(
       (a, b) => (a.expiration_timestamp || 0) - (b.expiration_timestamp || 0),
     );
 
-  data.instruments = perps;
+  // Set available instruments
+  const defaultPerp = findDefaultPerpetual(perps, allInstruments);
+  data.instruments = perps.length ? perps : [defaultPerp];
   data.futureInstruments = futures;
 
-  ui.perpetualInstrumentName = data.instruments[0]?.instrument_name || "";
+  // Set initial perpetual selection
+  data.instrument = data.instruments[0] || defaultPerp;
+  ui.instrumentName = data.instrument.instrument_name;
 
+  // Set initial future selection (closest to 7 days from now)
   if (futures.length) {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const closest = findClosestFuture(futures, nowSeconds);
+    data.futureInstrument = closest;
     ui.futureInstrumentName = closest.instrument_name;
-  } else {
-    ui.futureInstrumentName = "";
+  }
+
+  const instrument = data.instrument;
+  const futureInstrument = data.futureInstrument;
+  if (instrument) {
+    await load({
+      instrument,
+      futureInstrument,
+      resolutionKey: ui.resolution,
+    });
   }
 });
 
 watch(
-  () => [ui.resolution, ui.perpetualInstrumentName, ui.futureInstrumentName],
+  () => [ui.resolution, ui.instrumentName, ui.futureInstrumentName],
   async () => {
-    const perpetualInstrument = selectedPerpetual.value;
-    if (!perpetualInstrument) return;
-    if (!ui.futureInstrumentName) return;
+    if (!ui.instrumentName) return;
+
+    data.instrument = findInstrument(data.instruments, ui.instrumentName, null);
+    data.futureInstrument = findInstrument(
+      data.futureInstruments,
+      ui.futureInstrumentName,
+      null,
+    );
 
     await load({
-      perpetualInstrument,
-      futureName: ui.futureInstrumentName,
+      instrument: data.instrument,
+      futureInstrument: data.futureInstrument,
       resolutionKey: ui.resolution,
     });
   },
-  { immediate: true },
+  { immediate: false },
 );
 </script>
 
@@ -267,8 +271,8 @@ watch(
 
       <div class="controls">
         <div class="field">
-          <label for="instrument">Perpetual</label>
-          <select id="instrument" v-model="ui.perpetualInstrumentName">
+          <label for="instrument">Instrument</label>
+          <select id="instrument" v-model="ui.instrumentName">
             <option
               v-for="i in data.instruments"
               :key="i.instrument_name"
@@ -276,11 +280,8 @@ watch(
             >
               {{ i.instrument_name }}
             </option>
-            <option
-              v-if="!data.instruments.length"
-              :value="ui.perpetualInstrumentName"
-            >
-              {{ ui.perpetualInstrumentName }}
+            <option v-if="!data.instruments.length" :value="ui.instrumentName">
+              {{ ui.instrumentName }}
             </option>
           </select>
         </div>
@@ -334,7 +335,7 @@ watch(
       ref="chartRef"
       :data="mainSeries"
       :basis-data="basisSeries"
-      :instrument-name="ui.perpetualInstrumentName"
+      :instrument-name="ui.instrumentName"
       :loading="ui.loading"
     />
   </div>
