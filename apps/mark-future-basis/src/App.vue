@@ -53,8 +53,8 @@ const detailSeries = computed(() => {
   });
 });
 
-async function load() {
-  if (!ui.instrumentName) return;
+async function load({ instrument, resolutionKey }) {
+  if (!instrument) return;
 
   ui.loading = true;
   ui.error = "";
@@ -62,34 +62,33 @@ async function load() {
   data.index = {};
 
   const now = Math.floor(Date.now() / 1000);
-  const seconds = RESOLUTION_CONFIG[ui.resolution].seconds;
+  const seconds = RESOLUTION_CONFIG[resolutionKey].seconds;
   const timestampRange = {
     from: now - seconds * MAIN_POINT_LIMIT,
     to: now,
   };
 
   try {
-    const instrument = data.instrument;
     const [mainMarkResult, mainIndex] = await Promise.all([
       fetchMarkHistory({
-        instrument_name: ui.instrumentName,
-        resolution: ui.resolution,
+        instrument_name: instrument.instrument_name,
+        resolution: resolutionKey,
         from: now - seconds * MAIN_POINT_LIMIT,
         to: now,
       }),
       fetchIndexHistory({
         index_name: instrument?.underlying,
-        resolution: ui.resolution,
+        resolution: resolutionKey,
         from: timestampRange.from,
         to: timestampRange.to,
       }),
     ]);
 
-    const detailResolution = RESOLUTION_CONFIG[ui.resolution].detail;
+    const detailResolution = RESOLUTION_CONFIG[resolutionKey].detail;
 
     const [detailMarkResult, detailIndex] = await Promise.all([
       fetchMarkHistory({
-        instrument_name: ui.instrumentName,
+        instrument_name: instrument.instrument_name,
         resolution: detailResolution,
         from: timestampRange.from,
         to: timestampRange.to,
@@ -102,8 +101,8 @@ async function load() {
       }),
     ]);
 
-    data.mark[ui.resolution] = mainMarkResult || [];
-    data.index[ui.resolution] = mainIndex || [];
+    data.mark[resolutionKey] = mainMarkResult || [];
+    data.index[resolutionKey] = mainIndex || [];
     data.mark[detailResolution] = detailMarkResult || [];
     data.index[detailResolution] = detailIndex || [];
 
@@ -138,6 +137,9 @@ onMounted(async () => {
     data.instrument = data.instruments[0];
     ui.instrumentName = data.instruments[0].instrument_name;
   }
+  if (data.instrument) {
+    await load({ instrument: data.instrument, resolutionKey: ui.resolution });
+  }
 });
 
 watch(
@@ -147,9 +149,12 @@ watch(
     data.instrument =
       data.instruments.find((i) => i.instrument_name === ui.instrumentName) ||
       null;
-    await load();
+    await load({
+      instrument: data.instrument,
+      resolutionKey: ui.resolution,
+    });
   },
-  { immediate: true },
+  { immediate: false },
 );
 </script>
 
