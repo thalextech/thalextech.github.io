@@ -266,6 +266,10 @@ onMounted(async () => {
     ui.optionMaturity = String(oldest.expiration_ts);
     ui.optionStrike = getMiddleStrikeValue(optionStrikes.value);
   }
+  const instrument = selectedOptionInstrument.value;
+  if (instrument) {
+    await load(instrument);
+  }
 });
 
 watch(
@@ -306,7 +310,7 @@ watch(
     if (!instrument) return;
     await load(instrument);
   },
-  { immediate: true },
+  { immediate: false },
 );
 
 </script>
