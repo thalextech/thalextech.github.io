@@ -46,9 +46,6 @@ const data = reactive({
 });
 const chartRef = ref(null);
 
-/**
- * Finds an instrument by name, with fallback support for default instrument.
- */
 function findInstrument(instruments, name, fallback = null) {
   return (
     instruments.find((i) => i.instrument_name === name) ||
@@ -58,18 +55,15 @@ function findInstrument(instruments, name, fallback = null) {
   );
 }
 
-/**
- * Finds the default perpetual instrument (BTC-PERPETUAL or first available).
- */
 function findDefaultPerpetual(instruments, allInstruments) {
   const btcPerp = instruments.find(
-    (i) => i.instrument_name === DEFAULT_INSTRUMENT
+    (i) => i.instrument_name === DEFAULT_INSTRUMENT,
   );
   if (btcPerp) return btcPerp;
 
   // Fallback: search in all instruments
   const fromAll = allInstruments.find(
-    (i) => i?.instrument_name === DEFAULT_INSTRUMENT
+    (i) => i?.instrument_name === DEFAULT_INSTRUMENT,
   );
   if (fromAll) return fromAll;
 
@@ -80,10 +74,6 @@ function findDefaultPerpetual(instruments, allInstruments) {
   };
 }
 
-/**
- * Finds the future closest to target expiration (7 days from now).
- * Filters out expired futures and returns the one with expiration nearest to target.
- */
 function findClosestFuture(futures, nowSeconds) {
   if (!futures.length) return null;
 
@@ -91,7 +81,7 @@ function findClosestFuture(futures, nowSeconds) {
   const validFutures = futures.filter(
     (i) =>
       Number.isFinite(i.expiration_timestamp) &&
-      i.expiration_timestamp > nowSeconds
+      i.expiration_timestamp > nowSeconds,
   );
 
   if (!validFutures.length) return futures[0];
@@ -151,7 +141,8 @@ async function load({ instrument, futureInstrument, resolutionKey }) {
   const now = Math.floor(Date.now() / 1000);
   const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
   const resolution = resolutionConfig?.resolution;
-  const seconds = resolutionConfig?.interval_seconds ?? Number(resolutionKey) ?? 0;
+  const seconds =
+    resolutionConfig?.interval_seconds ?? Number(resolutionKey) ?? 0;
   const timestampRange = {
     from: now - seconds * MAIN_POINT_LIMIT,
     to: now,
@@ -210,12 +201,18 @@ onMounted(async () => {
 
   // Filter perpetuals and futures for BTC
   const perps = allInstruments.filter(
-    (i) => i?.type === INSTRUMENT_TYPE.PERPETUAL && i?.underlying === DEFAULT_UNDERLYING
+    (i) =>
+      i?.type === INSTRUMENT_TYPE.PERPETUAL &&
+      i?.underlying === DEFAULT_UNDERLYING,
   );
   const futures = allInstruments
-    .filter((i) => i?.type === INSTRUMENT_TYPE.FUTURE && i?.underlying === DEFAULT_UNDERLYING)
+    .filter(
+      (i) =>
+        i?.type === INSTRUMENT_TYPE.FUTURE &&
+        i?.underlying === DEFAULT_UNDERLYING,
+    )
     .sort(
-      (a, b) => (a.expiration_timestamp || 0) - (b.expiration_timestamp || 0)
+      (a, b) => (a.expiration_timestamp || 0) - (b.expiration_timestamp || 0),
     );
 
   // Set available instruments
@@ -255,7 +252,7 @@ watch(
     data.futureInstrument = findInstrument(
       data.futureInstruments,
       ui.futureInstrumentName,
-      null
+      null,
     );
 
     await load({
@@ -264,7 +261,7 @@ watch(
       resolutionKey: ui.resolution,
     });
   },
-  { immediate: false }
+  { immediate: false },
 );
 </script>
 
