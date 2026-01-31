@@ -757,6 +757,8 @@ function render() {
             avgIndex) *
           (SECONDS_PER_YEAR / spanSeconds)
         : null;
+    const hasBasis = props.basisData.length > 0;
+    const hasBasisInWindow = basisWindow.length > 0;
     const metricLabel = "Avg funding: ";
     const metricFunding =
       avgFundingAnnualized != null
@@ -775,6 +777,19 @@ function render() {
       .append("tspan")
       .text(metricBasis)
       .style("font-weight", 700);
+
+    if (!hasBasisInWindow) {
+      const message = hasBasis
+        ? "No basis data for the selected window."
+        : "No basis data available for this future.";
+      chartState.detailMessageText
+        .attr("x", detailInnerWidth / 2)
+        .attr("y", innerHeight / 2)
+        .text(message)
+        .attr("display", null);
+    } else {
+      chartState.detailMessageText.attr("display", "none");
+    }
 
     const xDomain = d3.extent([...series, ...basisSeries], (d) => d.date);
     const combinedValues = [
@@ -843,7 +858,6 @@ function render() {
       chartState.detailLegendBasisLine.attr("display", "none");
       chartState.detailLegendBasisText.attr("display", "none");
     }
-    chartState.detailMessageText.attr("display", "none");
     chartState.detailMetricText.attr("display", null);
   };
 

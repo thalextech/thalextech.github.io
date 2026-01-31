@@ -27,6 +27,7 @@ const ui = reactive({
   futureInstrumentName: "",
   loading: false,
   error: "",
+  notice: "",
 });
 const data = reactive({
   instruments: [],
@@ -36,10 +37,9 @@ const data = reactive({
   index: {},
 });
 const chartRef = ref(null);
-let lastLoadKey = "";
-let lastIndexKey = "";
-let lastPerpetualKey = "";
-let lastPerpetualAt = 0;
+let perpReqId = 0;
+let futureReqId = 0;
+let pendingLoads = 0;
 
 const selectedPerpetual = computed(() => {
   if (!ui.perpetualInstrumentName) return null;
@@ -58,6 +58,60 @@ const selectedFuture = computed(() => {
     ) || null
   );
 });
+
+const startLoad = () => {
+  pendingLoads += 1;
+  ui.loading = true;
+};
+
+const finishLoad = () => {
+  pendingLoads = Math.max(0, pendingLoads - 1);
+  ui.loading = pendingLoads > 0;
+};
+
+function getTimestampRange(resolutionKey) {
+  const now = Math.floor(Date.now() / 1000);
+  const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
+  const resolution = resolutionConfig?.resolution;
+  const seconds =
+    resolutionConfig?.interval_seconds ?? Number(resolutionKey) ?? 0;
+  return {
+    now,
+    resolution,
+    range: {
+      from: now - seconds * MAIN_POINT_LIMIT,
+      to: now,
+    },
+  };
+}
+
+function formatUtc(tsSeconds) {
+  return (
+    new Date(tsSeconds * 1000)
+      .toISOString()
+      .replace("T", " ")
+      .slice(0, 16) + " UTC"
+  );
+}
+
+function getIndexRangeOrFallback(resolutionKey, fallbackRange) {
+  const rows = data.index[resolutionKey] || [];
+  if (!rows.length) return fallbackRange;
+
+  let minTs = null;
+  let maxTs = null;
+  for (const row of rows) {
+    const ts = row?.ts;
+    if (!Number.isFinite(ts)) continue;
+    if (minTs == null || ts < minTs) minTs = ts;
+    if (maxTs == null || ts > maxTs) maxTs = ts;
+  }
+
+  if (Number.isFinite(minTs) && Number.isFinite(maxTs)) {
+    return { from: minTs, to: maxTs };
+  }
+  return fallbackRange;
+}
 
 function findClosestFuture(futures, nowSeconds) {
   if (!futures.length) return null;
@@ -106,101 +160,100 @@ const basisSeries = computed(() => {
     .slice(-MAIN_POINT_LIMIT);
 });
 
-async function load({ perpetualInstrument, futureInstrument, resolutionKey }) {
+async function loadPerpetualAndIndex({ resolutionKey, perpetualInstrument }) {
   if (!perpetualInstrument) return;
 
-  const futureName = futureInstrument?.instrument_name || "";
-  const loadKey = `${resolutionKey}:${perpetualInstrument.instrument_name}:${futureName}`;
-  lastLoadKey = loadKey;
+  const reqId = ++perpReqId;
+  const { resolution, range } = getTimestampRange(resolutionKey);
 
-  ui.loading = true;
+  startLoad();
   ui.error = "";
-  data.perpetualMark = {};
-  data.futureMark = {};
-  data.index = {};
-
-  const now = Math.floor(Date.now() / 1000);
-  const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
-  const resolution = resolutionConfig?.resolution;
-  const seconds =
-    resolutionConfig?.interval_seconds ?? Number(resolutionKey) ?? 0;
-  const timestampRange = {
-    from: now - seconds * MAIN_POINT_LIMIT,
-    to: now,
-  };
 
   try {
-    const indexName =
-      perpetualInstrument?.underlying || futureInstrument?.underlying || "BTCUSD";
-    const indexKey = `${resolutionKey}:${indexName}`;
-    const shouldFetchIndex =
-      indexKey !== lastIndexKey || !(data.index[resolutionKey]?.length);
-    const indexPromise = shouldFetchIndex
-      ? fetchIndexHistory({
-          index_name: indexName,
-          resolution,
-          from: timestampRange.from,
-          to: timestampRange.to,
-        })
-      : Promise.resolve(data.index[resolutionKey] || []);
-
-    const perpetualKey = `${resolutionKey}:${perpetualInstrument.instrument_name}`;
-    const isPerpetualFresh =
-      perpetualKey === lastPerpetualKey &&
-      Number.isFinite(lastPerpetualAt) &&
-      now - lastPerpetualAt <= 300;
-    const shouldFetchPerpetual =
-      !isPerpetualFresh || !(data.perpetualMark[resolutionKey]?.length);
-    const perpetualPromise = shouldFetchPerpetual
-      ? fetchMarkHistory({
-          instrument_name: perpetualInstrument.instrument_name,
-          resolution,
-          from: timestampRange.from,
-          to: timestampRange.to,
-        })
-      : Promise.resolve(data.perpetualMark[resolutionKey] || []);
-
-    const [perpetualData, mainIndex, futureMarkResult] = await Promise.all([
-      perpetualPromise,
-      indexPromise,
-      futureName
-        ? fetchMarkHistory({
-            instrument_name: futureName,
-            resolution,
-            from: timestampRange.from,
-            to: timestampRange.to,
-          })
-        : Promise.resolve([]),
+    const indexName = perpetualInstrument?.underlying || "BTCUSD";
+    const [perpetualData, indexData] = await Promise.all([
+      fetchMarkHistory({
+        instrument_name: perpetualInstrument.instrument_name,
+        resolution,
+        from: range.from,
+        to: range.to,
+      }),
+      fetchIndexHistory({
+        index_name: indexName,
+        resolution,
+        from: range.from,
+        to: range.to,
+      }),
     ]);
 
-    if (loadKey !== lastLoadKey) return;
+    if (reqId !== perpReqId) return;
 
     data.perpetualMark[resolutionKey] = perpetualData || [];
-    data.index[resolutionKey] = mainIndex || [];
-    if (futureName) {
-      data.futureMark[resolutionKey] = futureMarkResult || [];
-    }
-    if (shouldFetchIndex) {
-      lastIndexKey = indexKey;
-    }
-    if (shouldFetchPerpetual) {
-      lastPerpetualKey = perpetualKey;
-      lastPerpetualAt = now;
-    }
+    data.index[resolutionKey] = indexData || [];
 
     if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
     }
   } catch (e) {
-    if (loadKey !== lastLoadKey) return;
+    if (reqId !== perpReqId) return;
     ui.error = e instanceof Error ? e.message : String(e);
     data.perpetualMark = {};
     data.index = {};
+  } finally {
+    finishLoad();
+  }
+}
+
+async function loadFutureMark({ resolutionKey, futureName }) {
+  if (!futureName) return;
+
+  const reqId = ++futureReqId;
+  const { resolution, range } = getTimestampRange(resolutionKey);
+  const indexRange = getIndexRangeOrFallback(resolutionKey, range);
+
+  startLoad();
+  ui.error = "";
+
+  try {
+    const futureData = await fetchMarkHistory({
+      instrument_name: futureName,
+      resolution,
+      from: indexRange.from,
+      to: indexRange.to,
+    });
+
+    if (reqId !== futureReqId) return;
+
+    data.futureMark[resolutionKey] = futureData || [];
+    const label = RESOLUTION_CONFIG[resolutionKey]?.label || resolutionKey;
+    const rows = futureData || [];
+    let futureMin = null;
+    let futureMax = null;
+    for (const row of rows) {
+      const ts = row?.ts;
+      if (!Number.isFinite(ts)) continue;
+      if (futureMin == null || ts < futureMin) futureMin = ts;
+      if (futureMax == null || ts > futureMax) futureMax = ts;
+    }
+    const hasFuture = Number.isFinite(futureMin) && Number.isFinite(futureMax);
+    const overlapsIndex =
+      hasFuture &&
+      !(futureMax < indexRange.from || futureMin > indexRange.to);
+
+    if (!hasFuture || !overlapsIndex) {
+      ui.notice = `No ${futureName} data for ${formatUtc(
+        indexRange.from,
+      )} - ${formatUtc(indexRange.to)} at ${label} resolution.`;
+    } else {
+      ui.notice = "";
+    }
+  } catch (e) {
+    if (reqId !== futureReqId) return;
+    ui.error = e instanceof Error ? e.message : String(e);
+    ui.notice = "";
     data.futureMark = {};
   } finally {
-    if (loadKey === lastLoadKey) {
-      ui.loading = false;
-    }
+    finishLoad();
   }
 }
 
@@ -216,9 +269,7 @@ onMounted(async () => {
     (i) => i?.type === "perpetual" && i?.underlying === UNDERLYING,
   );
   const futures = allInstruments
-    .filter(
-      (i) => i?.type === "future" && i?.underlying === UNDERLYING,
-    )
+    .filter((i) => i?.type === "future" && i?.underlying === UNDERLYING)
     .sort(
       (a, b) => (a.expiration_timestamp || 0) - (b.expiration_timestamp || 0),
     );
@@ -236,33 +287,33 @@ onMounted(async () => {
     ui.futureInstrumentName = "";
   }
 
-  const perpetualInstrument = selectedPerpetual.value;
-  const futureInstrument = selectedFuture.value;
-  if (perpetualInstrument) {
-    await load({
-      perpetualInstrument,
-      futureInstrument,
-      resolutionKey: ui.resolution,
-    });
-  }
 });
 
 watch(
-  () => [ui.resolution, ui.perpetualInstrumentName, ui.futureInstrumentName],
+  () => [ui.resolution, ui.perpetualInstrumentName],
   async () => {
-    if (!ui.perpetualInstrumentName) return;
-
     const perpetualInstrument = selectedPerpetual.value;
-    const futureInstrument = selectedFuture.value;
-    if (!futureInstrument) return;
+    if (!perpetualInstrument) return;
 
-    await load({
+    await loadPerpetualAndIndex({
       perpetualInstrument,
-      futureInstrument,
       resolutionKey: ui.resolution,
     });
   },
-  { immediate: false },
+  { immediate: true },
+);
+
+watch(
+  () => [ui.resolution, ui.futureInstrumentName],
+  async () => {
+    if (!ui.futureInstrumentName) return;
+
+    await loadFutureMark({
+      resolutionKey: ui.resolution,
+      futureName: ui.futureInstrumentName,
+    });
+  },
+  { immediate: true },
 );
 </script>
 
@@ -336,6 +387,7 @@ watch(
       </div>
 
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
+      <div v-else-if="ui.notice" class="error">{{ ui.notice }}</div>
     </header>
 
     <FundingChart
