@@ -68,34 +68,19 @@ async function load({ instrument, resolutionKey }) {
     to: now,
   };
 
+  const detailResolution = RESOLUTION_CONFIG[resolutionKey].detail;
+
   try {
     const [mainMarkResult, mainIndex] = await Promise.all([
       fetchMarkHistory({
         instrument_name: instrument.instrument_name,
         resolution: resolutionKey,
-        from: now - seconds * MAIN_POINT_LIMIT,
-        to: now,
+        from: timestampRange.from,
+        to: timestampRange.to,
       }),
       fetchIndexHistory({
         index_name: instrument?.underlying,
         resolution: resolutionKey,
-        from: timestampRange.from,
-        to: timestampRange.to,
-      }),
-    ]);
-
-    const detailResolution = RESOLUTION_CONFIG[resolutionKey].detail;
-
-    const [detailMarkResult, detailIndex] = await Promise.all([
-      fetchMarkHistory({
-        instrument_name: instrument.instrument_name,
-        resolution: detailResolution,
-        from: timestampRange.from,
-        to: timestampRange.to,
-      }),
-      fetchIndexHistory({
-        index_name: instrument?.underlying,
-        resolution: detailResolution,
         from: timestampRange.from,
         to: timestampRange.to,
       }),
@@ -103,8 +88,6 @@ async function load({ instrument, resolutionKey }) {
 
     data.mark[resolutionKey] = mainMarkResult || [];
     data.index[resolutionKey] = mainIndex || [];
-    data.mark[detailResolution] = detailMarkResult || [];
-    data.index[detailResolution] = detailIndex || [];
 
     if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
@@ -116,6 +99,25 @@ async function load({ instrument, resolutionKey }) {
   } finally {
     ui.loading = false;
   }
+
+  // Fetch detail data in background
+  Promise.all([
+    fetchMarkHistory({
+      instrument_name: instrument.instrument_name,
+      resolution: detailResolution,
+      from: timestampRange.from,
+      to: timestampRange.to,
+    }),
+    fetchIndexHistory({
+      index_name: instrument?.underlying,
+      resolution: detailResolution,
+      from: timestampRange.from,
+      to: timestampRange.to,
+    }),
+  ]).then(([detailMarkResult, detailIndex]) => {
+    data.mark[detailResolution] = detailMarkResult || [];
+    data.index[detailResolution] = detailIndex || [];
+  });
 }
 
 function handleSavePng() {
