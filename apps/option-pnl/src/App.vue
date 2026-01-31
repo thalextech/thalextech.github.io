@@ -15,7 +15,7 @@ const RESOLUTION_CONFIG = {
   3600: { label: "1h", resolution: "1h", interval_seconds: 60 * 60 },
   86400: { label: "1d", resolution: "1d", interval_seconds: 24 * 60 * 60 },
 };
-const MAIN_POINT_LIMIT = 300;
+const MAIN_POINT_LIMIT = 360;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 
 const ui = reactive({
@@ -44,11 +44,21 @@ const strikeFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
 
+const normalizeOptionInstrument = (instrument) => {
+  if (!instrument || typeof instrument !== "object") return instrument;
+  return {
+    ...instrument,
+    expiration_ts: Number(instrument.expiration_timestamp),
+    strike: Number(instrument.strike_price),
+    option_type_normalized: (instrument.option_type || "call").toLowerCase(),
+  };
+};
+
 const getOldestOptionInstrument = (instruments) => {
   let oldest = null;
   for (const instrument of instruments || []) {
     const created = Number(instrument?.create_time_ms);
-    if (!oldest || created < Number(oldest?.create_time_ms)) {
+    if (!oldest || created < Number(oldest.create_time_ms)) {
       oldest = instrument;
     }
   }
@@ -80,15 +90,15 @@ const selectedMaturityTs = computed(() => Number(ui.optionMaturity));
 const optionInstrumentsForMaturity = computed(() => {
   const maturityTs = selectedMaturityTs.value;
   return data.optionInstruments.filter(
-    (instrument) => Number(instrument?.expiration_timestamp) === maturityTs,
+    (instrument) => instrument?.expiration_ts === maturityTs,
   );
 });
 
 const optionStrikes = computed(() => {
   const strikes = Array.from(
     new Set(
-      optionInstrumentsForMaturity.value.map((instrument) =>
-        Number(instrument?.strike_price),
+      optionInstrumentsForMaturity.value.map(
+        (instrument) => instrument?.strike,
       ),
     ),
   ).sort((a, b) => a - b);
@@ -111,10 +121,9 @@ const selectedOptionInstrument = computed(() => {
   const type = ui.optionType;
   return (
     data.optionInstruments.find((instrument) => {
-      const expirationMatch =
-        Number(instrument.expiration_timestamp) === maturityTs;
-      const strikeMatch = Number(instrument.strike_price) === strike;
-      const typeMatch = instrument.option_type === type;
+      const expirationMatch = instrument?.expiration_ts === maturityTs;
+      const strikeMatch = instrument?.strike === strike;
+      const typeMatch = instrument?.option_type_normalized === type;
       return expirationMatch && strikeMatch && typeMatch;
     }) || null
   );
@@ -127,23 +136,20 @@ const optionInstrumentName = computed(
 const mainSeries = computed(() => {
   const index = data.index[ui.resolution] || [];
   const optionMark = data.optionMark[ui.resolution] || [];
-  const optionDataByTs = new Map(
-    optionMark.map((row) => [
-      row.ts,
-      { iv_close: row.iv_close, option_mark_price: row.mark_price_close },
-    ]),
-  );
-  const optionTsRange = optionMark.reduce(
-    (acc, row) => {
-      const ts = row?.ts;
-      if (!Number.isFinite(ts)) return acc;
-      return {
-        min: acc.min == null || ts < acc.min ? ts : acc.min,
-        max: acc.max == null || ts > acc.max ? ts : acc.max,
-      };
-    },
-    { min: null, max: null },
-  );
+  const optionDataByTs = new Map();
+  let optionMinTs = null;
+  let optionMaxTs = null;
+  for (const row of optionMark) {
+    const ts = row?.ts;
+    if (!Number.isFinite(ts)) continue;
+    optionDataByTs.set(ts, {
+      iv_close: row.iv_close,
+      option_mark_price: row.mark_price_close,
+    });
+    if (optionMinTs == null || ts < optionMinTs) optionMinTs = ts;
+    if (optionMaxTs == null || ts > optionMaxTs) optionMaxTs = ts;
+  }
+  const optionTsRange = { min: optionMinTs, max: optionMaxTs };
   const optionMinDate =
     optionTsRange.min != null ? new Date(optionTsRange.min * 1000) : null;
   const optionMaxDate =
@@ -175,7 +181,7 @@ const optionPnlSeries = computed(() => {
   const series = computeGreeksPnlSeries({
     mark,
     index,
-    instrument: data.optionInstrument || {},
+    instrument: data.optionInstrument,
   });
   const filtered = series.filter(
     (point) => point.date instanceof Date && point.date >= MIN_DATA_DATE,
@@ -249,6 +255,7 @@ onMounted(async () => {
   const all_instruments = await fetchInstruments();
   data.optionInstruments = all_instruments
     .filter((i) => i?.type === "option" && i?.underlying === "BTCUSD")
+    .map(normalizeOptionInstrument)
     .sort(
       (a, b) =>
         (a.expiration_timestamp || 0) - (b.expiration_timestamp || 0) ||
@@ -256,10 +263,9 @@ onMounted(async () => {
     );
 
   const oldest = getOldestOptionInstrument(data.optionInstruments);
-  if (oldest && Number.isFinite(oldest.expiration_timestamp)) {
-    ui.optionMaturity = String(oldest.expiration_timestamp);
+  if (oldest && Number.isFinite(oldest.expiration_ts)) {
+    ui.optionMaturity = String(oldest.expiration_ts);
     ui.optionStrike = getMiddleStrikeValue(optionStrikes.value);
-    ui.optionType = (oldest.option_type || "call").toLowerCase();
     data.optionInstrument = oldest;
   }
 });
@@ -275,8 +281,8 @@ watch(
     if (maturityValues.includes(ui.optionMaturity)) return;
     const oldest = getOldestOptionInstrument(data.optionInstruments);
     ui.optionMaturity =
-      oldest && Number.isFinite(oldest.expiration_timestamp)
-        ? String(oldest.expiration_timestamp)
+      oldest && Number.isFinite(oldest.expiration_ts)
+        ? String(oldest.expiration_ts)
         : maturities[0].value;
   },
   { immediate: true },
@@ -294,10 +300,6 @@ watch(
   },
   { immediate: true },
 );
-
-if (!ui.optionType) {
-  ui.optionType = "call";
-}
 
 watch(
   () => [ui.resolution, ui.optionMaturity, ui.optionStrike, ui.optionType],
