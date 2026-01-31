@@ -74,9 +74,9 @@ const getMiddleStrikeValue = (strikes) => {
 const optionMaturities = computed(() => {
   const expirations = Array.from(
     new Set(
-      data.optionInstruments.map((instrument) =>
-        Number(instrument?.expiration_timestamp),
-      ),
+      data.optionInstruments
+        .map((instrument) => instrument?.expiration_ts)
+        .filter((ts) => Number.isFinite(ts) && ts > 0),
     ),
   ).sort((a, b) => a - b);
   return expirations.map((ts) => ({
@@ -258,8 +258,8 @@ onMounted(async () => {
     .map(normalizeOptionInstrument)
     .sort(
       (a, b) =>
-        (a.expiration_timestamp || 0) - (b.expiration_timestamp || 0) ||
-        (a.strike_price || 0) - (b.strike_price || 0),
+        (a.expiration_ts || 0) - (b.expiration_ts || 0) ||
+        (a.strike || 0) - (b.strike || 0),
     );
 
   const oldest = getOldestOptionInstrument(data.optionInstruments);
