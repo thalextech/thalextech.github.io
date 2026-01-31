@@ -44,12 +44,29 @@ const strikeFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
 
+const getOldestOptionInstrument = (instruments) => {
+  let oldest = null;
+  for (const instrument of instruments || []) {
+    const created = Number(instrument?.create_time_ms);
+    if (!oldest || created < Number(oldest?.create_time_ms)) {
+      oldest = instrument;
+    }
+  }
+  return oldest;
+};
+
+const getMiddleStrikeValue = (strikes) => {
+  if (!strikes?.length) return "";
+  const midIndex = Math.floor(strikes.length / 2);
+  return strikes[midIndex]?.value ?? "";
+};
+
 const optionMaturities = computed(() => {
   const expirations = Array.from(
     new Set(
-      data.optionInstruments
-        .map((instrument) => Number(instrument?.expiration_timestamp))
-        .filter((ts) => Number.isFinite(ts) && ts > 0),
+      data.optionInstruments.map((instrument) =>
+        Number(instrument?.expiration_timestamp),
+      ),
     ),
   ).sort((a, b) => a - b);
   return expirations.map((ts) => ({
@@ -62,7 +79,6 @@ const selectedMaturityTs = computed(() => Number(ui.optionMaturity));
 
 const optionInstrumentsForMaturity = computed(() => {
   const maturityTs = selectedMaturityTs.value;
-  if (!Number.isFinite(maturityTs)) return [];
   return data.optionInstruments.filter(
     (instrument) => Number(instrument?.expiration_timestamp) === maturityTs,
   );
@@ -71,9 +87,9 @@ const optionInstrumentsForMaturity = computed(() => {
 const optionStrikes = computed(() => {
   const strikes = Array.from(
     new Set(
-      optionInstrumentsForMaturity.value
-        .map((instrument) => Number(instrument?.strike_price))
-        .filter((strike) => Number.isFinite(strike) && strike > 0),
+      optionInstrumentsForMaturity.value.map((instrument) =>
+        Number(instrument?.strike_price),
+      ),
     ),
   ).sort((a, b) => a - b);
   return strikes.map((strike) => ({
@@ -84,41 +100,21 @@ const optionStrikes = computed(() => {
 
 const selectedStrike = computed(() => Number(ui.optionStrike));
 
-const optionTypes = computed(() => {
-  const strike = selectedStrike.value;
-  const candidates = optionInstrumentsForMaturity.value.filter((instrument) => {
-    if (!Number.isFinite(strike)) return true;
-    return Number(instrument?.strike_price) === strike;
-  });
-  const typeSet = new Set(
-    candidates.map((instrument) =>
-      (instrument?.option_type || "call").toLowerCase(),
-    ),
-  );
-  const typeOrder = ["call", "put"];
-  const types = Array.from(typeSet).sort(
-    (a, b) => typeOrder.indexOf(a) - typeOrder.indexOf(b),
-  );
-  return types.map((type) => ({
-    value: type,
-    label: type === "put" ? "Put" : "Call",
-  }));
-});
+const optionTypes = [
+  { value: "call", label: "Call" },
+  { value: "put", label: "Put" },
+];
 
 const selectedOptionInstrument = computed(() => {
   const maturityTs = selectedMaturityTs.value;
   const strike = selectedStrike.value;
   const type = ui.optionType;
-  if (!Number.isFinite(maturityTs) || !Number.isFinite(strike) || !type) {
-    return null;
-  }
   return (
     data.optionInstruments.find((instrument) => {
       const expirationMatch =
-        Number(instrument?.expiration_timestamp) === maturityTs;
-      const strikeMatch = Number(instrument?.strike_price) === strike;
-      const typeMatch =
-        (instrument?.option_type || "call").toLowerCase() === type;
+        Number(instrument.expiration_timestamp) === maturityTs;
+      const strikeMatch = Number(instrument.strike_price) === strike;
+      const typeMatch = instrument.option_type === type;
       return expirationMatch && strikeMatch && typeMatch;
     }) || null
   );
@@ -132,12 +128,10 @@ const mainSeries = computed(() => {
   const index = data.index[ui.resolution] || [];
   const optionMark = data.optionMark[ui.resolution] || [];
   const optionDataByTs = new Map(
-    optionMark
-      .filter((row) => row && Number.isFinite(row.ts))
-      .map((row) => [
-        row.ts,
-        { iv_close: row.iv_close, option_mark_price: row.mark_price_close },
-      ]),
+    optionMark.map((row) => [
+      row.ts,
+      { iv_close: row.iv_close, option_mark_price: row.mark_price_close },
+    ]),
   );
   const optionTsRange = optionMark.reduce(
     (acc, row) => {
@@ -261,23 +255,12 @@ onMounted(async () => {
         (a.strike_price || 0) - (b.strike_price || 0),
     );
 
-  if (data.optionInstruments.length) {
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const target = nowSeconds + 7 * 24 * 60 * 60;
-    const optionCandidates = data.optionInstruments.filter(
-      (i) =>
-        Number.isFinite(i.expiration_timestamp) &&
-        i.expiration_timestamp > nowSeconds,
-    );
-    const byDistance = (a, b) =>
-      Math.abs(a.expiration_timestamp - target) -
-      Math.abs(b.expiration_timestamp - target);
-    const closest =
-      optionCandidates.sort(byDistance)[0] || data.optionInstruments[0];
-    ui.optionMaturity = String(closest.expiration_timestamp || "");
-    ui.optionStrike = String(closest.strike_price || "");
-    ui.optionType = (closest.option_type || "call").toLowerCase();
-    data.optionInstrument = closest;
+  const oldest = getOldestOptionInstrument(data.optionInstruments);
+  if (oldest && Number.isFinite(oldest.expiration_timestamp)) {
+    ui.optionMaturity = String(oldest.expiration_timestamp);
+    ui.optionStrike = getMiddleStrikeValue(optionStrikes.value);
+    ui.optionType = (oldest.option_type || "call").toLowerCase();
+    data.optionInstrument = oldest;
   }
 });
 
@@ -290,16 +273,11 @@ watch(
     }
     const maturityValues = maturities.map((maturity) => maturity.value);
     if (maturityValues.includes(ui.optionMaturity)) return;
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const target = nowSeconds + 7 * 24 * 60 * 60;
-    const closestTs = maturities.reduce((best, maturity) => {
-      const ts = Number(maturity.value);
-      if (!Number.isFinite(ts)) return best;
-      if (best == null) return ts;
-      return Math.abs(ts - target) < Math.abs(best - target) ? ts : best;
-    }, null);
+    const oldest = getOldestOptionInstrument(data.optionInstruments);
     ui.optionMaturity =
-      closestTs != null ? String(closestTs) : maturities[0].value;
+      oldest && Number.isFinite(oldest.expiration_timestamp)
+        ? String(oldest.expiration_timestamp)
+        : maturities[0].value;
   },
   { immediate: true },
 );
@@ -312,24 +290,14 @@ watch(
       return;
     }
     if (strikes.some((strike) => strike.value === ui.optionStrike)) return;
-    ui.optionStrike = strikes[0].value;
+    ui.optionStrike = getMiddleStrikeValue(strikes);
   },
   { immediate: true },
 );
 
-watch(
-  optionTypes,
-  (types) => {
-    if (!types.length) {
-      ui.optionType = "";
-      return;
-    }
-    if (types.some((type) => type.value === ui.optionType)) return;
-    const preferred = types.find((type) => type.value === "call") || types[0];
-    ui.optionType = preferred.value;
-  },
-  { immediate: true },
-);
+if (!ui.optionType) {
+  ui.optionType = "call";
+}
 
 watch(
   () => [ui.resolution, ui.optionMaturity, ui.optionStrike, ui.optionType],
@@ -340,7 +308,6 @@ watch(
   },
   { immediate: true },
 );
-
 </script>
 
 <template>
