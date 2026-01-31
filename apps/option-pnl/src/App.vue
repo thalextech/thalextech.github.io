@@ -154,24 +154,27 @@ const mainSeries = computed(() => {
     optionTsRange.min != null ? new Date(optionTsRange.min * 1000) : null;
   const optionMaxDate =
     optionTsRange.max != null ? new Date(optionTsRange.max * 1000) : null;
-  const series = index.map((point) => {
+  const result = [];
+  for (const point of index) {
+    const date = new Date(point.ts * 1000);
+    if (!(date instanceof Date)) continue;
+    if (date < MIN_DATA_DATE) continue;
+    if (
+      optionMinDate &&
+      optionMaxDate &&
+      (date < optionMinDate || date > optionMaxDate)
+    ) {
+      continue;
+    }
     const optionData = optionDataByTs.get(point.ts);
-    return {
+    result.push({
       ...point,
-      date: new Date(point.ts * 1000),
+      date,
       iv_close: optionData?.iv_close ?? null,
       option_mark_price: optionData?.option_mark_price ?? null,
-    };
-  });
-  const filtered = series.filter((point) => {
-    if (!(point.date instanceof Date)) return false;
-    if (point.date < MIN_DATA_DATE) return false;
-    if (optionMinDate && optionMaxDate) {
-      return point.date >= optionMinDate && point.date <= optionMaxDate;
-    }
-    return true;
-  });
-  return filtered.slice(-MAIN_POINT_LIMIT);
+    });
+  }
+  return result.slice(-MAIN_POINT_LIMIT);
 });
 
 const optionPnlSeries = computed(() => {
