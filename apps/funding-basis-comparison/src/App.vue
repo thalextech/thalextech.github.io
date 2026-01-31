@@ -19,14 +19,7 @@ const RESOLUTION_CONFIG = {
 const MAIN_POINT_LIMIT = 300;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 
-const DEFAULT_INSTRUMENT = "BTC-PERPETUAL";
-const DEFAULT_UNDERLYING = "BTCUSD";
-const INSTRUMENT_TYPE = {
-  PERPETUAL: "perpetual",
-  FUTURE: "future",
-};
-const SECONDS_PER_DAY = 24 * 60 * 60;
-const DAYS_UNTIL_TARGET_FUTURE = 7;
+const UNDERLYING = "BTCUSD";
 
 const ui = reactive({
   resolution: "3600",
@@ -46,38 +39,10 @@ const data = reactive({
 });
 const chartRef = ref(null);
 
-function findInstrument(instruments, name, fallback = null) {
-  return (
-    instruments.find((i) => i.instrument_name === name) ||
-    (name === DEFAULT_INSTRUMENT
-      ? { instrument_name: DEFAULT_INSTRUMENT, underlying: DEFAULT_UNDERLYING }
-      : fallback)
-  );
-}
-
-function findDefaultPerpetual(instruments, allInstruments) {
-  const btcPerp = instruments.find(
-    (i) => i.instrument_name === DEFAULT_INSTRUMENT,
-  );
-  if (btcPerp) return btcPerp;
-
-  // Fallback: search in all instruments
-  const fromAll = allInstruments.find(
-    (i) => i?.instrument_name === DEFAULT_INSTRUMENT,
-  );
-  if (fromAll) return fromAll;
-
-  // Last resort: create synthetic default
-  return {
-    instrument_name: DEFAULT_INSTRUMENT,
-    underlying: DEFAULT_UNDERLYING,
-  };
-}
-
 function findClosestFuture(futures, nowSeconds) {
   if (!futures.length) return null;
 
-  const target = nowSeconds + DAYS_UNTIL_TARGET_FUTURE * SECONDS_PER_DAY;
+  const target = nowSeconds + 7 * 24 * 60 * 60;
   const validFutures = futures.filter(
     (i) =>
       Number.isFinite(i.expiration_timestamp) &&
@@ -199,30 +164,22 @@ function handleSavePng() {
 onMounted(async () => {
   const allInstruments = await fetchInstruments();
 
-  // Filter perpetuals and futures for BTC
   const perps = allInstruments.filter(
-    (i) =>
-      i?.type === INSTRUMENT_TYPE.PERPETUAL &&
-      i?.underlying === DEFAULT_UNDERLYING,
+    (i) => i?.type === "perpetual" && i?.underlying === UNDERLYING,
   );
   const futures = allInstruments
     .filter(
-      (i) =>
-        i?.type === INSTRUMENT_TYPE.FUTURE &&
-        i?.underlying === DEFAULT_UNDERLYING,
+      (i) => i?.type === "future" && i?.underlying === UNDERLYING,
     )
     .sort(
       (a, b) => (a.expiration_timestamp || 0) - (b.expiration_timestamp || 0),
     );
 
-  // Set available instruments
-  const defaultPerp = findDefaultPerpetual(perps, allInstruments);
-  data.instruments = perps.length ? perps : [defaultPerp];
+  data.instruments = perps;
   data.futureInstruments = futures;
 
-  // Set initial perpetual selection
-  data.instrument = data.instruments[0] || defaultPerp;
-  ui.instrumentName = data.instrument.instrument_name;
+  data.instrument = data.instruments[0] || null;
+  ui.instrumentName = data.instrument?.instrument_name || "";
 
   // Set initial future selection (closest to 7 days from now)
   if (futures.length) {
@@ -230,6 +187,9 @@ onMounted(async () => {
     const closest = findClosestFuture(futures, nowSeconds);
     data.futureInstrument = closest;
     ui.futureInstrumentName = closest.instrument_name;
+  } else {
+    data.futureInstrument = null;
+    ui.futureInstrumentName = "";
   }
 
   const instrument = data.instrument;
@@ -248,12 +208,13 @@ watch(
   async () => {
     if (!ui.instrumentName) return;
 
-    data.instrument = findInstrument(data.instruments, ui.instrumentName, null);
-    data.futureInstrument = findInstrument(
-      data.futureInstruments,
-      ui.futureInstrumentName,
-      null,
-    );
+    data.instrument =
+      data.instruments.find((i) => i.instrument_name === ui.instrumentName) ||
+      null;
+    data.futureInstrument =
+      data.futureInstruments.find(
+        (i) => i.instrument_name === ui.futureInstrumentName,
+      ) || null;
 
     await load({
       instrument: data.instrument,
