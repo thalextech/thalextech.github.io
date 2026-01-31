@@ -16,6 +16,7 @@ const RESOLUTION_CONFIG = {
   "1d": { label: "1d", seconds: 24 * 60 * 60, detail: "1h" },
 };
 const MAIN_POINT_LIMIT = 400;
+const DETAIL_POINT_LIMIT = 2000;
 
 const ui = reactive({
   resolution: "1d",
@@ -63,8 +64,12 @@ async function load({ instrument, resolutionKey }) {
 
   const now = Math.floor(Date.now() / 1000);
   const seconds = RESOLUTION_CONFIG[resolutionKey].seconds;
-  const timestampRange = {
+  const mainRange = {
     from: now - seconds * MAIN_POINT_LIMIT,
+    to: now,
+  };
+  const detailRange = {
+    from: now - seconds * DETAIL_POINT_LIMIT,
     to: now,
   };
 
@@ -73,14 +78,14 @@ async function load({ instrument, resolutionKey }) {
       fetchMarkHistory({
         instrument_name: instrument.instrument_name,
         resolution: resolutionKey,
-        from: now - seconds * MAIN_POINT_LIMIT,
-        to: now,
+        from: mainRange.from,
+        to: mainRange.to,
       }),
       fetchIndexHistory({
         index_name: instrument?.underlying,
         resolution: resolutionKey,
-        from: timestampRange.from,
-        to: timestampRange.to,
+        from: mainRange.from,
+        to: mainRange.to,
       }),
     ]);
 
@@ -90,14 +95,14 @@ async function load({ instrument, resolutionKey }) {
       fetchMarkHistory({
         instrument_name: instrument.instrument_name,
         resolution: detailResolution,
-        from: timestampRange.from,
-        to: timestampRange.to,
+        from: detailRange.from,
+        to: detailRange.to,
       }),
       fetchIndexHistory({
         index_name: instrument?.underlying,
         resolution: detailResolution,
-        from: timestampRange.from,
-        to: timestampRange.to,
+        from: detailRange.from,
+        to: detailRange.to,
       }),
     ]);
 
