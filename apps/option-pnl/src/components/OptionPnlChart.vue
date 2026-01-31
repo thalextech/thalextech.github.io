@@ -12,7 +12,7 @@ const props = defineProps({
 
 const svgRef = ref(null);
 const tooltipRef = ref(null);
-const gradientId = `funding-gradient-${Math.random().toString(16).slice(2)}`;
+const gradientId = `iv-gradient-${Math.random().toString(16).slice(2)}`;
 const SVG_FONT_FAMILY =
   'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
 
@@ -585,7 +585,8 @@ function render() {
   const ivValues = [];
   for (const d of data) {
     if (d.date instanceof Date) validDates.push(d.date);
-    if (Number.isFinite(d.index_price_close)) validIndex.push(d.index_price_close);
+    if (Number.isFinite(d.index_price_close))
+      validIndex.push(d.index_price_close);
     if (Number.isFinite(d.iv_close)) ivValues.push(d.iv_close);
   }
   const xDomain = d3.extent(validDates);
@@ -685,16 +686,14 @@ function render() {
     const windowStart = window[0]?.date;
     const windowEnd = window[window.length - 1]?.date;
 
-    const pnlWindow = props.optionPnlData
-      .filter(
-        (point) =>
-          point.date instanceof Date &&
-          windowStart instanceof Date &&
-          windowEnd instanceof Date &&
-          point.date >= windowStart &&
-          point.date <= windowEnd,
-      )
-      .sort((a, b) => a.date - b.date);
+    const pnlWindow = props.optionPnlData.filter(
+      (point) =>
+        point.date instanceof Date &&
+        windowStart instanceof Date &&
+        windowEnd instanceof Date &&
+        point.date >= windowStart &&
+        point.date <= windowEnd,
+    );
 
     if (!pnlWindow.length) {
       chartState.detailLegendGroup.attr("display", "none");
@@ -1071,11 +1070,7 @@ function render() {
 }
 
 watch(
-  () => [
-    props.data,
-    props.optionPnlData,
-    props.optionInstrumentName,
-  ],
+  () => [props.data, props.optionPnlData, props.optionInstrumentName],
   () => render(),
   { deep: false },
 );
