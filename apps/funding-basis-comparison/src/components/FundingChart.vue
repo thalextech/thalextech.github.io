@@ -445,8 +445,6 @@ function exportPng({
     filename,
     scale,
     padding,
-    width: layout.mainWidth + layout.panelGap + layout.detailWidth,
-    height: layout.height,
   });
 }
 

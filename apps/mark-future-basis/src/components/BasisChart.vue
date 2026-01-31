@@ -477,8 +477,6 @@ function exportPng({
     filename,
     scale,
     padding,
-    width: layout.mainWidth,
-    height: layout.panelHeight,
     drawBefore: ({ ctx, width, height, padding }) => {
       const scatterCanvas = scatterCanvasRef.value;
       if (scatterCanvas && scatterCanvas.width && scatterCanvas.height) {
