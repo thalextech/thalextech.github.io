@@ -28,7 +28,6 @@ const ui = reactive({
 });
 const data = reactive({
   optionInstruments: [],
-  optionInstrument: null,
   optionMark: {},
   index: {},
 });
@@ -176,11 +175,12 @@ const mainSeries = computed(() => {
 const optionPnlSeries = computed(() => {
   const mark = data.optionMark[ui.resolution] || [];
   const index = data.index[ui.resolution] || [];
-  if (!mark.length || !index.length || !data.optionInstrument) return [];
+  const instrument = selectedOptionInstrument.value;
+  if (!mark.length || !index.length || !instrument) return [];
   const series = computeGreeksPnlSeries({
     mark,
     index,
-    instrument: data.optionInstrument,
+    instrument,
   });
   const filtered = series.filter(
     (point) => point.date instanceof Date && point.date >= MIN_DATA_DATE,
@@ -188,8 +188,8 @@ const optionPnlSeries = computed(() => {
   return filtered.slice(-MAIN_POINT_LIMIT);
 });
 
-async function load() {
-  if (!data.optionInstrument) return;
+async function load(instrument) {
+  if (!instrument) return;
 
   ui.loading = true;
   ui.error = "";
@@ -207,7 +207,7 @@ async function load() {
   };
 
   try {
-    const optionInstrument = data.optionInstrument;
+    const optionInstrument = instrument;
     const indexName = optionInstrument?.underlying || "BTCUSD";
     const optionName = optionInstrumentName.value;
     const [mainIndex, optionMark] = await Promise.all([
@@ -265,7 +265,6 @@ onMounted(async () => {
   if (oldest && Number.isFinite(oldest.expiration_ts)) {
     ui.optionMaturity = String(oldest.expiration_ts);
     ui.optionStrike = getMiddleStrikeValue(optionStrikes.value);
-    data.optionInstrument = oldest;
   }
 });
 
@@ -303,12 +302,13 @@ watch(
 watch(
   () => [ui.resolution, ui.optionMaturity, ui.optionStrike, ui.optionType],
   async () => {
-    data.optionInstrument = selectedOptionInstrument.value;
-    if (!data.optionInstrument) return;
-    await load();
+    const instrument = selectedOptionInstrument.value;
+    if (!instrument) return;
+    await load(instrument);
   },
   { immediate: true },
 );
+
 </script>
 
 <template>
