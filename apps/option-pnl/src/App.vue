@@ -209,7 +209,7 @@ async function load(instrument) {
   try {
     const optionInstrument = instrument;
     const indexName = optionInstrument?.underlying || "BTCUSD";
-    const optionName = optionInstrumentName.value;
+    const optionName = optionInstrument?.instrument_name || "";
     const [mainIndex, optionMark] = await Promise.all([
       fetchIndexHistory({
         index_name: indexName,
