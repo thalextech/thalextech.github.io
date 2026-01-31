@@ -20,7 +20,6 @@ const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 
 const ui = reactive({
   resolution: "3600",
-  instrumentName: "",
   optionMaturity: "",
   optionStrike: "",
   optionType: "call",
@@ -28,8 +27,6 @@ const ui = reactive({
   error: "",
 });
 const data = reactive({
-  instruments: [],
-  instrument: null,
   optionInstruments: [],
   optionInstrument: null,
   optionMark: {},
@@ -193,7 +190,7 @@ const optionPnlSeries = computed(() => {
 });
 
 async function load() {
-  if (!ui.instrumentName) return;
+  if (!data.optionInstrument) return;
 
   ui.loading = true;
   ui.error = "";
@@ -211,10 +208,8 @@ async function load() {
   };
 
   try {
-    const instrument = data.instrument;
     const optionInstrument = data.optionInstrument;
-    const indexName =
-      instrument?.underlying || optionInstrument?.underlying || "BTCUSD";
+    const indexName = optionInstrument?.underlying || "BTCUSD";
     const optionName = optionInstrumentName.value;
     const [mainIndex, optionMark] = await Promise.all([
       fetchIndexHistory({
@@ -249,7 +244,7 @@ async function load() {
 
 function handleSavePng() {
   if (!chartRef.value) return;
-  const base = ui.instrumentName;
+  const base = optionInstrumentName.value || "option-pnl";
   const filename = ui.resolution
     ? `${base}-${ui.resolution}.png`
     : `${base}.png`;
@@ -258,35 +253,13 @@ function handleSavePng() {
 
 onMounted(async () => {
   const all_instruments = await fetchInstruments();
-  const perps = all_instruments.filter(
-    (i) => i?.type === "perpetual" && i?.underlying === "BTCUSD",
-  );
-  const options = all_instruments
+  data.optionInstruments = all_instruments
     .filter((i) => i?.type === "option" && i?.underlying === "BTCUSD")
     .sort(
       (a, b) =>
         (a.expiration_timestamp || 0) - (b.expiration_timestamp || 0) ||
         (a.strike_price || 0) - (b.strike_price || 0),
     );
-  const btcPerp =
-    perps.find((i) => i.instrument_name === "BTC-PERPETUAL") ||
-    all_instruments.find((i) => i?.instrument_name === "BTC-PERPETUAL");
-  data.instruments = perps.length ? perps : btcPerp ? [btcPerp] : [];
-  data.optionInstruments = options;
-  const defaultInstrument =
-    data.instruments.find((i) => i.instrument_name === "BTC-PERPETUAL") ||
-    data.instruments[0] ||
-    null;
-  if (defaultInstrument) {
-    data.instrument = defaultInstrument;
-    ui.instrumentName = defaultInstrument.instrument_name;
-  } else {
-    data.instrument = {
-      instrument_name: "BTC-PERPETUAL",
-      underlying: "BTCUSD",
-    };
-    ui.instrumentName = "BTC-PERPETUAL";
-  }
 
   if (data.optionInstruments.length) {
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -359,25 +332,15 @@ watch(
 );
 
 watch(
-  () => [
-    ui.resolution,
-    ui.instrumentName,
-    ui.optionMaturity,
-    ui.optionStrike,
-    ui.optionType,
-  ],
+  () => [ui.resolution, ui.optionMaturity, ui.optionStrike, ui.optionType],
   async () => {
-    if (!ui.instrumentName) return;
-    data.instrument =
-      data.instruments.find((i) => i.instrument_name === ui.instrumentName) ||
-      (ui.instrumentName === "BTC-PERPETUAL"
-        ? { instrument_name: "BTC-PERPETUAL", underlying: "BTCUSD" }
-        : null);
     data.optionInstrument = selectedOptionInstrument.value;
+    if (!data.optionInstrument) return;
     await load();
   },
   { immediate: true },
 );
+
 </script>
 
 <template>
@@ -466,7 +429,6 @@ watch(
       ref="chartRef"
       :data="mainSeries"
       :option-pnl-data="optionPnlSeries"
-      :instrument-name="ui.instrumentName"
       :option-instrument-name="optionInstrumentName"
       :loading="ui.loading"
     />

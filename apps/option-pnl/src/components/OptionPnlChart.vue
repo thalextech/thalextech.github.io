@@ -6,7 +6,6 @@ import { exportChartToPng } from "../../../../lib/export-png.js";
 const props = defineProps({
   data: { type: Array, default: () => [] },
   optionPnlData: { type: Array, default: () => [] },
-  instrumentName: { type: String, default: "" },
   optionInstrumentName: { type: String, default: "" },
   loading: { type: Boolean, default: false },
 });
@@ -1073,7 +1072,6 @@ watch(
   () => [
     props.data,
     props.optionPnlData,
-    props.instrumentName,
     props.optionInstrumentName,
   ],
   () => render(),
