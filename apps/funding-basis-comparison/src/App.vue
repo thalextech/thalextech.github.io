@@ -23,7 +23,7 @@ const UNDERLYING = "BTCUSD";
 
 const ui = reactive({
   resolution: "3600",
-  instrumentName: "",
+  perpetualInstrumentName: "",
   futureInstrumentName: "",
   loading: false,
   error: "",
@@ -37,12 +37,16 @@ const data = reactive({
 });
 const chartRef = ref(null);
 let lastLoadKey = "";
+let lastIndexKey = "";
+let lastPerpetualKey = "";
+let lastPerpetualAt = 0;
 
 const selectedPerpetual = computed(() => {
-  if (!ui.instrumentName) return null;
+  if (!ui.perpetualInstrumentName) return null;
   return (
-    data.instruments.find((i) => i.instrument_name === ui.instrumentName) ||
-    null
+    data.instruments.find(
+      (i) => i.instrument_name === ui.perpetualInstrumentName,
+    ) || null
   );
 });
 
@@ -128,19 +132,37 @@ async function load({ perpetualInstrument, futureInstrument, resolutionKey }) {
   try {
     const indexName =
       perpetualInstrument?.underlying || futureInstrument?.underlying || "BTCUSD";
+    const indexKey = `${resolutionKey}:${indexName}`;
+    const shouldFetchIndex =
+      indexKey !== lastIndexKey || !(data.index[resolutionKey]?.length);
+    const indexPromise = shouldFetchIndex
+      ? fetchIndexHistory({
+          index_name: indexName,
+          resolution,
+          from: timestampRange.from,
+          to: timestampRange.to,
+        })
+      : Promise.resolve(data.index[resolutionKey] || []);
+
+    const perpetualKey = `${resolutionKey}:${perpetualInstrument.instrument_name}`;
+    const isPerpetualFresh =
+      perpetualKey === lastPerpetualKey &&
+      Number.isFinite(lastPerpetualAt) &&
+      now - lastPerpetualAt <= 300;
+    const shouldFetchPerpetual =
+      !isPerpetualFresh || !(data.perpetualMark[resolutionKey]?.length);
+    const perpetualPromise = shouldFetchPerpetual
+      ? fetchMarkHistory({
+          instrument_name: perpetualInstrument.instrument_name,
+          resolution,
+          from: timestampRange.from,
+          to: timestampRange.to,
+        })
+      : Promise.resolve(data.perpetualMark[resolutionKey] || []);
+
     const [perpetualData, mainIndex, futureMarkResult] = await Promise.all([
-      fetchMarkHistory({
-        instrument_name: perpetualInstrument.instrument_name,
-        resolution,
-        from: timestampRange.from,
-        to: timestampRange.to,
-      }),
-      fetchIndexHistory({
-        index_name: indexName,
-        resolution,
-        from: timestampRange.from,
-        to: timestampRange.to,
-      }),
+      perpetualPromise,
+      indexPromise,
       futureName
         ? fetchMarkHistory({
             instrument_name: futureName,
@@ -157,6 +179,13 @@ async function load({ perpetualInstrument, futureInstrument, resolutionKey }) {
     data.index[resolutionKey] = mainIndex || [];
     if (futureName) {
       data.futureMark[resolutionKey] = futureMarkResult || [];
+    }
+    if (shouldFetchIndex) {
+      lastIndexKey = indexKey;
+    }
+    if (shouldFetchPerpetual) {
+      lastPerpetualKey = perpetualKey;
+      lastPerpetualAt = now;
     }
 
     if (!mainSeries.value.length) {
@@ -197,7 +226,7 @@ onMounted(async () => {
   data.instruments = perps;
   data.futureInstruments = futures;
 
-  ui.instrumentName = data.instruments[0]?.instrument_name || "";
+  ui.perpetualInstrumentName = data.instruments[0]?.instrument_name || "";
 
   if (futures.length) {
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -219,9 +248,9 @@ onMounted(async () => {
 });
 
 watch(
-  () => [ui.resolution, ui.instrumentName, ui.futureInstrumentName],
+  () => [ui.resolution, ui.perpetualInstrumentName, ui.futureInstrumentName],
   async () => {
-    if (!ui.instrumentName) return;
+    if (!ui.perpetualInstrumentName) return;
 
     const perpetualInstrument = selectedPerpetual.value;
     const futureInstrument = selectedFuture.value;
@@ -247,7 +276,7 @@ watch(
       <div class="controls">
         <div class="field">
           <label for="instrument">Instrument</label>
-          <select id="instrument" v-model="ui.instrumentName">
+          <select id="instrument" v-model="ui.perpetualInstrumentName">
             <option
               v-for="i in data.instruments"
               :key="i.instrument_name"
@@ -255,8 +284,11 @@ watch(
             >
               {{ i.instrument_name }}
             </option>
-            <option v-if="!data.instruments.length" :value="ui.instrumentName">
-              {{ ui.instrumentName }}
+            <option
+              v-if="!data.instruments.length"
+              :value="ui.perpetualInstrumentName"
+            >
+              {{ ui.perpetualInstrumentName }}
             </option>
           </select>
         </div>
@@ -310,7 +342,7 @@ watch(
       ref="chartRef"
       :data="mainSeries"
       :basis-data="basisSeries"
-      :instrument-name="ui.instrumentName"
+      :instrument-name="ui.perpetualInstrumentName"
       :loading="ui.loading"
     />
   </div>
