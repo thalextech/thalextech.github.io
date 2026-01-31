@@ -6,13 +6,14 @@ import { exportChartToPng } from "../../../../lib/export-png.js";
 const props = defineProps({
   data: { type: Array, default: () => [] },
   optionPnlData: { type: Array, default: () => [] },
+  instrumentName: { type: String, default: "" },
   optionInstrumentName: { type: String, default: "" },
   loading: { type: Boolean, default: false },
 });
 
 const svgRef = ref(null);
 const tooltipRef = ref(null);
-const gradientId = `iv-gradient-${Math.random().toString(16).slice(2)}`;
+const gradientId = `funding-gradient-${Math.random().toString(16).slice(2)}`;
 const SVG_FONT_FAMILY =
   'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
 
@@ -580,18 +581,12 @@ function render() {
     `translate(${detailLegendX},${detailLegendY})`,
   );
 
-  const validDates = [];
-  const validIndex = [];
-  const ivValues = [];
-  for (const d of data) {
-    if (d.date instanceof Date) validDates.push(d.date);
-    if (Number.isFinite(d.index_price_close))
-      validIndex.push(d.index_price_close);
-    if (Number.isFinite(d.iv_close)) ivValues.push(d.iv_close);
-  }
+  const validDates = data.map((d) => d.date).filter((d) => d instanceof Date);
+  const validIndex = data
+    .map((d) => d.index_price_close)
+    .filter((v) => Number.isFinite(v));
   const xDomain = d3.extent(validDates);
   const yDomain = d3.extent(validIndex);
-  const [extentMin, extentMax] = d3.extent(ivValues);
 
   const x = d3.scaleUtc().domain(xDomain).range([0, innerWidth]);
   const y = d3
@@ -601,6 +596,11 @@ function render() {
     .range([innerHeight, MAIN_TOP_INSET]);
   chartState.currentXScale = x;
   chartState.currentYScale = y;
+
+  const ivValues = data
+    .map((d) => d.iv_close)
+    .filter((v) => typeof v === "number" && Number.isFinite(v));
+  const [extentMin, extentMax] = d3.extent(ivValues);
   const hasValidExtent =
     Number.isFinite(extentMin) && Number.isFinite(extentMax);
   const domainMin = hasValidExtent ? Math.max(extentMin, 0) : 0;
@@ -686,14 +686,16 @@ function render() {
     const windowStart = window[0]?.date;
     const windowEnd = window[window.length - 1]?.date;
 
-    const pnlWindow = props.optionPnlData.filter(
-      (point) =>
-        point.date instanceof Date &&
-        windowStart instanceof Date &&
-        windowEnd instanceof Date &&
-        point.date >= windowStart &&
-        point.date <= windowEnd,
-    );
+    const pnlWindow = props.optionPnlData
+      .filter(
+        (point) =>
+          point.date instanceof Date &&
+          windowStart instanceof Date &&
+          windowEnd instanceof Date &&
+          point.date >= windowStart &&
+          point.date <= windowEnd,
+      )
+      .sort((a, b) => a.date - b.date);
 
     if (!pnlWindow.length) {
       chartState.detailLegendGroup.attr("display", "none");
@@ -779,16 +781,14 @@ function render() {
       values: seriesByKey[series.key] || [],
     }));
 
-    const allDates = [];
-    const allValues = [];
-    for (const series of seriesList) {
-      for (const d of series.values) {
-        allDates.push(d.date);
-        allValues.push(d.value);
-      }
-    }
-    const xDomain = d3.extent(allDates);
-    const [rawMin, rawMax] = d3.extent(allValues);
+    const xDomain = d3.extent(
+      seriesList.flatMap((series) => series.values),
+      (d) => d.date,
+    );
+    const combinedValues = seriesList.flatMap((series) =>
+      series.values.map((d) => d.value),
+    );
+    const [rawMin, rawMax] = d3.extent(combinedValues);
     let yMin = rawMin ?? 0;
     let yMax = rawMax ?? 0;
     yMin = Math.min(yMin, 0);
@@ -1070,7 +1070,12 @@ function render() {
 }
 
 watch(
-  () => [props.data, props.optionPnlData, props.optionInstrumentName],
+  () => [
+    props.data,
+    props.optionPnlData,
+    props.instrumentName,
+    props.optionInstrumentName,
+  ],
   () => render(),
   { deep: false },
 );
