@@ -2,6 +2,7 @@
 import * as d3 from "d3";
 import { computed, onMounted, ref, watch } from "vue";
 import { SECONDS_PER_YEAR } from "../../../../lib/thalex.js";
+import { exportChartToPng } from "../../../../lib/export-png.js";
 
 const props = defineProps({
   data: { type: Array, default: () => [] },
@@ -436,66 +437,17 @@ const ensureChartElements = () => {
 
 function exportPng({
   filename = "funding-chart.png",
-  scale = 2,
-  padding = 16,
+  scale = 4,
+  padding = 24,
 } = {}) {
-  const svgEl = svgRef.value;
-  if (!svgEl) return;
-
-  const viewBox = svgEl.getAttribute("viewBox");
-  let width = layout.mainWidth + layout.panelGap + layout.detailWidth;
-  let height = layout.height;
-  if (viewBox) {
-    const [, , vbWidth, vbHeight] = viewBox.split(" ").map(Number);
-    if (Number.isFinite(vbWidth) && Number.isFinite(vbHeight)) {
-      width = vbWidth;
-      height = vbHeight;
-    }
-  }
-
-  const svgClone = svgEl.cloneNode(true);
-  if (!svgClone.getAttribute("xmlns")) {
-    svgClone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-  }
-  svgClone.setAttribute("width", String(width));
-  svgClone.setAttribute("height", String(height));
-
-  const serializer = new XMLSerializer();
-  const source = serializer.serializeToString(svgClone);
-  const blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-
-  const image = new Image();
-  image.onload = () => {
-    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
-    const safePadding = Number.isFinite(padding) && padding >= 0 ? padding : 0;
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.round((width + safePadding * 2) * safeScale);
-    canvas.height = Math.round((height + safePadding * 2) * safeScale);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      URL.revokeObjectURL(url);
-      return;
-    }
-    ctx.scale(safeScale, safeScale);
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, width + safePadding * 2, height + safePadding * 2);
-    ctx.drawImage(image, safePadding, safePadding, width, height);
-    canvas.toBlob((pngBlob) => {
-      if (!pngBlob) {
-        URL.revokeObjectURL(url);
-        return;
-      }
-      const downloadUrl = URL.createObjectURL(pngBlob);
-      const link = document.createElement("a");
-      link.href = downloadUrl;
-      link.download = filename;
-      link.click();
-      URL.revokeObjectURL(downloadUrl);
-      URL.revokeObjectURL(url);
-    }, "image/png");
-  };
-  image.src = url;
+  exportChartToPng({
+    element: svgRef.value,
+    filename,
+    scale,
+    padding,
+    width: layout.mainWidth + layout.panelGap + layout.detailWidth,
+    height: layout.height,
+  });
 }
 
 defineExpose({ exportPng });
