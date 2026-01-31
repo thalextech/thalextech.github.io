@@ -113,10 +113,13 @@ const mainSeries = computed(() => {
     index,
     intervalSeconds,
   });
-  const filtered = series.filter(
-    (point) => point.date instanceof Date && point.date >= MIN_DATA_DATE,
-  );
-  return filtered.slice(-MAIN_POINT_LIMIT);
+  const result = [];
+  for (const point of series) {
+    if (!(point.date instanceof Date)) continue;
+    if (point.date < MIN_DATA_DATE) continue;
+    result.push(point);
+  }
+  return result.slice(-MAIN_POINT_LIMIT);
 });
 
 const basisSeries = computed(() => {
@@ -127,14 +130,17 @@ const basisSeries = computed(() => {
     index,
     instrument: data.futureInstrument || {},
   });
-  const filtered = series.filter(
-    (point) => point.date instanceof Date && point.date >= MIN_DATA_DATE,
-  );
-  return filtered.slice(-MAIN_POINT_LIMIT);
+  const result = [];
+  for (const point of series) {
+    if (!(point.date instanceof Date)) continue;
+    if (point.date < MIN_DATA_DATE) continue;
+    result.push(point);
+  }
+  return result.slice(-MAIN_POINT_LIMIT);
 });
 
-async function load() {
-  if (!ui.instrumentName) return;
+async function load({ instrument, futureInstrument, resolutionKey }) {
+  if (!instrument) return;
 
   ui.loading = true;
   ui.error = "";
@@ -143,24 +149,21 @@ async function load() {
   data.index = {};
 
   const now = Math.floor(Date.now() / 1000);
-  const resolutionConfig = RESOLUTION_CONFIG[ui.resolution];
+  const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
   const resolution = resolutionConfig?.resolution;
-  const seconds =
-    resolutionConfig?.interval_seconds ?? Number(ui.resolution) ?? 0;
+  const seconds = resolutionConfig?.interval_seconds ?? Number(resolutionKey) ?? 0;
   const timestampRange = {
     from: now - seconds * MAIN_POINT_LIMIT,
     to: now,
   };
 
   try {
-    const instrument = data.instrument;
-    const futureInstrument = data.futureInstrument;
     const indexName =
       instrument?.underlying || futureInstrument?.underlying || "BTCUSD";
-    const futureName = ui.futureInstrumentName;
+    const futureName = futureInstrument?.instrument_name || "";
     const [mainMarkResult, mainIndex, futureMarkResult] = await Promise.all([
       fetchMarkHistory({
-        instrument_name: ui.instrumentName,
+        instrument_name: instrument.instrument_name,
         resolution,
         from: timestampRange.from,
         to: timestampRange.to,
@@ -181,9 +184,9 @@ async function load() {
         : Promise.resolve([]),
     ]);
 
-    data.mark[ui.resolution] = mainMarkResult || [];
-    data.index[ui.resolution] = mainIndex || [];
-    data.futureMark[ui.resolution] = futureMarkResult || [];
+    data.mark[resolutionKey] = mainMarkResult || [];
+    data.index[resolutionKey] = mainIndex || [];
+    data.futureMark[resolutionKey] = futureMarkResult || [];
 
     if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
@@ -231,6 +234,16 @@ onMounted(async () => {
     data.futureInstrument = closest;
     ui.futureInstrumentName = closest.instrument_name;
   }
+
+  const instrument = data.instrument;
+  const futureInstrument = data.futureInstrument;
+  if (instrument) {
+    await load({
+      instrument,
+      futureInstrument,
+      resolutionKey: ui.resolution,
+    });
+  }
 });
 
 watch(
@@ -245,9 +258,13 @@ watch(
       null
     );
 
-    await load();
+    await load({
+      instrument: data.instrument,
+      futureInstrument: data.futureInstrument,
+      resolutionKey: ui.resolution,
+    });
   },
-  { immediate: true }
+  { immediate: false }
 );
 </script>
 
