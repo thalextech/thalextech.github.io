@@ -193,8 +193,6 @@ async function load(instrument) {
 
   ui.loading = true;
   ui.error = "";
-  data.optionMark = {};
-  data.index = {};
 
   const now = Math.floor(Date.now() / 1000);
   const resolutionConfig = RESOLUTION_CONFIG[ui.resolution];
