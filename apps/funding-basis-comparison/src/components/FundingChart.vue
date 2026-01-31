@@ -87,9 +87,91 @@ const POINT_RADIUS_HOVER = 10;
 const LAYOUT_TRANSITION_MS = 260;
 let hoveredDatum = null;
 let selectedDatums = [];
+let selectedRange = null;
 let detailActive = false;
 let lineRevealTimer = null;
 let lineRevealPending = false;
+
+const getDatumTs = (datum) => {
+  const ts = datum?.ts;
+  if (Number.isFinite(ts)) return ts;
+  const date = datum?.date;
+  return date instanceof Date ? Math.round(date.getTime() / 1000) : null;
+};
+
+const findClosestDatumByTs = (data, targetTs) => {
+  if (!Number.isFinite(targetTs)) return null;
+  let closest = null;
+  let bestDist = Infinity;
+  for (const datum of data) {
+    const datumTs = getDatumTs(datum);
+    if (!Number.isFinite(datumTs)) continue;
+    const dist = Math.abs(datumTs - targetTs);
+    if (dist < bestDist) {
+      bestDist = dist;
+      closest = datum;
+    }
+  }
+  return closest;
+};
+
+const updateSelectedRange = () => {
+  if (selectedDatums.length === 2) {
+    const firstTs = getDatumTs(selectedDatums[0]);
+    const secondTs = getDatumTs(selectedDatums[1]);
+    if (Number.isFinite(firstTs) && Number.isFinite(secondTs)) {
+      selectedRange = { from: firstTs, to: secondTs };
+      return;
+    }
+  }
+  selectedRange = null;
+};
+
+const syncSelectionWithData = (data) => {
+  if (!data.length) return;
+  const isValid =
+    selectedDatums.length === 2 && selectedDatums.every((d) => data.includes(d));
+  if (isValid) return;
+
+  if (!selectedRange) {
+    if (selectedDatums.length) {
+      selectedDatums = selectedDatums.filter((datum) => data.includes(datum));
+      updateSelectedRange();
+    }
+    return;
+  }
+
+  if (data.length >= 2) {
+    const dataMinTs = getDatumTs(data[0]);
+    const dataMaxTs = getDatumTs(data[data.length - 1]);
+    if (
+      Number.isFinite(dataMinTs) &&
+      Number.isFinite(dataMaxTs) &&
+      (selectedRange.from < dataMinTs || selectedRange.to > dataMaxTs)
+    ) {
+      selectedDatums = [data[0], data[data.length - 1]];
+      updateSelectedRange();
+      return;
+    }
+  }
+
+  const first = findClosestDatumByTs(data, selectedRange.from);
+  let second = findClosestDatumByTs(data, selectedRange.to);
+  if (first && second && first === second) {
+    second = findClosestDatumByTs(
+      data.filter((datum) => datum !== first),
+      selectedRange.to,
+    );
+  }
+
+  if (first && second) {
+    selectedDatums = [first, second];
+    updateSelectedRange();
+  } else {
+    selectedDatums = [];
+    selectedRange = null;
+  }
+};
 
 const handleChartClick = (event) => {
   const target = event?.target;
@@ -97,6 +179,7 @@ const handleChartClick = (event) => {
   if (isPoint) return;
   if (selectedDatums.length) {
     selectedDatums = [];
+    selectedRange = null;
     render();
     resetHoverStyles();
     hideTooltip();
@@ -460,9 +543,7 @@ function render() {
 
   const { height, margin } = layout;
   const fullWidth = layout.mainWidth + layout.panelGap + layout.detailWidth;
-  if (selectedDatums.length) {
-    selectedDatums = selectedDatums.filter((datum) => data.includes(datum));
-  }
+  syncSelectionWithData(data);
   if (hoveredDatum && !data.includes(hoveredDatum)) {
     hoveredDatum = null;
   }
@@ -923,6 +1004,7 @@ function render() {
           selectedDatums = [second || first, datum].filter(Boolean);
         }
       }
+      updateSelectedRange();
       render();
     });
 

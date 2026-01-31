@@ -30,6 +30,7 @@ const DAYS_UNTIL_TARGET_FUTURE = 7;
 
 const ui = reactive({
   resolution: "3600",
+  activeResolution: "3600",
   instrumentName: "",
   futureInstrumentName: "",
   loading: false,
@@ -45,6 +46,8 @@ const data = reactive({
   index: {},
 });
 const chartRef = ref(null);
+let mainRequestId = 0;
+let futureRequestId = 0;
 
 function findInstrument(instruments, name, fallback = null) {
   return (
@@ -93,11 +96,16 @@ function findClosestFuture(futures, nowSeconds) {
   return validFutures.sort(byDistance)[0];
 }
 
+const activeResolution = computed(
+  () => ui.activeResolution || ui.resolution,
+);
+
 const mainSeries = computed(() => {
-  const mark = data.mark[ui.resolution] || [];
-  const index = data.index[ui.resolution] || [];
+  const resolutionKey = activeResolution.value;
+  const mark = data.mark[resolutionKey] || [];
+  const index = data.index[resolutionKey] || [];
   const intervalSeconds =
-    RESOLUTION_CONFIG[ui.resolution]?.interval_seconds ?? Number(ui.resolution);
+    RESOLUTION_CONFIG[resolutionKey]?.interval_seconds ?? Number(resolutionKey);
   const series = buildFundingSeries({
     mark,
     index,
@@ -113,8 +121,9 @@ const mainSeries = computed(() => {
 });
 
 const basisSeries = computed(() => {
-  const mark = data.futureMark[ui.resolution] || [];
-  const index = data.index[ui.resolution] || [];
+  const resolutionKey = activeResolution.value;
+  const mark = data.futureMark[resolutionKey] || [];
+  const index = data.index[resolutionKey] || [];
   const series = buildBasisSeries({
     mark,
     index,
@@ -129,62 +138,95 @@ const basisSeries = computed(() => {
   return result.slice(-MAIN_POINT_LIMIT);
 });
 
-async function load({ instrument, futureInstrument, resolutionKey }) {
+function getTimestampRange(resolutionKey) {
+  const now = Math.floor(Date.now() / 1000);
+  const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
+  const seconds =
+    resolutionConfig?.interval_seconds ?? Number(resolutionKey) ?? 0;
+  return {
+    from: now - seconds * MAIN_POINT_LIMIT,
+    to: now,
+    resolution: resolutionConfig?.resolution,
+  };
+}
+
+async function loadMain({ instrument, resolutionKey }) {
   if (!instrument) return;
+  const requestId = ++mainRequestId;
 
   ui.loading = true;
   ui.error = "";
 
-  const now = Math.floor(Date.now() / 1000);
-  const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
-  const resolution = resolutionConfig?.resolution;
-  const seconds =
-    resolutionConfig?.interval_seconds ?? Number(resolutionKey) ?? 0;
-  const timestampRange = {
-    from: now - seconds * MAIN_POINT_LIMIT,
-    to: now,
-  };
+  const { from, to, resolution } = getTimestampRange(resolutionKey);
+  const indexName = instrument?.underlying || DEFAULT_UNDERLYING;
 
   try {
-    const indexName =
-      instrument?.underlying || futureInstrument?.underlying || "BTCUSD";
-    const futureName = futureInstrument?.instrument_name || "";
-    const [mainMarkResult, mainIndex, futureMarkResult] = await Promise.all([
+    const [mainMarkResult, mainIndex] = await Promise.all([
       fetchMarkHistory({
         instrument_name: instrument.instrument_name,
         resolution,
-        from: timestampRange.from,
-        to: timestampRange.to,
+        from,
+        to,
       }),
       fetchIndexHistory({
         index_name: indexName,
         resolution,
-        from: timestampRange.from,
-        to: timestampRange.to,
+        from,
+        to,
       }),
-      futureName
-        ? fetchMarkHistory({
-            instrument_name: futureName,
-            resolution,
-            from: timestampRange.from,
-            to: timestampRange.to,
-          })
-        : Promise.resolve([]),
     ]);
+
+    if (requestId !== mainRequestId) return;
 
     data.mark[resolutionKey] = mainMarkResult || [];
     data.index[resolutionKey] = mainIndex || [];
-    data.futureMark[resolutionKey] = futureMarkResult || [];
+    ui.activeResolution = resolutionKey;
 
     if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
     }
   } catch (e) {
+    if (requestId !== mainRequestId) return;
     ui.error = e instanceof Error ? e.message : String(e);
-    data.mark = {};
-    data.index = {};
   } finally {
-    ui.loading = false;
+    if (requestId === mainRequestId) {
+      ui.loading = false;
+    }
+  }
+}
+
+async function loadFuture({ futureInstrument, resolutionKey, fallbackIndex }) {
+  const requestId = ++futureRequestId;
+  if (!futureInstrument) {
+    data.futureMark[resolutionKey] = [];
+    return;
+  }
+
+  const { from, to, resolution } = getTimestampRange(resolutionKey);
+  const futureName = futureInstrument?.instrument_name || "";
+
+  try {
+    const futureMarkResult = futureName
+      ? await fetchMarkHistory({
+          instrument_name: futureName,
+          resolution,
+          from,
+          to,
+        })
+      : [];
+
+    if (requestId !== futureRequestId) return;
+
+    data.futureMark[resolutionKey] = futureMarkResult || [];
+
+    if (!data.index[resolutionKey]?.length && fallbackIndex?.length) {
+      data.index[resolutionKey] = fallbackIndex;
+    }
+  } catch (e) {
+    if (requestId !== futureRequestId) return;
+    if (!ui.error) {
+      ui.error = e instanceof Error ? e.message : String(e);
+    }
   }
 }
 
@@ -232,30 +274,59 @@ onMounted(async () => {
   const instrument = data.instrument;
   const futureInstrument = data.futureInstrument;
   if (instrument) {
-    await load({
+    ui.activeResolution = ui.resolution;
+    await loadMain({
       instrument,
+      resolutionKey: ui.resolution,
+    });
+    await loadFuture({
       futureInstrument,
       resolutionKey: ui.resolution,
+      fallbackIndex: data.index[ui.resolution],
     });
   }
 });
 
 watch(
-  () => [ui.resolution, ui.instrumentName, ui.futureInstrumentName],
+  () => [ui.resolution, ui.instrumentName],
   async () => {
     if (!ui.instrumentName) return;
 
     data.instrument = findInstrument(data.instruments, ui.instrumentName, null);
+
+    await loadMain({
+      instrument: data.instrument,
+      resolutionKey: ui.resolution,
+    });
+
+    if (ui.futureInstrumentName) {
+      data.futureInstrument = findInstrument(
+        data.futureInstruments,
+        ui.futureInstrumentName,
+        null,
+      );
+      await loadFuture({
+        futureInstrument: data.futureInstrument,
+        resolutionKey: ui.resolution,
+        fallbackIndex: data.index[ui.resolution],
+      });
+    }
+  },
+  { immediate: false },
+);
+
+watch(
+  () => ui.futureInstrumentName,
+  async () => {
     data.futureInstrument = findInstrument(
       data.futureInstruments,
       ui.futureInstrumentName,
       null,
     );
-
-    await load({
-      instrument: data.instrument,
+    await loadFuture({
       futureInstrument: data.futureInstrument,
-      resolutionKey: ui.resolution,
+      resolutionKey: activeResolution.value,
+      fallbackIndex: data.index[activeResolution.value],
     });
   },
   { immediate: false },
