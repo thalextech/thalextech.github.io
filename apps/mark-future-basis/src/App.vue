@@ -66,13 +66,12 @@ async function load({ instrument, resolutionKey }) {
   const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
   const seconds = resolutionConfig.seconds;
   const detailResolution = resolutionConfig.detail;
-  const detailSeconds = RESOLUTION_CONFIG[detailResolution]?.seconds ?? seconds;
   const mainRange = {
     from: now - seconds * MAIN_POINT_LIMIT,
     to: now,
   };
   const detailRange = {
-    from: now - detailSeconds * DETAIL_POINT_LIMIT,
+    from: now - seconds * DETAIL_POINT_LIMIT,
     to: now,
   };
 
