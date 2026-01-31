@@ -27,7 +27,6 @@ const ui = reactive({
   futureInstrumentName: "",
   loading: false,
   error: "",
-  notice: "",
 });
 const data = reactive({
   instruments: [],
@@ -65,8 +64,7 @@ function getTimestampRange(resolutionKey) {
   const now = Math.floor(Date.now() / 1000);
   const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
   const resolution = resolutionConfig?.resolution;
-  const seconds =
-    resolutionConfig?.interval_seconds ?? Number(resolutionKey) ?? 0;
+  const seconds = resolutionConfig.interval_seconds;
   return {
     now,
     resolution,
@@ -77,28 +75,18 @@ function getTimestampRange(resolutionKey) {
   };
 }
 
-function formatUtc(tsSeconds) {
-  return (
-    new Date(tsSeconds * 1000).toISOString().replace("T", " ").slice(0, 16) +
-    " UTC"
-  );
-}
-
 function getIndexRangeOrFallback(resolutionKey, fallbackRange) {
   const rows = data.index[resolutionKey] || [];
   if (!rows.length) return fallbackRange;
 
-  let minTs = null;
-  let maxTs = null;
-  for (const row of rows) {
-    const ts = row?.ts;
-    if (!Number.isFinite(ts)) continue;
-    if (minTs == null || ts < minTs) minTs = ts;
-    if (maxTs == null || ts > maxTs) maxTs = ts;
-  }
-
-  if (Number.isFinite(minTs) && Number.isFinite(maxTs)) {
-    return { from: minTs, to: maxTs };
+  const firstTs = rows[0]?.ts;
+  const lastTs = rows[rows.length - 1]?.ts;
+  if (
+    Number.isFinite(firstTs) &&
+    Number.isFinite(lastTs) &&
+    lastTs >= firstTs
+  ) {
+    return { from: firstTs, to: lastTs };
   }
   return fallbackRange;
 }
@@ -106,15 +94,11 @@ function getIndexRangeOrFallback(resolutionKey, fallbackRange) {
 function findClosestFuture(futures, nowSeconds) {
   if (!futures.length) return null;
 
-  const target = nowSeconds + 7 * 24 * 60 * 60;
   const validFutures = futures.filter(
-    (i) =>
-      Number.isFinite(i.expiration_timestamp) &&
-      i.expiration_timestamp > nowSeconds,
+    (i) => i.expiration_timestamp && i.expiration_timestamp > nowSeconds,
   );
 
-  if (!validFutures.length) return futures[0];
-
+  const target = nowSeconds + 7 * 24 * 60 * 60;
   const byDistance = (a, b) =>
     Math.abs(a.expiration_timestamp - target) -
     Math.abs(b.expiration_timestamp - target);
@@ -125,8 +109,7 @@ function findClosestFuture(futures, nowSeconds) {
 const mainSeries = computed(() => {
   const mark = data.perpetualMark[ui.resolution] || [];
   const index = data.index[ui.resolution] || [];
-  const intervalSeconds =
-    RESOLUTION_CONFIG[ui.resolution]?.interval_seconds ?? Number(ui.resolution);
+  const intervalSeconds = RESOLUTION_CONFIG[ui.resolution].interval_seconds;
   const series = buildFundingSeries({
     mark,
     index,
@@ -208,29 +191,8 @@ async function load({ resolutionKey, perpetualInstrument, futureName }) {
       data.index[resolutionKey] = indexData || [];
       cache.lastIndexKey = indexKey;
     }
+    // always fetch future
     data.futureMark[resolutionKey] = futureData || [];
-
-    const label = RESOLUTION_CONFIG[resolutionKey]?.label || resolutionKey;
-    const rows = data.futureMark[resolutionKey] || [];
-    let futureMin = null;
-    let futureMax = null;
-    for (const row of rows) {
-      const ts = row?.ts;
-      if (!Number.isFinite(ts)) continue;
-      if (futureMin == null || ts < futureMin) futureMin = ts;
-      if (futureMax == null || ts > futureMax) futureMax = ts;
-    }
-    const hasFuture = Number.isFinite(futureMin) && Number.isFinite(futureMax);
-    const overlapsIndex =
-      hasFuture && !(futureMax < indexRange.from || futureMin > indexRange.to);
-
-    if (!hasFuture || !overlapsIndex) {
-      ui.notice = `No ${futureName} data for ${formatUtc(
-        indexRange.from,
-      )} - ${formatUtc(indexRange.to)} at ${label} resolution.`;
-    } else {
-      ui.notice = "";
-    }
 
     if (
       (shouldFetchPerpetual || shouldFetchIndex) &&
@@ -241,7 +203,6 @@ async function load({ resolutionKey, perpetualInstrument, futureName }) {
   } catch (e) {
     if (reqId !== cache.loadReqId) return;
     ui.error = e instanceof Error ? e.message : String(e);
-    ui.notice = "";
   } finally {
     if (reqId === cache.loadReqId) {
       ui.loading = false;
@@ -367,7 +328,6 @@ watch(
       </div>
 
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
-      <div v-else-if="ui.notice" class="error">{{ ui.notice }}</div>
     </header>
 
     <FundingChart
