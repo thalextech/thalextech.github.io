@@ -91,6 +91,24 @@ async function load({ instrument, resolutionKey }) {
       }),
     ]);
 
+    data.mark[resolutionKey] = mainMarkResult || [];
+    data.index[resolutionKey] = mainIndex || [];
+
+    if (!mainSeries.value.length) {
+      throw new Error("No merged datapoints returned for this time range.");
+    }
+  } catch (e) {
+    ui.error = e instanceof Error ? e.message : String(e);
+    data.mark = {};
+    data.index = {};
+    ui.loading = false;
+    return;
+  }
+
+  // Main chart is ready; stop blocking the UI while detail data loads.
+  ui.loading = false;
+
+  try {
     const [detailMarkResult, detailIndex] = await Promise.all([
       fetchMarkHistory({
         instrument_name: instrument.instrument_name,
@@ -106,20 +124,12 @@ async function load({ instrument, resolutionKey }) {
       }),
     ]);
 
-    data.mark[resolutionKey] = mainMarkResult || [];
-    data.index[resolutionKey] = mainIndex || [];
     data.mark[detailResolution] = detailMarkResult || [];
     data.index[detailResolution] = detailIndex || [];
-
-    if (!mainSeries.value.length) {
-      throw new Error("No merged datapoints returned for this time range.");
-    }
   } catch (e) {
-    ui.error = e instanceof Error ? e.message : String(e);
-    data.mark = {};
-    data.index = {};
-  } finally {
-    ui.loading = false;
+    if (!ui.error) {
+      ui.error = e instanceof Error ? e.message : String(e);
+    }
   }
 }
 
