@@ -85,8 +85,7 @@ const mainSeries = computed(() => {
   const resolutionKey = displayed.resolutionKey;
   const mark = displayed.perpMark || [];
   const index = displayed.index || [];
-  const intervalSeconds =
-    RESOLUTION_CONFIG[resolutionKey]?.interval_seconds ?? Number(resolutionKey);
+  const { intervalSeconds } = resolveResolution(resolutionKey);
   const series = buildFundingSeries({
     mark,
     index,
@@ -108,8 +107,7 @@ const basisSeries = computed(() => {
 
 function resolveResolution(resolutionKey) {
   const config = RESOLUTION_CONFIG[resolutionKey];
-  const intervalSeconds =
-    config?.interval_seconds ?? Number(resolutionKey) ?? 0;
+  const intervalSeconds = config?.interval_seconds ?? Number(resolutionKey) ?? 0;
   return {
     intervalSeconds,
     apiResolution: config?.resolution,
