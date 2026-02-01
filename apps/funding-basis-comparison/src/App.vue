@@ -85,8 +85,7 @@ const mainSeries = computed(() => {
   const resolutionKey = displayed.resolutionKey;
   const mark = displayed.perpMark || [];
   const index = displayed.index || [];
-  const intervalSeconds =
-    RESOLUTION_CONFIG[resolutionKey]?.interval_seconds ?? Number(resolutionKey);
+  const { intervalSeconds } = resolveResolution(resolutionKey);
   const series = buildFundingSeries({
     mark,
     index,
@@ -106,15 +105,22 @@ const basisSeries = computed(() => {
   return filterSeriesData(series);
 });
 
+function resolveResolution(resolutionKey) {
+  const config = RESOLUTION_CONFIG[resolutionKey];
+  const intervalSeconds = config?.interval_seconds ?? Number(resolutionKey) ?? 0;
+  return {
+    intervalSeconds,
+    apiResolution: config?.resolution,
+  };
+}
+
 function getTimestampRange(resolutionKey) {
   const now = Math.floor(Date.now() / 1000);
-  const resolutionConfig = RESOLUTION_CONFIG[resolutionKey];
-  const seconds =
-    resolutionConfig?.interval_seconds ?? Number(resolutionKey) ?? 0;
+  const { intervalSeconds, apiResolution } = resolveResolution(resolutionKey);
   return {
-    from: now - seconds * MAIN_POINT_LIMIT,
+    from: now - intervalSeconds * MAIN_POINT_LIMIT,
     to: now,
-    resolution: resolutionConfig?.resolution,
+    resolution: apiResolution,
   };
 }
 
