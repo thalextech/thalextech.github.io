@@ -105,7 +105,8 @@ const basisSeries = computed(() => {
 
 function resolveResolution(resolutionKey) {
   const config = RESOLUTION_CONFIG[resolutionKey];
-  const intervalSeconds = config?.interval_seconds ?? Number(resolutionKey) ?? 0;
+  const intervalSeconds =
+    config?.interval_seconds ?? Number(resolutionKey) ?? 0;
   return {
     intervalSeconds,
     apiResolution: config?.resolution,
@@ -242,7 +243,6 @@ onMounted(async () => {
     const closest = findClosestFuture(futureInstruments, nowSeconds);
     uiState.futureInstrumentName = closest.instrument_name;
   }
-
 });
 
 watch(
@@ -259,17 +259,13 @@ watch(
     });
   },
   { immediate: true },
+  { immediate: true },
 );
 
 watch(
-  () => uiState.futureInstrumentName,
+  () => [ui.resolution, ui.futureInstrumentName],
   async () => {
-    if (uiState.loading) return;
-    if (!uiState.futureInstrumentName || !displayed.resolutionKey) return;
-    await loadFuture({
-      futureInstrument: selectedFutureInstrument.value,
-      resolutionKey: displayed.resolutionKey,
-    });
+    await loadSelectedFutureSeries(ui.resolution);
   },
   { immediate: false },
 );
