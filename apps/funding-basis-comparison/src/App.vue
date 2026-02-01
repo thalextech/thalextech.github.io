@@ -23,7 +23,7 @@ const DEFAULT_UNDERLYING = "BTCUSD";
 const SECONDS_PER_DAY = 24 * 60 * 60;
 const DAYS_UNTIL_TARGET_FUTURE = 7;
 
-const ui = reactive({
+const uiState = reactive({
   selectedResolutionKey: "3600",
   perpetualInstrumentName: "",
   futureInstrumentName: "",
@@ -39,7 +39,7 @@ const dataState = {
     perpMark: shallowRef([]),
     futureMark: shallowRef([]),
     index: shallowRef([]),
-    resolutionKey: ref(ui.selectedResolutionKey),
+    resolutionKey: ref(uiState.selectedResolutionKey),
   },
 };
 const chartRef = ref(null);
@@ -69,10 +69,10 @@ function findClosestFuture(futures, nowSeconds) {
 
 const displayResolutionKey = computed(() => dataState.displayed.resolutionKey.value);
 const selectedPerpetualInstrument = computed(() =>
-  findInstrument(availableInstruments.perpetual, ui.perpetualInstrumentName),
+  findInstrument(availableInstruments.perpetual, uiState.perpetualInstrumentName),
 );
 const selectedFutureInstrument = computed(() =>
-  findInstrument(availableInstruments.future, ui.futureInstrumentName),
+  findInstrument(availableInstruments.future, uiState.futureInstrumentName),
 );
 const resolutionKeys = computed(() => Object.keys(RESOLUTION_CONFIG));
 
@@ -128,8 +128,8 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
   const requestId = ++cacheRequestIds.main.value;
   const previousResolutionKey = dataState.displayed.resolutionKey.value;
 
-  ui.loading = true;
-  ui.error = "";
+  uiState.loading = true;
+  uiState.error = "";
 
   const { from, to, resolution } = getTimestampRange(resolutionKey);
   const indexName = perpetualInstrument?.underlying || DEFAULT_UNDERLYING;
@@ -167,10 +167,10 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
     void loadSelectedFutureSeries(resolutionKey);
   } catch (e) {
     if (requestId !== cacheRequestIds.main.value) return;
-    ui.error = e instanceof Error ? e.message : String(e);
+    uiState.error = e instanceof Error ? e.message : String(e);
   } finally {
     if (requestId === cacheRequestIds.main.value) {
-      ui.loading = false;
+      uiState.loading = false;
     }
   }
 }
@@ -200,14 +200,14 @@ async function loadFuture({ futureInstrument, resolutionKey }) {
     dataState.displayed.futureMark.value = futureMarkResult || [];
   } catch (e) {
     if (requestId !== cacheRequestIds.future.value) return;
-    if (!ui.error) {
-      ui.error = e instanceof Error ? e.message : String(e);
+    if (!uiState.error) {
+      uiState.error = e instanceof Error ? e.message : String(e);
     }
   }
 }
 
 async function loadSelectedFutureSeries(resolutionKey) {
-  if (!resolutionKey || !ui.futureInstrumentName) return;
+  if (!resolutionKey || !uiState.futureInstrumentName) return;
   await loadFuture({
     futureInstrument: selectedFutureInstrument.value,
     resolutionKey,
@@ -238,37 +238,37 @@ onMounted(async () => {
   availableInstruments.future = futures;
 
   // Set initial perpetual selection
-  ui.perpetualInstrumentName = defaultPerp?.instrument_name || "";
+  uiState.perpetualInstrumentName = defaultPerp?.instrument_name || "";
 
   // Set initial future selection (closest to 7 days from now)
   if (futures.length) {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const closest = findClosestFuture(futures, nowSeconds);
-    ui.futureInstrumentName = closest.instrument_name;
+    uiState.futureInstrumentName = closest.instrument_name;
   }
 
 });
 
 watch(
-  () => [ui.selectedResolutionKey, ui.perpetualInstrumentName],
+  () => [uiState.selectedResolutionKey, uiState.perpetualInstrumentName],
   async () => {
-    if (!ui.perpetualInstrumentName) return;
+    if (!uiState.perpetualInstrumentName) return;
 
     const perpetualInstrument = selectedPerpetualInstrument.value;
     if (!perpetualInstrument) return;
 
     await loadPerpetual({
       perpetualInstrument,
-      resolutionKey: ui.selectedResolutionKey,
+      resolutionKey: uiState.selectedResolutionKey,
     });
   },
   { immediate: true },
 );
 
 watch(
-  () => ui.futureInstrumentName,
+  () => uiState.futureInstrumentName,
   async () => {
-    if (ui.loading) return;
+    if (uiState.loading) return;
     await loadSelectedFutureSeries(dataState.displayed.resolutionKey.value);
   },
   { immediate: false },
@@ -287,7 +287,7 @@ watch(
           <label for="perpetual-instrument">Perpetual</label>
           <select
             id="perpetual-instrument"
-            v-model="ui.perpetualInstrumentName"
+            v-model="uiState.perpetualInstrumentName"
           >
             <option
               v-for="i in availableInstruments.perpetual"
@@ -298,16 +298,16 @@ watch(
             </option>
             <option
               v-if="!availableInstruments.perpetual.length"
-              :value="ui.perpetualInstrumentName"
+              :value="uiState.perpetualInstrumentName"
             >
-              {{ ui.perpetualInstrumentName }}
+              {{ uiState.perpetualInstrumentName }}
             </option>
           </select>
         </div>
 
         <div class="field">
           <label for="future-instrument">Future</label>
-          <select id="future-instrument" v-model="ui.futureInstrumentName">
+          <select id="future-instrument" v-model="uiState.futureInstrumentName">
             <option
               v-for="i in availableInstruments.future"
               :key="i.instrument_name"
@@ -317,16 +317,16 @@ watch(
             </option>
             <option
               v-if="!availableInstruments.future.length"
-              :value="ui.futureInstrumentName"
+              :value="uiState.futureInstrumentName"
             >
-              {{ ui.futureInstrumentName }}
+              {{ uiState.futureInstrumentName }}
             </option>
           </select>
         </div>
 
         <div class="field">
           <label for="resolution">Resolution</label>
-          <select id="resolution" v-model="ui.selectedResolutionKey">
+          <select id="resolution" v-model="uiState.selectedResolutionKey">
             <option v-for="key in resolutionKeys" :key="key" :value="key">
               {{ RESOLUTION_CONFIG[key].label }}
             </option>
@@ -337,21 +337,21 @@ watch(
           class="saveButton"
           type="button"
           @click="handleSavePng"
-          :disabled="ui.loading || !mainSeries.length"
+          :disabled="uiState.loading || !mainSeries.length"
         >
           Save PNG
         </button>
       </div>
 
-      <div v-if="ui.error" class="error">{{ ui.error }}</div>
+      <div v-if="uiState.error" class="error">{{ uiState.error }}</div>
     </header>
 
     <FundingChart
       ref="chartRef"
       :data="mainSeries"
       :basis-data="basisSeries"
-      :instrument-name="ui.perpetualInstrumentName"
-      :loading="ui.loading"
+      :instrument-name="uiState.perpetualInstrumentName"
+      :loading="uiState.loading"
     />
   </div>
 </template>
