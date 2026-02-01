@@ -856,18 +856,23 @@ function render() {
     });
     const rollSeries = basisSeries;
     let fundingIdx = 0;
-    let lastFunding = null;
-    const adjustedSeries = rollSeries.map((point) => {
-      const targetDate = point.date;
+    let lastFunding = 0;
+    const getFundingAtDate = (targetDate) => {
+      if (!(targetDate instanceof Date)) return lastFunding;
       while (
         fundingIdx < series.length &&
         series[fundingIdx]?.date instanceof Date &&
         series[fundingIdx].date <= targetDate
       ) {
-        lastFunding = series[fundingIdx].cumulative;
+        lastFunding = series[fundingIdx].cumulative ?? lastFunding;
         fundingIdx += 1;
       }
-      const fundingValue = lastFunding ?? 0;
+      return lastFunding;
+    };
+    const rollStartDate = rollSeries[0]?.date;
+    const fundingBase = rollStartDate ? getFundingAtDate(rollStartDate) : 0;
+    const adjustedSeries = rollSeries.map((point) => {
+      const fundingValue = getFundingAtDate(point.date) - fundingBase;
       return { date: point.date, cumulative: point.cumulative + fundingValue };
     });
     let rollRoiText = null;
