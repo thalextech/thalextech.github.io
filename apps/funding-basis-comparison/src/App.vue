@@ -222,7 +222,7 @@ onMounted(async () => {
   const perps = allInstruments.filter(
     (i) => i?.type === "perpetual" && i?.underlying === DEFAULT_UNDERLYING,
   );
-  const futures = allInstruments
+  const futureInstruments = allInstruments
     .filter((i) => i?.type === "future" && i?.underlying === DEFAULT_UNDERLYING)
     .sort(
       (a, b) => (a.expiration_timestamp || 0) - (b.expiration_timestamp || 0),
@@ -231,15 +231,15 @@ onMounted(async () => {
   // Set available instruments
   const defaultPerp = findInstrument(perps, "BTC-PERPETUAL");
   perpetuals.value = perps;
-  futures.value = futures;
+  futures.value = futureInstruments;
 
   // Set initial perpetual selection
   uiState.perpetualInstrumentName = defaultPerp?.instrument_name || "";
 
   // Set initial future selection (closest to 7 days from now)
-  if (futures.length) {
+  if (futureInstruments.length) {
     const nowSeconds = Math.floor(Date.now() / 1000);
-    const closest = findClosestFuture(futures, nowSeconds);
+    const closest = findClosestFuture(futureInstruments, nowSeconds);
     uiState.futureInstrumentName = closest.instrument_name;
   }
 
