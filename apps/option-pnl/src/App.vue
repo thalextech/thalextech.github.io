@@ -70,6 +70,44 @@ const getMiddleStrikeValue = (strikes) => {
   return strikes[midIndex]?.value ?? "";
 };
 
+const getLatestIndexClose = (rows) => {
+  if (!rows?.length) return null;
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const value = rows[i]?.index_price_close;
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+};
+
+const getClosestStrikeValue = (strikes, target) => {
+  if (!strikes?.length || !Number.isFinite(target)) return "";
+  let closest = strikes[0];
+  let minDistance = Math.abs(Number(closest?.value) - target);
+  for (const strike of strikes) {
+    const strikeValue = Number(strike?.value);
+    if (!Number.isFinite(strikeValue)) continue;
+    const distance = Math.abs(strikeValue - target);
+    if (distance < minDistance) {
+      closest = strike;
+      minDistance = distance;
+    }
+  }
+  return closest?.value ?? "";
+};
+
+const getTimestampRange = () => {
+  const now = Math.floor(Date.now() / 1000);
+  const resolutionConfig = RESOLUTION_CONFIG[ui.resolution];
+  const resolution = resolutionConfig?.resolution;
+  const seconds =
+    resolutionConfig?.interval_seconds ?? Number(ui.resolution) ?? 0;
+  return {
+    resolution,
+    from: now - seconds * MAIN_POINT_LIMIT,
+    to: now,
+  };
+};
+
 const optionMaturities = computed(() => {
   const expirations = Array.from(
     new Set(
@@ -188,39 +226,35 @@ const optionPnlSeries = computed(() => {
   return filtered.slice(-MAIN_POINT_LIMIT);
 });
 
-async function load(instrument) {
+async function load(instrument, options = {}) {
   if (!instrument) return;
 
   ui.loading = true;
   ui.error = "";
 
-  const now = Math.floor(Date.now() / 1000);
-  const resolutionConfig = RESOLUTION_CONFIG[ui.resolution];
-  const resolution = resolutionConfig?.resolution;
-  const seconds =
-    resolutionConfig?.interval_seconds ?? Number(ui.resolution) ?? 0;
-  const timestampRange = {
-    from: now - seconds * MAIN_POINT_LIMIT,
-    to: now,
-  };
+  const { resolution, from, to } = getTimestampRange();
+  const prefetchedIndex = options?.prefetchedIndex;
 
   try {
     const optionInstrument = instrument;
     const indexName = optionInstrument?.underlying || "BTCUSD";
     const optionName = optionInstrument?.instrument_name || "";
+    const indexPromise = prefetchedIndex
+      ? Promise.resolve(prefetchedIndex)
+      : fetchIndexHistory({
+          index_name: indexName,
+          resolution,
+          from,
+          to,
+        });
     const [mainIndex, optionMark] = await Promise.all([
-      fetchIndexHistory({
-        index_name: indexName,
-        resolution,
-        from: timestampRange.from,
-        to: timestampRange.to,
-      }),
+      indexPromise,
       optionName
         ? fetchMarkHistory({
             instrument_name: optionName,
             resolution,
-            from: timestampRange.from,
-            to: timestampRange.to,
+            from,
+            to,
           })
         : Promise.resolve([]),
     ]);
@@ -262,11 +296,24 @@ onMounted(async () => {
   const oldest = getOldestOptionInstrument(data.optionInstruments);
   if (oldest && Number.isFinite(oldest.expiration_ts)) {
     ui.optionMaturity = String(oldest.expiration_ts);
-    ui.optionStrike = getMiddleStrikeValue(optionStrikes.value);
   }
+  const indexName = data.optionInstruments[0]?.underlying || "BTCUSD";
+  const { resolution, from, to } = getTimestampRange();
+  const prefetchedIndex = await fetchIndexHistory({
+    index_name: indexName,
+    resolution,
+    from,
+    to,
+  });
+  data.index[ui.resolution] = prefetchedIndex || [];
+  const latestIndexClose = getLatestIndexClose(data.index[ui.resolution]);
+  const strikes = optionStrikes.value;
+  const closestStrike = getClosestStrikeValue(strikes, latestIndexClose);
+  ui.optionStrike = closestStrike || getMiddleStrikeValue(strikes);
+
   const instrument = selectedOptionInstrument.value;
   if (instrument) {
-    await load(instrument);
+    await load(instrument, { prefetchedIndex });
   }
 });
 

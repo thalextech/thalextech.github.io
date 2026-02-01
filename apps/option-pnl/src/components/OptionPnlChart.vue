@@ -73,6 +73,7 @@ const chartState = {
   legendRect: null,
   legendMinText: null,
   legendMaxText: null,
+  legendVisible: false,
   detailGroup: null,
   detailLayer: null,
   detailXAxisGroup: null,
@@ -376,6 +377,7 @@ const ensureChartElements = () => {
       "legendLabel",
       { anchor: "end" },
     );
+    chartState.legendGroup.attr("opacity", 0);
   }
 
   if (!chartState.noDataText) {
@@ -563,6 +565,7 @@ function render() {
       .data([])
       .join("circle");
     chartState.legendGroup.attr("display", "none");
+    chartState.legendVisible = false;
     chartState.detailGroup?.attr("display", "none");
     hideTooltip();
     return;
@@ -570,6 +573,17 @@ function render() {
 
   chartState.noDataText.attr("visibility", "hidden");
   chartState.legendGroup.attr("display", null);
+  if (!chartState.legendVisible) {
+    chartState.legendVisible = true;
+    chartState.legendGroup
+      .interrupt()
+      .attr("opacity", 0)
+      .transition()
+      .duration(200)
+      .attr("opacity", 1);
+  } else {
+    chartState.legendGroup.interrupt().attr("opacity", 1);
+  }
   chartState.detailGroup.attr("display", null);
 
   chartState.mainGroup.attr(
