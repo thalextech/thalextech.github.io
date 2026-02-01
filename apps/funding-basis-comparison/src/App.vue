@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, shallowRef, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import FundingChart from "./components/FundingChart.vue";
 import {
   buildFundingSeries,
@@ -34,10 +34,12 @@ const availableInstruments = reactive({
   perpetual: [],
   future: [],
 });
-const displayedResolutionKey = ref(uiState.selectedResolutionKey);
-const displayedPerpMark = shallowRef([]);
-const displayedFutureMark = shallowRef([]);
-const displayedIndex = shallowRef([]);
+const displayed = reactive({
+  resolutionKey: uiState.selectedResolutionKey,
+  perpMark: [],
+  futureMark: [],
+  index: [],
+});
 const chartRef = ref(null);
 let mainRequestId = 0;
 let futureRequestId = 0;
@@ -47,18 +49,18 @@ function findInstrument(instruments, name) {
 }
 
 function findClosestFuture(futures, nowSeconds) {
-  if (!futures.length) return null;
-
   const target = nowSeconds + DAYS_UNTIL_TARGET_FUTURE * SECONDS_PER_DAY;
-  const closest = futures.reduce((best, current) => {
-    const exp = current?.expiration_timestamp;
-    if (!Number.isFinite(exp) || exp <= nowSeconds) return best;
-    const dist = Math.abs(exp - target);
-    if (!best) return { future: current, dist };
-    return dist < best.dist ? { future: current, dist } : best;
-  }, null);
-
-  return closest?.future || futures[0];
+  return (
+    futures
+      .filter((future) => future.expiration_timestamp > nowSeconds)
+      .sort(
+        (a, b) =>
+          Math.abs(a.expiration_timestamp - target) -
+          Math.abs(b.expiration_timestamp - target),
+      )[0] ||
+    futures[0] ||
+    null
+  );
 }
 
 const selectedPerpetualInstrument = computed(() =>
@@ -67,7 +69,7 @@ const selectedPerpetualInstrument = computed(() =>
 const selectedFutureInstrument = computed(() =>
   findInstrument(availableInstruments.future, uiState.futureInstrumentName),
 );
-const resolutionKeys = computed(() => Object.keys(RESOLUTION_CONFIG));
+const RESOLUTION_KEYS = Object.keys(RESOLUTION_CONFIG);
 
 function filterSeriesData(series) {
   const result = [];
@@ -80,9 +82,9 @@ function filterSeriesData(series) {
 }
 
 const mainSeries = computed(() => {
-  const resolutionKey = displayedResolutionKey.value;
-  const mark = displayedPerpMark.value || [];
-  const index = displayedIndex.value || [];
+  const resolutionKey = displayed.resolutionKey;
+  const mark = displayed.perpMark || [];
+  const index = displayed.index || [];
   const intervalSeconds =
     RESOLUTION_CONFIG[resolutionKey]?.interval_seconds ?? Number(resolutionKey);
   const series = buildFundingSeries({
@@ -94,8 +96,8 @@ const mainSeries = computed(() => {
 });
 
 const basisSeries = computed(() => {
-  const mark = displayedFutureMark.value || [];
-  const index = displayedIndex.value || [];
+  const mark = displayed.futureMark || [];
+  const index = displayed.index || [];
   const series = buildBasisSeries({
     mark,
     index,
@@ -119,7 +121,7 @@ function getTimestampRange(resolutionKey) {
 async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
   if (!perpetualInstrument) return;
   const requestId = ++mainRequestId;
-  const previousResolutionKey = displayedResolutionKey.value;
+  const previousResolutionKey = displayed.resolutionKey;
 
   uiState.loading = true;
   uiState.error = "";
@@ -145,11 +147,11 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
 
     if (requestId !== mainRequestId) return;
 
-    displayedPerpMark.value = mainMarkResult || [];
-    displayedIndex.value = mainIndex || [];
-    displayedResolutionKey.value = resolutionKey;
+    displayed.perpMark = mainMarkResult || [];
+    displayed.index = mainIndex || [];
+    displayed.resolutionKey = resolutionKey;
     if (previousResolutionKey !== resolutionKey) {
-      displayedFutureMark.value = [];
+      displayed.futureMark = [];
     }
 
     if (!mainSeries.value.length) {
@@ -157,7 +159,12 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
     }
 
     // make non blocking
-    void loadSelectedFutureSeries(resolutionKey);
+    if (uiState.futureInstrumentName) {
+      void loadFuture({
+        futureInstrument: selectedFutureInstrument.value,
+        resolutionKey,
+      });
+    }
   } catch (e) {
     if (requestId !== mainRequestId) return;
     uiState.error = e instanceof Error ? e.message : String(e);
@@ -171,7 +178,7 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
 async function loadFuture({ futureInstrument, resolutionKey }) {
   const requestId = ++futureRequestId;
   if (!futureInstrument) {
-    displayedFutureMark.value = [];
+    displayed.futureMark = [];
     return;
   }
 
@@ -190,21 +197,13 @@ async function loadFuture({ futureInstrument, resolutionKey }) {
 
     if (requestId !== futureRequestId) return;
 
-    displayedFutureMark.value = futureMarkResult || [];
+    displayed.futureMark = futureMarkResult || [];
   } catch (e) {
     if (requestId !== futureRequestId) return;
     if (!uiState.error) {
       uiState.error = e instanceof Error ? e.message : String(e);
     }
   }
-}
-
-async function loadSelectedFutureSeries(resolutionKey) {
-  if (!resolutionKey || !uiState.futureInstrumentName) return;
-  await loadFuture({
-    futureInstrument: selectedFutureInstrument.value,
-    resolutionKey,
-  });
 }
 
 function handleSavePng() {
@@ -262,7 +261,11 @@ watch(
   () => uiState.futureInstrumentName,
   async () => {
     if (uiState.loading) return;
-    await loadSelectedFutureSeries(displayedResolutionKey.value);
+    if (!uiState.futureInstrumentName || !displayed.resolutionKey) return;
+    await loadFuture({
+      futureInstrument: selectedFutureInstrument.value,
+      resolutionKey: displayed.resolutionKey,
+    });
   },
   { immediate: false },
 );
@@ -320,7 +323,7 @@ watch(
         <div class="field">
           <label for="resolution">Resolution</label>
           <select id="resolution" v-model="uiState.selectedResolutionKey">
-            <option v-for="key in resolutionKeys" :key="key" :value="key">
+            <option v-for="key in RESOLUTION_KEYS" :key="key" :value="key">
               {{ RESOLUTION_CONFIG[key].label }}
             </option>
           </select>
