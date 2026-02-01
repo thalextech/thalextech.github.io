@@ -1,4 +1,4 @@
-const API_BASE = "/api/v2/public";
+const API_BASE = "https://thalex.com/api/v2/public";
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_PREFIX = "thalex-cache-vol";
 
