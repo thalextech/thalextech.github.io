@@ -119,6 +119,34 @@ a {
   cursor: not-allowed;
 }
 
+.modeToggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
+  border-radius: 10px;
+  overflow: hidden;
+  height: 40px;
+}
+
+.modeToggleButton {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 16px;
+  cursor: pointer;
+  height: 100%;
+}
+
+.modeToggleButton + .modeToggleButton {
+  border-left: 1px solid var(--border);
+}
+
+.modeToggleButton.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .meta {
   color: var(--muted);
   font-size: 13px;

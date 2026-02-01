@@ -30,6 +30,7 @@ const uiState = reactive({
   loading: false,
   error: "",
 });
+const showRollPnl = ref(false);
 const perpetuals = shallowRef([]);
 const futures = shallowRef([]);
 const displayed = reactive({
@@ -102,6 +103,35 @@ const basisSeries = computed(() => {
   });
   return filterSeriesData(series);
 });
+
+const rollSeries = computed(() => {
+  const perpMark = displayed.perpMark || [];
+  const futureMark = displayed.futureMark || [];
+  if (!perpMark.length || !futureMark.length) return [];
+
+  const futureByTs = new Map(futureMark.map((row) => [row.ts, row]));
+  const merged = [];
+  for (const perpPoint of perpMark) {
+    const futurePoint = futureByTs.get(perpPoint.ts);
+    if (!futurePoint) continue;
+    const spread =
+      Number.isFinite(futurePoint.mark_price_close) &&
+      Number.isFinite(perpPoint.mark_price_close)
+        ? futurePoint.mark_price_close - perpPoint.mark_price_close
+        : null;
+    if (spread == null) continue;
+    merged.push({
+      ts: perpPoint.ts,
+      date: new Date(perpPoint.ts * 1000),
+      basis_close: spread,
+    });
+  }
+  return filterSeriesData(merged);
+});
+
+const secondarySeries = computed(() =>
+  showRollPnl.value ? rollSeries.value : basisSeries.value,
+);
 
 function resolveResolution(resolutionKey) {
   const config = RESOLUTION_CONFIG[resolutionKey];
@@ -341,6 +371,25 @@ watch(
         >
           Save PNG
         </button>
+
+        <div class="modeToggle">
+          <button
+            class="modeToggleButton"
+            type="button"
+            :class="{ active: !showRollPnl }"
+            @click="showRollPnl = false"
+          >
+            Carry
+          </button>
+          <button
+            class="modeToggleButton"
+            type="button"
+            :class="{ active: showRollPnl }"
+            @click="showRollPnl = true"
+          >
+            Roll
+          </button>
+        </div>
       </div>
 
       <div v-if="uiState.error" class="error">{{ uiState.error }}</div>
@@ -349,9 +398,10 @@ watch(
     <FundingChart
       ref="chartRef"
       :data="mainSeries"
-      :basis-data="basisSeries"
+      :basis-data="secondarySeries"
       :instrument-name="uiState.perpetualInstrumentName"
       :loading="uiState.loading"
+      :show-roll-pnl="showRollPnl"
     />
   </div>
 </template>
