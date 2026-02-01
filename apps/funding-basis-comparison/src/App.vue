@@ -39,10 +39,8 @@ const displayedPerpMark = shallowRef([]);
 const displayedFutureMark = shallowRef([]);
 const displayedIndex = shallowRef([]);
 const chartRef = ref(null);
-const cacheRequestIds = {
-  main: ref(0),
-  future: ref(0),
-};
+let mainRequestId = 0;
+let futureRequestId = 0;
 
 function findInstrument(instruments, name) {
   return instruments.find((i) => i.instrument_name === name) || null;
@@ -128,7 +126,7 @@ function getTimestampRange(resolutionKey) {
 
 async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
   if (!perpetualInstrument) return;
-  const requestId = ++cacheRequestIds.main.value;
+  const requestId = ++mainRequestId;
   const previousResolutionKey = displayedResolutionKey.value;
 
   uiState.loading = true;
@@ -153,7 +151,7 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
       }),
     ]);
 
-    if (requestId !== cacheRequestIds.main.value) return;
+    if (requestId !== mainRequestId) return;
 
     displayedPerpMark.value = mainMarkResult || [];
     displayedIndex.value = mainIndex || [];
@@ -169,17 +167,17 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
     // make non blocking
     void loadSelectedFutureSeries(resolutionKey);
   } catch (e) {
-    if (requestId !== cacheRequestIds.main.value) return;
+    if (requestId !== mainRequestId) return;
     uiState.error = e instanceof Error ? e.message : String(e);
   } finally {
-    if (requestId === cacheRequestIds.main.value) {
+    if (requestId === mainRequestId) {
       uiState.loading = false;
     }
   }
 }
 
 async function loadFuture({ futureInstrument, resolutionKey }) {
-  const requestId = ++cacheRequestIds.future.value;
+  const requestId = ++futureRequestId;
   if (!futureInstrument) {
     displayedFutureMark.value = [];
     return;
@@ -198,11 +196,11 @@ async function loadFuture({ futureInstrument, resolutionKey }) {
         })
       : [];
 
-    if (requestId !== cacheRequestIds.future.value) return;
+    if (requestId !== futureRequestId) return;
 
     displayedFutureMark.value = futureMarkResult || [];
   } catch (e) {
-    if (requestId !== cacheRequestIds.future.value) return;
+    if (requestId !== futureRequestId) return;
     if (!uiState.error) {
       uiState.error = e instanceof Error ? e.message : String(e);
     }
