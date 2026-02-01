@@ -24,21 +24,29 @@ const SECONDS_PER_DAY = 24 * 60 * 60;
 const DAYS_UNTIL_TARGET_FUTURE = 7;
 
 const ui = reactive({
-  resolution: "3600",
+  selectedResolutionKey: "3600",
   perpetualInstrumentName: "",
   futureInstrumentName: "",
   loading: false,
   error: "",
 });
-const perpetualInstruments = ref([]);
-const futureInstruments = ref([]);
-const perpMarkByResolution = shallowRef({});
-const futureMarkByResolution = shallowRef({});
-const indexByResolution = shallowRef({});
+const availableInstruments = reactive({
+  perpetual: [],
+  future: [],
+});
+const dataState = {
+  displayed: {
+    perpMark: shallowRef([]),
+    futureMark: shallowRef([]),
+    index: shallowRef([]),
+    resolutionKey: ref(ui.selectedResolutionKey),
+  },
+};
 const chartRef = ref(null);
-const lastLoadedResolutionKey = ref("3600");
-const mainRequestId = ref(0);
-const futureRequestId = ref(0);
+const cacheRequestIds = {
+  main: ref(0),
+  future: ref(0),
+};
 
 function findInstrument(instruments, name) {
   return instruments.find((i) => i.instrument_name === name) || null;
@@ -59,14 +67,12 @@ function findClosestFuture(futures, nowSeconds) {
   return closest?.future || futures[0];
 }
 
-const displayResolutionKey = computed(
-  () => lastLoadedResolutionKey.value || ui.resolution,
-);
+const displayResolutionKey = computed(() => dataState.displayed.resolutionKey.value);
 const selectedPerpetualInstrument = computed(() =>
-  findInstrument(perpetualInstruments.value, ui.perpetualInstrumentName),
+  findInstrument(availableInstruments.perpetual, ui.perpetualInstrumentName),
 );
 const selectedFutureInstrument = computed(() =>
-  findInstrument(futureInstruments.value, ui.futureInstrumentName),
+  findInstrument(availableInstruments.future, ui.futureInstrumentName),
 );
 const resolutionKeys = computed(() => Object.keys(RESOLUTION_CONFIG));
 
@@ -82,8 +88,8 @@ function filterSeriesData(series) {
 
 const mainSeries = computed(() => {
   const resolutionKey = displayResolutionKey.value;
-  const mark = perpMarkByResolution.value[resolutionKey] || [];
-  const index = indexByResolution.value[resolutionKey] || [];
+  const mark = dataState.displayed.perpMark.value || [];
+  const index = dataState.displayed.index.value || [];
   const intervalSeconds =
     RESOLUTION_CONFIG[resolutionKey]?.interval_seconds ?? Number(resolutionKey);
   const series = buildFundingSeries({
@@ -95,9 +101,8 @@ const mainSeries = computed(() => {
 });
 
 const basisSeries = computed(() => {
-  const resolutionKey = displayResolutionKey.value;
-  const mark = futureMarkByResolution.value[resolutionKey] || [];
-  const index = indexByResolution.value[resolutionKey] || [];
+  const mark = dataState.displayed.futureMark.value || [];
+  const index = dataState.displayed.index.value || [];
   const series = buildBasisSeries({
     mark,
     index,
@@ -120,7 +125,8 @@ function getTimestampRange(resolutionKey) {
 
 async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
   if (!perpetualInstrument) return;
-  const requestId = ++mainRequestId.value;
+  const requestId = ++cacheRequestIds.main.value;
+  const previousResolutionKey = dataState.displayed.resolutionKey.value;
 
   ui.loading = true;
   ui.error = "";
@@ -144,38 +150,35 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
       }),
     ]);
 
-    if (requestId !== mainRequestId.value) return;
+    if (requestId !== cacheRequestIds.main.value) return;
 
-    perpMarkByResolution.value = {
-      ...perpMarkByResolution.value,
-      [resolutionKey]: mainMarkResult || [],
-    };
-    indexByResolution.value = {
-      ...indexByResolution.value,
-      [resolutionKey]: mainIndex || [],
-    };
-    lastLoadedResolutionKey.value = resolutionKey;
+    dataState.displayed.perpMark.value = mainMarkResult || [];
+    dataState.displayed.index.value = mainIndex || [];
+    dataState.displayed.resolutionKey.value = resolutionKey;
+    if (previousResolutionKey !== resolutionKey) {
+      dataState.displayed.futureMark.value = [];
+    }
 
     if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
     }
+
+    // make non blocking
+    void loadSelectedFutureSeries(resolutionKey);
   } catch (e) {
-    if (requestId !== mainRequestId.value) return;
+    if (requestId !== cacheRequestIds.main.value) return;
     ui.error = e instanceof Error ? e.message : String(e);
   } finally {
-    if (requestId === mainRequestId.value) {
+    if (requestId === cacheRequestIds.main.value) {
       ui.loading = false;
     }
   }
 }
 
 async function loadFuture({ futureInstrument, resolutionKey }) {
-  const requestId = ++futureRequestId.value;
+  const requestId = ++cacheRequestIds.future.value;
   if (!futureInstrument) {
-    futureMarkByResolution.value = {
-      ...futureMarkByResolution.value,
-      [resolutionKey]: [],
-    };
+    dataState.displayed.futureMark.value = [];
     return;
   }
 
@@ -192,14 +195,11 @@ async function loadFuture({ futureInstrument, resolutionKey }) {
         })
       : [];
 
-    if (requestId !== futureRequestId.value) return;
+    if (requestId !== cacheRequestIds.future.value) return;
 
-    futureMarkByResolution.value = {
-      ...futureMarkByResolution.value,
-      [resolutionKey]: futureMarkResult || [],
-    };
+    dataState.displayed.futureMark.value = futureMarkResult || [];
   } catch (e) {
-    if (requestId !== futureRequestId.value) return;
+    if (requestId !== cacheRequestIds.future.value) return;
     if (!ui.error) {
       ui.error = e instanceof Error ? e.message : String(e);
     }
@@ -207,7 +207,7 @@ async function loadFuture({ futureInstrument, resolutionKey }) {
 }
 
 async function loadSelectedFutureSeries(resolutionKey) {
-  if (!ui.futureInstrumentName) return;
+  if (!resolutionKey || !ui.futureInstrumentName) return;
   await loadFuture({
     futureInstrument: selectedFutureInstrument.value,
     resolutionKey,
@@ -234,8 +234,8 @@ onMounted(async () => {
 
   // Set available instruments
   const defaultPerp = findInstrument(perps, "BTC-PERPETUAL");
-  perpetualInstruments.value = perps;
-  futureInstruments.value = futures;
+  availableInstruments.perpetual = perps;
+  availableInstruments.future = futures;
 
   // Set initial perpetual selection
   ui.perpetualInstrumentName = defaultPerp?.instrument_name || "";
@@ -250,7 +250,7 @@ onMounted(async () => {
 });
 
 watch(
-  () => [ui.resolution, ui.perpetualInstrumentName],
+  () => [ui.selectedResolutionKey, ui.perpetualInstrumentName],
   async () => {
     if (!ui.perpetualInstrumentName) return;
 
@@ -259,16 +259,17 @@ watch(
 
     await loadPerpetual({
       perpetualInstrument,
-      resolutionKey: ui.resolution,
+      resolutionKey: ui.selectedResolutionKey,
     });
   },
   { immediate: true },
 );
 
 watch(
-  () => [ui.resolution, ui.futureInstrumentName],
+  () => ui.futureInstrumentName,
   async () => {
-    await loadSelectedFutureSeries(ui.resolution);
+    if (ui.loading) return;
+    await loadSelectedFutureSeries(dataState.displayed.resolutionKey.value);
   },
   { immediate: false },
 );
@@ -289,14 +290,14 @@ watch(
             v-model="ui.perpetualInstrumentName"
           >
             <option
-              v-for="i in perpetualInstruments"
+              v-for="i in availableInstruments.perpetual"
               :key="i.instrument_name"
               :value="i.instrument_name"
             >
               {{ i.instrument_name }}
             </option>
             <option
-              v-if="!perpetualInstruments.length"
+              v-if="!availableInstruments.perpetual.length"
               :value="ui.perpetualInstrumentName"
             >
               {{ ui.perpetualInstrumentName }}
@@ -308,14 +309,14 @@ watch(
           <label for="future-instrument">Future</label>
           <select id="future-instrument" v-model="ui.futureInstrumentName">
             <option
-              v-for="i in futureInstruments"
+              v-for="i in availableInstruments.future"
               :key="i.instrument_name"
               :value="i.instrument_name"
             >
               {{ i.instrument_name }}
             </option>
             <option
-              v-if="!futureInstruments.length"
+              v-if="!availableInstruments.future.length"
               :value="ui.futureInstrumentName"
             >
               {{ ui.futureInstrumentName }}
@@ -325,7 +326,7 @@ watch(
 
         <div class="field">
           <label for="resolution">Resolution</label>
-          <select id="resolution" v-model="ui.resolution">
+          <select id="resolution" v-model="ui.selectedResolutionKey">
             <option v-for="key in resolutionKeys" :key="key" :value="key">
               {{ RESOLUTION_CONFIG[key].label }}
             </option>
