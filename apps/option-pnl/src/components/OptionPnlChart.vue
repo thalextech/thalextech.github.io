@@ -1,6 +1,11 @@
 <script setup>
 import * as d3 from "d3";
 import { computed, onMounted, ref, watch } from "vue";
+import {
+  getDatumTs,
+  syncSelectionWithData as syncSelectionWithDataUtil,
+  updateSelectedRange as computeSelectedRange,
+} from "../../../../lib/chartUtils.js";
 import { exportChartToPng } from "../../../../lib/export-png.js";
 
 const props = defineProps({
@@ -105,27 +110,19 @@ let lineRevealTimer = null;
 let lineRevealPending = false;
 let hiddenDetailSeriesKeys = new Set();
 
-const getDatumTs = (datum) => {
-  const ts = datum?.ts;
-  if (Number.isFinite(ts)) return ts;
-  const date = datum?.date;
-  return date instanceof Date ? date.getTime() / 1000 : null;
+const updateSelectedRange = () => {
+  selectedRange = computeSelectedRange(selectedDatums);
 };
 
-const findClosestDatumByTs = (data, ts) => {
-  if (!Number.isFinite(ts)) return null;
-  let closest = null;
-  let bestDist = Infinity;
-  for (const datum of data) {
-    const datumTs = getDatumTs(datum);
-    if (!Number.isFinite(datumTs)) continue;
-    const dist = Math.abs(datumTs - ts);
-    if (dist < bestDist) {
-      bestDist = dist;
-      closest = datum;
-    }
-  }
-  return closest;
+const syncSelectionWithData = (data) => {
+  const synced = syncSelectionWithDataUtil({
+    data,
+    selectedDatums,
+    selectedRange,
+    getTs: getDatumTs,
+  });
+  selectedDatums = synced.selectedDatums;
+  selectedRange = synced.selectedRange;
 };
 
 const toggleDetailSeries = (key) => {
@@ -497,17 +494,7 @@ function render() {
 
   const { height, margin } = layout;
   const fullWidth = layout.mainWidth + layout.panelGap + layout.detailWidth;
-  if (selectedDatums.length) {
-    selectedDatums = selectedDatums.filter((datum) => data.includes(datum));
-  }
-  if (selectedRange && selectedDatums.length < 2) {
-    const fromDatum = findClosestDatumByTs(data, selectedRange.from);
-    const toDatum = findClosestDatumByTs(data, selectedRange.to);
-    if (fromDatum && toDatum) {
-      selectedDatums =
-        fromDatum === toDatum ? [fromDatum, toDatum] : [fromDatum, toDatum];
-    }
-  }
+  syncSelectionWithData(data);
   if (hoveredDatum && !data.includes(hoveredDatum)) {
     hoveredDatum = null;
   }
@@ -1075,17 +1062,7 @@ function render() {
           selectedDatums = [second || first, datum].filter(Boolean);
         }
       }
-      if (selectedDatums.length === 2) {
-        const fromTs = getDatumTs(selectedDatums[0]);
-        const toTs = getDatumTs(selectedDatums[1]);
-        if (Number.isFinite(fromTs) && Number.isFinite(toTs)) {
-          selectedRange = { from: fromTs, to: toTs };
-        } else {
-          selectedRange = null;
-        }
-      } else {
-        selectedRange = null;
-      }
+      updateSelectedRange();
       render();
     });
 
