@@ -247,16 +247,6 @@ onMounted(async () => {
     ui.futureInstrumentName = closest.instrument_name;
   }
 
-  if (selectedPerpetualInstrument.value) {
-    lastLoadedResolutionKey.value = ui.resolution;
-    await loadPerpetual({
-      perpetualInstrument: selectedPerpetualInstrument.value,
-      resolutionKey: ui.resolution,
-    });
-    
-    // make non blocking
-    void loadSelectedFutureSeries(ui.resolution);
-  }
 });
 
 watch(
@@ -271,16 +261,14 @@ watch(
       perpetualInstrument,
       resolutionKey: ui.resolution,
     });
-
-    void loadSelectedFutureSeries(ui.resolution);
   },
-  { immediate: false },
+  { immediate: true },
 );
 
 watch(
-  () => ui.futureInstrumentName,
+  () => [ui.resolution, ui.futureInstrumentName],
   async () => {
-    await loadSelectedFutureSeries(displayResolutionKey.value);
+    await loadSelectedFutureSeries(ui.resolution);
   },
   { immediate: false },
 );
