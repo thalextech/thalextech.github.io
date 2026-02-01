@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, shallowRef, watch } from "vue";
 import FundingChart from "./components/FundingChart.vue";
 import {
   buildFundingSeries,
@@ -30,10 +30,8 @@ const uiState = reactive({
   loading: false,
   error: "",
 });
-const availableInstruments = reactive({
-  perpetual: [],
-  future: [],
-});
+const perpetuals = shallowRef([]);
+const futures = shallowRef([]);
 const displayed = reactive({
   resolutionKey: uiState.selectedResolutionKey,
   perpMark: [],
@@ -64,10 +62,10 @@ function findClosestFuture(futures, nowSeconds) {
 }
 
 const selectedPerpetualInstrument = computed(() =>
-  findInstrument(availableInstruments.perpetual, uiState.perpetualInstrumentName),
+  findInstrument(perpetuals.value, uiState.perpetualInstrumentName),
 );
 const selectedFutureInstrument = computed(() =>
-  findInstrument(availableInstruments.future, uiState.futureInstrumentName),
+  findInstrument(futures.value, uiState.futureInstrumentName),
 );
 const RESOLUTION_KEYS = Object.keys(RESOLUTION_CONFIG);
 
@@ -232,8 +230,8 @@ onMounted(async () => {
 
   // Set available instruments
   const defaultPerp = findInstrument(perps, "BTC-PERPETUAL");
-  availableInstruments.perpetual = perps;
-  availableInstruments.future = futures;
+  perpetuals.value = perps;
+  futures.value = futures;
 
   // Set initial perpetual selection
   uiState.perpetualInstrumentName = defaultPerp?.instrument_name || "";
@@ -292,14 +290,14 @@ watch(
             v-model="uiState.perpetualInstrumentName"
           >
             <option
-              v-for="i in availableInstruments.perpetual"
+              v-for="i in perpetuals"
               :key="i.instrument_name"
               :value="i.instrument_name"
             >
               {{ i.instrument_name }}
             </option>
             <option
-              v-if="!availableInstruments.perpetual.length"
+              v-if="!perpetuals.length"
               :value="uiState.perpetualInstrumentName"
             >
               {{ uiState.perpetualInstrumentName }}
@@ -311,14 +309,14 @@ watch(
           <label for="future-instrument">Future</label>
           <select id="future-instrument" v-model="uiState.futureInstrumentName">
             <option
-              v-for="i in availableInstruments.future"
+              v-for="i in futures"
               :key="i.instrument_name"
               :value="i.instrument_name"
             >
               {{ i.instrument_name }}
             </option>
             <option
-              v-if="!availableInstruments.future.length"
+              v-if="!futures.length"
               :value="uiState.futureInstrumentName"
             >
               {{ uiState.futureInstrumentName }}
