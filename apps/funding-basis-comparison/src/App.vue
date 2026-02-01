@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, shallowRef, watch } from "vue";
 import FundingChart from "./components/FundingChart.vue";
 import {
   buildFundingSeries,
@@ -32,10 +32,9 @@ const ui = reactive({
 });
 const perpetualInstruments = ref([]);
 const futureInstruments = ref([]);
-const futureInstrument = ref(null);
-const markByResolution = ref({});
-const futureMarkByResolution = ref({});
-const indexByResolution = ref({});
+const perpMarkByResolution = shallowRef({});
+const futureMarkByResolution = shallowRef({});
+const indexByResolution = shallowRef({});
 const chartRef = ref(null);
 const lastLoadedResolutionKey = ref("3600");
 const mainRequestId = ref(0);
@@ -66,6 +65,9 @@ const displayResolutionKey = computed(
 const selectedPerpetualInstrument = computed(() =>
   findInstrument(perpetualInstruments.value, ui.perpetualInstrumentName),
 );
+const selectedFutureInstrument = computed(() =>
+  findInstrument(futureInstruments.value, ui.futureInstrumentName),
+);
 const resolutionKeys = computed(() => Object.keys(RESOLUTION_CONFIG));
 
 function filterSeriesData(series) {
@@ -80,7 +82,7 @@ function filterSeriesData(series) {
 
 const mainSeries = computed(() => {
   const resolutionKey = displayResolutionKey.value;
-  const mark = markByResolution.value[resolutionKey] || [];
+  const mark = perpMarkByResolution.value[resolutionKey] || [];
   const index = indexByResolution.value[resolutionKey] || [];
   const intervalSeconds =
     RESOLUTION_CONFIG[resolutionKey]?.interval_seconds ?? Number(resolutionKey);
@@ -99,7 +101,7 @@ const basisSeries = computed(() => {
   const series = buildBasisSeries({
     mark,
     index,
-    instrument: futureInstrument.value || {},
+    instrument: selectedFutureInstrument.value || {},
   });
   return filterSeriesData(series);
 });
@@ -144,8 +146,8 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
 
     if (requestId !== mainRequestId.value) return;
 
-    markByResolution.value = {
-      ...markByResolution.value,
+    perpMarkByResolution.value = {
+      ...perpMarkByResolution.value,
       [resolutionKey]: mainMarkResult || [],
     };
     indexByResolution.value = {
@@ -206,12 +208,8 @@ async function loadFuture({ futureInstrument, resolutionKey }) {
 
 async function loadSelectedFutureSeries(resolutionKey) {
   if (!ui.futureInstrumentName) return;
-  futureInstrument.value = findInstrument(
-    futureInstruments.value,
-    ui.futureInstrumentName,
-  );
   await loadFuture({
-    futureInstrument: futureInstrument.value,
+    futureInstrument: selectedFutureInstrument.value,
     resolutionKey,
   });
 }
@@ -246,7 +244,6 @@ onMounted(async () => {
   if (futures.length) {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const closest = findClosestFuture(futures, nowSeconds);
-    futureInstrument.value = closest;
     ui.futureInstrumentName = closest.instrument_name;
   }
 
