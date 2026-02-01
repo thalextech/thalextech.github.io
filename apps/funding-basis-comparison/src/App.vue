@@ -34,14 +34,10 @@ const availableInstruments = reactive({
   perpetual: [],
   future: [],
 });
-const dataState = {
-  displayed: {
-    perpMark: shallowRef([]),
-    futureMark: shallowRef([]),
-    index: shallowRef([]),
-    resolutionKey: ref(uiState.selectedResolutionKey),
-  },
-};
+const displayedResolutionKey = ref(uiState.selectedResolutionKey);
+const displayedPerpMark = shallowRef([]);
+const displayedFutureMark = shallowRef([]);
+const displayedIndex = shallowRef([]);
 const chartRef = ref(null);
 const cacheRequestIds = {
   main: ref(0),
@@ -67,7 +63,6 @@ function findClosestFuture(futures, nowSeconds) {
   return closest?.future || futures[0];
 }
 
-const displayResolutionKey = computed(() => dataState.displayed.resolutionKey.value);
 const selectedPerpetualInstrument = computed(() =>
   findInstrument(availableInstruments.perpetual, uiState.perpetualInstrumentName),
 );
@@ -87,9 +82,9 @@ function filterSeriesData(series) {
 }
 
 const mainSeries = computed(() => {
-  const resolutionKey = displayResolutionKey.value;
-  const mark = dataState.displayed.perpMark.value || [];
-  const index = dataState.displayed.index.value || [];
+  const resolutionKey = displayedResolutionKey.value;
+  const mark = displayedPerpMark.value || [];
+  const index = displayedIndex.value || [];
   const intervalSeconds =
     RESOLUTION_CONFIG[resolutionKey]?.interval_seconds ?? Number(resolutionKey);
   const series = buildFundingSeries({
@@ -101,8 +96,8 @@ const mainSeries = computed(() => {
 });
 
 const basisSeries = computed(() => {
-  const mark = dataState.displayed.futureMark.value || [];
-  const index = dataState.displayed.index.value || [];
+  const mark = displayedFutureMark.value || [];
+  const index = displayedIndex.value || [];
   const series = buildBasisSeries({
     mark,
     index,
@@ -126,7 +121,7 @@ function getTimestampRange(resolutionKey) {
 async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
   if (!perpetualInstrument) return;
   const requestId = ++cacheRequestIds.main.value;
-  const previousResolutionKey = dataState.displayed.resolutionKey.value;
+  const previousResolutionKey = displayedResolutionKey.value;
 
   uiState.loading = true;
   uiState.error = "";
@@ -152,11 +147,11 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
 
     if (requestId !== cacheRequestIds.main.value) return;
 
-    dataState.displayed.perpMark.value = mainMarkResult || [];
-    dataState.displayed.index.value = mainIndex || [];
-    dataState.displayed.resolutionKey.value = resolutionKey;
+    displayedPerpMark.value = mainMarkResult || [];
+    displayedIndex.value = mainIndex || [];
+    displayedResolutionKey.value = resolutionKey;
     if (previousResolutionKey !== resolutionKey) {
-      dataState.displayed.futureMark.value = [];
+      displayedFutureMark.value = [];
     }
 
     if (!mainSeries.value.length) {
@@ -178,7 +173,7 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
 async function loadFuture({ futureInstrument, resolutionKey }) {
   const requestId = ++cacheRequestIds.future.value;
   if (!futureInstrument) {
-    dataState.displayed.futureMark.value = [];
+    displayedFutureMark.value = [];
     return;
   }
 
@@ -197,7 +192,7 @@ async function loadFuture({ futureInstrument, resolutionKey }) {
 
     if (requestId !== cacheRequestIds.future.value) return;
 
-    dataState.displayed.futureMark.value = futureMarkResult || [];
+    displayedFutureMark.value = futureMarkResult || [];
   } catch (e) {
     if (requestId !== cacheRequestIds.future.value) return;
     if (!uiState.error) {
@@ -269,7 +264,7 @@ watch(
   () => uiState.futureInstrumentName,
   async () => {
     if (uiState.loading) return;
-    await loadSelectedFutureSeries(dataState.displayed.resolutionKey.value);
+    await loadSelectedFutureSeries(displayedResolutionKey.value);
   },
   { immediate: false },
 );
