@@ -401,6 +401,7 @@ watch(
       :basis-data="secondarySeries"
       :future-basis-data="basisSeries"
       :instrument-name="uiState.perpetualInstrumentName"
+      :future-instrument-name="uiState.futureInstrumentName"
       :loading="uiState.loading"
       :show-roll-pnl="showRollPnl"
     />

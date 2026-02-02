@@ -14,6 +14,7 @@ const props = defineProps({
   basisData: { type: Array, default: () => [] },
   futureBasisData: { type: Array, default: () => [] },
   instrumentName: { type: String, default: "" },
+  futureInstrumentName: { type: String, default: "" },
   loading: { type: Boolean, default: false },
   showRollPnl: { type: Boolean, default: false },
 });
@@ -143,6 +144,15 @@ const subtitle = computed(() => {
   const start = data[0].date;
   const end = data[data.length - 1].date;
   return `${fmt(start)} - ${fmt(end)}`;
+});
+
+const detailTitle = computed(() => {
+  const base = props.futureInstrumentName
+    ? `${props.futureInstrumentName}-PERPETUAL`
+    : props.instrumentName || "Perpetual";
+  return props.showRollPnl
+    ? `Roll price ${base}`
+    : `Relative carry ${base}`;
 });
 
 const applyTextStyle = (node, styleKey) => {
@@ -1008,7 +1018,7 @@ function render() {
   chartState.detailTitleText
     .attr("x", detailWidth / 2)
     .attr("y", 30)
-    .text(isRollMode ? "Roll price" : "Relative carry");
+    .text(detailTitle.value);
   const subtitleY = 54;
   const metricY = 72;
   const subtitleLine2Y = metricY;
@@ -1250,6 +1260,7 @@ watch(
     props.basisData,
     props.futureBasisData,
     props.instrumentName,
+    props.futureInstrumentName,
     props.showRollPnl,
   ],
   () => render(),
