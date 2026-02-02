@@ -1,9 +1,9 @@
-const API_BASE = "https://thalex.com/api/v2/public";
-export const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
+const API_BASE = "/api/v2/public";
+
+const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 const SECONDS_PER_BS_YEAR = 365.25 * 24 * 60 * 60;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_PREFIX = "thalex-cache";
-const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
 function getLocalStorage() {
   if (typeof window === "undefined") return null;
@@ -40,6 +40,36 @@ function readCache(key) {
   };
 }
 
+function clearOldCache() {
+  const storage = getLocalStorage();
+  if (!storage) return;
+
+  const keys = [];
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i);
+    if (key && key.startsWith(CACHE_PREFIX)) {
+      keys.push(key);
+    }
+  }
+
+  // Parse timestamps and sort by age (oldest first)
+  const entries = keys.map(key => {
+    try {
+      const raw = storage.getItem(key);
+      const parsed = JSON.parse(raw);
+      return { key, timestamp: parsed.timestamp || 0 };
+    } catch {
+      return { key, timestamp: 0 };
+    }
+  }).sort((a, b) => a.timestamp - b.timestamp);
+
+  // Remove oldest 30% of cache entries
+  const toRemove = Math.ceil(entries.length * 0.3);
+  for (let i = 0; i < toRemove && i < entries.length; i++) {
+    storage.removeItem(entries[i].key);
+  }
+}
+
 function writeCache(key, rows, meta) {
   const storage = getLocalStorage();
   if (!storage) return;
@@ -51,88 +81,35 @@ function writeCache(key, rows, meta) {
     };
     storage.setItem(key, JSON.stringify(payload));
   } catch (error) {
-    console.error("Failed to write cache", error);
+    if (error.name === "QuotaExceededError") {
+      // Clear old cache entries and retry once
+      clearOldCache();
+      try {
+        storage.setItem(key, JSON.stringify(payload));
+      } catch (retryError) {
+        // Silently fail if still can't write
+      }
+    }
   }
 }
 
-function cacheCoversRange(meta, from, to) {
-  if (!meta || typeof meta !== "object") return false;
-  const cachedFrom = meta.from;
-  const cachedTo = meta.to;
-  if (!Number.isFinite(cachedFrom) || !Number.isFinite(cachedTo)) return false;
-  if (Number.isFinite(from) && cachedFrom > from) return false;
-  if (Number.isFinite(to) && cachedTo < to) return false;
-  return true;
-}
+async function getJson(url, { timeoutMs = 20_000 } = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-function filterRowsByRange(rows, from, to) {
-  if (!Array.isArray(rows)) return [];
-  const hasFrom = Number.isFinite(from);
-  const hasTo = Number.isFinite(to);
-  if (!hasFrom && !hasTo) return rows;
-  return rows.filter((row) => {
-    const ts = row?.[0];
-    if (!Number.isFinite(ts)) return false;
-    if (hasFrom && ts < from) return false;
-    if (hasTo && ts > to) return false;
-    return true;
-  });
-}
-
-function isRetryableStatus(status) {
-  return RETRYABLE_STATUS.has(status);
-}
-
-function isRetryableError(error) {
-  if (!error) return false;
-  if (error.name === "AbortError") return true;
-  if (error instanceof TypeError) return true;
-  return false;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function getJson(
-  url,
-  { timeoutMs = 20_000, maxRetries = 2, retryDelayMs = 500 } = {},
-) {
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-      const res = await fetch(url, { signal: controller.signal });
-      const json = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        const message =
-          json?.error?.message ||
-          json?.message ||
-          `Request failed (${res.status})`;
-        const error = new Error(message);
-        error.status = res.status;
-
-        if (attempt < maxRetries && isRetryableStatus(res.status)) {
-          const delay = retryDelayMs * Math.pow(2, attempt);
-          await sleep(delay);
-          continue;
-        }
-        throw error;
-      }
-
-      return json;
-    } catch (error) {
-      if (attempt < maxRetries && isRetryableError(error)) {
-        const delay = retryDelayMs * Math.pow(2, attempt);
-        await sleep(delay);
-        continue;
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeout);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const message =
+        json?.error?.message ||
+        json?.message ||
+        `Request failed (${res.status})`;
+      throw new Error(message);
     }
+    return json;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -163,9 +140,8 @@ export async function fetchIndexHistory({
 } = {}) {
   const cacheKey = `${CACHE_PREFIX}:index:${index_name}:${resolution}`;
   const cached = readCache(cacheKey);
-  if (cached && cacheCoversRange(cached.meta, from, to)) {
-    const filtered = filterRowsByRange(cached.rows, from, to);
-    return (filtered || []).map((row) => ({
+  if (cached) {
+    return (cached.rows || []).map((row) => ({
       ts: row[0],
       index_price_open: row[1],
       index_price_high: row[2],
@@ -184,7 +160,7 @@ export async function fetchIndexHistory({
   const rows = json?.result?.index;
   if (!Array.isArray(rows)) return [];
 
-  writeCache(cacheKey, rows, { index_name, resolution, from, to });
+  writeCache(cacheKey, rows, { index_name, resolution });
 
   return rows.map((row) => ({
     ts: row[0],
@@ -195,37 +171,46 @@ export async function fetchIndexHistory({
   }));
 }
 
-function mapMarkRowByType(row) {
+function mapMarkRow(row) {
   if (!Array.isArray(row)) return null;
-
-  const base = {
-    ts: row[0],
-    mark_price_open: row[1],
-    mark_price_high: row[2],
-    mark_price_low: row[3],
-    mark_price_close: row[4],
-    funding: null,
-    tob: null,
-    iv_open: null,
-    iv_high: null,
-    iv_low: null,
-    iv_close: null,
-  };
+  const ts = row[0];
+  const mark_price_open = row[1];
+  const mark_price_high = row[2];
+  const mark_price_low = row[3];
+  const mark_price_close = row[4];
+  let funding = null;
+  let tob = null;
+  let iv_open = null;
+  let iv_high = null;
+  let iv_low = null;
+  let iv_close = null;
 
   if (row.length >= 9) {
-    base.iv_open = row[5];
-    base.iv_high = row[6];
-    base.iv_low = row[7];
-    base.iv_close = row[8];
-    base.tob = row[9] ?? null;
+    iv_open = row[5];
+    iv_high = row[6];
+    iv_low = row[7];
+    iv_close = row[8];
+    tob = row[9] ?? null;
   } else if (row.length >= 7) {
-    base.funding = row[5];
-    base.tob = row[6];
+    funding = row[5];
+    tob = row[6];
   } else if (row.length >= 6) {
-    base.tob = row[5];
+    tob = row[5];
   }
 
-  return base;
+  return {
+    ts,
+    mark_price_open,
+    mark_price_high,
+    mark_price_low,
+    mark_price_close,
+    funding,
+    tob,
+    iv_open,
+    iv_high,
+    iv_low,
+    iv_close,
+  };
 }
 
 export async function fetchMarkHistory({
@@ -236,11 +221,10 @@ export async function fetchMarkHistory({
 } = {}) {
   const cacheKey = `${CACHE_PREFIX}:mark:${instrument_name}:${resolution}`;
   const cached = readCache(cacheKey);
-  if (cached && cacheCoversRange(cached.meta, from, to)) {
-    const filtered = filterRowsByRange(cached.rows, from, to);
-    return (filtered || [])
-      .map((row) => mapMarkRowByType(row))
-      .filter((row) => row !== null);
+  if (cached) {
+    return {
+      data: (cached.rows || []).map(mapMarkRow).filter((row) => row !== null),
+    };
   }
 
   const url = makeUrl("/mark_price_historical_data", {
@@ -252,37 +236,39 @@ export async function fetchMarkHistory({
   const json = await getJson(url);
   const rows = json?.result?.mark;
 
-  if (!Array.isArray(rows)) return [];
+  if (!Array.isArray(rows)) return { data: [] };
 
-  writeCache(cacheKey, rows, { instrument_name, resolution, from, to });
+  writeCache(cacheKey, rows, { instrument_name, resolution });
 
-  return rows.map((row) => mapMarkRowByType(row)).filter((row) => row !== null);
+  return {
+    data: rows.map(mapMarkRow),
+  };
 }
 
-export function buildBasisSeries({ mark, index, instrument }) {
+export function computeBasisSeries({ mark, index, instrument }) {
   const indexByTs = new Map((index || []).map((row) => [row.ts, row]));
   const expiration = instrument?.expiration_timestamp;
   const instrumentName = instrument.instrument_name;
 
   const merged = [];
-  for (const markPoint of mark || []) {
-    const indexPoint = indexByTs.get(markPoint.ts);
-    if (!indexPoint) continue;
+  for (const m of mark || []) {
+    const i = indexByTs.get(m.ts);
+    if (!i) continue;
 
-    const tte = expiration - markPoint.ts;
-    const basis_open = markPoint.mark_price_open - indexPoint.index_price_open;
-    const basis_close = markPoint.mark_price_close - indexPoint.index_price_close;
+    const tte = expiration - m.ts;
+    const basis_open = m.mark_price_open - i.index_price_open;
+    const basis_close = m.mark_price_close - i.index_price_close;
 
     const basis_pct =
-      indexPoint.index_price_close !== 0
-        ? (basis_close / indexPoint.index_price_close) * (SECONDS_PER_YEAR / tte)
+      i.index_price_close !== 0
+        ? (basis_close / i.index_price_close) * (SECONDS_PER_YEAR / tte)
         : null;
 
     merged.push({
-      ...markPoint,
-      ...indexPoint,
+      ...m,
+      ...i,
       instrumentName,
-      date: new Date(markPoint.ts * 1000),
+      date: new Date(m.ts * 1000),
       tte,
       basis_open,
       basis_close,
@@ -293,23 +279,22 @@ export function buildBasisSeries({ mark, index, instrument }) {
   return merged;
 }
 
-export function buildFundingSeries({ mark, index, intervalSeconds }) {
+export function computeFundingSeries({ mark, index, intervalSeconds }) {
   const indexByTs = new Map((index || []).map((row) => [row.ts, row]));
   const merged = [];
+  for (const m of mark || []) {
+    const i = indexByTs.get(m.ts);
+    if (!i) continue;
 
-  for (const markPoint of mark || []) {
-    const indexPoint = indexByTs.get(markPoint.ts);
-    if (!indexPoint) continue;
-
-    const annualizedFunding = Number.isFinite(markPoint.funding)
-      ? ((markPoint.funding * -1) / indexPoint.index_price_close) *
+    const annualizedFunding = Number.isFinite(m.funding)
+      ? ((m.funding * -1) / i.index_price_close) *
         (SECONDS_PER_YEAR / intervalSeconds)
       : null;
 
     merged.push({
-      ...markPoint,
-      ...indexPoint,
-      date: new Date(markPoint.ts * 1000),
+      ...m,
+      ...i,
+      date: new Date(m.ts * 1000),
       funding_rate_annualized: annualizedFunding,
     });
   }
@@ -359,8 +344,7 @@ function calcInputs(spot, strike, tteSeconds, iv) {
   if (!Number.isFinite(iv) || iv <= 0) return null;
   if (!Number.isFinite(tau) || tau <= 0) return null;
   const sqrtTau = Math.sqrt(tau);
-  const d1 =
-    (Math.log(spot / strike) + 0.5 * iv * iv * tau) / (iv * sqrtTau);
+  const d1 = (Math.log(spot / strike) + 0.5 * iv * iv * tau) / (iv * sqrtTau);
   return { tau, sqrtTau, d1 };
 }
 
@@ -399,6 +383,7 @@ export function computeGreeksPnlSeries({ mark, index, instrument }) {
     const i = indexByTs.get(m.ts);
     if (!i) continue;
 
+    // Calculate Greeks at the OPEN of this candle (start of the interval)
     const tteSecondsOpen = expiration - m.ts;
     const greeksAtOpen = calcGreeks(
       i.index_price_open,
@@ -408,6 +393,7 @@ export function computeGreeksPnlSeries({ mark, index, instrument }) {
       optionType,
     );
 
+    // Calculate Greeks at close for reporting
     const tteSecondsClose = expiration - m.ts;
     const greeksAtClose = calcGreeks(
       i.index_price_close,
@@ -431,11 +417,11 @@ export function computeGreeksPnlSeries({ mark, index, instrument }) {
         ? (m.ts - prevTs) / (24 * 60 * 60)
         : null;
     const pl =
-      Number.isFinite(m.mark_price_close) &&
-      Number.isFinite(m.mark_price_open)
+      Number.isFinite(m.mark_price_close) && Number.isFinite(m.mark_price_open)
         ? m.mark_price_close - m.mark_price_open
         : null;
 
+    // Use Greeks at OPEN for attribution (aligned with the interval we're explaining)
     let delta_PL = null;
     let gamma_PL = null;
     let theta_PL = null;
@@ -456,7 +442,9 @@ export function computeGreeksPnlSeries({ mark, index, instrument }) {
     }
 
     let attributed_PL = null;
-    if ([delta_PL, gamma_PL, theta_PL, vega_PL].some((v) => Number.isFinite(v))) {
+    if (
+      [delta_PL, gamma_PL, theta_PL, vega_PL].some((v) => Number.isFinite(v))
+    ) {
       attributed_PL = 0;
       if (Number.isFinite(delta_PL)) attributed_PL += delta_PL;
       if (Number.isFinite(gamma_PL)) attributed_PL += gamma_PL;
