@@ -12,6 +12,7 @@ import { exportChartToPng } from "../../../../lib/export-png.js";
 const props = defineProps({
   data: { type: Array, default: () => [] },
   basisData: { type: Array, default: () => [] },
+  futureBasisData: { type: Array, default: () => [] },
   instrumentName: { type: String, default: "" },
   loading: { type: Boolean, default: false },
   showRollPnl: { type: Boolean, default: false },
@@ -101,6 +102,7 @@ let selectedRange = null;
 let detailActive = false;
 let lineRevealTimer = null;
 let lineRevealPending = false;
+const legendMetricMode = ref("funding");
 
 const updateSelectedRange = () => {
   selectedRange = computeSelectedRange(selectedDatums);
@@ -252,7 +254,7 @@ const resetHoverStyles = () => {
   applySelectionStyles();
 };
 
-const showTooltip = (event, datum) => {
+const showTooltip = (event, datum, metricLabel, metricValue) => {
   const tooltip = tooltipRef.value;
   const wrapper = svgRef.value?.closest(".chartWrap");
   if (!tooltip || !wrapper) return;
@@ -262,13 +264,13 @@ const showTooltip = (event, datum) => {
   const indexValue = Number.isFinite(datum.index_price_close)
     ? formatIndex(datum.index_price_close)
     : "n/a";
-  const fundingValue = Number.isFinite(datum.funding_rate_annualized)
-    ? formatFunding(datum.funding_rate_annualized)
+  const legendMetricValue = Number.isFinite(metricValue)
+    ? formatFunding(metricValue)
     : "n/a";
   tooltip.innerHTML = `
     <div class="tooltip-title">${formatDate(datum.date)}</div>
     <div>Index: ${indexValue}</div>
-    <div>Funding: ${fundingValue}</div>
+    <div>${metricLabel}: ${legendMetricValue}</div>
   `;
   tooltip.style.left = `${x}px`;
   tooltip.style.top = `${y}px`;
@@ -336,6 +338,14 @@ const ensureChartElements = () => {
 
   if (!chartState.legendGroup) {
     chartState.legendGroup = svg.append("g");
+    chartState.legendGroup
+      .style("cursor", "pointer")
+      .on("click", (event) => {
+        event.stopPropagation();
+        legendMetricMode.value =
+          legendMetricMode.value === "funding" ? "basis" : "funding";
+        render();
+      });
     chartState.legendTitle = appendText(chartState.legendGroup, "legendTitle", {
       text: "Annualized funding rate",
     });
@@ -477,6 +487,433 @@ function exportPng({
 }
 
 defineExpose({ exportPng });
+
+function createLegendMetricContext({ data, futureBasisByTs, mode }) {
+  const isBasisLegendMode = mode === "basis";
+  const label = isBasisLegendMode ? "Basis (ann.)" : "Funding (ann.)";
+  const title = isBasisLegendMode
+    ? "Annualized basis (future)"
+    : "Annualized funding rate";
+
+  const getBasisAnnualized = (datum) => {
+    if (!datum) return null;
+    const ts = Number.isFinite(datum.ts) ? datum.ts : getDatumTs(datum);
+    if (!Number.isFinite(ts)) return null;
+    const value = futureBasisByTs.get(ts);
+    return Number.isFinite(value) ? value : null;
+  };
+
+  const getValue = (datum) =>
+    isBasisLegendMode ? getBasisAnnualized(datum) : datum.funding_rate_annualized;
+
+  const values = data
+    .map((datum) => getValue(datum))
+    .filter((value) => typeof value === "number" && Number.isFinite(value));
+  const [extentMin, extentMax] = d3.extent(values);
+  const hasValidExtent =
+    Number.isFinite(extentMin) && Number.isFinite(extentMax);
+  const domainMin = hasValidExtent
+    ? isBasisLegendMode
+      ? extentMin
+      : Math.max(extentMin, -0.05)
+    : 0;
+  const domainMax = hasValidExtent ? extentMax : 0;
+  const domainSpan = domainMax - domainMin;
+  const hasSpread = hasValidExtent && domainSpan !== 0;
+  const fallbackColor = "#7c7f8f";
+
+  const colorForValue = (value) => {
+    if (!Number.isFinite(value) || !hasValidExtent) {
+      return fallbackColor;
+    }
+    if (!hasSpread) {
+      return d3.interpolateRdBu(0.5);
+    }
+    const normalized = (value - domainMin) / domainSpan;
+    const clamped = Math.max(0, Math.min(1, normalized));
+    const ramp = 0.32 + 0.68 * clamped;
+    return d3.interpolateRdBu(1 - ramp);
+  };
+
+  const formatValue = (value) =>
+    Number.isFinite(value) ? d3.format("+.2%")(value) : "n/a";
+
+  return {
+    label,
+    title,
+    extentMin,
+    domainMin,
+    domainMax,
+    domainSpan,
+    hasValidExtent,
+    getValue,
+    colorForValue,
+    formatValue,
+  };
+}
+
+const futureBasisByTs = computed(() => {
+  const map = new Map();
+  for (const row of props.futureBasisData || []) {
+    if (!Number.isFinite(row?.ts) || !Number.isFinite(row?.basis_pct)) continue;
+    map.set(row.ts, row.basis_pct);
+  }
+  return map;
+});
+
+function renderLegendBar({
+  mainWidth,
+  margin,
+  withLayoutTransition,
+  gradientId,
+  title,
+  extentMin,
+  domainMax,
+  formatValue,
+}) {
+  const legendWidth = 220;
+  const legendHeight = 10;
+  const legendX = mainWidth - margin.right - legendWidth;
+  const legendY = margin.top - 52;
+  withLayoutTransition(chartState.legendGroup).attr(
+    "transform",
+    `translate(${legendX},${legendY})`,
+  );
+  const legendPaddingY = 8;
+  const legendTitleY = legendPaddingY;
+  const legendBarTop = legendTitleY + 14;
+  const legendLabelY = legendBarTop + legendHeight + 16;
+
+  chartState.legendTitle?.attr("x", 0).attr("y", legendTitleY).text(title);
+  chartState.legendRect
+    .attr("x", 0)
+    .attr("y", legendBarTop)
+    .attr("width", legendWidth)
+    .attr("height", legendHeight)
+    .attr("fill", `url(#${gradientId})`);
+  chartState.legendMinText
+    .attr("x", 0)
+    .attr("y", legendLabelY)
+    .text(formatValue(extentMin));
+  chartState.legendMaxText
+    .attr("x", legendWidth)
+    .attr("y", legendLabelY)
+    .text(formatValue(domainMax));
+}
+
+function renderDetailWindow({
+  selection,
+  data,
+  basisData,
+  isRollMode,
+  detailPlaceholder,
+  detailWidth,
+  detailInnerWidth,
+  subtitleY,
+  subtitleLine2Y,
+  innerHeight,
+  axisTitlePadding,
+  detailColors,
+}) {
+  const setSubtitle = (line1, line2 = null, line2Bold = null) => {
+    chartState.detailSubtitleText.text("");
+    chartState.detailSubtitleText.selectAll("tspan").remove();
+    chartState.detailSubtitleText
+      .append("tspan")
+      .attr("x", detailWidth / 2)
+      .attr("y", subtitleY)
+      .text(line1);
+    if (line2) {
+      chartState.detailSubtitleText
+        .append("tspan")
+        .attr("x", detailWidth / 2)
+        .attr("y", subtitleLine2Y)
+        .text(line2);
+      if (line2Bold) {
+        chartState.detailSubtitleText
+          .append("tspan")
+          .text(line2Bold)
+          .style("font-weight", 700);
+      }
+    }
+  };
+  if (!selection || selection.length !== 2) {
+    setSubtitle(detailPlaceholder);
+    chartState.detailLinePath.attr("display", "none");
+    chartState.detailBasisLinePath.attr("display", "none");
+    chartState.detailXAxisGroup.attr("display", "none");
+    chartState.detailYAxisGroup.attr("display", "none");
+    chartState.detailXAxisLabel.attr("display", "none");
+    chartState.detailYAxisLabel.attr("display", "none");
+    chartState.detailMessageText.attr("display", "none");
+    chartState.detailMetricText.attr("display", "none");
+    chartState.detailLegendGroup.attr("display", "none");
+    return;
+  }
+  chartState.detailLegendGroup.attr("display", null);
+
+  const startIndex = data.indexOf(selection[0]);
+  const endIndex = data.indexOf(selection[1]);
+  if (startIndex < 0 || endIndex < 0) return;
+  const fromIndex = Math.min(startIndex, endIndex);
+  const toIndex = Math.max(startIndex, endIndex);
+  const window = data.slice(fromIndex, toIndex + 1);
+  const windowStart = window[0]?.date;
+  const windowEnd = window[window.length - 1]?.date;
+  let detailSubtitle = detailPlaceholder;
+  if (windowStart instanceof Date && windowEnd instanceof Date) {
+    const days = Math.abs((windowEnd - windowStart) / MS_PER_DAY);
+    detailSubtitle = `${formatDate(windowStart)} - ${formatDate(windowEnd)} (${days.toFixed(
+      1,
+    )} days)`;
+  }
+  let cumulative = 0;
+  let fundingSum = 0;
+  let fundingCount = 0;
+  let indexSum = 0;
+  let indexCount = 0;
+  const intervalSecondsCandidates = [];
+  const series = window.map((point, idx) => {
+    const funding = Number.isFinite(point.funding) ? -point.funding : 0;
+    if (Number.isFinite(point.funding)) {
+      fundingSum += -point.funding;
+      fundingCount += 1;
+    }
+    if (Number.isFinite(point.index_price_close)) {
+      indexSum += point.index_price_close;
+      indexCount += 1;
+    }
+    if (idx > 0 && point.date instanceof Date) {
+      const prev = window[idx - 1];
+      if (prev?.date instanceof Date) {
+        const delta = (point.date - prev.date) / 1000;
+        if (Number.isFinite(delta) && delta > 0) {
+          intervalSecondsCandidates.push(delta);
+        }
+      }
+    }
+    cumulative += funding;
+    return { date: point.date, cumulative };
+  });
+  const avgFunding = fundingCount ? fundingSum / fundingCount : null;
+  const avgIndex = indexCount ? indexSum / indexCount : null;
+  const avgIntervalSeconds = intervalSecondsCandidates.length
+    ? intervalSecondsCandidates.reduce((sum, value) => sum + value, 0) /
+      intervalSecondsCandidates.length
+    : null;
+  const avgFundingAnnualized =
+    avgFunding != null &&
+    avgIndex != null &&
+    avgIndex !== 0 &&
+    avgIntervalSeconds != null
+      ? (avgFunding / avgIndex) * (SECONDS_PER_YEAR / avgIntervalSeconds)
+      : null;
+
+  const basisWindow = basisData
+    .filter(
+      (point) =>
+        point.date instanceof Date &&
+        windowStart instanceof Date &&
+        windowEnd instanceof Date &&
+        point.date >= windowStart &&
+        point.date <= windowEnd &&
+        Number.isFinite(point.basis_close),
+    )
+    .sort((a, b) => a.date - b.date);
+  const basisBase = basisWindow.length ? basisWindow[0].basis_close : 0;
+  const basisSeriesRaw = basisWindow.map((point) => ({
+    date: point.date,
+    cumulative: isRollMode ? point.basis_close : basisBase - point.basis_close,
+  }));
+  const basisSeries = basisSeriesRaw.map((point, idx) => {
+    const start = Math.max(0, idx - 7);
+    const slice = basisSeriesRaw.slice(start, idx + 1);
+    const mean =
+      slice.reduce((sum, entry) => sum + entry.cumulative, 0) / slice.length;
+    return { date: point.date, cumulative: mean };
+  });
+  const rollSeries = basisSeries;
+  let fundingIdx = 0;
+  let lastFunding = 0;
+  const getFundingAtDate = (targetDate) => {
+    if (!(targetDate instanceof Date)) return lastFunding;
+    while (
+      fundingIdx < series.length &&
+      series[fundingIdx]?.date instanceof Date &&
+      series[fundingIdx].date <= targetDate
+    ) {
+      lastFunding = series[fundingIdx].cumulative ?? lastFunding;
+      fundingIdx += 1;
+    }
+    return lastFunding;
+  };
+  const rollStartDate = rollSeries[0]?.date;
+  const fundingBase = rollStartDate ? getFundingAtDate(rollStartDate) : 0;
+  const adjustedSeries = rollSeries.map((point) => {
+    const fundingValue = getFundingAtDate(point.date) - fundingBase;
+    return { date: point.date, cumulative: point.cumulative + fundingValue };
+  });
+  let rollRoiText = null;
+  if (isRollMode && adjustedSeries.length >= 2) {
+    const startValue = adjustedSeries[0].cumulative;
+    const endValue = adjustedSeries[adjustedSeries.length - 1].cumulative;
+    const roi =
+      Number.isFinite(startValue) &&
+      startValue !== 0 &&
+      Number.isFinite(endValue)
+        ? (endValue - startValue) / Math.abs(startValue)
+        : null;
+    rollRoiText = roi != null ? d3.format("+.2%")(roi) : "n/a";
+  }
+  if (isRollMode) {
+    const rollLabel = "Adj Roll Price ROI: ";
+    const rollValue = rollRoiText || "n/a";
+    setSubtitle(detailSubtitle, rollLabel, rollValue);
+  } else {
+    setSubtitle(detailSubtitle);
+  }
+  const spanSeconds =
+    windowStart instanceof Date && windowEnd instanceof Date
+      ? Math.abs((windowEnd - windowStart) / 1000)
+      : null;
+  const basisAnnualized =
+    basisWindow.length &&
+    avgIndex != null &&
+    avgIndex !== 0 &&
+    spanSeconds &&
+    spanSeconds > 0
+      ? ((basisBase - basisWindow[basisWindow.length - 1].basis_close) /
+          avgIndex) *
+        (SECONDS_PER_YEAR / spanSeconds)
+      : null;
+  const hasBasis = basisData.length > 0;
+  const hasBasisInWindow = basisWindow.length > 0;
+  chartState.detailMetricText.selectAll("tspan").remove();
+  if (isRollMode) {
+    chartState.detailMetricText.attr("display", "none");
+  } else {
+    chartState.detailMetricText.attr("display", null);
+    const metricFunding =
+      avgFundingAnnualized != null ? formatFunding(avgFundingAnnualized) : "n/a";
+    const metricBasis =
+      basisAnnualized != null ? formatFunding(basisAnnualized) : "n/a";
+    chartState.detailMetricText.append("tspan").text("Avg funding: ");
+    chartState.detailMetricText
+      .append("tspan")
+      .text(metricFunding)
+      .style("font-weight", 700);
+    chartState.detailMetricText.append("tspan").text(" | basis cost: ");
+    chartState.detailMetricText
+      .append("tspan")
+      .text(metricBasis)
+      .style("font-weight", 700);
+  }
+
+  if (!hasBasisInWindow) {
+    const message = hasBasis
+      ? isRollMode
+        ? "No roll data for the selected window."
+        : "No basis data for the selected window."
+      : isRollMode
+        ? "No roll data available for this future."
+        : "No basis data available for this future.";
+    chartState.detailMessageText
+      .attr("x", detailInnerWidth / 2)
+      .attr("y", innerHeight / 2)
+      .text(message)
+      .attr("display", null);
+  } else {
+    chartState.detailMessageText.attr("display", "none");
+  }
+
+  const primarySeries = isRollMode ? adjustedSeries : series;
+  const secondarySeries = isRollMode ? rollSeries : basisSeries;
+  const xDomain = d3.extent([...primarySeries, ...secondarySeries], (d) => d.date);
+  const combinedValues = [
+    ...primarySeries.map((d) => d.cumulative),
+    ...secondarySeries.map((d) => d.cumulative),
+  ];
+  const [rawMin, rawMax] = d3.extent(combinedValues);
+  let yMin = rawMin ?? 0;
+  let yMax = rawMax ?? 0;
+  if (isRollMode && rollSeries.length) {
+    const [rollMin, rollMax] = d3.extent(rollSeries.map((d) => d.cumulative));
+    if (Number.isFinite(rollMin)) {
+      yMin = Math.min(yMin, rollMin - Math.abs(rollMin) * 0.1);
+    }
+    if (Number.isFinite(rollMax)) {
+      yMax = Math.max(yMax, rollMax + Math.abs(rollMax) * 0.1);
+    }
+  } else if (!isRollMode && basisSeries.length) {
+    const [basisMin, basisMax] = d3.extent(basisSeries.map((d) => d.cumulative));
+    if (Number.isFinite(basisMin)) {
+      yMin = Math.min(yMin, basisMin - Math.abs(basisMin) * 0.1);
+    }
+    if (Number.isFinite(basisMax)) {
+      yMax = Math.max(yMax, basisMax + Math.abs(basisMax) * 0.1);
+    }
+  }
+  if (yMin === yMax) {
+    const pad = yMin === 0 ? 0.0001 : Math.abs(yMin) * 0.1;
+    yMin -= pad;
+    yMax += pad;
+  }
+  const detailX = d3.scaleUtc().domain(xDomain).range([0, detailInnerWidth]);
+  const detailY = d3
+    .scaleLinear()
+    .domain([yMin, yMax])
+    .nice()
+    .range([innerHeight, 0]);
+  const detailXAxis = d3.axisBottom(detailX).ticks(4).tickSize(0).tickPadding(10);
+  const detailYAxis = d3
+    .axisLeft(detailY)
+    .ticks(5)
+    .tickSize(0)
+    .tickPadding(10)
+    .tickFormat(d3.format("$,.2f"));
+
+  chartState.detailXAxisGroup
+    .attr("transform", `translate(0,${innerHeight})`)
+    .call(detailXAxis)
+    .call(axisStyle)
+    .attr("display", null);
+  chartState.detailYAxisGroup
+    .call(detailYAxis)
+    .call(axisStyle)
+    .attr("display", null);
+  chartState.detailXAxisLabel
+    .attr("x", detailInnerWidth / 2)
+    .attr("y", innerHeight + 42 + axisTitlePadding)
+    .attr("display", null);
+  chartState.detailYAxisLabel
+    .attr("transform", "rotate(-90)")
+    .attr("x", -innerHeight / 2)
+    .attr("y", -52 - axisTitlePadding)
+    .attr("display", null);
+
+  const line = d3
+    .line()
+    .x((d) => detailX(d.date))
+    .y((d) => detailY(d.cumulative))
+    .curve(d3.curveMonotoneX);
+  chartState.detailLinePath
+    .attr("stroke", detailColors.funding)
+    .attr("d", line(primarySeries))
+    .attr("display", null);
+  if (secondarySeries.length) {
+    chartState.detailBasisLinePath
+      .attr("stroke", detailColors.secondary)
+      .attr("d", line(secondarySeries))
+      .attr("display", null);
+    chartState.detailLegendBasisLine.attr("display", null);
+    chartState.detailLegendBasisText.attr("display", null);
+  } else {
+    chartState.detailBasisLinePath.attr("display", "none");
+    chartState.detailLegendBasisLine.attr("display", "none");
+    chartState.detailLegendBasisText.attr("display", "none");
+  }
+  chartState.detailMetricText.attr("display", null);
+}
 
 function render() {
   const svgEl = svgRef.value;
@@ -621,31 +1058,23 @@ function render() {
   chartState.currentXScale = x;
   chartState.currentYScale = y;
 
-  const fundingValues = data
-    .map((d) => d.funding_rate_annualized)
-    .filter((v) => typeof v === "number" && Number.isFinite(v));
-  const [extentMin, extentMax] = d3.extent(fundingValues);
-  const hasValidExtent =
-    Number.isFinite(extentMin) && Number.isFinite(extentMax);
-  const domainMin = hasValidExtent ? Math.max(extentMin, -0.05) : 0;
-  const domainMax = hasValidExtent ? extentMax : 0;
-  const domainSpan = domainMax - domainMin;
-  const hasSpread = hasValidExtent && domainSpan !== 0;
-  const fallbackColor = "#7c7f8f";
-  const colorForFunding = (value) => {
-    if (!Number.isFinite(value) || !hasValidExtent) {
-      return fallbackColor;
-    }
-    if (!hasSpread) {
-      return d3.interpolateRdBu(0.5);
-    }
-    const normalized = (value - domainMin) / domainSpan;
-    const clamped = Math.max(0, Math.min(1, normalized));
-    const ramp = 0.32 + 0.68 * clamped;
-    return d3.interpolateRdBu(1 - ramp);
-  };
-  const formatFundingPct = (value) =>
-    Number.isFinite(value) ? d3.format("+.2%")(value) : "n/a";
+  const legendMetric = createLegendMetricContext({
+    data,
+    futureBasisByTs: futureBasisByTs.value,
+    mode: legendMetricMode.value,
+  });
+  const {
+    label: legendMetricLabel,
+    title: legendTitleText,
+    extentMin,
+    domainMin,
+    domainMax,
+    domainSpan,
+    hasValidExtent,
+    getValue: getLegendMetricValue,
+    colorForValue: colorForLegendMetric,
+    formatValue: formatLegendPct,
+  } = legendMetric;
 
   const axisTitlePadding = 10;
 
@@ -675,341 +1104,6 @@ function render() {
 
   updateSelectionLine();
 
-  const renderDetailWindow = (selection) => {
-    const setSubtitle = (line1, line2 = null, line2Bold = null) => {
-      chartState.detailSubtitleText.text("");
-      chartState.detailSubtitleText.selectAll("tspan").remove();
-      chartState.detailSubtitleText
-        .append("tspan")
-        .attr("x", detailWidth / 2)
-        .attr("y", subtitleY)
-        .text(line1);
-      if (line2) {
-        chartState.detailSubtitleText
-          .append("tspan")
-          .attr("x", detailWidth / 2)
-          .attr("y", subtitleLine2Y)
-          .text(line2);
-        if (line2Bold) {
-          chartState.detailSubtitleText
-            .append("tspan")
-            .text(line2Bold)
-            .style("font-weight", 700);
-        }
-      }
-    };
-    if (!selection || selection.length !== 2) {
-      setSubtitle(detailPlaceholder);
-      chartState.detailLinePath.attr("display", "none");
-      chartState.detailBasisLinePath.attr("display", "none");
-      chartState.detailXAxisGroup.attr("display", "none");
-      chartState.detailYAxisGroup.attr("display", "none");
-      chartState.detailXAxisLabel.attr("display", "none");
-      chartState.detailYAxisLabel.attr("display", "none");
-      chartState.detailMessageText.attr("display", "none");
-      chartState.detailMetricText.attr("display", "none");
-      chartState.detailLegendGroup.attr("display", "none");
-      return;
-    }
-    chartState.detailLegendGroup.attr("display", null);
-
-    const startIndex = data.indexOf(selection[0]);
-    const endIndex = data.indexOf(selection[1]);
-    if (startIndex < 0 || endIndex < 0) return;
-    const fromIndex = Math.min(startIndex, endIndex);
-    const toIndex = Math.max(startIndex, endIndex);
-    const window = data.slice(fromIndex, toIndex + 1);
-    const windowStart = window[0]?.date;
-    const windowEnd = window[window.length - 1]?.date;
-    let detailSubtitle = detailPlaceholder;
-    if (windowStart instanceof Date && windowEnd instanceof Date) {
-      const days = Math.abs((windowEnd - windowStart) / MS_PER_DAY);
-      detailSubtitle = `${formatDate(windowStart)} - ${formatDate(windowEnd)} (${days.toFixed(
-        1,
-      )} days)`;
-    }
-    let cumulative = 0;
-    let fundingSum = 0;
-    let fundingCount = 0;
-    let indexSum = 0;
-    let indexCount = 0;
-    const intervalSecondsCandidates = [];
-    const series = window.map((point, idx) => {
-      const funding = Number.isFinite(point.funding) ? -point.funding : 0;
-      if (Number.isFinite(point.funding)) {
-        fundingSum += -point.funding;
-        fundingCount += 1;
-      }
-      if (Number.isFinite(point.index_price_close)) {
-        indexSum += point.index_price_close;
-        indexCount += 1;
-      }
-      if (idx > 0 && point.date instanceof Date) {
-        const prev = window[idx - 1];
-        if (prev?.date instanceof Date) {
-          const delta = (point.date - prev.date) / 1000;
-          if (Number.isFinite(delta) && delta > 0) {
-            intervalSecondsCandidates.push(delta);
-          }
-        }
-      }
-      cumulative += funding;
-      return { date: point.date, cumulative };
-    });
-    const avgFunding = fundingCount ? fundingSum / fundingCount : null;
-    const avgIndex = indexCount ? indexSum / indexCount : null;
-    const avgIntervalSeconds = intervalSecondsCandidates.length
-      ? intervalSecondsCandidates.reduce((sum, v) => sum + v, 0) /
-        intervalSecondsCandidates.length
-      : null;
-    const avgFundingAnnualized =
-      avgFunding != null &&
-      avgIndex != null &&
-      avgIndex !== 0 &&
-      avgIntervalSeconds != null
-        ? (avgFunding / avgIndex) * (SECONDS_PER_YEAR / avgIntervalSeconds)
-        : null;
-
-    const basisWindow = props.basisData
-      .filter(
-        (point) =>
-          point.date instanceof Date &&
-          windowStart instanceof Date &&
-          windowEnd instanceof Date &&
-          point.date >= windowStart &&
-          point.date <= windowEnd &&
-          Number.isFinite(point.basis_close),
-      )
-      .sort((a, b) => a.date - b.date);
-    const basisBase = basisWindow.length ? basisWindow[0].basis_close : 0;
-    const basisSeriesRaw = basisWindow.map((point) => ({
-      date: point.date,
-      cumulative: isRollMode ? point.basis_close : basisBase - point.basis_close,
-    }));
-    const basisSeries = basisSeriesRaw.map((point, idx) => {
-      const start = Math.max(0, idx - 7);
-      const slice = basisSeriesRaw.slice(start, idx + 1);
-      const mean =
-        slice.reduce((sum, entry) => sum + entry.cumulative, 0) / slice.length;
-      return { date: point.date, cumulative: mean };
-    });
-    const rollSeries = basisSeries;
-    let fundingIdx = 0;
-    let lastFunding = 0;
-    const getFundingAtDate = (targetDate) => {
-      if (!(targetDate instanceof Date)) return lastFunding;
-      while (
-        fundingIdx < series.length &&
-        series[fundingIdx]?.date instanceof Date &&
-        series[fundingIdx].date <= targetDate
-      ) {
-        lastFunding = series[fundingIdx].cumulative ?? lastFunding;
-        fundingIdx += 1;
-      }
-      return lastFunding;
-    };
-    const rollStartDate = rollSeries[0]?.date;
-    const fundingBase = rollStartDate ? getFundingAtDate(rollStartDate) : 0;
-    const adjustedSeries = rollSeries.map((point) => {
-      const fundingValue = getFundingAtDate(point.date) - fundingBase;
-      return { date: point.date, cumulative: point.cumulative + fundingValue };
-    });
-    let rollRoiText = null;
-    if (isRollMode && adjustedSeries.length >= 2) {
-      const startValue = adjustedSeries[0].cumulative;
-      const endValue = adjustedSeries[adjustedSeries.length - 1].cumulative;
-      const roi =
-        Number.isFinite(startValue) &&
-        startValue !== 0 &&
-        Number.isFinite(endValue)
-          ? (endValue - startValue) / Math.abs(startValue)
-          : null;
-      rollRoiText = roi != null ? d3.format("+.2%")(roi) : "n/a";
-    }
-    if (isRollMode) {
-      const rollLabel = "Adj Roll Price ROI: ";
-      const rollValue = rollRoiText || "n/a";
-      setSubtitle(detailSubtitle, rollLabel, rollValue);
-    } else {
-      setSubtitle(detailSubtitle);
-    }
-    const spanSeconds =
-      windowStart instanceof Date && windowEnd instanceof Date
-        ? Math.abs((windowEnd - windowStart) / 1000)
-        : null;
-    const basisAnnualized =
-      basisWindow.length &&
-      avgIndex != null &&
-      avgIndex !== 0 &&
-      spanSeconds &&
-      spanSeconds > 0
-        ? ((basisBase - basisWindow[basisWindow.length - 1].basis_close) /
-            avgIndex) *
-          (SECONDS_PER_YEAR / spanSeconds)
-        : null;
-    const hasBasis = props.basisData.length > 0;
-    const hasBasisInWindow = basisWindow.length > 0;
-    const rollPoint = basisWindow.length
-      ? basisWindow[basisWindow.length - 1]
-      : null;
-    const rollPrice = rollPoint ? rollPoint.basis_close : null;
-    const rollDate = rollPoint?.date;
-    let fundingCumulative = null;
-    if (series.length) {
-      if (rollDate instanceof Date) {
-        for (let i = series.length - 1; i >= 0; i -= 1) {
-          const pointDate = series[i].date;
-          if (pointDate instanceof Date && pointDate <= rollDate) {
-            fundingCumulative = series[i].cumulative;
-            break;
-          }
-        }
-      }
-      if (fundingCumulative == null) {
-        fundingCumulative = series[series.length - 1].cumulative;
-      }
-    }
-    const adjustedRoll =
-      rollPrice != null && fundingCumulative != null
-        ? rollPrice + fundingCumulative
-        : null;
-    chartState.detailMetricText.selectAll("tspan").remove();
-    if (isRollMode) {
-      chartState.detailMetricText.attr("display", "none");
-    } else {
-      chartState.detailMetricText.attr("display", null);
-      const metricFunding =
-        avgFundingAnnualized != null
-          ? formatFunding(avgFundingAnnualized)
-          : "n/a";
-      const metricBasis =
-        basisAnnualized != null ? formatFunding(basisAnnualized) : "n/a";
-      chartState.detailMetricText.append("tspan").text("Avg funding: ");
-      chartState.detailMetricText
-        .append("tspan")
-        .text(metricFunding)
-        .style("font-weight", 700);
-      chartState.detailMetricText.append("tspan").text(" | basis cost: ");
-      chartState.detailMetricText
-        .append("tspan")
-        .text(metricBasis)
-        .style("font-weight", 700);
-    }
-
-    if (!hasBasisInWindow) {
-      const message = hasBasis
-        ? isRollMode
-          ? "No roll data for the selected window."
-          : "No basis data for the selected window."
-        : isRollMode
-          ? "No roll data available for this future."
-          : "No basis data available for this future.";
-      chartState.detailMessageText
-        .attr("x", detailInnerWidth / 2)
-        .attr("y", innerHeight / 2)
-        .text(message)
-        .attr("display", null);
-    } else {
-      chartState.detailMessageText.attr("display", "none");
-    }
-
-    const primarySeries = isRollMode ? adjustedSeries : series;
-    const secondarySeries = isRollMode ? rollSeries : basisSeries;
-    const xDomain = d3.extent([...primarySeries, ...secondarySeries], (d) => d.date);
-    const combinedValues = [
-      ...primarySeries.map((d) => d.cumulative),
-      ...secondarySeries.map((d) => d.cumulative),
-    ];
-    const [rawMin, rawMax] = d3.extent(combinedValues);
-    let yMin = rawMin ?? 0;
-    let yMax = rawMax ?? 0;
-    if (isRollMode && rollSeries.length) {
-      const [rollMin, rollMax] = d3.extent(
-        rollSeries.map((d) => d.cumulative),
-      );
-      if (Number.isFinite(rollMin)) {
-        yMin = Math.min(yMin, rollMin - Math.abs(rollMin) * 0.1);
-      }
-      if (Number.isFinite(rollMax)) {
-        yMax = Math.max(yMax, rollMax + Math.abs(rollMax) * 0.1);
-      }
-    } else if (!isRollMode && basisSeries.length) {
-      const [basisMin, basisMax] = d3.extent(
-        basisSeries.map((d) => d.cumulative),
-      );
-      if (Number.isFinite(basisMin)) {
-        yMin = Math.min(yMin, basisMin - Math.abs(basisMin) * 0.1);
-      }
-      if (Number.isFinite(basisMax)) {
-        yMax = Math.max(yMax, basisMax + Math.abs(basisMax) * 0.1);
-      }
-    }
-    if (yMin === yMax) {
-      const pad = yMin === 0 ? 0.0001 : Math.abs(yMin) * 0.1;
-      yMin -= pad;
-      yMax += pad;
-    }
-    const detailX = d3.scaleUtc().domain(xDomain).range([0, detailInnerWidth]);
-    const detailY = d3
-      .scaleLinear()
-      .domain([yMin, yMax])
-      .nice()
-      .range([innerHeight, 0]);
-    const detailXAxis = d3
-      .axisBottom(detailX)
-      .ticks(4)
-      .tickSize(0)
-      .tickPadding(10);
-    const detailYAxis = d3
-      .axisLeft(detailY)
-      .ticks(5)
-      .tickSize(0)
-      .tickPadding(10)
-      .tickFormat(d3.format("$,.2f"));
-
-    chartState.detailXAxisGroup
-      .attr("transform", `translate(0,${innerHeight})`)
-      .call(detailXAxis)
-      .call(axisStyle)
-      .attr("display", null);
-    chartState.detailYAxisGroup
-      .call(detailYAxis)
-      .call(axisStyle)
-      .attr("display", null);
-    chartState.detailXAxisLabel
-      .attr("x", detailInnerWidth / 2)
-      .attr("y", innerHeight + 42 + axisTitlePadding)
-      .attr("display", null);
-    chartState.detailYAxisLabel
-      .attr("transform", "rotate(-90)")
-      .attr("x", -innerHeight / 2)
-      .attr("y", -52 - axisTitlePadding)
-      .attr("display", null);
-
-    const line = d3
-      .line()
-      .x((d) => detailX(d.date))
-      .y((d) => detailY(d.cumulative))
-      .curve(d3.curveMonotoneX);
-    chartState.detailLinePath
-      .attr("stroke", detailColors.funding)
-      .attr("d", line(primarySeries))
-      .attr("display", null);
-    if (secondarySeries.length) {
-      chartState.detailBasisLinePath
-        .attr("stroke", detailColors.secondary)
-        .attr("d", line(secondarySeries))
-        .attr("display", null);
-      chartState.detailLegendBasisLine.attr("display", null);
-      chartState.detailLegendBasisText.attr("display", null);
-    } else {
-      chartState.detailBasisLinePath.attr("display", "none");
-      chartState.detailLegendBasisLine.attr("display", "none");
-      chartState.detailLegendBasisText.attr("display", "none");
-    }
-    chartState.detailMetricText.attr("display", null);
-  };
-
   const mainPoints = chartState.pointsGroup
     .selectAll("circle.main-point")
     .data(data, (d) => (d.date ? d.date.getTime() : d.index_price_close));
@@ -1025,7 +1119,7 @@ function render() {
         .attr("opacity", 0.8);
       return circles;
     })
-    .attr("fill", (d) => colorForFunding(d.funding_rate_annualized))
+    .attr("fill", (d) => colorForLegendMetric(getLegendMetricValue(d)))
     .on("mouseenter", (event, datum) => {
       hoveredDatum = datum;
       updateSelectionLine();
@@ -1036,12 +1130,22 @@ function render() {
         .attr("stroke-width", 1.1)
         .attr("opacity", 1)
         .raise();
-      showTooltip(event, datum);
+      showTooltip(
+        event,
+        datum,
+        legendMetricLabel,
+        getLegendMetricValue(datum),
+      );
     })
     .on("mousemove", (event, datum) => {
       hoveredDatum = datum;
       updateSelectionLine();
-      showTooltip(event, datum);
+      showTooltip(
+        event,
+        datum,
+        legendMetricLabel,
+        getLegendMetricValue(datum),
+      );
     })
     .on("mouseleave", (event) => {
       hoveredDatum = null;
@@ -1095,7 +1199,20 @@ function render() {
       .raise();
   }
 
-  renderDetailWindow(selectedDatums);
+  renderDetailWindow({
+    selection: selectedDatums,
+    data,
+    basisData: props.basisData,
+    isRollMode,
+    detailPlaceholder,
+    detailWidth,
+    detailInnerWidth,
+    subtitleY,
+    subtitleLine2Y,
+    innerHeight,
+    axisTitlePadding,
+    detailColors,
+  });
 
   const gradientStops = hasValidExtent
     ? [
@@ -1113,40 +1230,28 @@ function render() {
     .data(gradientStops)
     .join((enter) => enter.append("stop"))
     .attr("offset", (d) => d.offset)
-    .attr("stop-color", (d) => colorForFunding(d.value));
+    .attr("stop-color", (d) => colorForLegendMetric(d.value));
 
-  const legendWidth = 220;
-  const legendHeight = 10;
-  const legendX = mainWidth - margin.right - legendWidth;
-  const legendY = margin.top - 52;
-  withLayoutTransition(chartState.legendGroup).attr(
-    "transform",
-    `translate(${legendX},${legendY})`,
-  );
-  const legendPaddingY = 8;
-  const legendTitleY = legendPaddingY;
-  const legendBarTop = legendTitleY + 14;
-  const legendLabelY = legendBarTop + legendHeight + 16;
-
-  chartState.legendTitle?.attr("x", 0).attr("y", legendTitleY);
-  chartState.legendRect
-    .attr("x", 0)
-    .attr("y", legendBarTop)
-    .attr("width", legendWidth)
-    .attr("height", legendHeight)
-    .attr("fill", `url(#${gradientId})`);
-  chartState.legendMinText
-    .attr("x", 0)
-    .attr("y", legendLabelY)
-    .text(formatFundingPct(extentMin));
-  chartState.legendMaxText
-    .attr("x", legendWidth)
-    .attr("y", legendLabelY)
-    .text(formatFundingPct(domainMax));
+  renderLegendBar({
+    mainWidth,
+    margin,
+    withLayoutTransition,
+    gradientId,
+    title: legendTitleText,
+    extentMin,
+    domainMax,
+    formatValue: formatLegendPct,
+  });
 }
 
 watch(
-  () => [props.data, props.basisData, props.instrumentName, props.showRollPnl],
+  () => [
+    props.data,
+    props.basisData,
+    props.futureBasisData,
+    props.instrumentName,
+    props.showRollPnl,
+  ],
   () => render(),
   { deep: false },
 );
