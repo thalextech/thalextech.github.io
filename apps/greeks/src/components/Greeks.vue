@@ -1,6 +1,7 @@
 <script setup>
 import * as d3 from "d3";
 import { onMounted, ref, watch } from "vue";
+import { exportChartToPng } from "../../../../lib/export-png.js";
 
 const props = defineProps({
   data: { type: Array, default: () => [] },
@@ -51,6 +52,22 @@ const axisStyle = (axisG) => {
   axisG.selectAll("path").remove();
   applyTextStyle(axisG.selectAll("text"), "axisText");
 };
+
+function exportPng({ filename = "greeks.png", scale = 4, padding = 24 } = {}) {
+  exportChartToPng({
+    element: svgRef.value,
+    filename,
+    scale,
+    padding,
+    drawBefore: ({ ctx, width, height, padding: p }) => {
+      const canvas = canvasRef.value;
+      if (!canvas) return;
+      ctx.drawImage(canvas, p, p, width, height);
+    },
+  });
+}
+
+defineExpose({ exportPng });
 
 const render = () => {
   const svgEl = svgRef.value;

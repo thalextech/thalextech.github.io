@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import * as d3 from "d3";
 import Greeks from "./components/Greeks.vue";
 import {
@@ -36,6 +36,7 @@ const data = reactive({
   markRows: [],
   requestedRange: null,
 });
+const chartRef = ref(null);
 
 const expirationOptions = computed(() => {
   const map = new Map();
@@ -182,6 +183,13 @@ const metaSummary = computed(() => {
 });
 
 const chartLoading = computed(() => ui.loading && chartRows.value.length === 0);
+
+function handleSavePng() {
+  if (!chartRef.value) return;
+  const safeExpiration = ui.expiration || "expiration";
+  const filename = `greeks-${safeExpiration}-${ui.greek}-${ui.xMode}.png`;
+  chartRef.value.exportPng({ filename });
+}
 
 const computeRange = (expirationTimestamp) => {
   const now = Math.floor(Date.now() / 1000);
@@ -361,12 +369,22 @@ watch(
             {{ option.symbol }}
           </button>
         </div>
+
+        <button
+          class="saveButton"
+          type="button"
+          @click="handleSavePng"
+          :disabled="ui.loading || !chartRows.length"
+        >
+          Save PNG
+        </button>
       </div>
 
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
     <Greeks
+      ref="chartRef"
       :data="chartRows"
       :title="chartTitle"
       :subtitle="chartSubtitle"
