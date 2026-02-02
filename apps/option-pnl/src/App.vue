@@ -19,7 +19,7 @@ const MAIN_POINT_LIMIT = 360;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 
 const ui = reactive({
-  resolution: "900",
+  resolutionKey: "900",
   optionMaturity: "",
   optionStrike: "",
   optionType: "call",
@@ -97,10 +97,10 @@ const getClosestStrikeValue = (strikes, target) => {
 
 const getTimestampRange = () => {
   const now = Math.floor(Date.now() / 1000);
-  const resolutionConfig = RESOLUTION_CONFIG[ui.resolution];
+  const resolutionConfig = RESOLUTION_CONFIG[ui.resolutionKey];
   const resolution = resolutionConfig?.resolution;
   const seconds =
-    resolutionConfig?.interval_seconds ?? Number(ui.resolution) ?? 0;
+    resolutionConfig?.interval_seconds ?? Number(ui.resolutionKey) ?? 0;
   return {
     resolution,
     from: now - seconds * MAIN_POINT_LIMIT,
@@ -171,8 +171,8 @@ const optionInstrumentName = computed(
 );
 
 const mainSeries = computed(() => {
-  const index = data.index[ui.resolution] || [];
-  const optionMark = data.optionMark[ui.resolution] || [];
+  const index = data.index[ui.resolutionKey] || [];
+  const optionMark = data.optionMark[ui.resolutionKey] || [];
   const optionDataByTs = new Map();
   let optionMinTs = null;
   let optionMaxTs = null;
@@ -211,8 +211,8 @@ const mainSeries = computed(() => {
 });
 
 const optionPnlSeries = computed(() => {
-  const mark = data.optionMark[ui.resolution] || [];
-  const index = data.index[ui.resolution] || [];
+  const mark = data.optionMark[ui.resolutionKey] || [];
+  const index = data.index[ui.resolutionKey] || [];
   const instrument = selectedOptionInstrument.value;
   if (!mark.length || !index.length || !instrument) return [];
   const series = computeGreeksPnlSeries({
@@ -258,8 +258,8 @@ async function load(instrument, options = {}) {
           })
         : Promise.resolve([]),
     ]);
-    data.index[ui.resolution] = mainIndex || [];
-    data.optionMark[ui.resolution] = optionMark || [];
+    data.index[ui.resolutionKey] = mainIndex || [];
+    data.optionMark[ui.resolutionKey] = optionMark || [];
 
     if (!mainSeries.value.length) {
       throw new Error("No merged datapoints returned for this time range.");
@@ -276,8 +276,8 @@ async function load(instrument, options = {}) {
 function handleSavePng() {
   if (!chartRef.value) return;
   const base = optionInstrumentName.value || "option-pnl";
-  const filename = ui.resolution
-    ? `${base}-${ui.resolution}.png`
+  const filename = ui.resolutionKey
+    ? `${base}-${ui.resolutionKey}.png`
     : `${base}.png`;
   chartRef.value.exportPng({ filename });
 }
@@ -305,8 +305,8 @@ onMounted(async () => {
     from,
     to,
   });
-  data.index[ui.resolution] = prefetchedIndex || [];
-  const latestIndexClose = getLatestIndexClose(data.index[ui.resolution]);
+  data.index[ui.resolutionKey] = prefetchedIndex || [];
+  const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
   const strikes = optionStrikes.value;
   const closestStrike = getClosestStrikeValue(strikes, latestIndexClose);
   ui.optionStrike = closestStrike || getMiddleStrikeValue(strikes);
@@ -349,7 +349,7 @@ watch(
 );
 
 watch(
-  () => [ui.resolution, ui.optionMaturity, ui.optionStrike, ui.optionType],
+  () => [ui.resolutionKey, ui.optionMaturity, ui.optionStrike, ui.optionType],
   async () => {
     const instrument = selectedOptionInstrument.value;
     if (!instrument) return;
@@ -417,7 +417,7 @@ watch(
 
         <div class="field">
           <label for="resolution">Resolution</label>
-          <select id="resolution" v-model="ui.resolution">
+          <select id="resolution" v-model="ui.resolutionKey">
             <option
               v-for="key in Object.keys(RESOLUTION_CONFIG)"
               :key="key"
