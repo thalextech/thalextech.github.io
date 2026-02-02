@@ -316,7 +316,7 @@ const render = () => {
 
       ctx.globalAlpha = highlightOpacity;
       ctx.fillStyle = color(colorAccessor(d));
-      ctx.strokeStyle = "#ffffff";
+      ctx.strokeStyle = "#111111";
       ctx.lineWidth = 0.2;
 
       ctx.beginPath();
@@ -413,10 +413,13 @@ const render = () => {
 
   const formatGreek = (val, decimals = 4) =>
     Number.isFinite(val) ? val.toFixed(decimals) : "N/A";
+  const formatIndexPrice = (val) =>
+    Number.isFinite(val) ? d3.format("$,.2f")(val) : "N/A";
 
   function showTooltip(d, px, py) {
     const lines = [
       d.instrument_name,
+      `Index: ${formatIndexPrice(d.index_price_close)}`,
       `Delta: ${formatGreek(d.delta)}`,
       `Gamma: ${formatGreek(d.gamma, 6)}`,
       `Theta: ${formatGreek(d.theta)}`,
