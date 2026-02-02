@@ -32,6 +32,9 @@ const data = reactive({
   index: {},
 });
 const chartRef = ref(null);
+const isInitializing = ref(true);
+let prefetchedIndexForInitialLoad = null;
+let loadRequestId = 0;
 
 const maturityFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -271,14 +274,23 @@ const optionPnlSeries = computed(() => {
   return filtered.slice(-MAIN_POINT_LIMIT);
 });
 
-async function load(instrument, options = {}) {
+async function load(instrument) {
   if (!instrument) return;
+  const requestId = ++loadRequestId;
 
   ui.loading = true;
   ui.error = "";
 
   const { resolution, from, to } = getTimestampRange();
-  const prefetchedIndex = options?.prefetchedIndex;
+  const canUsePrefetchedIndex =
+    prefetchedIndexForInitialLoad &&
+    prefetchedIndexForInitialLoad.resolutionKey === ui.resolutionKey;
+  const prefetchedIndex = canUsePrefetchedIndex
+    ? prefetchedIndexForInitialLoad.rows
+    : null;
+  if (canUsePrefetchedIndex) {
+    prefetchedIndexForInitialLoad = null;
+  }
 
   try {
     const optionInstrument = instrument;
@@ -303,18 +315,20 @@ async function load(instrument, options = {}) {
           })
         : Promise.resolve([]),
     ]);
+
+    if (requestId !== loadRequestId) return;
+
     data.index[ui.resolutionKey] = mainIndex || [];
     data.optionMark[ui.resolutionKey] = optionMark || [];
-
-    if (!mainSeries.value.length) {
-      throw new Error("No merged datapoints returned for this time range.");
-    }
   } catch (e) {
+    if (requestId !== loadRequestId) return;
     ui.error = e instanceof Error ? e.message : String(e);
     data.index = {};
     data.optionMark = {};
   } finally {
-    ui.loading = false;
+    if (requestId === loadRequestId) {
+      ui.loading = false;
+    }
   }
 }
 
@@ -328,40 +342,44 @@ function handleSavePng() {
 }
 
 onMounted(async () => {
-  const all_instruments = await fetchInstruments();
-  data.optionInstruments = all_instruments
-    .filter((i) => i?.type === "option" && i?.underlying === "BTCUSD")
-    .map(normalizeOptionInstrument)
-    .sort(
-      (a, b) =>
-        (a.expiration_ts || 0) - (b.expiration_ts || 0) ||
-        (a.strike || 0) - (b.strike || 0),
-    );
+  try {
+    const { resolution, from, to } = getTimestampRange();
+    const [all_instruments, prefetchedIndex] = await Promise.all([
+      fetchInstruments(),
+      fetchIndexHistory({
+        index_name: "BTCUSD",
+        resolution,
+        from,
+        to,
+      }),
+    ]);
+    data.optionInstruments = all_instruments
+      .filter((i) => i?.type === "option" && i?.underlying === "BTCUSD")
+      .map(normalizeOptionInstrument)
+      .sort(
+        (a, b) =>
+          (a.expiration_ts || 0) - (b.expiration_ts || 0) ||
+          (a.strike || 0) - (b.strike || 0),
+      );
 
-  const oldest = getOldestOptionInstrument(data.optionInstruments);
-  if (oldest && Number.isFinite(oldest.expiration_ts)) {
-    ui.optionMaturity = String(oldest.expiration_ts);
-  }
-  const indexName = data.optionInstruments[0]?.underlying || "BTCUSD";
-  const { resolution, from, to } = getTimestampRange();
-  const prefetchedIndex = await fetchIndexHistory({
-    index_name: indexName,
-    resolution,
-    from,
-    to,
-  });
-  data.index[ui.resolutionKey] = prefetchedIndex || [];
-  const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
-  ui.optionStrike = getDefaultStrikeValue({
-    maturityInstruments: optionInstrumentsForMaturity.value,
-    optionType: ui.optionType,
-    indexPrice: latestIndexClose,
-    fallbackStrikes: optionStrikes.value,
-  });
-
-  const instrument = selectedOptionInstrument.value;
-  if (instrument) {
-    await load(instrument, { prefetchedIndex });
+    const oldest = getOldestOptionInstrument(data.optionInstruments);
+    if (oldest && Number.isFinite(oldest.expiration_ts)) {
+      ui.optionMaturity = String(oldest.expiration_ts);
+    }
+    data.index[ui.resolutionKey] = prefetchedIndex || [];
+    prefetchedIndexForInitialLoad = {
+      resolutionKey: ui.resolutionKey,
+      rows: prefetchedIndex || [],
+    };
+    const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
+    ui.optionStrike = getDefaultStrikeValue({
+      maturityInstruments: optionInstrumentsForMaturity.value,
+      optionType: ui.optionType,
+      indexPrice: latestIndexClose,
+      fallbackStrikes: optionStrikes.value,
+    });
+  } finally {
+    isInitializing.value = false;
   }
 });
 
@@ -386,6 +404,7 @@ watch(
 watch(
   optionStrikes,
   (strikes) => {
+    if (isInitializing.value) return;
     if (!strikes.length) {
       ui.optionStrike = "";
       return;
