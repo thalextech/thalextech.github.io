@@ -43,10 +43,19 @@ const strikeFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
 
+const normalizeCreateTimeSeconds = (value) => {
+  const ts = Number(value);
+  if (!Number.isFinite(ts) || ts <= 0) return null;
+  return ts;
+};
+
 const normalizeOptionInstrument = (instrument) => {
   if (!instrument || typeof instrument !== "object") return instrument;
   return {
     ...instrument,
+    create_time_s: normalizeCreateTimeSeconds(
+      instrument.create_time ?? instrument.create_time_ms,
+    ),
     expiration_ts: Number(instrument.expiration_timestamp),
     strike: Number(instrument.strike_price),
     option_type_normalized: (instrument.option_type || "call").toLowerCase(),
@@ -56,8 +65,8 @@ const normalizeOptionInstrument = (instrument) => {
 const getOldestOptionInstrument = (instruments) => {
   let oldest = null;
   for (const instrument of instruments || []) {
-    const created = Number(instrument?.create_time_ms);
-    if (!oldest || created < Number(oldest.create_time_ms)) {
+    const created = Number(instrument?.create_time_s);
+    if (!oldest || created < Number(oldest.create_time_s)) {
       oldest = instrument;
     }
   }
@@ -79,20 +88,56 @@ const getLatestIndexClose = (rows) => {
   return null;
 };
 
-const getClosestStrikeValue = (strikes, target) => {
-  if (!strikes?.length || !Number.isFinite(target)) return "";
-  let closest = strikes[0];
-  let minDistance = Math.abs(Number(closest?.value) - target);
-  for (const strike of strikes) {
-    const strikeValue = Number(strike?.value);
-    if (!Number.isFinite(strikeValue)) continue;
-    const distance = Math.abs(strikeValue - target);
-    if (distance < minDistance) {
-      closest = strike;
-      minDistance = distance;
+const getDefaultStrikeValue = ({
+  maturityInstruments,
+  optionType,
+  indexPrice,
+  fallbackStrikes,
+}) => {
+  const typedInstruments = (maturityInstruments || [])
+    .filter(
+      (instrument) =>
+        instrument?.option_type_normalized === optionType &&
+        Number.isFinite(instrument?.strike),
+    )
+    .sort((a, b) => a.strike - b.strike);
+
+  if (Number.isFinite(indexPrice) && typedInstruments.length) {
+    const above = [];
+    const seenStrikes = new Set();
+    for (const instrument of typedInstruments) {
+      if (instrument.strike <= indexPrice) continue;
+      if (seenStrikes.has(instrument.strike)) continue;
+      seenStrikes.add(instrument.strike);
+      above.push(instrument);
+      if (above.length === 2) break;
+    }
+    if (above.length) {
+      let selected = above[0];
+      for (const candidate of above.slice(1)) {
+        const candidateCreated = Number(candidate?.create_time_s);
+        const selectedCreated = Number(selected?.create_time_s);
+        if (
+          Number.isFinite(candidateCreated) &&
+          (!Number.isFinite(selectedCreated) ||
+            candidateCreated < selectedCreated)
+        ) {
+          selected = candidate;
+        }
+      }
+      if (Number.isFinite(selected?.strike)) {
+        return String(selected.strike);
+      }
     }
   }
-  return closest?.value ?? "";
+
+  const typedStrikes = Array.from(
+    new Set(typedInstruments.map((instrument) => instrument.strike)),
+  )
+    .sort((a, b) => a - b)
+    .map((strike) => ({ value: String(strike) }));
+  const strikeOptions = typedStrikes.length ? typedStrikes : fallbackStrikes;
+  return getMiddleStrikeValue(strikeOptions);
 };
 
 const getTimestampRange = () => {
@@ -307,9 +352,12 @@ onMounted(async () => {
   });
   data.index[ui.resolutionKey] = prefetchedIndex || [];
   const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
-  const strikes = optionStrikes.value;
-  const closestStrike = getClosestStrikeValue(strikes, latestIndexClose);
-  ui.optionStrike = closestStrike || getMiddleStrikeValue(strikes);
+  ui.optionStrike = getDefaultStrikeValue({
+    maturityInstruments: optionInstrumentsForMaturity.value,
+    optionType: ui.optionType,
+    indexPrice: latestIndexClose,
+    fallbackStrikes: optionStrikes.value,
+  });
 
   const instrument = selectedOptionInstrument.value;
   if (instrument) {
