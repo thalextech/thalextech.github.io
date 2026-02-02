@@ -19,7 +19,7 @@ const MAIN_POINT_LIMIT = 360;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 
 const ui = reactive({
-  resolution: "3600",
+  resolution: "900",
   optionMaturity: "",
   optionStrike: "",
   optionType: "call",
