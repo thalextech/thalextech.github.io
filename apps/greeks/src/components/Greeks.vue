@@ -310,8 +310,11 @@ const render = () => {
     "axisLabel",
   );
 
-  const colorAccessor = (d) => normalizeGreekValue(greekKey, d[greekKey]);
-  const colorLabel = greekKey;
+  const colorAccessor = (d) => {
+    const value = normalizeGreekValue(greekKey, d[greekKey]);
+    return Number.isFinite(value) ? Math.abs(value) : NaN;
+  };
+  const colorLabel = `|${greekKey}|`;
 
   const colorExtent = d3.extent(props.data, colorAccessor);
   const domainMin = Number.isFinite(colorExtent[0]) ? colorExtent[0] : 0;
