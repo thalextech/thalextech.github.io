@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import OptionPnlChart from "./components/OptionPnlChart.vue";
+import StraddleBreakEvenChart from "./components/StraddleBreakEvenChart.vue";
 import {
   computeGreeksPnlSeries,
   fetchIndexHistory,
@@ -22,6 +23,7 @@ const ui = reactive({
   resolutionKey: "3600",
   optionMaturity: "",
   optionStrike: "",
+  mode: "straddle",
   loading: false,
   error: "",
 });
@@ -32,6 +34,7 @@ const data = reactive({
   index: {},
 });
 const chartRef = ref(null);
+const breakEvenChartRef = ref(null);
 const isInitializing = ref(true);
 let prefetchedIndexForInitialLoad = null;
 let loadRequestId = 0;
@@ -235,6 +238,72 @@ const optionInstrumentName = computed(() => {
   }
   return `${callName}-STRADDLE`;
 });
+
+const breakEvenTitle = "BTC Straddle Break-Evens";
+const breakEvenSubtitle = computed(() => {
+  const expiryTs = selectedMaturityTs.value;
+  const strike = selectedStrike.value;
+  if (!Number.isFinite(expiryTs) || !Number.isFinite(strike)) return "";
+  return `Expiry: ${maturityFormatter.format(new Date(expiryTs * 1000))} UTC Strike: ${strikeFormatter.format(strike)}`;
+});
+
+const latestMarkClose = (rows) => {
+  for (let i = (rows?.length || 0) - 1; i >= 0; i -= 1) {
+    const value = rows[i]?.mark_price_close;
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+};
+
+const breakEvenMetrics = computed(() => {
+  const strike = selectedStrike.value;
+  if (!Number.isFinite(strike)) return null;
+  const callClose = latestMarkClose(data.callMark[ui.resolutionKey] || []);
+  const putClose = latestMarkClose(data.putMark[ui.resolutionKey] || []);
+  if (!Number.isFinite(callClose) || !Number.isFinite(putClose)) return null;
+  const straddleMark = callClose + putClose;
+  return {
+    straddleMark,
+    breakEvenLow: strike - straddleMark,
+    breakEvenHigh: strike + straddleMark,
+  };
+});
+
+const breakEvenActualData = computed(() =>
+  (data.index[ui.resolutionKey] || [])
+    .filter((row) => Number.isFinite(row?.ts) && Number.isFinite(row?.index_price_close))
+    .sort((a, b) => a.ts - b.ts)
+    .map((row) => ({
+      date: new Date(row.ts * 1000),
+      value: row.index_price_close,
+      low: row.index_price_low,
+      high: row.index_price_high,
+    })),
+);
+
+const breakEvenProjectedData = computed(() => {
+  const actual = breakEvenActualData.value;
+  const expiryTs = selectedMaturityTs.value;
+  if (!actual.length || !Number.isFinite(expiryTs)) return [];
+  const lastActual = actual[actual.length - 1];
+  const expiryDate = new Date(expiryTs * 1000);
+  if (!(expiryDate > lastActual.date)) return [];
+  return [
+    { date: lastActual.date, value: lastActual.value },
+    { date: expiryDate, value: lastActual.value },
+  ];
+});
+
+const breakEvenCurrentIndex = computed(() => {
+  const actual = breakEvenActualData.value;
+  return actual.length ? actual[actual.length - 1].value : null;
+});
+
+const canSavePng = computed(() =>
+  ui.mode === "breakeven"
+    ? breakEvenActualData.value.length > 0
+    : mainSeries.value.length > 0,
+);
 
 const mainSeries = computed(() => {
   const index = data.index[ui.resolutionKey] || [];
@@ -443,12 +512,17 @@ async function load({ callInstrument, putInstrument }) {
 }
 
 function handleSavePng() {
-  if (!chartRef.value) return;
   const base = optionInstrumentName.value || "straddle";
-  const filename = ui.resolutionKey
-    ? `${base}-${ui.resolutionKey}.png`
-    : `${base}.png`;
-  chartRef.value.exportPng({ filename });
+  const filenameBase = ui.resolutionKey ? `${base}-${ui.resolutionKey}` : base;
+  if (ui.mode === "breakeven") {
+    if (!breakEvenChartRef.value) return;
+    breakEvenChartRef.value.exportPng({
+      filename: `${filenameBase}-break-even.png`,
+    });
+    return;
+  }
+  if (!chartRef.value) return;
+  chartRef.value.exportPng({ filename: `${filenameBase}.png` });
 }
 
 onMounted(async () => {
@@ -596,20 +670,53 @@ watch(
           class="saveButton"
           type="button"
           @click="handleSavePng"
-          :disabled="ui.loading || !mainSeries.length"
+          :disabled="ui.loading || !canSavePng"
         >
           Save PNG
         </button>
+
+        <div class="modeToggle" role="group" aria-label="Chart mode">
+          <button
+            type="button"
+            class="modeToggleButton"
+            :class="{ active: ui.mode === 'straddle' }"
+            @click="ui.mode = 'straddle'"
+          >
+            Straddle
+          </button>
+          <button
+            type="button"
+            class="modeToggleButton"
+            :class="{ active: ui.mode === 'breakeven' }"
+            @click="ui.mode = 'breakeven'"
+          >
+            Break-even
+          </button>
+        </div>
       </div>
 
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
     <OptionPnlChart
+      v-if="ui.mode === 'straddle'"
       ref="chartRef"
       :data="mainSeries"
       :option-pnl-data="straddlePnlSeries"
       :option-instrument-name="optionInstrumentName"
+      :loading="ui.loading"
+    />
+    <StraddleBreakEvenChart
+      v-else
+      ref="breakEvenChartRef"
+      :actual-data="breakEvenActualData"
+      :projected-data="breakEvenProjectedData"
+      :break-even-low="breakEvenMetrics?.breakEvenLow"
+      :break-even-high="breakEvenMetrics?.breakEvenHigh"
+      :current-index="breakEvenCurrentIndex"
+      :expiry-ts="selectedMaturityTs"
+      :title="breakEvenTitle"
+      :subtitle="breakEvenSubtitle"
       :loading="ui.loading"
     />
   </div>
