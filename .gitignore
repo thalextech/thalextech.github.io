@@ -6,3 +6,4 @@
 apps_deployment
 dist
 node_modules
+.vite/
