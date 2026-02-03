@@ -23,7 +23,7 @@ const ui = reactive({
   resolutionKey: "3600",
   optionMaturity: "",
   optionStrike: "",
-  mode: "straddle",
+  mode: "breakeven",
   loading: false,
   error: "",
 });
@@ -547,9 +547,21 @@ onMounted(async () => {
           (a.strike || 0) - (b.strike || 0),
       );
 
-    const oldest = getOldestOptionInstrument(data.optionInstruments);
-    if (oldest && Number.isFinite(oldest.expiration_ts)) {
-      ui.optionMaturity = String(oldest.expiration_ts);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const oneWeekAhead = nowSeconds + 7 * 24 * 60 * 60;
+    const expiries = optionMaturities.value
+      .map((option) => Number(option.value))
+      .filter((ts) => Number.isFinite(ts));
+    const upcomingExpiries = expiries.filter((ts) => ts > nowSeconds);
+    const candidateExpiries = upcomingExpiries.length ? upcomingExpiries : expiries;
+    const closestExpiry = candidateExpiries.reduce((best, ts) => {
+      if (!Number.isFinite(best)) return ts;
+      const bestDistance = Math.abs(best - oneWeekAhead);
+      const currentDistance = Math.abs(ts - oneWeekAhead);
+      return currentDistance < bestDistance ? ts : best;
+    }, NaN);
+    if (Number.isFinite(closestExpiry)) {
+      ui.optionMaturity = String(closestExpiry);
     }
 
     data.index[ui.resolutionKey] = prefetchedIndex || [];
@@ -679,18 +691,18 @@ watch(
           <button
             type="button"
             class="modeToggleButton"
-            :class="{ active: ui.mode === 'straddle' }"
-            @click="ui.mode = 'straddle'"
-          >
-            Straddle
-          </button>
-          <button
-            type="button"
-            class="modeToggleButton"
             :class="{ active: ui.mode === 'breakeven' }"
             @click="ui.mode = 'breakeven'"
           >
             Break-even
+          </button>
+          <button
+            type="button"
+            class="modeToggleButton"
+            :class="{ active: ui.mode === 'straddle' }"
+            @click="ui.mode = 'straddle'"
+          >
+            Straddle P&amp;L
           </button>
         </div>
       </div>

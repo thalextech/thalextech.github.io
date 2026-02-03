@@ -179,6 +179,7 @@ const axisStyle = (axisG) => {
 
 const formatDate = d3.utcFormat("%d %b %y %H:%M");
 const formatIndex = d3.format(",.2f");
+const formatIndexAxis = d3.format(",.0f");
 const formatPnl = d3.format("$,.0f");
 const formatVol = d3.format(".1%");
 
@@ -685,7 +686,7 @@ function render() {
     .ticks(6)
     .tickSize(0)
     .tickPadding(10)
-    .tickFormat(formatIndex);
+    .tickFormat(formatIndexAxis);
 
   const xAxisSelection = withLayoutTransition(chartState.xAxisGroup)
     .attr("transform", `translate(0,${innerHeight})`)
