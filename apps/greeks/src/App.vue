@@ -20,11 +20,13 @@ const GREEK_OPTIONS = [
   { value: "vega", symbol: "\u03bd" },
 ];
 const RANGE_DAYS = 21;
+const ONE_HOUR_SECONDS = 60 * 60;
+const MAX_1H_POINTS_PER_INSTRUMENT = 72;
 
 const ui = reactive({
-  expiration: "",
-  resolution: "1h",
-  xMode: "m",
+  expirationPrimary: "",
+  expirationSecondary: "",
+  resolution: "1d",
   greek: "delta",
   loading: false,
   error: "",
@@ -37,6 +39,24 @@ const data = reactive({
   requestedRange: null,
 });
 const chartRef = ref(null);
+
+const selectedExpirations = computed(() =>
+  Array.from(
+    new Set(
+      [ui.expirationPrimary, ui.expirationSecondary].filter(
+        (expiry) => typeof expiry === "string" && expiry.length,
+      ),
+    ),
+  ),
+);
+
+const expirationByValue = computed(() => {
+  const map = new Map();
+  for (const option of expirationOptions.value) {
+    map.set(option.value, option);
+  }
+  return map;
+});
 
 const expirationOptions = computed(() => {
   const map = new Map();
@@ -59,11 +79,13 @@ const expirationOptions = computed(() => {
 });
 
 const selectedInstruments = computed(() => {
-  if (!ui.expiration) return [];
+  const selected = new Set(selectedExpirations.value);
+  if (!selected.size) return [];
   return data.instruments.filter(
     (instrument) =>
       instrument?.product === "OBTCUSD" &&
-      instrument?.expiry_date === ui.expiration,
+      selected.has(instrument?.expiry_date) &&
+      (instrument?.option_type || "call").toLowerCase() === "call",
   );
 });
 
@@ -88,7 +110,8 @@ const chartRows = computed(() => {
     if (!index) continue;
     const instrument = lookup.get(mark.instrument_name);
     if (!instrument) continue;
-    if ((instrument.option_type || "call").toLowerCase() !== "call") continue;
+    const optionType = (instrument.option_type || "call").toLowerCase();
+    if (optionType !== "call") continue;
     const strike = Number(instrument.strike_price);
     const tte = instrument.expiration_timestamp - mark.ts;
     const spot = index.index_price_close;
@@ -98,7 +121,7 @@ const chartRows = computed(() => {
       strike,
       tte,
       iv,
-      "call",
+      optionType,
     );
     if (!Number.isFinite(delta)) continue;
 
@@ -110,6 +133,11 @@ const chartRows = computed(() => {
       ...mark,
       strike,
       tte,
+      expiry_date: instrument.expiry_date,
+      expiry_rank: Math.max(
+        0,
+        selectedExpirations.value.indexOf(instrument.expiry_date),
+      ),
       delta,
       gamma,
       theta,
@@ -156,12 +184,7 @@ const activeGreekSymbol = computed(
     GREEK_OPTIONS[0].symbol,
 );
 
-const chartTitle = computed(() => {
-  const greek = activeGreekSymbol.value;
-  if (!chartRows.value.length) return `Options ${greek} vs moneyness`;
-  const name = chartRows.value[0]?.instrument_name || "";
-  return name.slice(0, 11) || `Options ${greek} vs moneyness`;
-});
+const chartTitle = computed(() => "");
 
 const chartSubtitle = computed(() => {
   if (!chartRows.value.length) return "";
@@ -178,16 +201,18 @@ const chartSubtitle = computed(() => {
 });
 
 const metaSummary = computed(() => {
-  if (!selectedInstruments.value.length) return "";
-  return `${selectedInstruments.value.length} instruments | ${chartRows.value.length} points`;
+  if (!selectedExpirations.value.length) return "";
+  const expiryCount = selectedExpirations.value.length;
+  return `${expiryCount} expiries | ${selectedInstruments.value.length} instruments | ${chartRows.value.length} points`;
 });
 
 const chartLoading = computed(() => ui.loading && chartRows.value.length === 0);
 
 function handleSavePng() {
   if (!chartRef.value) return;
-  const safeExpiration = ui.expiration || "expiration";
-  const filename = `greeks-${safeExpiration}-${ui.greek}-${ui.xMode}.png`;
+  const primary = ui.expirationPrimary || "expiry-a";
+  const secondary = ui.expirationSecondary || "expiry-b";
+  const filename = `greeks-${primary}-${secondary}-${ui.greek}.png`;
   chartRef.value.exportPng({ filename });
 }
 
@@ -197,11 +222,16 @@ const computeRange = (expirationTimestamp) => {
     ? Math.min(now, expirationTimestamp - 3600)
     : now;
   const to = Math.max(safeEnd, 0);
-  const from = Math.max(0, to - RANGE_DAYS * 24 * 60 * 60);
+  let from = Math.max(0, to - RANGE_DAYS * 24 * 60 * 60);
+  if (ui.resolution === "1h") {
+    const spanSeconds = MAX_1H_POINTS_PER_INSTRUMENT * ONE_HOUR_SECONDS;
+    from = Math.max(0, to - spanSeconds);
+  }
   return { from, to };
 };
 
 let requestId = 0;
+const markRowsCache = new Map();
 
 async function fetchMarkRows(instruments, range) {
   const results = await Promise.allSettled(
@@ -216,22 +246,32 @@ async function fetchMarkRows(instruments, range) {
   );
 
   const rows = [];
+  let rateLimitedCount = 0;
   results.forEach((result, index) => {
-    if (result.status !== "fulfilled") return;
+    if (result.status !== "fulfilled") {
+      if (result.reason?.status === 429) {
+        rateLimitedCount += 1;
+      }
+      return;
+    }
     const instrumentName = instruments[index].instrument_name;
     const dataRows = Array.isArray(result.value) ? result.value : [];
     dataRows.forEach((row) => {
       rows.push({ ...row, instrument_name: instrumentName });
     });
   });
-  return rows;
+  return { rows, rateLimitedCount };
+}
+
+function buildMarkCacheKey({ expiry, resolution }) {
+  return `${expiry}|${resolution}`;
 }
 
 async function load() {
-  if (!ui.expiration) return;
+  if (!selectedExpirations.value.length) return;
   const instruments = selectedInstruments.value;
   if (!instruments.length) {
-    ui.error = "No instruments available for this expiration.";
+    ui.error = "No instruments available for the selected expiries.";
     return;
   }
 
@@ -241,30 +281,77 @@ async function load() {
   data.indexRows = [];
   data.markRows = [];
 
-  const range = computeRange(instruments[0].expiration_timestamp);
+  const expiryTimestamps = selectedExpirations.value
+    .map((value) => expirationByValue.value.get(value)?.expiration_timestamp)
+    .filter((value) => Number.isFinite(value));
+  const referenceExpiryTs = expiryTimestamps.length
+    ? Math.max(...expiryTimestamps)
+    : instruments[0].expiration_timestamp;
+  const range = computeRange(referenceExpiryTs);
   data.requestedRange = range;
 
   try {
-    const [indexRows, markRows] = await Promise.all([
-      fetchIndexHistory({
-        index_name: "BTCUSD",
-        resolution: ui.resolution,
-        from: range.from,
-        to: range.to,
-      }),
-      fetchMarkRows(instruments, range),
-    ]);
+    const indexRows = await fetchIndexHistory({
+      index_name: "BTCUSD",
+      resolution: ui.resolution,
+      from: range.from,
+      to: range.to,
+    });
 
     if (current !== requestId) return;
     data.indexRows = indexRows || [];
-    data.markRows = markRows || [];
+
+    const instrumentsByExpiry = new Map();
+    for (const instrument of instruments) {
+      const expiry = instrument?.expiry_date;
+      if (!expiry) continue;
+      const bucket = instrumentsByExpiry.get(expiry) || [];
+      bucket.push(instrument);
+      instrumentsByExpiry.set(expiry, bucket);
+    }
+
+    let totalRateLimitedCount = 0;
+    for (const expiry of selectedExpirations.value) {
+      const expiryInstruments = instrumentsByExpiry.get(expiry) || [];
+      if (!expiryInstruments.length) continue;
+      const cacheKey = buildMarkCacheKey({
+        expiry,
+        resolution: ui.resolution,
+      });
+      if (markRowsCache.has(cacheKey)) continue;
+
+      const markResult = await fetchMarkRows(expiryInstruments, range);
+      if (current !== requestId) return;
+      totalRateLimitedCount += markResult?.rateLimitedCount || 0;
+      markRowsCache.set(cacheKey, markResult?.rows || []);
+    }
+
+    const combinedMarkRows = [];
+    for (const expiry of selectedExpirations.value) {
+      const cacheKey = buildMarkCacheKey({
+        expiry,
+        resolution: ui.resolution,
+      });
+      const cachedRows = markRowsCache.get(cacheKey) || [];
+      combinedMarkRows.push(...cachedRows);
+    }
+    data.markRows = combinedMarkRows;
 
     if (!data.indexRows.length || !data.markRows.length) {
+      if (totalRateLimitedCount > 0) {
+        throw new Error(
+          `Rate limited by Thalex (429) while loading ${totalRateLimitedCount} instrument request(s). Please wait a bit and retry.`,
+        );
+      }
       throw new Error("No datapoints returned for this range.");
     }
   } catch (error) {
     if (current !== requestId) return;
-    ui.error = error instanceof Error ? error.message : String(error);
+    if (error?.status === 429) {
+      ui.error = "Rate limited by Thalex (429). Please wait a bit and retry.";
+    } else {
+      ui.error = error instanceof Error ? error.message : String(error);
+    }
     data.indexRows = [];
     data.markRows = [];
   } finally {
@@ -295,16 +382,26 @@ onMounted(async () => {
       const optionDiff = Math.abs(option.expiration_timestamp - target);
       return optionDiff < bestDiff ? option : best;
     }, null);
-    ui.expiration = (closest || options[0]).value;
+    const primary = (closest || options[0]).value;
+    const primaryIndex = options.findIndex((option) => option.value === primary);
+    const secondaryFallback =
+      options[primaryIndex + 1] || options[primaryIndex - 1] || options[0];
+    ui.expirationPrimary = primary;
+    ui.expirationSecondary =
+      secondaryFallback?.value === primary ? "" : secondaryFallback?.value || "";
   } catch (error) {
     ui.error = error instanceof Error ? error.message : String(error);
   }
 });
 
 watch(
-  () => [ui.expiration, ui.resolution],
+  () => [
+    ui.expirationPrimary,
+    ui.expirationSecondary,
+    ui.resolution,
+  ],
   async () => {
-    if (!ui.expiration) return;
+    if (!selectedExpirations.value.length) return;
     await load();
   },
   { immediate: true },
@@ -316,13 +413,19 @@ watch(
     <header class="header">
       <div class="titleRow">
         <h1>Options {{ activeGreekSymbol }} vs moneyness</h1>
-        <div v-if="metaSummary" class="meta">{{ metaSummary }}</div>
+        <div
+          v-if="chartSubtitle || metaSummary"
+          class="titleMetaGroup"
+        >
+          <div v-if="chartSubtitle" class="meta">{{ chartSubtitle }}</div>
+          <div v-if="metaSummary" class="meta">{{ metaSummary }}</div>
+        </div>
       </div>
 
       <div class="controls">
         <div class="field">
-          <label for="expiration">Expiration</label>
-          <select id="expiration" v-model="ui.expiration">
+          <label for="expiration-primary">Expiry A</label>
+          <select id="expiration-primary" v-model="ui.expirationPrimary">
             <option
               v-for="option in expirationOptions"
               :key="option.value"
@@ -330,8 +433,31 @@ watch(
             >
               {{ option.label }}
             </option>
-            <option v-if="!expirationOptions.length" :value="ui.expiration">
-              {{ ui.expiration || "No expirations" }}
+            <option
+              v-if="!expirationOptions.length"
+              :value="ui.expirationPrimary"
+            >
+              {{ ui.expirationPrimary || "No expirations" }}
+            </option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="expiration-secondary">Expiry B</label>
+          <select id="expiration-secondary" v-model="ui.expirationSecondary">
+            <option value="">None</option>
+            <option
+              v-for="option in expirationOptions"
+              :key="`secondary-${option.value}`"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+            <option
+              v-if="!expirationOptions.length"
+              :value="ui.expirationSecondary"
+            >
+              {{ ui.expirationSecondary || "No expirations" }}
             </option>
           </select>
         </div>
@@ -346,14 +472,6 @@ watch(
             >
               {{ RESOLUTION_CONFIG[key].label }}
             </option>
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="xmode">X-axis</label>
-          <select id="xmode" v-model="ui.xMode">
-            <option value="strike">strike</option>
-            <option value="m">moneyness (S/K)</option>
           </select>
         </div>
 
@@ -387,9 +505,9 @@ watch(
       ref="chartRef"
       :data="chartRows"
       :title="chartTitle"
-      :subtitle="chartSubtitle"
+      subtitle=""
       :loading="chartLoading"
-      :x-mode="ui.xMode"
+      x-mode="m"
       :greek="ui.greek"
       :resolution="ui.resolution"
     />
@@ -397,6 +515,13 @@ watch(
 </template>
 
 <style scoped>
+.titleMetaGroup {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
 .greekSymbolGrid {
   display: inline-grid;
   grid-auto-flow: column;

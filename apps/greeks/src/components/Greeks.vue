@@ -26,12 +26,14 @@ const layout = {
   height: 900,
   margin: { top: 90, right: 70, bottom: 80, left: 80 },
 };
+const PANEL_X_TICK_COUNT = 5;
 
 const TEXT_STYLES = {
   axisText: { fill: "#ffffff", size: "12px" },
   axisLabel: { fill: "#ffffff", size: "16px", weight: 600 },
   title: { fill: "#ffffff", size: "22px", weight: 600 },
   subtitle: { fill: "#ffffff", size: "18px" },
+  panelTitle: { fill: "#ffffff", size: "20px", weight: 700 },
   legendTitle: { fill: "#ffffff", size: "12px", weight: 600 },
   legendLabel: { fill: "#ffffff", size: "11px" },
   noData: { fill: "#c9c9cf", size: "14px" },
@@ -99,18 +101,20 @@ const render = () => {
     ctx.clearRect(0, 0, width, height);
   }
 
-  const chartTitle = props.title || "Options delta vs moneyness";
+  const chartTitle = props.title || "";
   const chartSubtitle = props.subtitle || "";
 
-  applyTextStyle(
-    svg
-      .append("text")
-      .attr("x", width / 2)
-      .attr("y", 32)
-      .attr("text-anchor", "middle")
-      .text(chartTitle),
-    "title",
-  );
+  if (chartTitle) {
+    applyTextStyle(
+      svg
+        .append("text")
+        .attr("x", width / 2)
+        .attr("y", 32)
+        .attr("text-anchor", "middle")
+        .text(chartTitle),
+      "title",
+    );
+  }
 
   if (chartSubtitle) {
     applyTextStyle(
@@ -179,48 +183,31 @@ const render = () => {
   };
 
   const yAccessor = (d) => normalizeGreekValue(greekKey, d[greekKey]);
-
   const yValues = props.data.map(yAccessor).filter(Number.isFinite);
-
   if (!yValues.length) return;
 
   const mainChartRight = width - margin.right;
-
-  let x = null;
-  let xAxis = null;
-  if (useStrike) {
-    const strikes = [
-      ...new Set(props.data.map((d) => d.strike).filter(Number.isFinite)),
-    ].sort((a, b) => a - b);
-    if (!strikes.length) return;
-    x = d3
-      .scalePoint()
-      .domain(strikes)
-      .range([margin.left, mainChartRight])
-      .padding(0.5);
-    const tickStep = Math.max(1, Math.ceil(strikes.length / 10));
-    const tickValues = strikes.filter((_, i) => i % tickStep === 0);
-    xAxis = d3
-      .axisBottom(x)
-      .tickValues(tickValues)
-      .tickFormat(d3.format("~g"))
-      .tickSize(0)
-      .tickPadding(20);
-  } else {
-    const xValues = props.data.map(xAccessor).filter(Number.isFinite);
-    if (!xValues.length) return;
-    const xExtent = d3.extent(xValues);
-    if (!Number.isFinite(xExtent[0]) || !Number.isFinite(xExtent[1])) {
-      console.error("Invalid data extents", { xExtent });
-      return;
-    }
-    x = d3
-      .scaleLinear()
-      .domain(xExtent)
-      .nice()
-      .range([margin.left, mainChartRight]);
-    xAxis = d3.axisBottom(x).ticks(10).tickSize(0).tickPadding(20);
-  }
+  const panelGap = 56;
+  const panelLabels = Array.from(
+    new Set(
+      props.data
+        .map((point) => point?.expiry_date)
+        .filter((expiry) => typeof expiry === "string" && expiry.length),
+    ),
+  )
+    .sort(
+      (a, b) =>
+        (props.data.find((point) => point?.expiry_date === a)?.expiry_rank ??
+          Number.MAX_SAFE_INTEGER) -
+        (props.data.find((point) => point?.expiry_date === b)?.expiry_rank ??
+          Number.MAX_SAFE_INTEGER),
+    )
+    .slice(0, 2);
+  if (!panelLabels.length) return;
+  const panelCount = panelLabels.length;
+  const totalGap = panelCount > 1 ? panelGap * (panelCount - 1) : 0;
+  const panelWidth = (mainChartRight - margin.left - totalGap) / panelCount;
+  if (!(panelWidth > 0)) return;
 
   const yExtent = d3.extent(yValues);
   if (!Number.isFinite(yExtent[0]) || !Number.isFinite(yExtent[1])) {
@@ -234,30 +221,81 @@ const render = () => {
     .nice()
     .range([height - margin.bottom, margin.top]);
 
+  const panelScaleByLabel = new Map();
+  panelLabels.forEach((label, index) => {
+    const panelPoints = props.data.filter((point) => point?.expiry_date === label);
+    const panelXValues = panelPoints.map(xAccessor).filter(Number.isFinite);
+    if (!panelXValues.length) return;
+    const xExtent = d3.extent(panelXValues);
+    if (!Number.isFinite(xExtent[0]) || !Number.isFinite(xExtent[1])) return;
+
+    const left = margin.left + index * (panelWidth + panelGap);
+    const right = left + panelWidth;
+    const x = d3.scaleLinear().domain(xExtent).nice().range([left, right]);
+    const xAxis = d3
+      .axisBottom(x)
+      .ticks(PANEL_X_TICK_COUNT)
+      .tickSize(0)
+      .tickPadding(20);
+    if (useStrike) {
+      xAxis.tickFormat(d3.format(",.0f"));
+    }
+    panelScaleByLabel.set(label, { x, xAxis, left, right });
+  });
+  if (!panelScaleByLabel.size) return;
+
   const mainGroup = svg.append("g");
 
   const yAxis = d3.axisLeft(y).ticks(5).tickSize(0).tickPadding(20);
 
   mainGroup
     .append("g")
-    .attr("transform", `translate(0,${height - margin.bottom})`)
-    .call(xAxis)
-    .call(axisStyle);
-  mainGroup
-    .append("g")
     .attr("transform", `translate(${margin.left},0)`)
     .call(yAxis)
     .call(axisStyle);
 
-  applyTextStyle(
-    svg
-      .append("text")
-      .attr("x", (margin.left + mainChartRight) / 2)
-      .attr("y", height - 24)
-      .attr("text-anchor", "middle")
-      .text(xLabel),
-    "axisLabel",
-  );
+  panelLabels.forEach((label, index) => {
+    const panel = panelScaleByLabel.get(label);
+    if (!panel) return;
+
+    mainGroup
+      .append("g")
+      .attr("transform", `translate(0,${height - margin.bottom})`)
+      .call(panel.xAxis)
+      .call(axisStyle);
+
+    applyTextStyle(
+      svg
+        .append("text")
+        .attr("x", (panel.left + panel.right) / 2)
+        .attr("y", height - 24)
+        .attr("text-anchor", "middle")
+        .text(xLabel),
+      "axisLabel",
+    );
+
+    applyTextStyle(
+      svg
+        .append("text")
+        .attr("x", (panel.left + panel.right) / 2)
+        .attr("y", 58)
+        .attr("text-anchor", "middle")
+        .text(label),
+      "panelTitle",
+    );
+
+    if (panelCount > 1 && index < panelCount - 1) {
+      const separatorX = panel.right + panelGap / 2;
+      svg
+        .append("line")
+        .attr("x1", separatorX)
+        .attr("x2", separatorX)
+        .attr("y1", margin.top)
+        .attr("y2", height - margin.bottom)
+        .attr("stroke", "#2e3040")
+        .attr("stroke-width", 1);
+    }
+  });
 
   applyTextStyle(
     svg
@@ -282,10 +320,13 @@ const render = () => {
   const color = d3
     .scaleSequential()
     .domain([domainMin, domainMax])
-    .interpolator(d3.interpolateRdBu);
+    .interpolator((t) => d3.interpolateRdBu(1 - t));
 
   const points = [...props.data].filter(
-    (d) => Number.isFinite(xAccessor(d)) && Number.isFinite(yAccessor(d)),
+    (d) =>
+      Number.isFinite(xAccessor(d)) &&
+      Number.isFinite(yAccessor(d)) &&
+      panelScaleByLabel.has(d.expiry_date),
   );
 
   // Create canvas for rendering points
@@ -302,8 +343,10 @@ const render = () => {
     // Draw non-highlighted points first
     points.forEach((d) => {
       if (d.ts === highlightedTs) return;
+      const panel = panelScaleByLabel.get(d.expiry_date);
+      if (!panel) return;
 
-      const cx = x(xAccessor(d));
+      const cx = panel.x(xAccessor(d));
       const cy = y(yAccessor(d));
       const size = 100;
       const radius = Math.sqrt(size / Math.PI);
@@ -326,14 +369,16 @@ const render = () => {
 
     // Draw highlighted points on top
     highlightedPoints.forEach((d) => {
-      const cx = x(xAccessor(d));
+      const panel = panelScaleByLabel.get(d.expiry_date);
+      if (!panel) return;
+      const cx = panel.x(xAccessor(d));
       const cy = y(yAccessor(d));
-      const size = 250;
+      const size = 170;
       const radius = Math.sqrt(size / Math.PI);
 
       ctx.globalAlpha = highlightOpacity;
       ctx.fillStyle = color(colorAccessor(d));
-      ctx.strokeStyle = "#111111";
+      ctx.strokeStyle = "#000000";
       ctx.lineWidth = 0.2;
 
       ctx.beginPath();
@@ -365,7 +410,7 @@ const render = () => {
   gradient
     .append("stop")
     .attr("offset", "0%")
-    .attr("stop-color", d3.interpolateRdBu(0));
+    .attr("stop-color", d3.interpolateRdBu(1));
   gradient
     .append("stop")
     .attr("offset", "50%")
@@ -373,7 +418,7 @@ const render = () => {
   gradient
     .append("stop")
     .attr("offset", "100%")
-    .attr("stop-color", d3.interpolateRdBu(1));
+    .attr("stop-color", d3.interpolateRdBu(0));
 
   const legend = svg
     .append("g")
@@ -436,6 +481,7 @@ const render = () => {
   function showTooltip(d, px, py) {
     const lines = [
       d.instrument_name,
+      `Expiry: ${d.expiry_date || "N/A"}`,
       `Index: ${formatIndexPrice(d.index_price_close)}`,
       `Delta: ${formatGreek(d.delta)}`,
       `Gamma: ${formatGreek(d.gamma, 6)}`,
@@ -502,7 +548,9 @@ const render = () => {
     const maxDist = 30; // Max pixel distance to show tooltip
 
     points.forEach((d) => {
-      const px = x(xAccessor(d));
+      const panel = panelScaleByLabel.get(d.expiry_date);
+      if (!panel) return;
+      const px = panel.x(xAccessor(d));
       const py = y(yAccessor(d));
       const dist = Math.sqrt((mouseX - px) ** 2 + (mouseY - py) ** 2);
       if (dist < minDist) {
