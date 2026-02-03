@@ -223,7 +223,9 @@ const render = () => {
 
   const panelScaleByLabel = new Map();
   panelLabels.forEach((label, index) => {
-    const panelPoints = props.data.filter((point) => point?.expiry_date === label);
+    const panelPoints = props.data.filter(
+      (point) => point?.expiry_date === label,
+    );
     const panelXValues = panelPoints.map(xAccessor).filter(Number.isFinite);
     if (!panelXValues.length) return;
     const xExtent = d3.extent(panelXValues);
@@ -353,8 +355,8 @@ const render = () => {
 
       ctx.globalAlpha = baseOpacity;
       ctx.fillStyle = color(colorAccessor(d));
-      ctx.strokeStyle = "#000000";
-      ctx.lineWidth = 0.3;
+      ctx.strokeStyle = "#111";
+      ctx.lineWidth = 0.8;
 
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
