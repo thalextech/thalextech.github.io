@@ -22,6 +22,7 @@ const GREEK_OPTIONS = [
 const RANGE_DAYS = 21;
 const ONE_HOUR_SECONDS = 60 * 60;
 const MAX_1H_POINTS_PER_INSTRUMENT = 72;
+const MAX_MARK_REQUEST_CONCURRENCY = 2;
 
 const ui = reactive({
   expirationPrimary: "",
@@ -36,10 +37,11 @@ const data = reactive({
   instruments: [],
   indexRows: [],
   markRows: [],
+  markRowsByExpiry: {},
   requestedRange: null,
 });
 const chartRef = ref(null);
-const allowSecondaryLoadOnce = ref(false);
+const isBootstrapping = ref(true);
 
 const selectedExpirations = computed(() =>
   Array.from(
@@ -231,32 +233,67 @@ const computeRange = (expirationTimestamp) => {
   return { from, to };
 };
 
-function getExpirationsForLoad() {
-  const values = [ui.expirationPrimary, ui.expirationSecondary].filter(
-    (expiry) => typeof expiry === "string" && expiry.length,
-  );
-  const unique = Array.from(new Set(values));
-  if (allowSecondaryLoadOnce.value) {
-    allowSecondaryLoadOnce.value = false;
-    return unique;
-  }
-  return ui.expirationPrimary ? [ui.expirationPrimary] : [];
+let indexRequestId = 0;
+const markRequestIdByExpiry = new Map();
+const markRowsCache = new Map();
+let pendingLoads = 0;
+
+function startLoad() {
+  pendingLoads += 1;
+  ui.loading = true;
 }
 
-let requestId = 0;
-const markRowsCache = new Map();
+function finishLoad() {
+  pendingLoads = Math.max(0, pendingLoads - 1);
+  ui.loading = pendingLoads > 0;
+}
 
-async function fetchMarkRows(instruments, range) {
-  const results = await Promise.allSettled(
-    instruments.map((instrument) =>
-      fetchMarkHistory({
-        instrument_name: instrument.instrument_name,
-        resolution: ui.resolution,
-        from: range.from,
-        to: range.to,
-      }),
-    ),
-  );
+function rebuildMarkRows() {
+  const combined = [];
+  for (const expiry of selectedExpirations.value) {
+    const rows = data.markRowsByExpiry[expiry] || [];
+    combined.push(...rows);
+  }
+  data.markRows = combined;
+}
+
+function getReferenceExpiryTs() {
+  const timestamps = selectedExpirations.value
+    .map((value) => expirationByValue.value.get(value)?.expiration_timestamp)
+    .filter((value) => Number.isFinite(value));
+  if (!timestamps.length) return null;
+  return Math.max(...timestamps);
+}
+
+function buildMarkCacheKey({ expiry, resolution }) {
+  return `${expiry}|${resolution}`;
+}
+
+async function fetchMarkRows(instruments, range, resolution) {
+  const results = new Array(instruments.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < instruments.length) {
+      const index = cursor;
+      cursor += 1;
+      const instrument = instruments[index];
+      try {
+        const rows = await fetchMarkHistory({
+          instrument_name: instrument.instrument_name,
+          resolution,
+          from: range.from,
+          to: range.to,
+        });
+        results[index] = { status: "fulfilled", value: rows };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }
+
+  const workers = Math.min(MAX_MARK_REQUEST_CONCURRENCY, instruments.length);
+  await Promise.all(Array.from({ length: workers }, () => worker()));
 
   const rows = [];
   let rateLimitedCount = 0;
@@ -276,37 +313,15 @@ async function fetchMarkRows(instruments, range) {
   return { rows, rateLimitedCount };
 }
 
-function buildMarkCacheKey({ expiry, resolution }) {
-  return `${expiry}|${resolution}`;
-}
+async function loadIndex() {
+  if (!selectedExpirations.value.length) return;
+  const referenceExpiryTs = getReferenceExpiryTs();
+  if (!Number.isFinite(referenceExpiryTs)) return;
 
-async function load() {
-  const expirationsToLoad = getExpirationsForLoad();
-  if (!expirationsToLoad.length) return;
-  const selected = new Set(expirationsToLoad);
-  const instruments = data.instruments.filter(
-    (instrument) =>
-      instrument?.product === "OBTCUSD" &&
-      selected.has(instrument?.expiry_date) &&
-      (instrument?.option_type || "call").toLowerCase() === "call",
-  );
-  if (!instruments.length) {
-    ui.error = "No instruments available for the selected expiries.";
-    return;
-  }
-
-  const current = (requestId += 1);
-  ui.loading = true;
+  const current = (indexRequestId += 1);
+  startLoad();
   ui.error = "";
-  data.indexRows = [];
-  data.markRows = [];
 
-  const expiryTimestamps = expirationsToLoad
-    .map((value) => expirationByValue.value.get(value)?.expiration_timestamp)
-    .filter((value) => Number.isFinite(value));
-  const referenceExpiryTs = expiryTimestamps.length
-    ? Math.max(...expiryTimestamps)
-    : instruments[0].expiration_timestamp;
   const range = computeRange(referenceExpiryTs);
   data.requestedRange = range;
 
@@ -318,67 +333,103 @@ async function load() {
       to: range.to,
     });
 
-    if (current !== requestId) return;
+    if (current !== indexRequestId) return;
     data.indexRows = indexRows || [];
 
-    const instrumentsByExpiry = new Map();
-    for (const instrument of instruments) {
-      const expiry = instrument?.expiry_date;
-      if (!expiry) continue;
-      const bucket = instrumentsByExpiry.get(expiry) || [];
-      bucket.push(instrument);
-      instrumentsByExpiry.set(expiry, bucket);
-    }
-
-    let totalRateLimitedCount = 0;
-    for (const expiry of expirationsToLoad) {
-      const expiryInstruments = instrumentsByExpiry.get(expiry) || [];
-      if (!expiryInstruments.length) continue;
-      const cacheKey = buildMarkCacheKey({
-        expiry,
-        resolution: ui.resolution,
-      });
-      if (markRowsCache.has(cacheKey)) continue;
-
-      const markResult = await fetchMarkRows(expiryInstruments, range);
-      if (current !== requestId) return;
-      totalRateLimitedCount += markResult?.rateLimitedCount || 0;
-      markRowsCache.set(cacheKey, markResult?.rows || []);
-    }
-
-    const combinedMarkRows = [];
-    for (const expiry of expirationsToLoad) {
-      const cacheKey = buildMarkCacheKey({
-        expiry,
-        resolution: ui.resolution,
-      });
-      const cachedRows = markRowsCache.get(cacheKey) || [];
-      combinedMarkRows.push(...cachedRows);
-    }
-    data.markRows = combinedMarkRows;
-
-    if (!data.indexRows.length || !data.markRows.length) {
-      if (totalRateLimitedCount > 0) {
-        throw new Error(
-          `Rate limited by Thalex (429) while loading ${totalRateLimitedCount} instrument request(s). Please wait a bit and retry.`,
-        );
-      }
+    if (!data.indexRows.length) {
       throw new Error("No datapoints returned for this range.");
     }
   } catch (error) {
-    if (current !== requestId) return;
+    if (current !== indexRequestId) return;
+    ui.error = error instanceof Error ? error.message : String(error);
+    data.indexRows = [];
+  } finally {
+    finishLoad();
+  }
+}
+
+async function loadExpiry(expiry, { rebuild = true } = {}) {
+  if (!expiry) return;
+  const option = expirationByValue.value.get(expiry);
+  if (!option) return;
+  const resolution = ui.resolution;
+  const instruments = data.instruments.filter(
+    (instrument) =>
+      instrument?.product === "OBTCUSD" &&
+      instrument?.expiry_date === expiry &&
+      (instrument?.option_type || "call").toLowerCase() === "call",
+  );
+  if (!instruments.length) {
+    ui.error = `No instruments available for expiry ${expiry}.`;
+    return;
+  }
+
+  const prevRequestId = markRequestIdByExpiry.get(expiry) || 0;
+  const current = prevRequestId + 1;
+  markRequestIdByExpiry.set(expiry, current);
+
+  const range = data.requestedRange || computeRange(option?.expiration_timestamp);
+  data.requestedRange = range;
+  const cacheKey = buildMarkCacheKey({
+    expiry,
+    resolution,
+  });
+  const cachedRows = markRowsCache.get(cacheKey);
+  if (cachedRows) {
+    data.markRowsByExpiry[expiry] = cachedRows;
+    if (rebuild) rebuildMarkRows();
+    return;
+  }
+
+  startLoad();
+  ui.error = "";
+
+  try {
+    const markResult = await fetchMarkRows(instruments, range, resolution);
+    if (markRequestIdByExpiry.get(expiry) !== current) return;
+
+    const nextRows = markResult?.rows || [];
+    if (!nextRows.length) {
+      if (markResult?.rateLimitedCount > 0) {
+        throw new Error(
+          `Rate limited by Thalex (429) while loading ${markResult.rateLimitedCount} instrument request(s). Please wait a bit and retry.`,
+        );
+      }
+      throw new Error(`No datapoints returned for expiry ${expiry}.`);
+    }
+
+    data.markRowsByExpiry[expiry] = nextRows;
+    markRowsCache.set(cacheKey, nextRows);
+    if (rebuild) rebuildMarkRows();
+  } catch (error) {
+    if (markRequestIdByExpiry.get(expiry) !== current) return;
     if (error?.status === 429) {
       ui.error = "Rate limited by Thalex (429). Please wait a bit and retry.";
     } else {
       ui.error = error instanceof Error ? error.message : String(error);
     }
-    data.indexRows = [];
-    data.markRows = [];
   } finally {
-    if (current === requestId) {
-      ui.loading = false;
-    }
+    finishLoad();
   }
+}
+
+async function reloadAll() {
+  if (!selectedExpirations.value.length) return;
+  data.indexRows = [];
+  data.markRowsByExpiry = {};
+  data.markRows = [];
+  await loadIndex();
+  const expiriesToLoad = [];
+  if (ui.expirationPrimary) {
+    expiriesToLoad.push(ui.expirationPrimary);
+  }
+  if (ui.expirationSecondary && ui.expirationSecondary !== ui.expirationPrimary) {
+    expiriesToLoad.push(ui.expirationSecondary);
+  }
+  for (const expiry of expiriesToLoad) {
+    await loadExpiry(expiry, { rebuild: false });
+  }
+  rebuildMarkRows();
 }
 
 onMounted(async () => {
@@ -406,22 +457,50 @@ onMounted(async () => {
     const primaryIndex = options.findIndex((option) => option.value === primary);
     const secondaryFallback =
       options[primaryIndex + 1] || options[primaryIndex - 1] || options[0];
-    allowSecondaryLoadOnce.value = true;
     ui.expirationPrimary = primary;
     ui.expirationSecondary =
       secondaryFallback?.value === primary ? "" : secondaryFallback?.value || "";
+    await reloadAll();
   } catch (error) {
     ui.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    isBootstrapping.value = false;
   }
 });
 
 watch(
-  () => [ui.expirationPrimary, ui.resolution],
+  () => ui.resolution,
   async () => {
-    if (!ui.expirationPrimary) return;
-    await load();
+    if (isBootstrapping.value) return;
+    await reloadAll();
   },
-  { immediate: true },
+  { immediate: false },
+);
+
+watch(
+  () => ui.expirationPrimary,
+  async (next) => {
+    if (isBootstrapping.value) return;
+    if (next) {
+      await loadExpiry(next);
+    } else {
+      rebuildMarkRows();
+    }
+  },
+  { immediate: false },
+);
+
+watch(
+  () => ui.expirationSecondary,
+  async (next) => {
+    if (isBootstrapping.value) return;
+    if (next) {
+      await loadExpiry(next);
+    } else {
+      rebuildMarkRows();
+    }
+  },
+  { immediate: false },
 );
 </script>
 
