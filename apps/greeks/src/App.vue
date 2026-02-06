@@ -39,6 +39,7 @@ const data = reactive({
   requestedRange: null,
 });
 const chartRef = ref(null);
+const allowSecondaryLoadOnce = ref(false);
 
 const selectedExpirations = computed(() =>
   Array.from(
@@ -230,6 +231,18 @@ const computeRange = (expirationTimestamp) => {
   return { from, to };
 };
 
+function getExpirationsForLoad() {
+  const values = [ui.expirationPrimary, ui.expirationSecondary].filter(
+    (expiry) => typeof expiry === "string" && expiry.length,
+  );
+  const unique = Array.from(new Set(values));
+  if (allowSecondaryLoadOnce.value) {
+    allowSecondaryLoadOnce.value = false;
+    return unique;
+  }
+  return ui.expirationPrimary ? [ui.expirationPrimary] : [];
+}
+
 let requestId = 0;
 const markRowsCache = new Map();
 
@@ -268,8 +281,15 @@ function buildMarkCacheKey({ expiry, resolution }) {
 }
 
 async function load() {
-  if (!selectedExpirations.value.length) return;
-  const instruments = selectedInstruments.value;
+  const expirationsToLoad = getExpirationsForLoad();
+  if (!expirationsToLoad.length) return;
+  const selected = new Set(expirationsToLoad);
+  const instruments = data.instruments.filter(
+    (instrument) =>
+      instrument?.product === "OBTCUSD" &&
+      selected.has(instrument?.expiry_date) &&
+      (instrument?.option_type || "call").toLowerCase() === "call",
+  );
   if (!instruments.length) {
     ui.error = "No instruments available for the selected expiries.";
     return;
@@ -281,7 +301,7 @@ async function load() {
   data.indexRows = [];
   data.markRows = [];
 
-  const expiryTimestamps = selectedExpirations.value
+  const expiryTimestamps = expirationsToLoad
     .map((value) => expirationByValue.value.get(value)?.expiration_timestamp)
     .filter((value) => Number.isFinite(value));
   const referenceExpiryTs = expiryTimestamps.length
@@ -311,7 +331,7 @@ async function load() {
     }
 
     let totalRateLimitedCount = 0;
-    for (const expiry of selectedExpirations.value) {
+    for (const expiry of expirationsToLoad) {
       const expiryInstruments = instrumentsByExpiry.get(expiry) || [];
       if (!expiryInstruments.length) continue;
       const cacheKey = buildMarkCacheKey({
@@ -327,7 +347,7 @@ async function load() {
     }
 
     const combinedMarkRows = [];
-    for (const expiry of selectedExpirations.value) {
+    for (const expiry of expirationsToLoad) {
       const cacheKey = buildMarkCacheKey({
         expiry,
         resolution: ui.resolution,
@@ -386,6 +406,7 @@ onMounted(async () => {
     const primaryIndex = options.findIndex((option) => option.value === primary);
     const secondaryFallback =
       options[primaryIndex + 1] || options[primaryIndex - 1] || options[0];
+    allowSecondaryLoadOnce.value = true;
     ui.expirationPrimary = primary;
     ui.expirationSecondary =
       secondaryFallback?.value === primary ? "" : secondaryFallback?.value || "";
@@ -395,13 +416,9 @@ onMounted(async () => {
 });
 
 watch(
-  () => [
-    ui.expirationPrimary,
-    ui.expirationSecondary,
-    ui.resolution,
-  ],
+  () => [ui.expirationPrimary, ui.resolution],
   async () => {
-    if (!selectedExpirations.value.length) return;
+    if (!ui.expirationPrimary) return;
     await load();
   },
   { immediate: true },

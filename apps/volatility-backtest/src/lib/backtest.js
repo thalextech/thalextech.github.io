@@ -591,6 +591,329 @@ export async function runBacktestStraddle({
   };
 }
 
+function buildMarkLookup(rows) {
+  const clean = (rows || [])
+    .filter((r) => Number.isFinite(r?.ts))
+    .map((r) => {
+      const priceRaw = r?.mark_price_close ?? r?.mark_price;
+      const price = Number(priceRaw);
+      if (!Number.isFinite(price)) return null;
+      return {
+        ts: r.ts,
+        price,
+        iv: r?.iv_close != null ? Number(r.iv_close) : null,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.ts - b.ts);
+
+  const byTs = new Map();
+  const tsList = [];
+  for (const row of clean) {
+    byTs.set(row.ts, row);
+    tsList.push(row.ts);
+  }
+  return { rows: clean, byTs, tsList };
+}
+
+function getNearestMarkRow(lookup, ts, maxTsDiff) {
+  if (!lookup?.tsList?.length || !Number.isFinite(ts)) return null;
+  const exact = lookup.byTs.get(ts);
+  if (exact) return exact;
+  const tsList = lookup.tsList;
+  let lo = 0;
+  let hi = tsList.length - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (tsList[mid] <= ts) lo = mid;
+    else hi = mid;
+  }
+  const a = tsList[lo];
+  const b = tsList[hi];
+  const da = Math.abs(ts - a);
+  const db = Math.abs(ts - b);
+  const bestTs = da <= db ? a : b;
+  const diff = Math.min(da, db);
+  if (diff > maxTsDiff) return null;
+  return lookup.byTs.get(bestTs) || null;
+}
+
+/**
+ * Run backtest for one or more option instruments. Option values are summed and hedged as a single position.
+ * Supports single option and 2-leg combinations.
+ */
+export async function runBacktestOptionsBasket({
+  instruments,
+  startTs,
+  endTs,
+  direction,
+  indexName,
+  resolution = DEFAULT_RESOLUTION,
+  deltaHedgeParams = {},
+}) {
+  const selected = Array.isArray(instruments)
+    ? instruments.filter((inst) => inst?.instrument_name)
+    : [];
+  if (!selected.length) {
+    return {
+      series: [],
+      pnl: null,
+      startValue: null,
+      endValue: null,
+      error: "Select at least one option instrument.",
+    };
+  }
+
+  const tolerance = Number(deltaHedgeParams.tolerance) || DEFAULT_DELTA_TOLERANCE;
+  const frequencyMinutes = deltaHedgeParams.frequencyMinutes != null
+    ? Number(deltaHedgeParams.frequencyMinutes)
+    : DEFAULT_FREQUENCY_MINUTES;
+  const frequencySeconds = frequencyMinutes > 0 ? frequencyMinutes * 60 : 0;
+  const useFrequency = frequencyMinutes > 0;
+  const perpInstrumentName = String(indexName || "").toUpperCase().includes("ETH")
+    ? "ETH-PERPETUAL"
+    : "BTC-PERPETUAL";
+
+  const [optionMarks, perpRows] = await Promise.all([
+    Promise.all(
+      selected.map((inst) => fetchMarkHistory({
+        instrument_name: inst.instrument_name,
+        resolution,
+        from: startTs,
+        to: endTs,
+      })),
+    ),
+    fetchMarkHistory({
+      instrument_name: perpInstrumentName,
+      resolution,
+      from: startTs,
+      to: endTs,
+    }),
+  ]);
+
+  for (let i = 0; i < selected.length; i += 1) {
+    if (!optionMarks[i] || optionMarks[i].length === 0) {
+      return {
+        series: [],
+        pnl: null,
+        startValue: null,
+        endValue: null,
+        error: `No mark history for ${selected[i].instrument_name} in the selected range.`,
+      };
+    }
+  }
+  if (!perpRows || perpRows.length === 0) {
+    return {
+      series: [],
+      pnl: null,
+      startValue: null,
+      endValue: null,
+      error: `No perpetual mark history for ${perpInstrumentName}.`,
+    };
+  }
+
+  const optionLookups = selected.map((inst, idx) => ({
+    strike: getStrike(inst),
+    expiryTs: parseExpirationTs(inst),
+    isCallOption: isCall(inst),
+    lookup: buildMarkLookup(optionMarks[idx]),
+  }));
+  const perpLookup = buildMarkLookup(perpRows);
+
+  if (!perpLookup.rows.length) {
+    return {
+      series: [],
+      pnl: null,
+      startValue: null,
+      endValue: null,
+      error: `No perpetual mark history for ${perpInstrumentName}.`,
+    };
+  }
+
+  const baseRows = optionLookups[0].lookup.rows;
+  if (!baseRows.length) {
+    return {
+      series: [],
+      pnl: null,
+      startValue: null,
+      endValue: null,
+      error: `No mark history for ${selected[0].instrument_name} in the selected range.`,
+    };
+  }
+
+  const mult = direction === "short" ? -1 : 1;
+  const bucketSeconds = resolutionSeconds(resolution);
+  const maxTsDiff = Math.max(bucketSeconds * 2, 25 * 60 * 60);
+  const useIndexAlignment =
+    baseRows.length === perpLookup.rows.length &&
+    optionLookups.every((meta) => meta.lookup.rows.length === baseRows.length);
+
+  const series = baseRows.map((baseRow, i) => {
+    const ts = baseRow.ts;
+    const prevTs = i > 0 ? baseRows[i - 1].ts : ts;
+    let combinedMark = 0;
+    let prevCombinedMark = 0;
+    const matchedRows = [];
+
+    for (const meta of optionLookups) {
+      const { lookup } = meta;
+      let currentRow = null;
+      if (useIndexAlignment) {
+        currentRow = lookup.rows[i] ?? getNearestMarkRow(lookup, ts, maxTsDiff);
+      } else {
+        currentRow =
+          getNearestMarkRow(lookup, ts, maxTsDiff) ??
+          lookup.rows[Math.min(i, lookup.rows.length - 1)] ??
+          null;
+      }
+      let prevRow = currentRow;
+      if (i > 0) {
+        if (useIndexAlignment) {
+          prevRow = lookup.rows[i - 1] ?? getNearestMarkRow(lookup, prevTs, maxTsDiff);
+        } else {
+          prevRow = getNearestMarkRow(lookup, prevTs, maxTsDiff) ?? currentRow;
+        }
+      }
+
+      const price = currentRow?.price ?? 0;
+      const prevPrice = i === 0 ? price : (prevRow?.price ?? 0);
+      combinedMark += price;
+      prevCombinedMark += prevPrice;
+      matchedRows.push(currentRow);
+    }
+
+    let perpRow = null;
+    if (useIndexAlignment) {
+      perpRow = perpLookup.rows[i] ?? getNearestMarkRow(perpLookup, ts, maxTsDiff);
+    } else {
+      perpRow =
+        getNearestMarkRow(perpLookup, ts, maxTsDiff) ??
+        perpLookup.rows[Math.min(i, perpLookup.rows.length - 1)] ??
+        null;
+    }
+    const S = perpRow?.price ?? null;
+
+    let delta = null;
+    if (S != null && Number.isFinite(S)) {
+      let deltaSum = 0;
+      let hasDelta = false;
+      for (let j = 0; j < optionLookups.length; j += 1) {
+        const meta = optionLookups[j];
+        const row = matchedRows[j];
+        const T =
+          meta.expiryTs && ts < meta.expiryTs
+            ? (meta.expiryTs - ts) / SECONDS_PER_YEAR
+            : null;
+        const sigmaRaw = row?.iv != null ? row.iv / 100 : null;
+        const sigma = sigmaRaw > 0 ? sigmaRaw : 0.5;
+        const d =
+          meta.strike && T && T > 0
+            ? bsDelta(S, meta.strike, T, sigma, meta.isCallOption)
+            : null;
+        if (d != null && Number.isFinite(d)) {
+          deltaSum += d;
+          hasDelta = true;
+        }
+      }
+      delta = hasDelta ? deltaSum : null;
+    }
+
+    const value = mult * combinedMark;
+    const prevValue = mult * prevCombinedMark;
+    const periodOptionPnl = i === 0 ? 0 : value - prevValue;
+
+    return {
+      ts,
+      date: new Date(ts * 1000),
+      mark_price_close: combinedMark,
+      iv_close: baseRow.iv != null && Number.isFinite(baseRow.iv) ? baseRow.iv : null,
+      value,
+      periodPnl: periodOptionPnl,
+      periodOptionPnl,
+      delta,
+      indexPrice: S,
+    };
+  });
+
+  let cumOption = 0;
+  let cumHedge = 0;
+  let hedgeRatio = null;
+  let lastRehedgeIndex = -1;
+
+  for (let i = 0; i < series.length; i += 1) {
+    const row = series[i];
+    const prevS = i > 0 ? series[i - 1].indexPrice : null;
+    const S = row.indexPrice;
+
+    cumOption += row.periodOptionPnl ?? 0;
+    row.cumulativeOptionPnl = cumOption;
+    const periodHedgePnl =
+      i > 0 && prevS != null && S != null && hedgeRatio != null && Number.isFinite(hedgeRatio)
+        ? hedgeRatio * (S - prevS)
+        : 0;
+    cumHedge += periodHedgePnl;
+    row.cumulativeHedgePnl = cumHedge;
+    row.cumulativeTotalPnl = cumOption + cumHedge;
+    row.cumulativePnl = row.cumulativeOptionPnl;
+
+    const deltaDev =
+      hedgeRatio != null && row.delta != null
+        ? Math.abs(-row.delta * mult - hedgeRatio)
+        : (row.delta != null ? Infinity : 0);
+    const secondsSinceRehedge =
+      lastRehedgeIndex < 0
+        ? (useFrequency ? frequencySeconds : 0)
+        : row.ts - series[lastRehedgeIndex].ts;
+    const timeTrigger = useFrequency && secondsSinceRehedge >= frequencySeconds;
+    const toleranceTrigger = deltaDev > tolerance;
+    const shouldRehedge =
+      row.delta != null && Number.isFinite(row.delta) && (timeTrigger || toleranceTrigger);
+
+    if (shouldRehedge) {
+      hedgeRatio = -row.delta * mult;
+      lastRehedgeIndex = i;
+      row.rehedge = true;
+    } else {
+      row.rehedge = false;
+    }
+  }
+
+  const hedgeStats = {
+    points: series.length,
+    withIndex: series.filter((r) => r.indexPrice != null && Number.isFinite(r.indexPrice)).length,
+    withDelta: series.filter((r) => r.delta != null && Number.isFinite(r.delta)).length,
+    rehedges: series.filter((r) => r.rehedge).length,
+  };
+
+  const rawStart = series[0]?.value;
+  const rawEnd = series.length ? series[series.length - 1]?.value : undefined;
+  const startValue = rawStart != null && Number.isFinite(rawStart) ? rawStart : null;
+  const endValue = rawEnd != null && Number.isFinite(rawEnd) ? rawEnd : null;
+  const pnl =
+    startValue != null && endValue != null && Number.isFinite(startValue) && Number.isFinite(endValue)
+      ? endValue - startValue
+      : null;
+  const lastRow = series.length ? series[series.length - 1] : null;
+  const hedgePnl =
+    lastRow != null && lastRow.cumulativeHedgePnl != null && Number.isFinite(lastRow.cumulativeHedgePnl)
+      ? lastRow.cumulativeHedgePnl
+      : null;
+  const totalPnl =
+    lastRow != null && lastRow.cumulativeTotalPnl != null && Number.isFinite(lastRow.cumulativeTotalPnl)
+      ? lastRow.cumulativeTotalPnl
+      : null;
+
+  return {
+    series,
+    pnl,
+    startValue,
+    endValue,
+    hedgePnl,
+    totalPnl,
+    hedgeStats,
+  };
+}
+
 export async function loadInstruments() {
   return fetchInstruments();
 }
