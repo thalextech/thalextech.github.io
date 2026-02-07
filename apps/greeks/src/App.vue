@@ -42,6 +42,14 @@ const data = reactive({
 });
 const chartRef = ref(null);
 const isBootstrapping = ref(true);
+const expiryPanelLoading = reactive({
+  primary: false,
+  secondary: false,
+});
+const expiryPanelLoadToken = {
+  primary: 0,
+  secondary: 0,
+};
 
 const selectedExpirations = computed(() =>
   Array.from(
@@ -210,6 +218,20 @@ const metaSummary = computed(() => {
 });
 
 const chartLoading = computed(() => ui.loading && chartRows.value.length === 0);
+const loadingPanelIndexes = computed(() => {
+  const indexes = [];
+  if (expiryPanelLoading.primary) {
+    indexes.push(0);
+  }
+  if (
+    expiryPanelLoading.secondary &&
+    ui.expirationSecondary &&
+    ui.expirationSecondary !== ui.expirationPrimary
+  ) {
+    indexes.push(1);
+  }
+  return indexes;
+});
 
 function handleSavePng() {
   if (!chartRef.value) return;
@@ -255,6 +277,27 @@ function rebuildMarkRows() {
     combined.push(...rows);
   }
   data.markRows = combined;
+}
+
+function startPanelLoad(panelKey) {
+  if (!panelKey) return 0;
+  const next = (expiryPanelLoadToken[panelKey] || 0) + 1;
+  expiryPanelLoadToken[panelKey] = next;
+  expiryPanelLoading[panelKey] = true;
+  return next;
+}
+
+function finishPanelLoad(panelKey, token) {
+  if (!panelKey || !token) return;
+  if (expiryPanelLoadToken[panelKey] === token) {
+    expiryPanelLoading[panelKey] = false;
+  }
+}
+
+function resetPanelLoad(panelKey) {
+  if (!panelKey) return;
+  expiryPanelLoadToken[panelKey] = (expiryPanelLoadToken[panelKey] || 0) + 1;
+  expiryPanelLoading[panelKey] = false;
 }
 
 function getReferenceExpiryTs() {
@@ -348,7 +391,7 @@ async function loadIndex() {
   }
 }
 
-async function loadExpiry(expiry, { rebuild = true } = {}) {
+async function loadExpiry(expiry, { rebuild = true, panelKey = null } = {}) {
   if (!expiry) return;
   const option = expirationByValue.value.get(expiry);
   if (!option) return;
@@ -381,6 +424,7 @@ async function loadExpiry(expiry, { rebuild = true } = {}) {
     return;
   }
 
+  const panelToken = startPanelLoad(panelKey);
   startLoad();
   ui.error = "";
 
@@ -409,6 +453,7 @@ async function loadExpiry(expiry, { rebuild = true } = {}) {
       ui.error = error instanceof Error ? error.message : String(error);
     }
   } finally {
+    finishPanelLoad(panelKey, panelToken);
     finishLoad();
   }
 }
@@ -421,13 +466,16 @@ async function reloadAll() {
   await loadIndex();
   const expiriesToLoad = [];
   if (ui.expirationPrimary) {
-    expiriesToLoad.push(ui.expirationPrimary);
+    expiriesToLoad.push({ expiry: ui.expirationPrimary, panelKey: "primary" });
   }
   if (ui.expirationSecondary && ui.expirationSecondary !== ui.expirationPrimary) {
-    expiriesToLoad.push(ui.expirationSecondary);
+    expiriesToLoad.push({
+      expiry: ui.expirationSecondary,
+      panelKey: "secondary",
+    });
   }
-  for (const expiry of expiriesToLoad) {
-    await loadExpiry(expiry, { rebuild: false });
+  for (const { expiry, panelKey } of expiriesToLoad) {
+    await loadExpiry(expiry, { rebuild: false, panelKey });
   }
   rebuildMarkRows();
 }
@@ -482,8 +530,9 @@ watch(
   async (next) => {
     if (isBootstrapping.value) return;
     if (next) {
-      await loadExpiry(next);
+      await loadExpiry(next, { panelKey: "primary" });
     } else {
+      resetPanelLoad("primary");
       rebuildMarkRows();
     }
   },
@@ -495,8 +544,9 @@ watch(
   async (next) => {
     if (isBootstrapping.value) return;
     if (next) {
-      await loadExpiry(next);
+      await loadExpiry(next, { panelKey: "secondary" });
     } else {
+      resetPanelLoad("secondary");
       rebuildMarkRows();
     }
   },
@@ -603,6 +653,7 @@ watch(
       :title="chartTitle"
       subtitle=""
       :loading="chartLoading"
+      :loading-panels="loadingPanelIndexes"
       x-mode="m"
       :greek="ui.greek"
       :resolution="ui.resolution"

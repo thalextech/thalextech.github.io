@@ -8,6 +8,7 @@ const props = defineProps({
   title: { type: String, default: "" },
   subtitle: { type: String, default: "" },
   loading: { type: Boolean, default: false },
+  loadingPanels: { type: Array, default: () => [] },
   xMode: { type: String, default: "strike" },
   greek: { type: String, default: "delta" },
   resolution: { type: String, default: "1h" },
@@ -173,9 +174,15 @@ const render = () => {
     ? props.greek
     : "delta";
   const xLabel = useStrike ? "strike" : "S/K";
-  const yLabel = greekKey;
+  const gammaScaleFactor = 1e4;
+  const isGamma = greekKey === "gamma";
+  const yLabel = isGamma ? `${greekKey} [x10^4]` : greekKey;
   const normalizeGreekValue = (key, value) =>
-    key === "vega" && Number.isFinite(value) ? value / 100 : value;
+    key === "vega" && Number.isFinite(value)
+      ? value / 100
+      : key === "gamma" && Number.isFinite(value)
+        ? value * gammaScaleFactor
+        : value;
 
   const xAccessor = (d) => {
     if (useStrike) return d.strike;
@@ -208,6 +215,12 @@ const render = () => {
   const totalGap = panelCount > 1 ? panelGap * (panelCount - 1) : 0;
   const panelWidth = (mainChartRight - margin.left - totalGap) / panelCount;
   if (!(panelWidth > 0)) return;
+  const loadingPanelSet = new Set(
+    (props.loadingPanels || []).filter(
+      (index) =>
+        Number.isInteger(index) && index >= 0 && index < panelCount,
+    ),
+  );
 
   const yExtent = d3.extent(yValues);
   if (!Number.isFinite(yExtent[0]) || !Number.isFinite(yExtent[1])) {
@@ -297,6 +310,28 @@ const render = () => {
         .attr("stroke", "#2e3040")
         .attr("stroke-width", 1);
     }
+
+    if (loadingPanelSet.has(index)) {
+      svg
+        .append("rect")
+        .attr("x", panel.left)
+        .attr("y", margin.top)
+        .attr("width", panel.right - panel.left)
+        .attr("height", height - margin.top - margin.bottom)
+        .attr("fill", "rgba(0, 0, 0, 0.35)")
+        .attr("pointer-events", "none");
+
+      applyTextStyle(
+        svg
+          .append("text")
+          .attr("x", (panel.left + panel.right) / 2)
+          .attr("y", margin.top + (height - margin.top - margin.bottom) / 2)
+          .attr("text-anchor", "middle")
+          .attr("dominant-baseline", "middle")
+          .text("Loading..."),
+        "noData",
+      );
+    }
   });
 
   applyTextStyle(
@@ -314,7 +349,7 @@ const render = () => {
     const value = normalizeGreekValue(greekKey, d[greekKey]);
     return Number.isFinite(value) ? Math.abs(value) : NaN;
   };
-  const colorLabel = `|${greekKey}|`;
+  const colorLabel = isGamma ? `|${greekKey}| [x10^4]` : `|${greekKey}|`;
 
   const colorExtent = d3.extent(props.data, colorAccessor);
   const domainMin = Number.isFinite(colorExtent[0]) ? colorExtent[0] : 0;
@@ -580,6 +615,7 @@ watch(
     props.title,
     props.subtitle,
     props.loading,
+    props.loadingPanels,
     props.xMode,
     props.greek,
     props.resolution,
