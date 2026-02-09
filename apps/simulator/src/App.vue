@@ -427,6 +427,67 @@ const optionLegs = computed(() =>
   positionLegs.value.filter((leg): leg is OptionLeg => leg.kind === "option"),
 );
 
+const MARK_RETRY_DELAY_MS = 1500;
+const MARK_RETRY_MAX = 2;
+const markFetchInFlight = new Set<string>();
+const markRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const markRetryAttempts = new Map<string, number>();
+
+const clearMarkRetry = (name: string): void => {
+  const timer = markRetryTimers.get(name);
+  if (timer) {
+    clearTimeout(timer);
+    markRetryTimers.delete(name);
+  }
+  markRetryAttempts.delete(name);
+};
+
+const setTickerSnapshot = (name: string, ticker: unknown): void => {
+  tickerByInstrument.value = {
+    ...tickerByInstrument.value,
+    [name]: { data: ticker, fetchedAt: Date.now() },
+  };
+};
+
+const fetchMarkSnapshot = async (name: string): Promise<boolean> => {
+  if (markFetchInFlight.has(name)) return false;
+  markFetchInFlight.add(name);
+  try {
+    const ticker = await fetchLatestMarkPrice(name);
+    if (!ticker) return false;
+    if (!selectedInstrumentNames.value.includes(name)) return false;
+    setTickerSnapshot(name, ticker);
+    clearMarkRetry(name);
+    return true;
+  } catch (error) {
+    console.warn("Failed to fetch ticker", name, error);
+    return false;
+  } finally {
+    markFetchInFlight.delete(name);
+  }
+};
+
+const scheduleMarkRetry = (name: string): void => {
+  if (markRetryTimers.has(name)) return;
+  const attempts = markRetryAttempts.get(name) ?? 0;
+  if (attempts >= MARK_RETRY_MAX) return;
+  markRetryAttempts.set(name, attempts + 1);
+  const timer = setTimeout(async () => {
+    markRetryTimers.delete(name);
+    if (!selectedInstrumentNames.value.includes(name)) {
+      markRetryAttempts.delete(name);
+      return;
+    }
+    if (tickerByInstrument.value[name]) {
+      clearMarkRetry(name);
+      return;
+    }
+    const ok = await fetchMarkSnapshot(name);
+    if (!ok) scheduleMarkRetry(name);
+  }, MARK_RETRY_DELAY_MS);
+  markRetryTimers.set(name, timer);
+};
+
 const resolveInstrumentForLeg = (leg: OptionLeg): ResolvedInstrument | null => {
   const expirySeconds = parseExpiryToSeconds(leg.expiry);
   if (!expirySeconds) return null;
@@ -722,6 +783,12 @@ onUnmounted(() => {
   clearNPopoverHideTimer();
   clearRowsApplyTimer();
   clearSimSettingsHideTimer();
+  for (const timer of markRetryTimers.values()) {
+    clearTimeout(timer);
+  }
+  markRetryTimers.clear();
+  markRetryAttempts.clear();
+  markFetchInFlight.clear();
 });
 
 onMounted(async () => {
@@ -735,22 +802,23 @@ onMounted(async () => {
 watch(
   selectedInstrumentNames,
   async (names) => {
-    if (!names.length) return;
-    const updates: Record<string, { data: unknown; fetchedAt: number }> = {
-      ...tickerByInstrument.value,
-    };
+    if (!names.length) {
+      for (const name of Array.from(markRetryTimers.keys())) {
+        clearMarkRetry(name);
+      }
+      return;
+    }
+    const active = new Set(names);
+    for (const name of Array.from(markRetryTimers.keys())) {
+      if (!active.has(name)) clearMarkRetry(name);
+    }
     await Promise.all(
       names.map(async (name) => {
-        if (updates[name]) return;
-        try {
-          const ticker = await fetchLatestMarkPrice(name);
-          if (ticker) updates[name] = { data: ticker, fetchedAt: Date.now() };
-        } catch (error) {
-          console.warn("Failed to fetch ticker", name, error);
-        }
+        if (tickerByInstrument.value[name]) return;
+        const ok = await fetchMarkSnapshot(name);
+        if (!ok) scheduleMarkRetry(name);
       }),
     );
-    tickerByInstrument.value = updates;
   },
   { immediate: true },
 );
@@ -937,3 +1005,285 @@ watch(
     </section>
   </main>
 </template>
+
+<style scoped>
+.app-main {
+  --text-primary: var(--text);
+  --text-muted: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 1200px;
+  width: 100%;
+  margin: 32px auto 64px;
+  padding: 0 16px;
+  min-height: 100vh;
+}
+
+:deep(input),
+:deep(select),
+:deep(textarea),
+:deep(button) {
+  font-family: inherit;
+}
+
+:deep(button) {
+  appearance: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  font-weight: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: none;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.builder-section {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  height: var(--chart-header-height);
+  padding: 0 8px;
+  position: relative;
+  z-index: 8;
+}
+
+.chart-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chart-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+}
+
+.chart-meta-key {
+  color: var(--text-muted);
+}
+
+.chart-meta-value {
+  color: rgba(148, 163, 184, 0.95);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-meta-n {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  border-radius: 4px;
+}
+
+.chart-meta-n:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.chart-horizon-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.sim-settings-btn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.sim-settings-btn:hover {
+  color: var(--text-primary);
+}
+
+.sim-settings-popover {
+  position: absolute;
+  top: calc(var(--chart-header-height) + 4px);
+  left: 8px;
+  z-index: 6;
+  width: 220px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(9, 13, 20, 0.96);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+  display: grid;
+  gap: 8px;
+}
+
+.sim-settings-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  column-gap: 10px;
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+.sim-settings-input {
+  width: 92px;
+  padding: 3px 6px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(0, 0, 0, 0.32);
+  color: var(--text-primary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.sim-settings-input::-webkit-inner-spin-button,
+.sim-settings-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.chart-section {
+  position: relative;
+  width: 100%;
+  max-width: 980px;
+  min-width: 0;
+  margin: 0;
+  margin-right: auto;
+  --chart-header-height: 40px;
+  height: min(70vh, 620px);
+  min-height: 520px;
+}
+
+.chart-section svg {
+  position: absolute;
+  top: var(--chart-header-height);
+  left: 0;
+  width: 100%;
+  height: calc(100% - var(--chart-header-height));
+  display: block;
+  cursor: crosshair;
+  z-index: 2;
+}
+
+.chart-section canvas {
+  position: absolute;
+  top: var(--chart-header-height);
+  left: 0;
+  width: 100%;
+  height: calc(100% - var(--chart-header-height));
+  display: block;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.rows-popover {
+  position: absolute;
+  z-index: 4;
+  width: 220px;
+  padding: 10px 12px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(9, 13, 20, 0.96);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+  transform: translate(-50%, 8px);
+  backdrop-filter: blur(4px);
+}
+
+.rows-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.rows-popover-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.rows-popover-value {
+  font-size: 11px;
+  color: #f1f5f9;
+  font-variant-numeric: tabular-nums;
+}
+
+.rows-popover-slider {
+  width: 100%;
+  accent-color: #8fb8e3;
+}
+
+.rows-popover-scale {
+  margin-top: 2px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: rgba(148, 163, 184, 0.9);
+  font-variant-numeric: tabular-nums;
+}
+
+.histogram-toggle {
+  position: absolute;
+  top: 8px;
+  left: 86%;
+  transform: translateX(-50%);
+  z-index: 9;
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 999px;
+  border: none;
+  background: #000000;
+}
+
+.histogram-toggle button {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.histogram-toggle button.is-active {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+@media (max-width: 900px) {
+  .app-main {
+    margin: 24px auto 48px;
+    padding: 0 12px;
+  }
+}
+
+@media (max-width: 640px) {
+  .chart-section {
+    height: 460px;
+    --chart-header-height: 36px;
+  }
+}
+</style>

@@ -1293,5 +1293,116 @@ onUnmounted(() => {
 .cloud-chart-layer {
   position: absolute;
   inset: 0;
+  font-family: inherit;
+}
+
+.cloud-chart-layer svg,
+.cloud-chart-layer canvas {
+  position: absolute;
+  top: var(--chart-header-height);
+  left: 0;
+  width: 100%;
+  height: calc(100% - var(--chart-header-height));
+  display: block;
+}
+
+.cloud-chart-layer svg {
+  cursor: crosshair;
+  z-index: 2;
+}
+
+.cloud-chart-layer canvas {
+  pointer-events: none;
+  z-index: 1;
+}
+
+:deep(svg) {
+  font-family: inherit;
+}
+
+:deep(.chart-meta-overlay text) {
+  dominant-baseline: alphabetic;
+}
+
+:deep(.chart-meta-key) {
+  fill: var(--text-muted);
+  font-size: 10px;
+  font-family: inherit;
+}
+
+:deep(.chart-meta-value) {
+  fill: rgba(148, 163, 184, 0.95);
+  font-size: 10px;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+:deep(.grid line) {
+  stroke: rgba(255, 255, 255, 0.08);
+}
+
+:deep(.grid path) {
+  stroke: none;
+}
+
+:deep(.baseline) {
+  stroke: rgba(126, 211, 255, 0.35);
+  stroke-width: 1;
+  stroke-dasharray: 4 6;
+}
+
+:deep(.paths path) {
+  mix-blend-mode: normal;
+}
+
+:deep(.mu-guide line) {
+  stroke: #fff;
+}
+
+:deep(.mu-guide),
+:deep(.mu-guide *) {
+  pointer-events: none;
+}
+
+:deep(.mu-cone-fill) {
+  opacity: 1;
+}
+
+:deep(.mu-cone-edge) {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.55);
+  stroke-width: 1.5;
+}
+
+:deep(.axis-label) {
+  fill: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+:deep(.axis text) {
+  fill: var(--text-muted);
+  font-size: 10px;
+  font-family: inherit;
+}
+
+:deep(.forward-value-label) {
+  fill: rgba(148, 163, 184, 0.88);
+  font-size: 10px;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+:deep(.axis path),
+:deep(.axis line),
+:deep(.hist-baseline) {
+  stroke: rgba(255, 255, 255, 0.18);
+}
+
+:deep(.hist-s0) {
+  stroke: rgba(0, 0, 0, 0.35);
+  stroke-width: 1;
 }
 </style>
