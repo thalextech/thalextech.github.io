@@ -1197,8 +1197,8 @@ watch(
 }
 
 .sim-settings-btn {
-  width: 18px;
-  height: 18px;
+  width: 12px;
+  height: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1207,9 +1207,10 @@ watch(
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 7px;
   line-height: 1;
   flex-shrink: 0;
+  transform: translateY(1px);
 }
 
 .sim-settings-btn:hover {
