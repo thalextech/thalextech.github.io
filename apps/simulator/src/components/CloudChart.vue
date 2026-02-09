@@ -721,7 +721,10 @@ const updateDynamicScene = (
         1,
         Math.round(lerp(output[left].count, output[right].count)),
       );
-      output[i].sumPayoff = lerp(output[left].sumPayoff, output[right].sumPayoff);
+      output[i].sumPayoff = lerp(
+        output[left].sumPayoff,
+        output[right].sumPayoff,
+      );
       output[i].medianPayoff = lerp(
         output[left].medianPayoff,
         output[right].medianPayoff,
@@ -733,12 +736,12 @@ const updateDynamicScene = (
 
   const displayBins = smoothDisplayBins(bins);
   const countMax = d3.max(displayBins, (bin) => bin.count) || 1;
-  const cloudFillOpacity = 0.6;
+  const cloudFillOpacity = 0.5;
   const binCountMax = d3.max(bins, (bin) => bin.count) || 1;
   const opacityScale = d3
     .scaleSqrt()
     .domain([0, binCountMax])
-    .range([0.12, cloudFillOpacity])
+    .range([0.2, cloudFillOpacity])
     .clamp(true);
   const maxAbsAvgPayoff = Math.max(Math.abs(payoffMin), Math.abs(payoffMax));
   const payoffSpan =
@@ -1246,11 +1249,7 @@ const draw = async (): Promise<void> => {
         10,
         Math.min(400, Math.round(props.histBins ?? HISTOGRAM_BIN_COUNT)),
       ),
-      histBinsMultiplier: clamp(
-        Number(props.histBinsMultiplier ?? 1),
-        1,
-        2,
-      ),
+      histBinsMultiplier: clamp(Number(props.histBinsMultiplier ?? 1), 1, 2),
       samplePathLimit: Math.max(
         1,
         Math.min(

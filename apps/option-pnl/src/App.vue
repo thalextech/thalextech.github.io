@@ -15,8 +15,10 @@ const RESOLUTION_CONFIG = {
   3600: { label: "1h", resolution: "1h", interval_seconds: 60 * 60 },
   86400: { label: "1d", resolution: "1d", interval_seconds: 24 * 60 * 60 },
 };
+const RESOLUTION_KEYS = Object.keys(RESOLUTION_CONFIG);
 const MAIN_POINT_LIMIT = 360;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
+const MIN_DATA_TS = Math.floor(MIN_DATA_DATE.getTime() / 1000);
 
 const ui = reactive({
   resolutionKey: "900",
@@ -45,6 +47,23 @@ const maturityFormatter = new Intl.DateTimeFormat("en-US", {
 const strikeFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
+
+const createStableOptionsBuilder = ({ toValue, toLabel }) => {
+  let prevKeys = [];
+  let prevOptions = [];
+  return (keys) => {
+    const unchanged =
+      keys.length === prevKeys.length &&
+      keys.every((key, idx) => key === prevKeys[idx]);
+    if (unchanged) return prevOptions;
+    prevKeys = [...keys];
+    prevOptions = keys.map((key) => ({
+      value: toValue(key),
+      label: toLabel(key),
+    }));
+    return prevOptions;
+  };
+};
 
 const normalizeCreateTimeSeconds = (value) => {
   const ts = Number(value);
@@ -156,6 +175,11 @@ const getTimestampRange = () => {
   };
 };
 
+const buildMaturityOptions = createStableOptionsBuilder({
+  toValue: (ts) => String(ts),
+  toLabel: (ts) => `${maturityFormatter.format(new Date(ts * 1000))} UTC`,
+});
+
 const optionMaturities = computed(() => {
   const expirations = Array.from(
     new Set(
@@ -164,10 +188,7 @@ const optionMaturities = computed(() => {
         .filter((ts) => Number.isFinite(ts) && ts > 0),
     ),
   ).sort((a, b) => a - b);
-  return expirations.map((ts) => ({
-    value: String(ts),
-    label: `${maturityFormatter.format(new Date(ts * 1000))} UTC`,
-  }));
+  return buildMaturityOptions(expirations);
 });
 
 const selectedMaturityTs = computed(() => Number(ui.optionMaturity));
@@ -179,6 +200,11 @@ const optionInstrumentsForMaturity = computed(() => {
   );
 });
 
+const buildStrikeOptions = createStableOptionsBuilder({
+  toValue: (strike) => String(strike),
+  toLabel: (strike) => strikeFormatter.format(strike),
+});
+
 const optionStrikes = computed(() => {
   const strikes = Array.from(
     new Set(
@@ -187,10 +213,7 @@ const optionStrikes = computed(() => {
       ),
     ),
   ).sort((a, b) => a - b);
-  return strikes.map((strike) => ({
-    value: String(strike),
-    label: strikeFormatter.format(strike),
-  }));
+  return buildStrikeOptions(strikes);
 });
 
 const selectedStrike = computed(() => Number(ui.optionStrike));
@@ -238,7 +261,7 @@ const mainSeries = computed(() => {
   for (const point of index) {
     const ts = point.ts;
     if (!Number.isFinite(ts)) continue;
-    if (ts * 1000 < MIN_DATA_DATE.getTime()) continue;
+    if (ts < MIN_DATA_TS) continue;
     if (
       Number.isFinite(optionMinTs) &&
       Number.isFinite(optionMaxTs) &&
@@ -268,9 +291,12 @@ const optionPnlSeries = computed(() => {
     index,
     instrument,
   });
-  const filtered = series.filter(
-    (point) => point.date instanceof Date && point.date >= MIN_DATA_DATE,
-  );
+  const filtered = [];
+  for (const point of series) {
+    if (Number.isFinite(point?.ts) && point.ts >= MIN_DATA_TS) {
+      filtered.push(point);
+    }
+  }
   return filtered.slice(-MAIN_POINT_LIMIT);
 });
 
@@ -332,6 +358,12 @@ async function load(instrument) {
   }
 }
 
+function clearActiveSeries() {
+  const resolutionKey = ui.resolutionKey;
+  data.index[resolutionKey] = [];
+  data.optionMark[resolutionKey] = [];
+}
+
 function handleSavePng() {
   if (!chartRef.value) return;
   const base = optionInstrumentName.value || "option-pnl";
@@ -378,6 +410,11 @@ onMounted(async () => {
       indexPrice: latestIndexClose,
       fallbackStrikes: optionStrikes.value,
     });
+  } catch (e) {
+    ui.error = e instanceof Error ? e.message : String(e);
+    data.optionInstruments = [];
+    data.index = {};
+    data.optionMark = {};
   } finally {
     isInitializing.value = false;
   }
@@ -419,7 +456,12 @@ watch(
   () => [ui.resolutionKey, ui.optionMaturity, ui.optionStrike, ui.optionType],
   async () => {
     const instrument = selectedOptionInstrument.value;
-    if (!instrument) return;
+    if (!instrument) {
+      loadRequestId += 1;
+      ui.loading = false;
+      clearActiveSeries();
+      return;
+    }
     await load(instrument);
   },
   { immediate: false },
@@ -485,11 +527,7 @@ watch(
         <div class="field">
           <label for="resolution">Resolution</label>
           <select id="resolution" v-model="ui.resolutionKey">
-            <option
-              v-for="key in Object.keys(RESOLUTION_CONFIG)"
-              :key="key"
-              :value="key"
-            >
+            <option v-for="key in RESOLUTION_KEYS" :key="key" :value="key">
               {{ RESOLUTION_CONFIG[key].label }}
             </option>
           </select>
