@@ -92,7 +92,8 @@ const chartState = {
 const POINT_RADIUS = 4;
 const POINT_RADIUS_DIMMED = 2.8;
 const POINT_RADIUS_HOVER = 10;
-const LAYOUT_TRANSITION_MS = 260;
+const TAP_SELECT_HITBOX_PX = 22;
+const LAYOUT_TRANSITION_MS = 160;
 const DETAIL_COLORS = {
   carry: { funding: "#c9c9cf", secondary: "#7aa2ff" },
   roll: { funding: "#f0c58a", secondary: "#ffffff" },
@@ -104,6 +105,7 @@ let detailActive = false;
 let lineRevealTimer = null;
 let lineRevealPending = false;
 const legendMetricMode = ref("funding");
+let suppressClearClick = false;
 
 const updateSelectedRange = () => {
   selectedRange = computeSelectedRange(selectedDatums);
@@ -121,6 +123,10 @@ const syncSelectionWithData = (data) => {
 };
 
 const handleChartClick = (event) => {
+  if (suppressClearClick) {
+    suppressClearClick = false;
+    return;
+  }
   const target = event?.target;
   const isPoint = target?.closest?.("circle.main-point");
   if (isPoint) return;
@@ -1118,6 +1124,79 @@ function render() {
     .selectAll("circle.main-point")
     .data(data, (d) => (d.date ? d.date.getTime() : d.index_price_close));
 
+  const handlePointSelect = (event, datum, fromNearestTap = false) => {
+    event.stopPropagation();
+    if (event.type === "pointerdown") {
+      event.preventDefault();
+    }
+    if (fromNearestTap) {
+      suppressClearClick = true;
+    }
+    if (selectedDatums.includes(datum)) return;
+    if (selectedDatums.length < 2) {
+      selectedDatums = [...selectedDatums, datum];
+    } else {
+      const [first, second] = selectedDatums;
+      const firstDate = first?.date;
+      const secondDate = second?.date;
+      const nextDate = datum?.date;
+      if (
+        firstDate instanceof Date &&
+        secondDate instanceof Date &&
+        nextDate instanceof Date
+      ) {
+        const distToFirst = Math.abs(nextDate - firstDate);
+        const distToSecond = Math.abs(nextDate - secondDate);
+        const keep = distToFirst <= distToSecond ? second : first;
+        selectedDatums = [keep, datum];
+      } else {
+        selectedDatums = [second || first, datum].filter(Boolean);
+      }
+    }
+    updateSelectedRange();
+    render();
+  };
+
+  const findNearestDatumForTap = (event) => {
+    const mainNode = chartState.mainGroup?.node();
+    if (!mainNode) return null;
+    const [px, py] = d3.pointer(event, mainNode);
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+    if (
+      px < -TAP_SELECT_HITBOX_PX ||
+      px > innerWidth + TAP_SELECT_HITBOX_PX ||
+      py < -TAP_SELECT_HITBOX_PX ||
+      py > innerHeight + TAP_SELECT_HITBOX_PX
+    ) {
+      return null;
+    }
+    let nearest = null;
+    let bestDistSq = TAP_SELECT_HITBOX_PX * TAP_SELECT_HITBOX_PX + 1;
+    for (const datum of data) {
+      if (!(datum?.date instanceof Date)) continue;
+      if (!Number.isFinite(datum?.index_price_close)) continue;
+      const dx = x(datum.date) - px;
+      const dy = y(datum.index_price_close) - py;
+      if (Math.abs(dx) > TAP_SELECT_HITBOX_PX || Math.abs(dy) > TAP_SELECT_HITBOX_PX) {
+        continue;
+      }
+      const distSq = dx * dx + dy * dy;
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq;
+        nearest = datum;
+      }
+    }
+    return nearest;
+  };
+
+  chartState.mainGroup.on("pointerdown.nearest-select", (event) => {
+    const target = event?.target;
+    if (target?.closest?.("circle.main-point")) return;
+    const nearest = findNearestDatumForTap(event);
+    if (!nearest) return;
+    handlePointSelect(event, nearest, true);
+  });
+
   const pointUpdate = mainPoints
     .join((enter) => {
       const circles = enter
@@ -1163,32 +1242,7 @@ function render() {
       updateSelectionLine();
       hideTooltip();
     })
-    .on("click", (event, datum) => {
-      event.stopPropagation();
-      if (selectedDatums.includes(datum)) return;
-      if (selectedDatums.length < 2) {
-        selectedDatums = [...selectedDatums, datum];
-      } else {
-        const [first, second] = selectedDatums;
-        const firstDate = first?.date;
-        const secondDate = second?.date;
-        const nextDate = datum?.date;
-        if (
-          firstDate instanceof Date &&
-          secondDate instanceof Date &&
-          nextDate instanceof Date
-        ) {
-          const distToFirst = Math.abs(nextDate - firstDate);
-          const distToSecond = Math.abs(nextDate - secondDate);
-          const keep = distToFirst <= distToSecond ? second : first;
-          selectedDatums = [keep, datum];
-        } else {
-          selectedDatums = [second || first, datum].filter(Boolean);
-        }
-      }
-      updateSelectedRange();
-      render();
-    });
+    .on("pointerdown", (event, datum) => handlePointSelect(event, datum));
 
   const pointPosition = animateLayout
     ? pointUpdate.transition().duration(LAYOUT_TRANSITION_MS)
