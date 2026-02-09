@@ -20,6 +20,9 @@ const props = defineProps<{
   volMin?: number;
   volMax?: number;
   histMode?: "price" | "payoff" | "prob";
+  colorMin?: number;
+  colorMax?: number;
+  histBinsMultiplier?: number;
   legs?: PositionLeg[];
   optionPricingByLegId?: Record<string, OptionPricingInput>;
   histBins?: number;
@@ -65,6 +68,9 @@ const MAIN_WIDTH =
   HISTOGRAM_GAP;
 const MAIN_HEIGHT = CHART_HEIGHT - CHART_MARGIN.top - CHART_MARGIN.bottom;
 
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, value));
+
 type SceneHandles = {
   svg: d3.Selection<SVGSVGElement, unknown, null, undefined>;
   defs: d3.Selection<SVGDefsElement, unknown, null, undefined>;
@@ -83,6 +89,7 @@ type SimWorkerRequest = {
   valuationTs: number;
   horizonSeconds: number;
   histBins: number;
+  histBinsMultiplier: number;
   samplePathLimit: number;
 };
 
@@ -446,6 +453,7 @@ const updateDynamicScene = (
     steps,
     rows: totalPathCount,
     samplePaths: paths,
+    sampledFinalPrices,
     sampledPayoffs,
     bins,
     pathMin,
@@ -482,21 +490,28 @@ const updateDynamicScene = (
   const y = d3.scaleLinear().domain(targetDomain).range([mainHeight, 0]);
 
   const x = d3.scaleLinear().domain([0, steps]).range([0, mainWidth]);
+  const binMin = targetDomain[0];
+  const binMax = targetDomain[1];
 
   const negSpan = Math.abs(Math.min(payoffMin, 0));
   const posSpan = Math.max(payoffMax, 0);
   // Piecewise side scaling:
   // negatives map across the lower half, positives across the upper half,
   // so each side keeps contrast even when payoff tails are asymmetric.
+  const colorMin = clamp(props.colorMin ?? COLOR_T_MIN, 0, 1);
+  const colorMax = clamp(props.colorMax ?? COLOR_T_MAX, 0, 1);
+  const resolvedMin = Math.min(colorMin, colorMax);
+  const resolvedMax = Math.max(colorMin, colorMax);
+  const colorMid = clamp((resolvedMin + resolvedMax) / 2, 0, 1);
   const negPayoffColorT = d3
     .scaleLinear()
     .domain([-Math.max(negSpan, 1e-9), 0])
-    .range([COLOR_T_MIN, COLOR_T_MID])
+    .range([resolvedMin, colorMid])
     .clamp(true);
   const posPayoffColorT = d3
     .scaleLinear()
     .domain([0, Math.max(posSpan, 1e-9)])
-    .range([COLOR_T_MID, COLOR_T_MAX])
+    .range([colorMid, resolvedMax])
     .clamp(true);
   const payoffColorRamp = (value: number): string => {
     const t =
@@ -504,7 +519,7 @@ const updateDynamicScene = (
         ? negPayoffColorT(value)
         : value > 0
           ? posPayoffColorT(value)
-          : COLOR_T_MID;
+          : colorMid;
     return d3.interpolateRdBu(t);
   };
   const cloudFillForPath = (pathIndex: number): string =>
@@ -719,6 +734,12 @@ const updateDynamicScene = (
   const displayBins = smoothDisplayBins(bins);
   const countMax = d3.max(displayBins, (bin) => bin.count) || 1;
   const cloudFillOpacity = 0.6;
+  const binCountMax = d3.max(bins, (bin) => bin.count) || 1;
+  const opacityScale = d3
+    .scaleSqrt()
+    .domain([0, binCountMax])
+    .range([0.12, cloudFillOpacity])
+    .clamp(true);
   const maxAbsAvgPayoff = Math.max(Math.abs(payoffMin), Math.abs(payoffMax));
   const payoffSpan =
     Number.isFinite(maxAbsAvgPayoff) && maxAbsAvgPayoff > 0
@@ -750,6 +771,23 @@ const updateDynamicScene = (
     totalPathCount > 0 ? bin.sumPayoff / totalPathCount : 0;
   const barFill = (bin: SimBin): string =>
     payoffColorRamp(getMedianPayoff(bin));
+  const binCount = bins.length;
+  const invBinSize =
+    binCount > 0 && binMax > binMin ? binCount / (binMax - binMin) : 0;
+  const findBinIndex = (value: number): number => {
+    if (!Number.isFinite(value) || binCount === 0 || invBinSize <= 0) return -1;
+    if (value <= binMin) return 0;
+    if (value >= binMax) return binCount - 1;
+    const idx = Math.floor((value - binMin) * invBinSize);
+    return Math.max(0, Math.min(binCount - 1, idx));
+  };
+  const opacityForPath = (pathIndex: number): number => {
+    const finalPrice = sampledFinalPrices[pathIndex];
+    if (!Number.isFinite(finalPrice)) return cloudFillOpacity;
+    const binIndex = findBinIndex(finalPrice);
+    if (binIndex < 0) return cloudFillOpacity;
+    return opacityScale(bins[binIndex]?.count ?? 0);
+  };
   const barX = (bin: SimBin, progress: number): number => {
     if (histogramMode === "price") return xZero;
     if (histogramMode === "prob") {
@@ -887,8 +925,6 @@ const updateDynamicScene = (
     }
   }
 
-  const clamp = (value: number, min: number, max: number): number =>
-    Math.min(max, Math.max(min, value));
   const minMu = props.muMin ?? -0.1;
   const maxMu = props.muMax ?? 0.3;
   const minVol = props.volMin ?? 0.1;
@@ -1155,7 +1191,7 @@ const updateDynamicScene = (
       drawCloudPath(
         paths[pathIndex],
         cloudFillForPath(pathIndex),
-        cloudFillOpacity,
+        opacityForPath(pathIndex),
       );
     }
     cloudCursor = targetCloud;
@@ -1171,7 +1207,7 @@ const updateDynamicScene = (
       drawCloudPath(
         paths[pathIndex],
         cloudFillForPath(pathIndex),
-        cloudFillOpacity,
+        opacityForPath(pathIndex),
       );
     }
     cloudCursor = totalCloud;
@@ -1209,6 +1245,11 @@ const draw = async (): Promise<void> => {
       histBins: Math.max(
         10,
         Math.min(400, Math.round(props.histBins ?? HISTOGRAM_BIN_COUNT)),
+      ),
+      histBinsMultiplier: clamp(
+        Number(props.histBinsMultiplier ?? 1),
+        1,
+        2,
       ),
       samplePathLimit: Math.max(
         1,
@@ -1249,8 +1290,11 @@ watch(
     props.params.rows,
     props.valuationTs,
     props.histBins,
+    props.histBinsMultiplier,
     props.samplePathLimit,
     props.histMode,
+    props.colorMin,
+    props.colorMax,
   ],
   scheduleDraw,
 );

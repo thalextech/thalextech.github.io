@@ -43,6 +43,9 @@ const guideVol = ref<number | null>(null);
 const histogramMode = ref<"price" | "payoff" | "prob">("payoff");
 const settingsOpen = ref(false);
 const cloudPathLimit = ref(2000);
+const colorMinPercent = ref(15);
+const colorMaxPercent = ref(85);
+const histBinsMultiplier = ref(1);
 const defaultTradeInitialized = ref(false);
 const positionLegs = ref<PositionLeg[]>([
   {
@@ -119,6 +122,7 @@ const horizonDaysLabel = computed(() => {
   return `T+${days}d`;
 });
 const nLabelRef = ref<HTMLElement | null>(null);
+const settingsPopoverRef = ref<HTMLElement | null>(null);
 const rowsSlider = ref(appliedParams.rows);
 const nPopoverOpen = ref(false);
 const nPopoverAnchor = ref<{ left: number; top: number; width: number; height: number } | null>(
@@ -127,6 +131,13 @@ const nPopoverAnchor = ref<{ left: number; top: number; width: number; height: n
 let nPopoverHideTimer: ReturnType<typeof setTimeout> | null = null;
 let rowsApplyTimer: ReturnType<typeof setTimeout> | null = null;
 let simSettingsHideTimer: ReturnType<typeof setTimeout> | null = null;
+const settingsFocusWithin = ref(false);
+
+const isSettingsFocusActive = (): boolean => {
+  if (typeof document === "undefined") return false;
+  const active = document.activeElement;
+  return !!(active && settingsPopoverRef.value?.contains(active));
+};
 
 const clampInt = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, Math.round(value)));
@@ -151,6 +162,24 @@ const setCloudPathLimit = (value: number): void => {
   cloudPathLimit.value = clampInt(hardClamped, DRAWN_PATHS_MIN, Math.max(DRAWN_PATHS_MIN, appliedParams.rows));
 };
 
+const setColorMinPercent = (value: number): void => {
+  if (!Number.isFinite(value)) return;
+  const next = clamp(roundTo(value, 1), 0, colorMaxPercent.value - 1);
+  colorMinPercent.value = next;
+};
+
+const setColorMaxPercent = (value: number): void => {
+  if (!Number.isFinite(value)) return;
+  const next = clamp(roundTo(value, 1), colorMinPercent.value + 1, 100);
+  colorMaxPercent.value = next;
+};
+
+const setHistBinsMultiplier = (value: number): void => {
+  if (!Number.isFinite(value)) return;
+  const next = clamp(roundTo(value, 2), 1, 2);
+  histBinsMultiplier.value = next;
+};
+
 const clearSimSettingsHideTimer = (): void => {
   if (!simSettingsHideTimer) return;
   clearTimeout(simSettingsHideTimer);
@@ -163,15 +192,36 @@ const showSimSettings = (): void => {
 };
 
 const scheduleSimSettingsHide = (): void => {
+  if (settingsFocusWithin.value || isSettingsFocusActive()) return;
   clearSimSettingsHideTimer();
   simSettingsHideTimer = setTimeout(() => {
+    if (settingsFocusWithin.value || isSettingsFocusActive()) return;
     settingsOpen.value = false;
-  }, 140);
+  }, 1000);
 };
 
 const toggleSimSettings = (): void => {
   clearSimSettingsHideTimer();
   settingsOpen.value = !settingsOpen.value;
+};
+
+const handleSettingsFocusIn = (): void => {
+  settingsFocusWithin.value = true;
+  showSimSettings();
+};
+
+const handleSettingsFocusOut = (): void => {
+  if (typeof requestAnimationFrame === "undefined") {
+    settingsFocusWithin.value = isSettingsFocusActive();
+    if (!settingsFocusWithin.value) scheduleSimSettingsHide();
+    return;
+  }
+  requestAnimationFrame(() => {
+    settingsFocusWithin.value = isSettingsFocusActive();
+    if (!settingsFocusWithin.value && !settingsPopoverRef.value?.matches(":hover")) {
+      scheduleSimSettingsHide();
+    }
+  });
 };
 
 const clearNPopoverHideTimer = (): void => {
@@ -925,8 +975,11 @@ watch(
       <div
         v-if="settingsOpen"
         class="sim-settings-popover"
+        ref="settingsPopoverRef"
         @mouseenter="showSimSettings"
         @mouseleave="scheduleSimSettingsHide"
+        @focusin="handleSettingsFocusIn"
+        @focusout="handleSettingsFocusOut"
       >
         <div class="sim-settings-row">
           <label for="time-steps">Time steps</label>
@@ -954,6 +1007,48 @@ watch(
             :value="cloudPathLimit"
             @change="setCloudPathLimit(Number(($event.target as HTMLInputElement).value))"
             @blur="setCloudPathLimit(Number(($event.target as HTMLInputElement).value))"
+          />
+        </div>
+        <div class="sim-settings-row">
+          <label for="color-min">Color min %</label>
+          <input
+            id="color-min"
+            class="sim-settings-input"
+            type="number"
+            min="0"
+            max="99"
+            step="1"
+            :value="colorMinPercent"
+            @change="setColorMinPercent(Number(($event.target as HTMLInputElement).value))"
+            @blur="setColorMinPercent(Number(($event.target as HTMLInputElement).value))"
+          />
+        </div>
+        <div class="sim-settings-row">
+          <label for="color-max">Color max %</label>
+          <input
+            id="color-max"
+            class="sim-settings-input"
+            type="number"
+            min="1"
+            max="100"
+            step="1"
+            :value="colorMaxPercent"
+            @change="setColorMaxPercent(Number(($event.target as HTMLInputElement).value))"
+            @blur="setColorMaxPercent(Number(($event.target as HTMLInputElement).value))"
+          />
+        </div>
+        <div class="sim-settings-row">
+          <label for="bins-mult">Bins x</label>
+          <input
+            id="bins-mult"
+            class="sim-settings-input"
+            type="number"
+            min="1"
+            max="2"
+            step="0.05"
+            :value="histBinsMultiplier"
+            @change="setHistBinsMultiplier(Number(($event.target as HTMLInputElement).value))"
+            @blur="setHistBinsMultiplier(Number(($event.target as HTMLInputElement).value))"
           />
         </div>
       </div>
@@ -996,6 +1091,9 @@ watch(
         :volMin="volBounds.min"
         :volMax="volBounds.max"
         :histMode="histogramMode"
+        :colorMin="colorMinPercent / 100"
+        :colorMax="colorMaxPercent / 100"
+        :histBinsMultiplier="histBinsMultiplier"
         :legs="positionLegs"
         :optionPricingByLegId="optionPricingByLegId"
         @set-mu="setMuFromChart"
@@ -1099,8 +1197,8 @@ watch(
 }
 
 .sim-settings-btn {
-  width: 26px;
-  height: 26px;
+  width: 18px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1109,7 +1207,7 @@ watch(
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: 10px;
   line-height: 1;
   flex-shrink: 0;
 }

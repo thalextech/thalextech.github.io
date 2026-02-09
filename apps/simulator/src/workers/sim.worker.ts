@@ -17,6 +17,7 @@ type SimWorkerRequest = {
   valuationTs: number;
   horizonSeconds: number;
   histBins: number;
+  histBinsMultiplier: number;
   samplePathLimit: number;
 };
 
@@ -312,6 +313,11 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   const rows = Math.max(1, Math.floor(request.params.rows));
   const baseline = request.params.s0;
   const histBinsCap = clamp(Math.round(request.histBins), 10, 400);
+  const histBinsMultiplier = clamp(
+    Number(request.histBinsMultiplier ?? 1),
+    1,
+    2,
+  );
   const samplePathLimit = clamp(Math.round(request.samplePathLimit), 1, rows);
 
   const finalPrices = new Float64Array(rows);
@@ -451,10 +457,15 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
     Number.isFinite(paddedDelta) && paddedDelta > 0 ? paddedDelta : 1;
   const binMin = baseline - safeDelta;
   const binMax = baseline + safeDelta;
-  const histBins = computeAdaptiveBinCount(
+  const baseBins = computeAdaptiveBinCount(
     finalPrices,
     binMin,
     binMax,
+    histBinsCap,
+  );
+  const histBins = clamp(
+    Math.round(baseBins * histBinsMultiplier),
+    10,
     histBinsCap,
   );
   const binSize = (binMax - binMin) / histBins;
