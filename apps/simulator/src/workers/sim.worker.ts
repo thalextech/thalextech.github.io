@@ -76,7 +76,6 @@ type PreparedFuturePathLeg = {
 type TailCandidate = {
   index: number;
   finalPrice: number;
-  path: Float64Array;
 };
 
 type Rng = () => number;
@@ -333,8 +332,6 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   const { hasPositionLegs, optionLegs, futureLegs } = prepareLegs(request);
 
   const sampledIndices = pickSampleIndices(rows, samplePathLimit, request.seed);
-  const sampledSet = new Set<number>(sampledIndices);
-  const sampledPathByIndex = new Map<number, Float64Array>();
   const lowTailPool: TailCandidate[] = [];
   const highTailPool: TailCandidate[] = [];
 
@@ -349,15 +346,15 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   let maxDrawdown = 0;
 
   for (let r = 0; r < rows; r += 1) {
-    const path = new Float64Array(steps);
     let s = baseline;
     let peak = baseline;
     let worstDrawdown = 0;
+    const stopHit =
+      futureLegs.length > 0 ? new Uint8Array(futureLegs.length) : null;
 
     for (let c = 0; c < steps; c += 1) {
       const z = randn();
       s *= Math.exp(drift + volStep * z);
-      path[c] = s;
 
       if (s < pathMin) pathMin = s;
       if (s > pathMax) pathMax = s;
@@ -366,6 +363,20 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
       if (peak > 0) {
         const drawdown = (peak - s) / peak;
         if (drawdown > worstDrawdown) worstDrawdown = drawdown;
+      }
+
+      if (stopHit) {
+        for (let i = 0; i < futureLegs.length; i += 1) {
+          if (stopHit[i]) continue;
+          const leg = futureLegs[i];
+          if (leg.stopLoss == null) continue;
+          if (
+            (leg.isBuy && Number.isFinite(s) && s <= leg.stopLoss) ||
+            (!leg.isBuy && Number.isFinite(s) && s >= leg.stopLoss)
+          ) {
+            stopHit[i] = 1;
+          }
+        }
       }
     }
 
@@ -391,28 +402,13 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
         total += leg.sign * leg.qty * (modelPrice - leg.entryPrice);
       }
 
-      for (const leg of futureLegs) {
+      for (let i = 0; i < futureLegs.length; i += 1) {
+        const leg = futureLegs[i];
         const entryPrice = leg.entry ?? s;
-        let exitPrice = s;
-        if (leg.stopLoss != null) {
-          if (leg.isBuy) {
-            for (let c = 0; c < steps; c += 1) {
-              const value = path[c];
-              if (Number.isFinite(value) && value <= leg.stopLoss) {
-                exitPrice = leg.stopLoss;
-                break;
-              }
-            }
-          } else {
-            for (let c = 0; c < steps; c += 1) {
-              const value = path[c];
-              if (Number.isFinite(value) && value >= leg.stopLoss) {
-                exitPrice = leg.stopLoss;
-                break;
-              }
-            }
-          }
-        }
+        const exitPrice =
+          leg.stopLoss != null && stopHit?.[i]
+            ? leg.stopLoss
+            : s;
         total += leg.sign * leg.qty * (exitPrice - entryPrice);
       }
     }
@@ -423,14 +419,10 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
     if (total < payoffMin) payoffMin = total;
     if (total > payoffMax) payoffMax = total;
 
-    if (sampledSet.has(r)) {
-      sampledPathByIndex.set(r, path);
-    }
     if (rows > samplePathLimit) {
       const tailCandidate: TailCandidate = {
         index: r,
         finalPrice: s,
-        path: path.slice(),
       };
       insertLowTailCandidate(lowTailPool, tailCandidate, TAIL_PATH_POOL_SIZE);
       insertHighTailCandidate(highTailPool, tailCandidate, TAIL_PATH_POOL_SIZE);
@@ -534,13 +526,9 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
     addTailPercentileSamples(highTailPool, 3);
   }
   const sampleIndices = Array.from(sampleIndexSet).sort((a, b) => a - b);
-
-  const tailPathByIndex = new Map<number, Float64Array>();
-  for (const candidate of lowTailPool) {
-    tailPathByIndex.set(candidate.index, candidate.path);
-  }
-  for (const candidate of highTailPool) {
-    tailPathByIndex.set(candidate.index, candidate.path);
+  const sampleIndexToRow = new Map<number, number>();
+  for (let i = 0; i < sampleIndices.length; i += 1) {
+    sampleIndexToRow.set(sampleIndices[i], i);
   }
 
   const sampleRows = sampleIndices.length;
@@ -550,13 +538,23 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
 
   for (let i = 0; i < sampleRows; i += 1) {
     const pathIndex = sampleIndices[i];
-    let path = sampledPathByIndex.get(pathIndex) ?? tailPathByIndex.get(pathIndex);
-    if (!path) {
-      path = new Float64Array(steps);
-    }
-    sampledPaths.set(path, i * steps);
     sampledFinalPrices[i] = finalPrices[pathIndex] ?? baseline;
     sampledPayoffs[i] = payoffs[pathIndex] ?? 0;
+  }
+  // Replay once to materialize only selected paths.
+  const replayRng = mulberry32(request.seed);
+  const replayRandn = makeRandn(replayRng);
+  for (let r = 0; r < rows; r += 1) {
+    let s = baseline;
+    const sampleRow = sampleIndexToRow.get(r);
+    const writeOffset = sampleRow != null ? sampleRow * steps : -1;
+    for (let c = 0; c < steps; c += 1) {
+      const z = replayRandn();
+      s *= Math.exp(drift + volStep * z);
+      if (writeOffset >= 0) {
+        sampledPaths[writeOffset + c] = s;
+      }
+    }
   }
 
   return {
