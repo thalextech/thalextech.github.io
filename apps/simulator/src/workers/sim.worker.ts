@@ -507,12 +507,31 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
 
   const sampleIndexSet = new Set<number>(sampledIndices);
   if (rows > samplePathLimit) {
-    // Add mild-tail representatives so the cloud better matches histogram width
-    // without forcing extremely rare min/max outliers.
-    const lowTailAnchor = lowTailPool[lowTailPool.length - 1];
-    const highTailAnchor = highTailPool[highTailPool.length - 1];
-    if (lowTailAnchor) sampleIndexSet.add(lowTailAnchor.index);
-    if (highTailAnchor) sampleIndexSet.add(highTailAnchor.index);
+    // Always include explicit min/max terminal-price paths,
+    // then add a few percentile representatives from each extreme tail pool.
+    const lowExtreme = lowTailPool[0];
+    const highExtreme = highTailPool[0];
+    if (lowExtreme) sampleIndexSet.add(lowExtreme.index);
+    if (highExtreme) sampleIndexSet.add(highExtreme.index);
+
+    const addTailPercentileSamples = (pool: TailCandidate[], picks: number): void => {
+      if (!pool.length || picks <= 0) return;
+      const picked = new Set<number>();
+      for (let i = 1; i <= picks; i += 1) {
+        const p = i / (picks + 1); // 0.25, 0.5, 0.75 for 3 picks
+        const idx = Math.max(
+          0,
+          Math.min(pool.length - 1, Math.round(p * (pool.length - 1))),
+        );
+        picked.add(pool[idx].index);
+      }
+      for (const index of picked) {
+        sampleIndexSet.add(index);
+      }
+    };
+
+    addTailPercentileSamples(lowTailPool, 3);
+    addTailPercentileSamples(highTailPool, 3);
   }
   const sampleIndices = Array.from(sampleIndexSet).sort((a, b) => a - b);
 

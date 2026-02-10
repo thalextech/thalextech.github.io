@@ -70,8 +70,12 @@ const positionLegs = ref<PositionLeg[]>([
   },
 ]);
 const instruments = ref<ThalexInstrument[]>([]);
-const tickerByInstrument = ref<Record<string, { data: unknown; fetchedAt: number }>>({});
-const indexByName = ref<Record<string, { data: unknown; fetchedAt: number }>>({});
+const tickerByInstrument = ref<
+  Record<string, { data: unknown; fetchedAt: number }>
+>({});
+const indexByName = ref<Record<string, { data: unknown; fetchedAt: number }>>(
+  {},
+);
 
 type OptionPricingInput = {
   iv: number | null;
@@ -125,9 +129,14 @@ const guideVolPercent = computed(() =>
   ((guideVol.value ?? pendingParams.vol) * 100).toFixed(2),
 );
 const guideRows = computed(() =>
-  new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(appliedParams.rows),
+  new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(
+    appliedParams.rows,
+  ),
 );
-const formatUsd = (value: number | null | undefined, forceSign = false): string => {
+const formatUsd = (
+  value: number | null | undefined,
+  forceSign = false,
+): string => {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   const numeric = value;
   const abs = Math.abs(numeric);
@@ -155,9 +164,12 @@ const nLabelRef = ref<HTMLElement | null>(null);
 const settingsPopoverRef = ref<HTMLElement | null>(null);
 const rowsSlider = ref(appliedParams.rows);
 const nPopoverOpen = ref(false);
-const nPopoverAnchor = ref<{ left: number; top: number; width: number; height: number } | null>(
-  null,
-);
+const nPopoverAnchor = ref<{
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+} | null>(null);
 let nPopoverHideTimer: ReturnType<typeof setTimeout> | null = null;
 let rowsApplyTimer: ReturnType<typeof setTimeout> | null = null;
 let simSettingsHideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -172,11 +184,19 @@ const isSettingsFocusActive = (): boolean => {
 const clampInt = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, Math.round(value)));
 const simTimeSteps = ref(
-  clampInt(Math.round(appliedParams.T / appliedParams.dt), TIME_STEPS_MIN, TIME_STEPS_MAX),
+  clampInt(
+    Math.round(appliedParams.T / appliedParams.dt),
+    TIME_STEPS_MIN,
+    TIME_STEPS_MAX,
+  ),
 );
 
 const setSimTimeSteps = (value: number): void => {
-  const next = clampInt(Math.round(value / TIME_STEPS_STEP) * TIME_STEPS_STEP, TIME_STEPS_MIN, TIME_STEPS_MAX);
+  const next = clampInt(
+    Math.round(value / TIME_STEPS_STEP) * TIME_STEPS_STEP,
+    TIME_STEPS_MIN,
+    TIME_STEPS_MAX,
+  );
   simTimeSteps.value = next;
   const nextDt = appliedParams.T / next;
   if (!Number.isFinite(nextDt) || nextDt <= 0) return;
@@ -189,7 +209,11 @@ const setCloudPathLimit = (value: number): void => {
   if (!Number.isFinite(value)) return;
   const snapped = Math.round(value / DRAWN_PATHS_STEP) * DRAWN_PATHS_STEP;
   const hardClamped = clampInt(snapped, DRAWN_PATHS_MIN, DRAWN_PATHS_MAX);
-  cloudPathLimit.value = clampInt(hardClamped, DRAWN_PATHS_MIN, Math.max(DRAWN_PATHS_MIN, appliedParams.rows));
+  cloudPathLimit.value = clampInt(
+    hardClamped,
+    DRAWN_PATHS_MIN,
+    Math.max(DRAWN_PATHS_MIN, appliedParams.rows),
+  );
 };
 
 const setColorMinPercent = (value: number): void => {
@@ -248,7 +272,10 @@ const handleSettingsFocusOut = (): void => {
   }
   requestAnimationFrame(() => {
     settingsFocusWithin.value = isSettingsFocusActive();
-    if (!settingsFocusWithin.value && !settingsPopoverRef.value?.matches(":hover")) {
+    if (
+      !settingsFocusWithin.value &&
+      !settingsPopoverRef.value?.matches(":hover")
+    ) {
       scheduleSimSettingsHide();
     }
   });
@@ -430,7 +457,12 @@ const parseInstrumentFromName = (name: string): ResolvedInstrument | null => {
   const day = Number(dd);
   const month = monthMap[mmm.toLowerCase()];
   const year = 2000 + Number(yy);
-  if (!Number.isFinite(day) || !Number.isFinite(month) || !Number.isFinite(year)) return null;
+  if (
+    !Number.isFinite(day) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(year)
+  )
+    return null;
   const strike = Number(strikeStr);
   if (!Number.isFinite(strike)) return null;
   const expiration = Math.floor(Date.UTC(year, month, day, 8, 0, 0) / 1000);
@@ -450,7 +482,9 @@ const parseTimestampToSeconds = (value: unknown): number | null => {
   if (typeof value === "string") {
     const asNumber = Number(value);
     if (Number.isFinite(asNumber)) {
-      return asNumber > 1e12 ? Math.floor(asNumber / 1000) : Math.floor(asNumber);
+      return asNumber > 1e12
+        ? Math.floor(asNumber / 1000)
+        : Math.floor(asNumber);
     }
     const parsed = Date.parse(value);
     if (Number.isFinite(parsed)) return Math.floor(parsed / 1000);
@@ -461,12 +495,17 @@ const parseTimestampToSeconds = (value: unknown): number | null => {
 const formatExpiryFromTs = (tsSeconds: number): string => {
   const date = new Date(tsSeconds * 1000);
   const day = String(date.getUTCDate()).padStart(2, "0");
-  const month = date.toLocaleString("en-US", { month: "short", timeZone: "UTC" });
+  const month = date.toLocaleString("en-US", {
+    month: "short",
+    timeZone: "UTC",
+  });
   const year = String(date.getUTCFullYear()).slice(-2);
   return `${day} ${month} ${year}`;
 };
 
-const normalizeInstrument = (instrument: ThalexInstrument): ResolvedInstrument | null => {
+const normalizeInstrument = (
+  instrument: ThalexInstrument,
+): ResolvedInstrument | null => {
   if (!instrument?.instrument_name) return null;
   const optionTypeRaw = instrument.option_type?.toLowerCase?.();
   const optionType =
@@ -582,19 +621,28 @@ const resolveInstrumentForLeg = (leg: OptionLeg): ResolvedInstrument | null => {
     if (type && instrument.option_type?.toLowerCase() !== type) return false;
     if (Number(instrument.strike_price) !== strike) return false;
     if (!Number.isFinite(Number(instrument.expiration_timestamp))) return false;
-    const diff = Math.abs(Number(instrument.expiration_timestamp) - expirySeconds);
+    const diff = Math.abs(
+      Number(instrument.expiration_timestamp) - expirySeconds,
+    );
     return diff <= 12 * 60 * 60;
   });
 
   return candidates[0] ?? null;
 };
 
-const selectedInstruments = computed(() =>
-  optionLegs.value.map(resolveInstrumentForLeg).filter(Boolean) as ResolvedInstrument[],
+const selectedInstruments = computed(
+  () =>
+    optionLegs.value
+      .map(resolveInstrumentForLeg)
+      .filter(Boolean) as ResolvedInstrument[],
 );
 
 const selectedInstrumentNames = computed(() =>
-  Array.from(new Set(selectedInstruments.value.map((instrument) => instrument.instrument_name))),
+  Array.from(
+    new Set(
+      selectedInstruments.value.map((instrument) => instrument.instrument_name),
+    ),
+  ),
 );
 
 const selectedIndexNames = computed<string[]>(() =>
@@ -602,7 +650,9 @@ const selectedIndexNames = computed<string[]>(() =>
     new Set(
       selectedInstruments.value
         .map((instrument) => instrument.index_name)
-        .filter((name): name is string => typeof name === "string" && name.length > 0),
+        .filter(
+          (name): name is string => typeof name === "string" && name.length > 0,
+        ),
     ),
   ),
 );
@@ -629,7 +679,12 @@ const resolvedIndexNames = computed<string[]>(() => {
 const extractIndexPrice = (data: unknown): number | null => {
   if (!data || typeof data !== "object") return null;
   const record = data as Record<string, unknown>;
-  const candidates = [record.index_price_close, record.close, record.index_price, record.price];
+  const candidates = [
+    record.index_price_close,
+    record.close,
+    record.index_price,
+    record.price,
+  ];
   for (const candidate of candidates) {
     const value = asNumber(candidate);
     if (Number.isFinite(value)) return value;
@@ -651,105 +706,124 @@ const indexDisplay = computed(() => {
   };
 });
 
-const activeIndexName = computed<string | null>(() => resolvedIndexNames.value[0] ?? null);
-const activeIndexSnapshot = computed<{ data: unknown; fetchedAt: number } | null>(() => {
+const activeIndexName = computed<string | null>(
+  () => resolvedIndexNames.value[0] ?? null,
+);
+const activeIndexSnapshot = computed<{
+  data: unknown;
+  fetchedAt: number;
+} | null>(() => {
   const name = activeIndexName.value;
   if (!name) return null;
   return indexByName.value[name] ?? null;
 });
 
-const defaultStraddleSpec = computed<{ strike: number; expiry: string } | null>(() => {
-  const spot = Number(indexDisplay.value?.price);
-  // Wait for a live index spot so ATM is selected from real market level.
-  if (!Number.isFinite(spot) || spot <= 0) return null;
+const defaultStraddleSpec = computed<{ strike: number; expiry: string } | null>(
+  () => {
+    const spot = Number(indexDisplay.value?.price);
+    // Wait for a live index spot so ATM is selected from real market level.
+    if (!Number.isFinite(spot) || spot <= 0) return null;
 
-  const instrumentsForIndex = normalizedOptionInstruments.value.filter((instrument) => {
-    if (!activeIndexName.value) return true;
-    return instrument.index_name === activeIndexName.value;
-  });
-  const source = instrumentsForIndex.length ? instrumentsForIndex : normalizedOptionInstruments.value;
-  if (!source.length) return null;
-
-  let targetExpiryTs: number | null = null;
-  let oldestCreate = Number.POSITIVE_INFINITY;
-  for (const instrument of source) {
-    const create = Number(instrument.create_time);
-    const expiryTs = Number(instrument.expiration_timestamp);
-    if (!Number.isFinite(create) || !Number.isFinite(expiryTs)) continue;
-    if (create < oldestCreate) {
-      oldestCreate = create;
-      targetExpiryTs = expiryTs;
-    }
-  }
-  if (!Number.isFinite(targetExpiryTs)) {
-    const fallbackExpiries = source
-      .map((instrument) => Number(instrument.expiration_timestamp))
-      .filter((ts) => Number.isFinite(ts));
-    if (!fallbackExpiries.length) return null;
-    targetExpiryTs = Math.min(...fallbackExpiries);
-  }
-  if (!Number.isFinite(targetExpiryTs)) return null;
-
-  const expiryInstruments = source.filter(
-    (instrument) => Number(instrument.expiration_timestamp) === targetExpiryTs,
-  );
-  const callStrikes = new Set<number>();
-  const putStrikes = new Set<number>();
-  for (const instrument of expiryInstruments) {
-    const strike = Number(instrument.strike_price);
-    if (!Number.isFinite(strike)) continue;
-    if (instrument.option_type === "call") callStrikes.add(strike);
-    if (instrument.option_type === "put") putStrikes.add(strike);
-  }
-
-  const strikes = Array.from(callStrikes).filter((strike) => putStrikes.has(strike));
-  if (!strikes.length) {
-    strikes.push(
-      ...expiryInstruments
-        .map((instrument) => Number(instrument.strike_price))
-        .filter((strike) => Number.isFinite(strike)),
+    const instrumentsForIndex = normalizedOptionInstruments.value.filter(
+      (instrument) => {
+        if (!activeIndexName.value) return true;
+        return instrument.index_name === activeIndexName.value;
+      },
     );
-  }
-  if (!strikes.length) return null;
+    const source = instrumentsForIndex.length
+      ? instrumentsForIndex
+      : normalizedOptionInstruments.value;
+    if (!source.length) return null;
 
-  let nearestStrike = strikes[0];
-  let bestDistance = Math.abs(nearestStrike - spot);
-  for (let i = 1; i < strikes.length; i += 1) {
-    const strike = strikes[i];
-    const distance = Math.abs(strike - spot);
-    if (distance < bestDistance || (distance === bestDistance && strike < nearestStrike)) {
-      nearestStrike = strike;
-      bestDistance = distance;
+    let targetExpiryTs: number | null = null;
+    let oldestCreate = Number.POSITIVE_INFINITY;
+    for (const instrument of source) {
+      const create = Number(instrument.create_time);
+      const expiryTs = Number(instrument.expiration_timestamp);
+      if (!Number.isFinite(create) || !Number.isFinite(expiryTs)) continue;
+      if (create < oldestCreate) {
+        oldestCreate = create;
+        targetExpiryTs = expiryTs;
+      }
     }
-  }
+    if (!Number.isFinite(targetExpiryTs)) {
+      const fallbackExpiries = source
+        .map((instrument) => Number(instrument.expiration_timestamp))
+        .filter((ts) => Number.isFinite(ts));
+      if (!fallbackExpiries.length) return null;
+      targetExpiryTs = Math.min(...fallbackExpiries);
+    }
+    if (!Number.isFinite(targetExpiryTs)) return null;
 
-  return {
-    strike: nearestStrike,
-    expiry: formatExpiryFromTs(Number(targetExpiryTs)),
-  };
-});
+    const expiryInstruments = source.filter(
+      (instrument) =>
+        Number(instrument.expiration_timestamp) === targetExpiryTs,
+    );
+    const callStrikes = new Set<number>();
+    const putStrikes = new Set<number>();
+    for (const instrument of expiryInstruments) {
+      const strike = Number(instrument.strike_price);
+      if (!Number.isFinite(strike)) continue;
+      if (instrument.option_type === "call") callStrikes.add(strike);
+      if (instrument.option_type === "put") putStrikes.add(strike);
+    }
 
-const optionPricingByLegId = computed<Record<string, OptionPricingInput>>(() => {
-  const map: Record<string, OptionPricingInput> = {};
-  for (const leg of optionLegs.value) {
-    const instrument = resolveInstrumentForLeg(leg);
-    const tickerSnapshot =
-      instrument?.instrument_name != null
-        ? tickerByInstrument.value[instrument.instrument_name]
-        : null;
-    const expirationFromInstrument = Number(instrument?.expiration_timestamp);
-    const expirationTs = Number.isFinite(expirationFromInstrument)
-      ? expirationFromInstrument
-      : parseExpiryToSeconds(leg.expiry);
+    const strikes = Array.from(callStrikes).filter((strike) =>
+      putStrikes.has(strike),
+    );
+    if (!strikes.length) {
+      strikes.push(
+        ...expiryInstruments
+          .map((instrument) => Number(instrument.strike_price))
+          .filter((strike) => Number.isFinite(strike)),
+      );
+    }
+    if (!strikes.length) return null;
 
-    map[leg.id] = {
-      iv: extractTickerIV(tickerSnapshot?.data),
-      mark: extractTickerMark(tickerSnapshot?.data),
-      expirationTs,
+    let nearestStrike = strikes[0];
+    let bestDistance = Math.abs(nearestStrike - spot);
+    for (let i = 1; i < strikes.length; i += 1) {
+      const strike = strikes[i];
+      const distance = Math.abs(strike - spot);
+      if (
+        distance < bestDistance ||
+        (distance === bestDistance && strike < nearestStrike)
+      ) {
+        nearestStrike = strike;
+        bestDistance = distance;
+      }
+    }
+
+    return {
+      strike: nearestStrike,
+      expiry: formatExpiryFromTs(Number(targetExpiryTs)),
     };
-  }
-  return map;
-});
+  },
+);
+
+const optionPricingByLegId = computed<Record<string, OptionPricingInput>>(
+  () => {
+    const map: Record<string, OptionPricingInput> = {};
+    for (const leg of optionLegs.value) {
+      const instrument = resolveInstrumentForLeg(leg);
+      const tickerSnapshot =
+        instrument?.instrument_name != null
+          ? tickerByInstrument.value[instrument.instrument_name]
+          : null;
+      const expirationFromInstrument = Number(instrument?.expiration_timestamp);
+      const expirationTs = Number.isFinite(expirationFromInstrument)
+        ? expirationFromInstrument
+        : parseExpiryToSeconds(leg.expiry);
+
+      map[leg.id] = {
+        iv: extractTickerIV(tickerSnapshot?.data),
+        mark: extractTickerMark(tickerSnapshot?.data),
+        expirationTs,
+      };
+    }
+    return map;
+  },
+);
 
 const quoteValuationTs = computed<number>(() => {
   const fetchedAtMs: number[] = [];
@@ -777,7 +851,9 @@ const shortestExpiryDays = computed<number | null>(() => {
   const nowTs = Math.floor(Date.now() / 1000);
   const expiries = optionLegs.value
     .map((leg) => {
-      const instrumentExpiry = Number(resolveInstrumentForLeg(leg)?.expiration_timestamp);
+      const instrumentExpiry = Number(
+        resolveInstrumentForLeg(leg)?.expiration_timestamp,
+      );
       if (Number.isFinite(instrumentExpiry)) return instrumentExpiry;
       return parseExpiryToSeconds(leg.expiry);
     })
@@ -838,7 +914,10 @@ watch(
     if (!Number.isFinite(minDays) || minDays == null) return;
     const nextT = Number(minDays) / 365.25;
     const nextDt = nextT / simTimeSteps.value;
-    if (Math.abs(appliedParams.T - nextT) < 1e-9 && Math.abs(appliedParams.dt - nextDt) < 1e-12)
+    if (
+      Math.abs(appliedParams.T - nextT) < 1e-9 &&
+      Math.abs(appliedParams.dt - nextDt) < 1e-12
+    )
       return;
     pendingParams.T = nextT;
     appliedParams.T = nextT;
@@ -918,7 +997,8 @@ watch(
         if (updates[name]) return;
         try {
           const indexPrice = await fetchLatestIndexPrice(name);
-          if (indexPrice) updates[name] = { data: indexPrice, fetchedAt: Date.now() };
+          if (indexPrice)
+            updates[name] = { data: indexPrice, fetchedAt: Date.now() };
         } catch (error) {
           console.warn("Failed to fetch index price", name, error);
         }
@@ -928,7 +1008,6 @@ watch(
   },
   { immediate: true },
 );
-
 </script>
 
 <template>
@@ -994,7 +1073,9 @@ watch(
         </div>
         <div class="sim-stats-row">
           <span class="sim-stats-label">Break-even</span>
-          <span class="sim-stats-value sim-stats-value--break-even">{{ breakEvenSummary }}</span>
+          <span class="sim-stats-value sim-stats-value--break-even">{{
+            breakEvenSummary
+          }}</span>
         </div>
         <div class="sim-stats-row">
           <span class="sim-stats-label">Max Loss</span>
@@ -1054,8 +1135,12 @@ watch(
             :max="TIME_STEPS_MAX"
             :step="TIME_STEPS_STEP"
             :value="simTimeSteps"
-            @change="setSimTimeSteps(Number(($event.target as HTMLInputElement).value))"
-            @blur="setSimTimeSteps(Number(($event.target as HTMLInputElement).value))"
+            @change="
+              setSimTimeSteps(Number(($event.target as HTMLInputElement).value))
+            "
+            @blur="
+              setSimTimeSteps(Number(($event.target as HTMLInputElement).value))
+            "
           />
         </div>
         <div class="sim-settings-row">
@@ -1068,8 +1153,16 @@ watch(
             :max="Math.min(DRAWN_PATHS_MAX, appliedParams.rows)"
             :step="DRAWN_PATHS_STEP"
             :value="cloudPathLimit"
-            @change="setCloudPathLimit(Number(($event.target as HTMLInputElement).value))"
-            @blur="setCloudPathLimit(Number(($event.target as HTMLInputElement).value))"
+            @change="
+              setCloudPathLimit(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
+            @blur="
+              setCloudPathLimit(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
           />
         </div>
         <div class="sim-settings-row">
@@ -1082,8 +1175,16 @@ watch(
             max="99"
             step="1"
             :value="colorMinPercent"
-            @change="setColorMinPercent(Number(($event.target as HTMLInputElement).value))"
-            @blur="setColorMinPercent(Number(($event.target as HTMLInputElement).value))"
+            @change="
+              setColorMinPercent(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
+            @blur="
+              setColorMinPercent(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
           />
         </div>
         <div class="sim-settings-row">
@@ -1096,8 +1197,16 @@ watch(
             max="100"
             step="1"
             :value="colorMaxPercent"
-            @change="setColorMaxPercent(Number(($event.target as HTMLInputElement).value))"
-            @blur="setColorMaxPercent(Number(($event.target as HTMLInputElement).value))"
+            @change="
+              setColorMaxPercent(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
+            @blur="
+              setColorMaxPercent(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
           />
         </div>
         <div class="sim-settings-row">
@@ -1110,8 +1219,16 @@ watch(
             max="2"
             step="0.05"
             :value="histBinsMultiplier"
-            @change="setHistBinsMultiplier(Number(($event.target as HTMLInputElement).value))"
-            @blur="setHistBinsMultiplier(Number(($event.target as HTMLInputElement).value))"
+            @change="
+              setHistBinsMultiplier(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
+            @blur="
+              setHistBinsMultiplier(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
           />
         </div>
       </div>
@@ -1126,7 +1243,7 @@ watch(
         @mouseleave="handleNPopoverMouseLeave"
       >
         <div class="rows-popover-head">
-          <span class="rows-popover-label">n</span>
+          <span class="rows-popover-label">Number of paths:</span>
           <span class="rows-popover-value">{{ guideRows }}</span>
         </div>
         <input
@@ -1136,7 +1253,9 @@ watch(
           :max="ROWS_MAX"
           :step="ROWS_STEP"
           :value="rowsSlider"
-          @input="setRowsFromSlider(Number(($event.target as HTMLInputElement).value))"
+          @input="
+            setRowsFromSlider(Number(($event.target as HTMLInputElement).value))
+          "
           @change="flushRowsFromSlider"
         />
         <div class="rows-popover-scale">
@@ -1285,7 +1404,7 @@ watch(
   position: absolute;
   top: calc(var(--chart-header-height) + 4px);
   left: 8px;
-  z-index: 6;
+  z-index: 12;
   width: 220px;
   padding: 10px 12px;
   border-radius: 10px;
@@ -1330,7 +1449,7 @@ watch(
   position: absolute;
   top: calc(var(--chart-header-height) + 8px);
   left: 8px;
-  z-index: 5;
+  z-index: 4;
   width: min(270px, calc(100% - 16px));
   padding: 9px 10px;
   border-radius: 10px;
@@ -1407,7 +1526,7 @@ watch(
 
 .rows-popover {
   position: absolute;
-  z-index: 4;
+  z-index: 12;
   width: 220px;
   padding: 10px 12px 8px;
   border-radius: 10px;
@@ -1419,26 +1538,77 @@ watch(
 }
 
 .rows-popover-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  column-gap: 8px;
+  row-gap: 4px;
   margin-bottom: 8px;
 }
 
 .rows-popover-label {
-  font-size: 10px;
+  font-size: 9px;
   color: var(--text-muted);
+  letter-spacing: 0.03em;
 }
 
 .rows-popover-value {
-  font-size: 11px;
+  font-size: 10px;
   color: #f1f5f9;
   font-variant-numeric: tabular-nums;
 }
 
 .rows-popover-slider {
   width: 100%;
-  accent-color: #8fb8e3;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  height: 16px;
+  cursor: pointer;
+}
+
+.rows-popover-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.rows-popover-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(2, 6, 23, 0.9);
+  background: #f8fafc;
+  margin-top: -4px;
+}
+
+.rows-popover-slider::-moz-range-track {
+  height: 4px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.rows-popover-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid rgba(2, 6, 23, 0.9);
+  background: #f8fafc;
+}
+
+.rows-popover-slider:focus-visible {
+  outline: none;
+}
+
+.rows-popover-slider:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 2px rgba(248, 250, 252, 0.28);
+}
+
+.rows-popover-slider:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 2px rgba(248, 250, 252, 0.28);
 }
 
 .rows-popover-scale {
