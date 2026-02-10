@@ -84,7 +84,7 @@ type Randn = () => number;
 
 const SECONDS_PER_YEAR = 365.25 * 24 * 60 * 60;
 const RISK_FREE_RATE = 0.0;
-const TAIL_PATH_POOL_SIZE = 256;
+const TAIL_PATH_POOL_SIZE = 20;
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));

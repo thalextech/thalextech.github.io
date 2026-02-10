@@ -38,6 +38,8 @@ const emit = defineEmits<{
     value: {
       meanPayoff: number;
       medianPayoff: number;
+      breakEvenPrices: number[];
+      maxLoss: number;
       maxDrawdown: number;
       maxPayoff: number;
       winRate: number;
@@ -99,6 +101,51 @@ type SimBin = {
   count: number;
   sumPayoff: number;
   medianPayoff: number;
+};
+
+const computeBreakEvenPrices = (bins: SimBin[]): number[] => {
+  const points: Array<{ price: number; payoff: number }> = [];
+  for (const bin of bins) {
+    if (bin.count <= 0) continue;
+    const x0 = Number(bin.x0);
+    const x1 = Number(bin.x1);
+    if (!Number.isFinite(x0) || !Number.isFinite(x1)) continue;
+    const price = (x0 + x1) * 0.5;
+    const payoff = bin.sumPayoff / bin.count;
+    if (!Number.isFinite(price) || !Number.isFinite(payoff)) continue;
+    points.push({ price, payoff });
+  }
+  if (!points.length) return [];
+
+  const raw: number[] = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const left = points[i];
+    const right = points[i + 1];
+    if (Math.abs(left.payoff) < 1e-9) raw.push(left.price);
+    if (
+      (left.payoff < 0 && right.payoff > 0) ||
+      (left.payoff > 0 && right.payoff < 0)
+    ) {
+      const denom = right.payoff - left.payoff;
+      if (Math.abs(denom) > 1e-12) {
+        const t = -left.payoff / denom;
+        raw.push(left.price + t * (right.price - left.price));
+      }
+    }
+  }
+  const last = points[points.length - 1];
+  if (Math.abs(last.payoff) < 1e-9) raw.push(last.price);
+  if (!raw.length) return [];
+
+  raw.sort((a, b) => a - b);
+  const span = points[points.length - 1].price - points[0].price;
+  const tol = Math.max(span / Math.max(points.length * 4, 1), 1e-6);
+  const deduped: number[] = [];
+  for (const value of raw) {
+    const prev = deduped[deduped.length - 1];
+    if (prev == null || Math.abs(value - prev) > tol) deduped.push(value);
+  }
+  return deduped.slice(0, 6);
 };
 
 type SimWorkerSuccess = {
@@ -468,9 +515,12 @@ const updateDynamicScene = (
     maxDrawdown,
     winRate,
   } = sim;
+  const breakEvenPrices = computeBreakEvenPrices(bins);
   emit("stats-update", {
     meanPayoff,
     medianPayoff,
+    breakEvenPrices,
+    maxLoss: Math.min(payoffMin, 0),
     maxDrawdown,
     maxPayoff,
     winRate,

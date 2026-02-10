@@ -79,6 +79,16 @@ type OptionPricingInput = {
   expirationTs: number | null;
 };
 
+type ChartSummaryStats = {
+  meanPayoff: number;
+  medianPayoff: number;
+  breakEvenPrices: number[];
+  maxLoss: number;
+  maxPayoff: number;
+};
+
+const chartStats = ref<ChartSummaryStats | null>(null);
+
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 const roundTo = (value: number, decimals: number): number => {
@@ -117,6 +127,26 @@ const guideVolPercent = computed(() =>
 const guideRows = computed(() =>
   new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(appliedParams.rows),
 );
+const formatUsd = (value: number | null | undefined, forceSign = false): string => {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  const numeric = value;
+  const abs = Math.abs(numeric);
+  const fractionDigits = abs >= 1000 ? 0 : abs >= 100 ? 1 : 2;
+  const sign = numeric < 0 ? "-" : forceSign && numeric > 0 ? "+" : "";
+  return `${sign}$${abs.toLocaleString("en-US", {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  })}`;
+};
+const formatPrice = (value: number): string => {
+  if (!Number.isFinite(value)) return "—";
+  return `$${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+};
+const breakEvenSummary = computed(() => {
+  const values = chartStats.value?.breakEvenPrices ?? [];
+  if (!values.length) return "—";
+  return values.map((value) => formatPrice(value)).join(" | ");
+});
 const horizonDaysLabel = computed(() => {
   const days = Math.round(appliedParams.T * 365.25);
   return `T+${days}d`;
@@ -305,6 +335,9 @@ const handleNPopoverMouseLeave = (): void => {
 const updateGuide = (payload: { mu: number; vol: number }): void => {
   guideMu.value = payload.mu;
   guideVol.value = payload.vol;
+};
+const updateStats = (payload: ChartSummaryStats): void => {
+  chartStats.value = payload;
 };
 const parseExpiryToSeconds = (expiry?: string): number | null => {
   if (!expiry) return null;
@@ -946,6 +979,36 @@ watch(
           </div>
         </div>
       </div>
+      <div class="sim-stats-card" aria-live="polite">
+        <div class="sim-stats-row">
+          <span class="sim-stats-label">Avg PnL</span>
+          <span class="sim-stats-value">{{
+            formatUsd(chartStats?.meanPayoff ?? null, true)
+          }}</span>
+        </div>
+        <div class="sim-stats-row">
+          <span class="sim-stats-label">Median PnL</span>
+          <span class="sim-stats-value">{{
+            formatUsd(chartStats?.medianPayoff ?? null, true)
+          }}</span>
+        </div>
+        <div class="sim-stats-row">
+          <span class="sim-stats-label">Break-even</span>
+          <span class="sim-stats-value sim-stats-value--break-even">{{ breakEvenSummary }}</span>
+        </div>
+        <div class="sim-stats-row">
+          <span class="sim-stats-label">Max Loss</span>
+          <span class="sim-stats-value">{{
+            formatUsd(chartStats?.maxLoss ?? null, false)
+          }}</span>
+        </div>
+        <div class="sim-stats-row">
+          <span class="sim-stats-label">Max Payoff</span>
+          <span class="sim-stats-value">{{
+            formatUsd(chartStats?.maxPayoff ?? null, true)
+          }}</span>
+        </div>
+      </div>
       <div class="histogram-toggle" role="group" aria-label="Histogram view">
         <button
           type="button"
@@ -1099,6 +1162,7 @@ watch(
         @set-mu="setMuFromChart"
         @set-vol="setVolFromChart"
         @guide-update="updateGuide"
+        @stats-update="updateStats"
       />
     </section>
   </main>
@@ -1262,6 +1326,51 @@ watch(
   margin: 0;
 }
 
+.sim-stats-card {
+  position: absolute;
+  top: calc(var(--chart-header-height) + 8px);
+  left: 8px;
+  z-index: 5;
+  width: min(270px, calc(100% - 16px));
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(9, 13, 20, 0.68);
+  backdrop-filter: blur(3px);
+  display: grid;
+  gap: 5px;
+  pointer-events: none;
+}
+
+.sim-stats-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  column-gap: 10px;
+}
+
+.sim-stats-label {
+  color: rgba(148, 163, 184, 0.88);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sim-stats-value {
+  justify-self: end;
+  color: rgba(241, 245, 249, 0.96);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.sim-stats-value--break-even {
+  white-space: normal;
+  line-height: 1.2;
+}
+
 .chart-section {
   position: relative;
   width: 100%;
@@ -1383,6 +1492,12 @@ watch(
   .chart-section {
     height: 460px;
     --chart-header-height: 36px;
+  }
+
+  .sim-stats-card {
+    top: calc(var(--chart-header-height) + 6px);
+    padding: 7px 8px;
+    gap: 4px;
   }
 }
 </style>

@@ -1091,6 +1091,7 @@ const totalMarkPrice = computed<number | null>(() => {
   grid-template-columns: var(--strike-width) 1fr;
   align-items: center;
   gap: var(--strike-greeks-gap);
+  padding: var(--row-pad-y) 0;
   font-size: 10px;
   color: rgba(148, 163, 184, 0.9);
   grid-column: 5;
