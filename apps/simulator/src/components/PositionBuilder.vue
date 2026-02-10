@@ -346,7 +346,8 @@ const getLegGreeks = (leg: OptionLeg) => {
 
 const signedGreek = (leg: OptionLeg, value: number): number => {
   const sign = leg.side === "buy" ? 1 : -1;
-  return sign * leg.qty * value;
+  const qty = Number.isFinite(leg.qty) ? Math.max(0, Number(leg.qty)) : 0;
+  return sign * qty * value;
 };
 
 const totalGreeks = computed(() => {
@@ -358,10 +359,11 @@ const totalGreeks = computed(() => {
   for (const leg of optionLegs.value) {
     const greeks = getLegGreeks(leg);
     const sign = leg.side === "buy" ? 1 : -1;
-    delta += sign * leg.qty * greeks.delta;
-    gamma += sign * leg.qty * greeks.gamma;
-    theta += sign * leg.qty * greeks.theta;
-    vega += sign * leg.qty * greeks.vega;
+    const qty = Number.isFinite(leg.qty) ? Math.max(0, Number(leg.qty)) : 0;
+    delta += sign * qty * greeks.delta;
+    gamma += sign * qty * greeks.gamma;
+    theta += sign * qty * greeks.theta;
+    vega += sign * qty * greeks.vega;
   }
 
   return { delta, gamma, theta, vega };
@@ -415,10 +417,12 @@ const formatMarkPrice = (
   value: number | null,
   side?: "buy" | "sell",
   alwaysShowSign: boolean = false,
+  qty: number = 1,
 ): string => {
   if (!Number.isFinite(value)) return "--";
   const sign = side === "sell" ? -1 : 1;
-  const signed = sign * Number(value);
+  const normalizedQty = Number.isFinite(qty) ? Math.max(0, Number(qty)) : 0;
+  const signed = sign * normalizedQty * Number(value);
   return new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
@@ -521,7 +525,8 @@ const totalMarkPrice = computed<number | null>(() => {
     const mark = legDisplayById.value[leg.id]?.mark;
     if (!Number.isFinite(mark)) continue;
     const sign = leg.side === "buy" ? 1 : -1;
-    total += sign * leg.qty * Number(mark);
+    const qty = Number.isFinite(leg.qty) ? Math.max(0, Number(leg.qty)) : 0;
+    total += sign * qty * Number(mark);
     hasAny = true;
   }
   return hasAny ? total : null;
@@ -665,7 +670,9 @@ const totalMarkPrice = computed<number | null>(() => {
               <span class="leg-greek-value">{{ formatIvPercent(legDisplay(leg).iv) }}</span>
             </span>
             <span class="leg-greek">
-              <span class="leg-greek-value">{{ formatMarkPrice(legDisplay(leg).mark, leg.side) }}</span>
+              <span class="leg-greek-value">
+                {{ formatMarkPrice(legDisplay(leg).mark, leg.side, false, leg.qty) }}
+              </span>
             </span>
             <span class="leg-greek">
               <span class="leg-greek-value">
@@ -708,7 +715,7 @@ const totalMarkPrice = computed<number | null>(() => {
           <div class="leg-greeks">
             <span class="leg-greek leg-greek--spacer"></span>
             <span class="leg-greek">
-              <span class="leg-greek-value">{{ formatMarkPrice(totalMarkPrice, undefined, true) }}</span>
+              <span class="leg-greek-value">{{ formatMarkPrice(totalMarkPrice, undefined, true, 1) }}</span>
             </span>
             <span class="leg-greek">
               <span class="leg-greek-value">{{ formatSignedNumber(totalGreeks.delta) }}</span>
