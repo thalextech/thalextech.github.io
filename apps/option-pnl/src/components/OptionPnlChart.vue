@@ -42,18 +42,29 @@ const TEXT_STYLES = {
   detailMessage: { fill: "#c9c9cf", size: "12px" },
 };
 
-const DETAIL_SERIES_CONFIG = [
-  { key: "total", label: "Total", color: "#94b3fd", strokeWidth: 2.2 },
-  { key: "delta", label: "Delta", color: "#ffb703", strokeWidth: 1.6 },
+const DETAIL_SERIES_ORDER = [
   {
     key: "gammaTheta",
     label: "Gamma + Theta",
-    color: "#8ecae6",
-    strokeWidth: 1.6,
+    strokeWidth: 0.8,
+    areaOpacity: 0.04,
   },
-  { key: "vega", label: "Vega", color: "#ff6b6b", strokeWidth: 1.6 },
-  { key: "residual", label: "Residual", color: "#7c7f8f", strokeWidth: 1.2 },
+  { key: "vega", label: "Vega", strokeWidth: 0.8, areaOpacity: 0.04 },
+  { key: "total", label: "Total", strokeWidth: 0.8, areaOpacity: 0.04 },
+  { key: "residual", label: "Residual", strokeWidth: 0.8, areaOpacity: 0.04 },
+  { key: "delta", label: "Delta", strokeWidth: 0.8, areaOpacity: 0.04 },
 ];
+const DETAIL_SERIES_COLOR_STEP = 1 / DETAIL_SERIES_ORDER.length;
+const DETAIL_SERIES_COLOR_INDEX_OFFSET = 0.5;
+const DETAIL_SERIES_CONFIG = DETAIL_SERIES_ORDER.map((series, index) => ({
+  ...series,
+  color: d3.interpolateRdBu(
+    Math.min(
+      1,
+      (index + DETAIL_SERIES_COLOR_INDEX_OFFSET) * DETAIL_SERIES_COLOR_STEP,
+    ),
+  ),
+}));
 
 const chartState = {
   gradient: null,
@@ -87,7 +98,6 @@ const chartState = {
   detailMessageText: null,
   detailLegendGroup: null,
   detailSeriesGroup: null,
-  detailAreaPath: null,
   currentXScale: null,
   currentYScale: null,
   noDataText: null,
@@ -512,13 +522,6 @@ const ensureChartElements = () => {
     chartState.detailXAxisGroup = chartState.detailLayer.append("g");
     chartState.detailYAxisGroup = chartState.detailLayer.append("g");
     chartState.detailSeriesGroup = chartState.detailLayer.append("g");
-    chartState.detailAreaPath = chartState.detailSeriesGroup
-      .append("path")
-      .attr("class", "detail-area")
-      .attr("fill", "#94b3fd")
-      .attr("fill-opacity", 0.16)
-      .attr("stroke", "none")
-      .attr("display", "none");
     chartState.detailMessageText = appendText(
       chartState.detailLayer,
       "detailMessage",
@@ -568,8 +571,8 @@ function render() {
   }
   const hasSelectionRange = Boolean(
     selectedRange &&
-      Number.isFinite(selectedRange.from) &&
-      Number.isFinite(selectedRange.to),
+    Number.isFinite(selectedRange.from) &&
+    Number.isFinite(selectedRange.to),
   );
   const isDetailActive = selectedDatums.length === 2 || hasSelectionRange;
   const animateLayout = isDetailActive !== detailActive;
@@ -673,9 +676,7 @@ function render() {
     const days = (rangeEnd - rangeStart) / msPerDay;
     detailRangeLabel = `${formatDate(rangeStart)} - ${formatDate(
       rangeEnd,
-    )} (${days.toFixed(
-      1,
-    )} days)`;
+    )} (${days.toFixed(1)} days)`;
   }
   chartState.detailGroup
     .call(withLayoutTransition)
@@ -806,15 +807,19 @@ function render() {
         end = firstDate <= secondDate ? secondDate : firstDate;
       }
     }
-    if (!start && range && Number.isFinite(range.from) && Number.isFinite(range.to)) {
+    if (
+      !start &&
+      range &&
+      Number.isFinite(range.from) &&
+      Number.isFinite(range.to)
+    ) {
       start = new Date(range.from * 1000);
       end = new Date(range.to * 1000);
     }
     if (!(start instanceof Date) || !(end instanceof Date)) {
       chartState.detailSeriesGroup
-        .selectAll("path.detail-line")
+        .selectAll("path.detail-line, path.detail-area")
         .attr("display", "none");
-      chartState.detailAreaPath?.attr("display", "none");
       chartState.detailXAxisGroup.attr("display", "none");
       chartState.detailYAxisGroup.attr("display", "none");
       chartState.detailXAxisLabel.attr("display", "none");
@@ -837,17 +842,14 @@ function render() {
 
     const pnlWindow = props.optionPnlData.filter(
       (point) =>
-        point.date instanceof Date &&
-        point.date >= start &&
-        point.date <= end,
+        point.date instanceof Date && point.date >= start && point.date <= end,
     );
 
     if (!pnlWindow.length) {
       chartState.detailLegendGroup.attr("display", "none");
       chartState.detailSeriesGroup
-        .selectAll("path.detail-line")
+        .selectAll("path.detail-line, path.detail-area")
         .attr("display", "none");
-      chartState.detailAreaPath?.attr("display", "none");
       chartState.detailXAxisGroup.attr("display", "none");
       chartState.detailYAxisGroup.attr("display", "none");
       chartState.detailXAxisLabel.attr("display", "none");
@@ -989,29 +991,33 @@ function render() {
       .x((d) => detailX(d.date))
       .y((d) => detailY(d.value))
       .curve(d3.curveMonotoneX);
+    const area = d3
+      .area()
+      .x((d) => detailX(d.date))
+      .y0(detailY(0))
+      .y1((d) => detailY(d.value))
+      .curve(d3.curveMonotoneX);
 
     const isHiddenSeries = (key) => hiddenDetailSeriesKeys.has(key);
-    const totalConfig =
-      DETAIL_SERIES_CONFIG.find((series) => series.key === "total") ||
-      DETAIL_SERIES_CONFIG[0];
-    const totalSeries = seriesByKey.total;
-    const totalHidden = isHiddenSeries("total");
-    if (totalSeries.length && chartState.detailAreaPath && !totalHidden) {
-      const zeroY = detailY(0);
-      const area = d3
-        .area()
-        .x((d) => detailX(d.date))
-        .y0(zeroY)
-        .y1((d) => detailY(d.value))
-        .curve(d3.curveMonotoneX);
-      chartState.detailAreaPath
-        .attr("d", area(totalSeries))
-        .attr("fill", totalConfig.color)
-        .attr("fill-opacity", 0.18)
-        .attr("display", null);
-    } else {
-      chartState.detailAreaPath?.attr("display", "none");
-    }
+
+    const seriesAreas = chartState.detailSeriesGroup
+      .selectAll("path.detail-area")
+      .data(seriesList, (d) => d.key)
+      .join((enter) =>
+        enter
+          .append("path")
+          .attr("class", "detail-area")
+          .attr("stroke", "none")
+          .attr("pointer-events", "none"),
+      );
+
+    seriesAreas
+      .attr("fill", (d) => d.color)
+      .attr("fill-opacity", (d) => d.areaOpacity ?? 0.12)
+      .attr("d", (d) => area(d.values))
+      .attr("display", (d) =>
+        d.values.length && !isHiddenSeries(d.key) ? null : "none",
+      );
 
     const seriesPaths = chartState.detailSeriesGroup
       .selectAll("path.detail-line")
@@ -1028,8 +1034,10 @@ function render() {
       .attr("stroke", (d) => d.color)
       .attr("stroke-width", (d) => d.strokeWidth || 1.6)
       .attr("d", (d) => line(d.values))
-      .attr("display", (d) => (d.values.length ? null : "none"))
-      .attr("stroke-opacity", (d) => (isHiddenSeries(d.key) ? 0.16 : 1));
+      .attr("display", (d) =>
+        d.values.length && !isHiddenSeries(d.key) ? null : "none",
+      )
+      .attr("stroke-opacity", (d) => (d.key === "total" ? 0.92 : 0.78));
 
     const legendItems = chartState.detailLegendGroup
       .selectAll("g.detail-legend-item")
@@ -1154,7 +1162,10 @@ function render() {
       if (!Number.isFinite(datum?.index_price_close)) continue;
       const dx = x(datum.date) - px;
       const dy = y(datum.index_price_close) - py;
-      if (Math.abs(dx) > TAP_SELECT_HITBOX_PX || Math.abs(dy) > TAP_SELECT_HITBOX_PX) {
+      if (
+        Math.abs(dx) > TAP_SELECT_HITBOX_PX ||
+        Math.abs(dy) > TAP_SELECT_HITBOX_PX
+      ) {
         continue;
       }
       const distSq = dx * dx + dy * dy;
