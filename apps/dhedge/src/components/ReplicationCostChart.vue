@@ -1,6 +1,6 @@
 <script setup>
 import * as d3 from "d3";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   getDatumTs,
   syncSelectionWithData as syncSelectionWithDataUtil,
@@ -13,6 +13,7 @@ const props = defineProps({
   replicationData: { type: Array, default: () => [] },
   optionInstrumentName: { type: String, default: "" },
   loading: { type: Boolean, default: false },
+  showPnlMode: { type: Boolean, default: false },
 });
 
 const svgRef = ref(null);
@@ -47,18 +48,39 @@ const TEXT_STYLES = {
   detailMessage: { fill: "#c9c9cf", size: "12px" },
 };
 
-const DETAIL_SERIES_CONFIG = [
+const DETAIL_SERIES_CONFIG_MARK = [
   {
-    key: "replication",
+    key: "replication_cost",
     label: "Replication cost",
     color: "#2f5aa6",
-    strokeWidth: 2.2,
+    strokeWidth: 1.2,
   },
   {
-    key: "option",
+    key: "option_mark_change",
     label: "Option mark change",
     color: "#ffb703",
-    strokeWidth: 1.8,
+    strokeWidth: 1.2,
+  },
+];
+
+const DETAIL_SERIES_CONFIG_PNL = [
+  {
+    key: "total_pnl",
+    label: "Total P&L",
+    color: "#94b3fd",
+    strokeWidth: 1.6,
+  },
+  {
+    key: "hedge_pnl",
+    label: "Delta hedge P&L",
+    color: "#8ecae6",
+    strokeWidth: 1.2,
+  },
+  {
+    key: "short_option_pnl",
+    label: "Short option P&L",
+    color: "#ffb703",
+    strokeWidth: 1.2,
   },
 ];
 
@@ -80,7 +102,6 @@ const chartState = {
   legendRect: null,
   legendMinText: null,
   legendMaxText: null,
-  legendVisible: false,
   detailGroup: null,
   detailLayer: null,
   detailXAxisGroup: null,
@@ -103,6 +124,9 @@ const chartState = {
 const POINT_RADIUS = 4;
 const POINT_RADIUS_DIMMED = 2.8;
 const POINT_RADIUS_HOVER = 10;
+const TAP_SELECT_HITBOX_PX = 22;
+const TOOLTIP_HITBOX_PX = 18;
+const TOOLTIP_FADE_DELAY_MS = 1000;
 const LAYOUT_TRANSITION_MS = 260;
 let hoveredDatum = null;
 let selectedDatums = [];
@@ -111,6 +135,45 @@ let detailActive = false;
 let lineRevealTimer = null;
 let lineRevealPending = false;
 let hiddenDetailSeriesKeys = new Set();
+let suppressClearClick = false;
+let tooltipDatum = null;
+let lastPointerInMain = null;
+let tooltipFadeTimer = null;
+
+const clearTooltipFadeTimer = () => {
+  if (tooltipFadeTimer) {
+    clearTimeout(tooltipFadeTimer);
+    tooltipFadeTimer = null;
+  }
+};
+
+const isCursorInTooltipDatumHitbox = (datum) => {
+  const x = chartState.currentXScale;
+  const y = chartState.currentYScale;
+  if (!datum || !x || !y || !lastPointerInMain) return false;
+  if (!(datum.date instanceof Date)) return false;
+  if (!Number.isFinite(datum.index_price_close)) return false;
+  const px = x(datum.date);
+  const py = y(datum.index_price_close);
+  if (!Number.isFinite(px) || !Number.isFinite(py)) return false;
+  return (
+    Math.abs(lastPointerInMain.x - px) <= TOOLTIP_HITBOX_PX &&
+    Math.abs(lastPointerInMain.y - py) <= TOOLTIP_HITBOX_PX
+  );
+};
+
+const scheduleTooltipAutoFade = () => {
+  clearTooltipFadeTimer();
+  tooltipFadeTimer = setTimeout(() => {
+    tooltipFadeTimer = null;
+    if (!tooltipDatum) return;
+    if (isCursorInTooltipDatumHitbox(tooltipDatum)) {
+      scheduleTooltipAutoFade();
+      return;
+    }
+    hideTooltip();
+  }, TOOLTIP_FADE_DELAY_MS);
+};
 
 const updateSelectedRange = () => {
   selectedRange = computeSelectedRange(selectedDatums);
@@ -138,6 +201,10 @@ const toggleDetailSeries = (key) => {
 };
 
 const handleChartClick = (event) => {
+  if (suppressClearClick) {
+    suppressClearClick = false;
+    return;
+  }
   const target = event?.target;
   const isPoint = target?.closest?.("circle.main-point");
   if (isPoint) return;
@@ -276,8 +343,18 @@ const resetHoverStyles = () => {
 
 const showTooltip = (event, datum) => {
   const tooltip = tooltipRef.value;
-  const wrapper = svgRef.value?.closest(".chartWrap");
-  if (!tooltip || !wrapper) return;
+  const svgEl = svgRef.value;
+  const wrapper = svgEl?.closest(".chartWrap");
+  if (!tooltip || !wrapper || !svgEl) return;
+  const mainNode = chartState.mainGroup?.node();
+  if (mainNode) {
+    const [px, py] = d3.pointer(event, mainNode);
+    if (Number.isFinite(px) && Number.isFinite(py)) {
+      lastPointerInMain = { x: px, y: py };
+    }
+  }
+  tooltipDatum = datum;
+  clearTooltipFadeTimer();
   const wrapperRect = wrapper.getBoundingClientRect();
   const x = event.clientX - wrapperRect.left;
   const y = event.clientY - wrapperRect.top;
@@ -296,25 +373,85 @@ const showTooltip = (event, datum) => {
     <div>Option Mark: ${optionMarkValue}</div>
     <div>Gamma: ${gammaValue}</div>
   `;
-  tooltip.style.left = `${x}px`;
-  tooltip.style.top = `${y}px`;
+  const xScale = chartState.currentXScale;
+  const yScale = chartState.currentYScale;
+  let anchorX = x;
+  let anchorY = y;
+  if (
+    xScale &&
+    yScale &&
+    datum?.date instanceof Date &&
+    Number.isFinite(datum?.index_price_close)
+  ) {
+    const viewBox = svgEl.viewBox?.baseVal;
+    const viewBoxWidth = Number(viewBox?.width);
+    const viewBoxHeight = Number(viewBox?.height);
+    const anchorSvgX = layout.margin.left + xScale(datum.date);
+    const anchorSvgY = layout.margin.top + yScale(datum.index_price_close);
+    const svgRect = svgEl.getBoundingClientRect();
+    const wrapperOffsetX = svgRect.left - wrapperRect.left;
+    const wrapperOffsetY = svgRect.top - wrapperRect.top;
+    if (
+      Number.isFinite(viewBoxWidth) &&
+      viewBoxWidth > 0 &&
+      Number.isFinite(viewBoxHeight) &&
+      viewBoxHeight > 0
+    ) {
+      anchorX = wrapperOffsetX + (anchorSvgX / viewBoxWidth) * svgRect.width;
+      anchorY = wrapperOffsetY + (anchorSvgY / viewBoxHeight) * svgRect.height;
+    } else {
+      anchorX = anchorSvgX;
+      anchorY = anchorSvgY;
+    }
+  }
+  tooltip.style.left = `${anchorX}px`;
+  tooltip.style.top = `${anchorY}px`;
   tooltip.style.opacity = "1";
   const tooltipRect = tooltip.getBoundingClientRect();
   const wrapperRectUpdated = wrapper.getBoundingClientRect();
-  const centeredLeft = x - tooltipRect.width / 2;
+  const edgePadding = 8;
+  const verticalGap = 36;
+  const centeredLeft = anchorX - tooltipRect.width / 2;
   const clampedLeft = Math.max(
-    8,
-    Math.min(wrapperRectUpdated.width - tooltipRect.width - 8, centeredLeft),
+    edgePadding,
+    Math.min(
+      wrapperRectUpdated.width - tooltipRect.width - edgePadding,
+      centeredLeft,
+    ),
   );
-  const top = y - tooltipRect.height - 12;
+  const minTop = layout.margin.top + 4;
+  const maxTop = Math.max(
+    minTop,
+    wrapperRectUpdated.height - tooltipRect.height - edgePadding,
+  );
+  const aboveTop = anchorY - tooltipRect.height - verticalGap;
   tooltip.style.left = `${clampedLeft}px`;
-  tooltip.style.top = `${Math.max(8, top)}px`;
+  tooltip.style.top = `${Math.max(minTop, Math.min(maxTop, aboveTop))}px`;
+  scheduleTooltipAutoFade();
 };
 
 const hideTooltip = () => {
   const tooltip = tooltipRef.value;
   if (!tooltip) return;
   tooltip.style.opacity = "0";
+  tooltipDatum = null;
+  clearTooltipFadeTimer();
+};
+
+const handlePointerMove = (event) => {
+  const mainNode = chartState.mainGroup?.node();
+  if (!mainNode) return;
+  const [px, py] = d3.pointer(event, mainNode);
+  if (Number.isFinite(px) && Number.isFinite(py)) {
+    lastPointerInMain = { x: px, y: py };
+  }
+};
+
+const handlePointerLeave = () => {
+  lastPointerInMain = null;
+  if (tooltipDatum) {
+    scheduleTooltipAutoFade();
+  }
 };
 
 const ensureChartElements = () => {
@@ -501,10 +638,17 @@ function render() {
   if (hoveredDatum && !data.includes(hoveredDatum)) {
     hoveredDatum = null;
   }
-  const isDetailActive = selectedDatums.length === 2;
+  const hasSelectionRange = Boolean(
+    selectedRange &&
+    Number.isFinite(selectedRange.from) &&
+    Number.isFinite(selectedRange.to),
+  );
+  const isDetailActive = selectedDatums.length === 2 || hasSelectionRange;
   const animateLayout = isDetailActive !== detailActive;
   detailActive = isDetailActive;
   if (animateLayout && isDetailActive) {
+    hoveredDatum = null;
+    hideTooltip();
     scheduleLineReveal();
   } else if (!isDetailActive) {
     if (lineRevealTimer) clearTimeout(lineRevealTimer);
@@ -554,26 +698,14 @@ function render() {
       .selectAll("circle.main-point")
       .data([])
       .join("circle");
-    chartState.legendGroup.attr("display", "none");
-    chartState.legendVisible = false;
+    chartState.legendGroup.interrupt().attr("display", "none").attr("opacity", 0);
     chartState.detailGroup?.attr("display", "none");
     hideTooltip();
     return;
   }
 
   chartState.noDataText.attr("visibility", "hidden");
-  chartState.legendGroup.attr("display", null);
-  if (!chartState.legendVisible) {
-    chartState.legendVisible = true;
-    chartState.legendGroup
-      .interrupt()
-      .attr("opacity", 0)
-      .transition()
-      .duration(200)
-      .attr("opacity", 1);
-  } else {
-    chartState.legendGroup.interrupt().attr("opacity", 1);
-  }
+  chartState.legendGroup.interrupt().attr("display", null).attr("opacity", 1);
   chartState.detailGroup.attr("display", null);
 
   chartState.mainGroup.attr(
@@ -584,14 +716,24 @@ function render() {
   const detailOffsetX = mainWidth + panelGap;
   const detailInnerWidth = detailWidth - margin.left - margin.right;
   let detailRangeLabel = "Select two points";
+  let rangeStart = null;
+  let rangeEnd = null;
   if (selectedDatums.length === 2) {
     const first = selectedDatums[0];
     const second = selectedDatums[1];
-    const start = first.date <= second.date ? first.date : second.date;
-    const end = first.date <= second.date ? second.date : first.date;
+    rangeStart = first.date <= second.date ? first.date : second.date;
+    rangeEnd = first.date <= second.date ? second.date : first.date;
+  }
+  if (!rangeStart && hasSelectionRange) {
+    const startTs = Math.min(selectedRange.from, selectedRange.to);
+    const endTs = Math.max(selectedRange.from, selectedRange.to);
+    rangeStart = new Date(startTs * 1000);
+    rangeEnd = new Date(endTs * 1000);
+  }
+  if (rangeStart instanceof Date && rangeEnd instanceof Date) {
     const msPerDay = 24 * 60 * 60 * 1000;
-    const days = (end - start) / msPerDay;
-    detailRangeLabel = `${formatDate(start)} - ${formatDate(end)} (${days.toFixed(
+    const days = (rangeEnd - rangeStart) / msPerDay;
+    detailRangeLabel = `${formatDate(rangeStart)} - ${formatDate(rangeEnd)} (${days.toFixed(
       1,
     )} days)`;
   }
@@ -606,7 +748,7 @@ function render() {
   chartState.detailTitleText
     .attr("x", detailWidth / 2)
     .attr("y", 30)
-    .text("Replication vs Option");
+    .text(props.showPnlMode ? "Short Option + Delta Hedge P&L" : "Replication vs Option");
   chartState.detailSubtitleText
     .attr("x", detailWidth / 2)
     .attr("y", 54)
@@ -713,8 +855,22 @@ function render() {
 
   updateSelectionLine();
 
-  const renderDetailWindow = (selection) => {
-    if (!selection || selection.length !== 2) {
+  const renderDetailWindow = (selection, range) => {
+    let start = null;
+    let end = null;
+    if (selection && selection.length === 2) {
+      const firstDate = selection[0]?.date;
+      const secondDate = selection[1]?.date;
+      if (firstDate instanceof Date && secondDate instanceof Date) {
+        start = firstDate <= secondDate ? firstDate : secondDate;
+        end = firstDate <= secondDate ? secondDate : firstDate;
+      }
+    }
+    if (!start && range && Number.isFinite(range.from) && Number.isFinite(range.to)) {
+      start = new Date(Math.min(range.from, range.to) * 1000);
+      end = new Date(Math.max(range.from, range.to) * 1000);
+    }
+    if (!(start instanceof Date) || !(end instanceof Date)) {
       chartState.detailSeriesGroup
         .selectAll("path.detail-line")
         .attr("display", "none");
@@ -730,22 +886,11 @@ function render() {
       return;
     }
 
-    const startIndex = data.indexOf(selection[0]);
-    const endIndex = data.indexOf(selection[1]);
-    if (startIndex < 0 || endIndex < 0) return;
-    const fromIndex = Math.min(startIndex, endIndex);
-    const toIndex = Math.max(startIndex, endIndex);
-    const window = data.slice(fromIndex, toIndex + 1);
-    const windowStart = window[0]?.date;
-    const windowEnd = window[window.length - 1]?.date;
-
     const replicationWindow = props.replicationData.filter(
       (point) =>
         point.date instanceof Date &&
-        windowStart instanceof Date &&
-        windowEnd instanceof Date &&
-        point.date >= windowStart &&
-        point.date <= windowEnd,
+        point.date >= start &&
+        point.date <= end,
     );
 
     if (!replicationWindow.length) {
@@ -766,45 +911,42 @@ function render() {
         .attr("display", null)
         .text(
           props.optionInstrumentName
-            ? "No replication data for this range."
-            : "Select an option instrument to view replication cost.",
+            ? props.showPnlMode
+              ? "No strategy P&L data for this range."
+              : "No replication data for this range."
+            : props.showPnlMode
+              ? "Select an option instrument to view strategy P&L."
+              : "Select an option instrument to view replication cost.",
         );
       return;
     }
 
-    const firstPoint = replicationWindow[0];
-    const baseReplication = Number.isFinite(firstPoint?.replication_cost)
-      ? firstPoint.replication_cost
-      : 0;
-    const baseOption = Number.isFinite(firstPoint?.option_mark_change)
-      ? firstPoint.option_mark_change
-      : 0;
-
-    const seriesByKey = {
-      replication: [],
-      option: [],
-    };
+    const detailSeriesConfig = props.showPnlMode
+      ? DETAIL_SERIES_CONFIG_PNL
+      : DETAIL_SERIES_CONFIG_MARK;
+    const firstPoint = replicationWindow[0] || {};
+    const baseByKey = {};
+    for (const series of detailSeriesConfig) {
+      const baseValue = Number(firstPoint?.[series.key]);
+      baseByKey[series.key] = Number.isFinite(baseValue) ? baseValue : 0;
+    }
+    const seriesByKey = Object.fromEntries(
+      detailSeriesConfig.map((series) => [series.key, []]),
+    );
 
     replicationWindow.forEach((point) => {
       const date = point.date;
       if (!(date instanceof Date)) return;
-
-      const replicationValue = Number.isFinite(point.replication_cost)
-        ? point.replication_cost - baseReplication
-        : null;
-      if (Number.isFinite(replicationValue)) {
-        seriesByKey.replication.push({ date, value: replicationValue });
-      }
-
-      const optionValue = Number.isFinite(point.option_mark_change)
-        ? point.option_mark_change - baseOption
-        : null;
-      if (Number.isFinite(optionValue)) {
-        seriesByKey.option.push({ date, value: optionValue });
+      for (const series of detailSeriesConfig) {
+        const rawValue = Number(point?.[series.key]);
+        if (!Number.isFinite(rawValue)) continue;
+        const baseValue = Number(baseByKey[series.key]);
+        const normalizedValue = rawValue - (Number.isFinite(baseValue) ? baseValue : 0);
+        seriesByKey[series.key].push({ date, value: normalizedValue });
       }
     });
 
-    const seriesList = DETAIL_SERIES_CONFIG.map((series) => ({
+    const seriesList = detailSeriesConfig.map((series) => ({
       ...series,
       values: seriesByKey[series.key] || [],
     }));
@@ -937,26 +1079,124 @@ function render() {
     chartState.detailLegendGroup.attr("display", null);
     chartState.detailMessageText.attr("display", "none");
 
-    const lastReplication =
-      seriesByKey.replication[seriesByKey.replication.length - 1];
-    const lastOption = seriesByKey.option[seriesByKey.option.length - 1];
-    const replicationLabel = Number.isFinite(lastReplication?.value)
-      ? formatPnl(lastReplication.value)
-      : "n/a";
-    const optionLabel = Number.isFinite(lastOption?.value)
-      ? formatPnl(lastOption.value)
-      : "n/a";
-    chartState.detailMetricText
-      .text(`Replication: ${replicationLabel}`)
-      .attr("display", null);
-    chartState.detailRoiText
-      .text(`Option: ${optionLabel}`)
-      .attr("display", null);
+    if (props.showPnlMode) {
+      const lastTotal = seriesByKey.total_pnl?.[seriesByKey.total_pnl.length - 1];
+      const lastHedge = seriesByKey.hedge_pnl?.[seriesByKey.hedge_pnl.length - 1];
+      const lastShort =
+        seriesByKey.short_option_pnl?.[seriesByKey.short_option_pnl.length - 1];
+      const totalLabel = Number.isFinite(lastTotal?.value)
+        ? formatPnl(lastTotal.value)
+        : "n/a";
+      const hedgeLabel = Number.isFinite(lastHedge?.value)
+        ? formatPnl(lastHedge.value)
+        : "n/a";
+      const shortLabel = Number.isFinite(lastShort?.value)
+        ? formatPnl(lastShort.value)
+        : "n/a";
+      chartState.detailMetricText
+        .text(`Total P&L: ${totalLabel}`)
+        .attr("display", null);
+      chartState.detailRoiText
+        .text(`Hedge: ${hedgeLabel} | Short: ${shortLabel}`)
+        .attr("display", null);
+    } else {
+      const lastReplication =
+        seriesByKey.replication_cost[seriesByKey.replication_cost.length - 1];
+      const lastOption =
+        seriesByKey.option_mark_change[seriesByKey.option_mark_change.length - 1];
+      const replicationLabel = Number.isFinite(lastReplication?.value)
+        ? formatPnl(lastReplication.value)
+        : "n/a";
+      const optionLabel = Number.isFinite(lastOption?.value)
+        ? formatPnl(lastOption.value)
+        : "n/a";
+      chartState.detailMetricText
+        .text(`Replication: ${replicationLabel}`)
+        .attr("display", null);
+      chartState.detailRoiText
+        .text(`Option: ${optionLabel}`)
+        .attr("display", null);
+    }
   };
 
   const mainPoints = chartState.pointsGroup
     .selectAll("circle.main-point")
     .data(data, (d) => (d.date ? d.date.getTime() : d.index_price_close));
+
+  const handlePointSelect = (event, datum, fromNearestTap = false) => {
+    event.stopPropagation();
+    if (event.type === "pointerdown") {
+      event.preventDefault();
+    }
+    if (fromNearestTap) {
+      suppressClearClick = true;
+    }
+    if (selectedDatums.includes(datum)) return;
+    if (selectedDatums.length < 2) {
+      selectedDatums = [...selectedDatums, datum];
+    } else {
+      const [first, second] = selectedDatums;
+      const firstDate = first?.date;
+      const secondDate = second?.date;
+      const nextDate = datum?.date;
+      if (
+        firstDate instanceof Date &&
+        secondDate instanceof Date &&
+        nextDate instanceof Date
+      ) {
+        const distToFirst = Math.abs(nextDate - firstDate);
+        const distToSecond = Math.abs(nextDate - secondDate);
+        const keep = distToFirst <= distToSecond ? second : first;
+        selectedDatums = [keep, datum];
+      } else {
+        selectedDatums = [second || first, datum].filter(Boolean);
+      }
+    }
+    updateSelectedRange();
+    hoveredDatum = null;
+    hideTooltip();
+    render();
+  };
+
+  const findNearestDatumForTap = (event) => {
+    const mainNode = chartState.mainGroup?.node();
+    if (!mainNode) return null;
+    const [px, py] = d3.pointer(event, mainNode);
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+    if (
+      px < -TAP_SELECT_HITBOX_PX ||
+      px > innerWidth + TAP_SELECT_HITBOX_PX ||
+      py < MAIN_TOP_INSET - TAP_SELECT_HITBOX_PX ||
+      py > innerHeight + TAP_SELECT_HITBOX_PX
+    ) {
+      return null;
+    }
+    let nearest = null;
+    let bestDistSq = TAP_SELECT_HITBOX_PX * TAP_SELECT_HITBOX_PX + 1;
+    for (const datum of data) {
+      if (!(datum?.date instanceof Date)) continue;
+      if (!Number.isFinite(datum?.index_price_close)) continue;
+      const dx = x(datum.date) - px;
+      const dy = y(datum.index_price_close) - py;
+      if (Math.abs(dx) > TAP_SELECT_HITBOX_PX || Math.abs(dy) > TAP_SELECT_HITBOX_PX) {
+        continue;
+      }
+      const distSq = dx * dx + dy * dy;
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq;
+        nearest = datum;
+      }
+    }
+    return nearest;
+  };
+
+  chartState.mainGroup.on("pointerdown.nearest-select", (event) => {
+    const target = event?.target;
+    if (target?.closest?.("circle.main-point")) return;
+    const nearest = findNearestDatumForTap(event);
+    if (!nearest) return;
+    handlePointSelect(event, nearest, true);
+  });
 
   const pointUpdate = mainPoints
     .join((enter) => {
@@ -994,34 +1234,9 @@ function render() {
       hoveredDatum = null;
       resetHoverStyles();
       updateSelectionLine();
-      hideTooltip();
+      scheduleTooltipAutoFade();
     })
-    .on("click", (event, datum) => {
-      event.stopPropagation();
-      if (selectedDatums.includes(datum)) return;
-      if (selectedDatums.length < 2) {
-        selectedDatums = [...selectedDatums, datum];
-      } else {
-        const [first, second] = selectedDatums;
-        const firstDate = first?.date;
-        const secondDate = second?.date;
-        const nextDate = datum?.date;
-        if (
-          firstDate instanceof Date &&
-          secondDate instanceof Date &&
-          nextDate instanceof Date
-        ) {
-          const distToFirst = Math.abs(nextDate - firstDate);
-          const distToSecond = Math.abs(nextDate - secondDate);
-          const keep = distToFirst <= distToSecond ? second : first;
-          selectedDatums = [keep, datum];
-        } else {
-          selectedDatums = [second || first, datum].filter(Boolean);
-        }
-      }
-      updateSelectedRange();
-      render();
-    });
+    .on("pointerdown", (event, datum) => handlePointSelect(event, datum));
 
   const pointPosition = animateLayout
     ? pointUpdate.transition().duration(LAYOUT_TRANSITION_MS)
@@ -1042,7 +1257,7 @@ function render() {
       .raise();
   }
 
-  renderDetailWindow(selectedDatums);
+  renderDetailWindow(selectedDatums, selectedRange);
 
   const gradientStops = hasValidExtent
     ? [
@@ -1093,16 +1308,29 @@ function render() {
 }
 
 watch(
-  () => [props.data, props.replicationData, props.optionInstrumentName],
+  () => [
+    props.data,
+    props.replicationData,
+    props.optionInstrumentName,
+    props.showPnlMode,
+  ],
   () => render(),
   { deep: false },
 );
 
 onMounted(() => render());
+onUnmounted(() => {
+  clearTooltipFadeTimer();
+});
 </script>
 
 <template>
-  <div class="chartWrap" @click="handleChartClick">
+  <div
+    class="chartWrap"
+    @click="handleChartClick"
+    @pointermove="handlePointerMove"
+    @pointerleave="handlePointerLeave"
+  >
     <svg ref="svgRef" />
     <div ref="tooltipRef" class="tooltip" />
     <div v-if="loading" class="overlay">Loading...</div>

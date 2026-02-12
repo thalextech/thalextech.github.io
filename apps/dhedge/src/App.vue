@@ -35,6 +35,7 @@ const data = reactive({
 });
 const chartRef = ref(null);
 const isInitializing = ref(true);
+const showPnlMode = ref(false);
 let prefetchedIndexForInitialLoad = null;
 let loadRequestId = 0;
 
@@ -336,11 +337,22 @@ const replicationSeries = computed(() => {
     const replicationCost = -hedgePnlCumul;
     const optionMarkChange =
       initialMark != null ? point.option_mark_close - initialMark : null;
+    const shortOptionPnl =
+      initialMark != null ? initialMark - point.option_mark_close : null;
+    // `hedgePnlCumul` is built from the replication-cost convention.
+    // For short-option delta-hedged P&L, use the opposite hedge sign.
+    const hedgePnl = -hedgePnlCumul;
+    const totalPnl = Number.isFinite(shortOptionPnl)
+      ? shortOptionPnl + hedgePnl
+      : null;
 
     result.push({
       ...point,
       replication_cost: replicationCost,
       option_mark_change: optionMarkChange,
+      short_option_pnl: shortOptionPnl,
+      hedge_pnl: hedgePnl,
+      total_pnl: totalPnl,
     });
 
     prevDelta = nextDelta;
@@ -594,6 +606,25 @@ watch(
           </select>
         </div>
 
+        <div class="modeToggle" role="group" aria-label="Chart mode">
+          <button
+            class="modeToggleButton"
+            type="button"
+            :class="{ active: !showPnlMode }"
+            @click="showPnlMode = false"
+          >
+            Mark
+          </button>
+          <button
+            class="modeToggleButton"
+            type="button"
+            :class="{ active: showPnlMode }"
+            @click="showPnlMode = true"
+          >
+            Pnl
+          </button>
+        </div>
+
         <button
           class="saveButton"
           type="button"
@@ -613,6 +644,7 @@ watch(
       :replication-data="replicationSeries"
       :option-instrument-name="optionInstrumentName"
       :loading="ui.loading"
+      :show-pnl-mode="showPnlMode"
     />
   </div>
 </template>
