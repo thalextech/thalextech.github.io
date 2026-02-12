@@ -92,6 +92,7 @@ const chartState = {
 const POINT_RADIUS = 4;
 const POINT_RADIUS_DIMMED = 2.8;
 const POINT_RADIUS_HOVER = 10;
+const HOVER_RELEASE_HITBOX_PX = 14;
 const TAP_SELECT_HITBOX_PX = 22;
 const TOOLTIP_HITBOX_PX = 18;
 const TOOLTIP_FADE_DELAY_MS = 1000;
@@ -409,11 +410,39 @@ const handlePointerMove = (event) => {
   const [px, py] = d3.pointer(event, mainNode);
   if (Number.isFinite(px) && Number.isFinite(py)) {
     lastPointerInMain = { x: px, y: py };
+    if (
+      hoveredDatum &&
+      chartState.currentXScale &&
+      chartState.currentYScale &&
+      hoveredDatum.date instanceof Date &&
+      Number.isFinite(hoveredDatum.index_price_close)
+    ) {
+      const hx = chartState.currentXScale(hoveredDatum.date);
+      const hy = chartState.currentYScale(hoveredDatum.index_price_close);
+      const cursorOutsideHoveredDot =
+        !Number.isFinite(hx) ||
+        !Number.isFinite(hy) ||
+        Math.abs(px - hx) > HOVER_RELEASE_HITBOX_PX ||
+        Math.abs(py - hy) > HOVER_RELEASE_HITBOX_PX;
+      if (cursorOutsideHoveredDot) {
+        hoveredDatum = null;
+        resetHoverStyles();
+        updateSelectionLine();
+        if (tooltipDatum) {
+          scheduleTooltipAutoFade();
+        }
+      }
+    }
   }
 };
 
 const handlePointerLeave = () => {
   lastPointerInMain = null;
+  if (hoveredDatum) {
+    hoveredDatum = null;
+    resetHoverStyles();
+    updateSelectionLine();
+  }
   if (tooltipDatum) {
     scheduleTooltipAutoFade();
   }
