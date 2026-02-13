@@ -1,8 +1,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from "vue";
-import OptionPnlChart from "./components/OptionPnlChart.vue";
+import ReplicationCostChart from "./components/ReplicationCostChart.vue";
 import {
-  computeGreeksPnlSeries,
+  calcGreeks,
   fetchIndexHistory,
   fetchInstruments,
   fetchMarkHistory,
@@ -15,10 +15,8 @@ const RESOLUTION_CONFIG = {
   3600: { label: "1h", resolution: "1h", interval_seconds: 60 * 60 },
   86400: { label: "1d", resolution: "1d", interval_seconds: 24 * 60 * 60 },
 };
-const RESOLUTION_KEYS = Object.keys(RESOLUTION_CONFIG);
 const MAIN_POINT_LIMIT = 360;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
-const MIN_DATA_TS = Math.floor(MIN_DATA_DATE.getTime() / 1000);
 
 const ui = reactive({
   resolutionKey: "900",
@@ -31,10 +29,13 @@ const ui = reactive({
 const data = reactive({
   optionInstruments: [],
   optionMark: {},
+  optionMarkKey: {},
   index: {},
+  indexKey: {},
 });
 const chartRef = ref(null);
 const isInitializing = ref(true);
+const showPnlMode = ref(false);
 let prefetchedIndexForInitialLoad = null;
 let loadRequestId = 0;
 
@@ -47,23 +48,6 @@ const maturityFormatter = new Intl.DateTimeFormat("en-US", {
 const strikeFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
-
-const createStableOptionsBuilder = ({ toValue, toLabel }) => {
-  let prevKeys = [];
-  let prevOptions = [];
-  return (keys) => {
-    const unchanged =
-      keys.length === prevKeys.length &&
-      keys.every((key, idx) => key === prevKeys[idx]);
-    if (unchanged) return prevOptions;
-    prevKeys = [...keys];
-    prevOptions = keys.map((key) => ({
-      value: toValue(key),
-      label: toLabel(key),
-    }));
-    return prevOptions;
-  };
-};
 
 const normalizeCreateTimeSeconds = (value) => {
   const ts = Number(value);
@@ -175,11 +159,6 @@ const getTimestampRange = () => {
   };
 };
 
-const buildMaturityOptions = createStableOptionsBuilder({
-  toValue: (ts) => String(ts),
-  toLabel: (ts) => `${maturityFormatter.format(new Date(ts * 1000))} UTC`,
-});
-
 const optionMaturities = computed(() => {
   const expirations = Array.from(
     new Set(
@@ -188,7 +167,10 @@ const optionMaturities = computed(() => {
         .filter((ts) => Number.isFinite(ts) && ts > 0),
     ),
   ).sort((a, b) => a - b);
-  return buildMaturityOptions(expirations);
+  return expirations.map((ts) => ({
+    value: String(ts),
+    label: `${maturityFormatter.format(new Date(ts * 1000))} UTC`,
+  }));
 });
 
 const selectedMaturityTs = computed(() => Number(ui.optionMaturity));
@@ -200,11 +182,6 @@ const optionInstrumentsForMaturity = computed(() => {
   );
 });
 
-const buildStrikeOptions = createStableOptionsBuilder({
-  toValue: (strike) => String(strike),
-  toLabel: (strike) => strikeFormatter.format(strike),
-});
-
 const optionStrikes = computed(() => {
   const strikes = Array.from(
     new Set(
@@ -213,7 +190,10 @@ const optionStrikes = computed(() => {
       ),
     ),
   ).sort((a, b) => a - b);
-  return buildStrikeOptions(strikes);
+  return strikes.map((strike) => ({
+    value: String(strike),
+    label: strikeFormatter.format(strike),
+  }));
 });
 
 const selectedStrike = computed(() => Number(ui.optionStrike));
@@ -244,6 +224,14 @@ const optionInstrumentName = computed(
 const mainSeries = computed(() => {
   const index = data.index[ui.resolutionKey] || [];
   const optionMark = data.optionMark[ui.resolutionKey] || [];
+  const instrument = selectedOptionInstrument.value;
+  if (!instrument) return [];
+
+  const strike = Number(instrument.strike);
+  const expiration = Number(instrument.expiration_ts);
+  const optionType =
+    instrument.option_type_normalized === "put" ? "put" : "call";
+
   const optionDataByTs = new Map();
   let optionMinTs = null;
   let optionMaxTs = null;
@@ -252,16 +240,18 @@ const mainSeries = computed(() => {
     if (!Number.isFinite(ts)) continue;
     optionDataByTs.set(ts, {
       iv_close: row.iv_close,
-      option_mark_price: row.mark_price_close,
+      mark_price_open: row.mark_price_open,
+      mark_price_close: row.mark_price_close,
     });
     if (optionMinTs == null || ts < optionMinTs) optionMinTs = ts;
     if (optionMaxTs == null || ts > optionMaxTs) optionMaxTs = ts;
   }
+
   const result = [];
   for (const point of index) {
     const ts = point.ts;
     if (!Number.isFinite(ts)) continue;
-    if (ts < MIN_DATA_TS) continue;
+    if (ts * 1000 < MIN_DATA_DATE.getTime()) continue;
     if (
       Number.isFinite(optionMinTs) &&
       Number.isFinite(optionMaxTs) &&
@@ -269,40 +259,129 @@ const mainSeries = computed(() => {
     ) {
       continue;
     }
-    const date = new Date(ts * 1000);
     const optionData = optionDataByTs.get(point.ts);
+    if (!optionData) continue;
+
+    const date = new Date(ts * 1000);
+    const tteSeconds = expiration - ts;
+    const greeks = calcGreeks(
+      point.index_price_close,
+      strike,
+      tteSeconds,
+      optionData.iv_close,
+      optionType,
+    );
+
     result.push({
       ...point,
       date,
-      iv_close: optionData?.iv_close ?? null,
-      option_mark_price: optionData?.option_mark_price ?? null,
+      iv_close: optionData.iv_close ?? null,
+      option_mark_open: optionData.mark_price_open ?? null,
+      option_mark_close: optionData.mark_price_close ?? null,
+      option_mark_price: optionData.mark_price_close ?? null,
+      delta: greeks.delta ?? null,
+      gamma: greeks.gamma ?? null,
     });
   }
   return result.slice(-MAIN_POINT_LIMIT);
 });
 
-const optionPnlSeries = computed(() => {
-  const mark = data.optionMark[ui.resolutionKey] || [];
-  const index = data.index[ui.resolutionKey] || [];
-  const instrument = selectedOptionInstrument.value;
-  if (!mark.length || !index.length || !instrument) return [];
-  const series = computeGreeksPnlSeries({
-    mark,
-    index,
-    instrument,
-  });
-  const filtered = [];
+const replicationSeries = computed(() => {
+  const series = mainSeries.value;
+  if (!series.length) return [];
+
+  let initialMark = null;
+  let prevDelta = 0;
+  let qBuyCum = 0;
+  let vBuyCum = 0;
+  let qSellCum = 0;
+  let vSellCum = 0;
+  let avgBuyPrice = null;
+
+  const result = [];
   for (const point of series) {
-    if (Number.isFinite(point?.ts) && point.ts >= MIN_DATA_TS) {
-      filtered.push(point);
+    if (!Number.isFinite(point.index_price_close)) continue;
+    if (!Number.isFinite(point.option_mark_close)) continue;
+    if (initialMark == null) {
+      if (Number.isFinite(point.option_mark_open)) {
+        initialMark = point.option_mark_open;
+      } else if (Number.isFinite(point.option_mark_close)) {
+        initialMark = point.option_mark_close;
+      }
     }
+
+    const safePrevDelta = Number.isFinite(prevDelta) ? prevDelta : 0;
+    const nextDelta = Number.isFinite(point.delta) ? point.delta : safePrevDelta;
+    const deltaChange = nextDelta - safePrevDelta;
+    const q = -deltaChange;
+    const qBuy = q > 0 ? q : 0;
+    const qSell = q < 0 ? -q : 0;
+    const price = point.index_price_close;
+    const vBuy = qBuy * price;
+    const vSell = qSell * price;
+
+    qBuyCum += qBuy;
+    vBuyCum += vBuy;
+    qSellCum += qSell;
+    vSellCum += vSell;
+    if (qBuyCum > 0) {
+      avgBuyPrice = vBuyCum / qBuyCum;
+    }
+    const effectiveBuyPrice = Number.isFinite(avgBuyPrice)
+      ? avgBuyPrice
+      : price;
+    const hedgePosition = -safePrevDelta;
+    const realized = vSellCum - qSellCum * effectiveBuyPrice;
+    const unrealized = hedgePosition * (price - effectiveBuyPrice);
+    const hedgePnlCumul = realized + unrealized;
+    const replicationCost = -hedgePnlCumul;
+    const optionMarkChange =
+      initialMark != null ? point.option_mark_close - initialMark : null;
+    const shortOptionPnl =
+      initialMark != null ? initialMark - point.option_mark_close : null;
+    // `hedgePnlCumul` is built from the replication-cost convention.
+    // For short-option delta-hedged P&L, use the opposite hedge sign.
+    const hedgePnl = -hedgePnlCumul;
+    const totalPnl = Number.isFinite(shortOptionPnl)
+      ? shortOptionPnl + hedgePnl
+      : null;
+
+    result.push({
+      ...point,
+      replication_cost: replicationCost,
+      option_mark_change: optionMarkChange,
+      short_option_pnl: shortOptionPnl,
+      hedge_pnl: hedgePnl,
+      total_pnl: totalPnl,
+    });
+
+    prevDelta = nextDelta;
   }
-  return filtered.slice(-MAIN_POINT_LIMIT);
+
+  return result;
 });
 
 async function load(instrument) {
   if (!instrument) return;
   const requestId = ++loadRequestId;
+
+  const resolutionKey = ui.resolutionKey;
+  const indexName = instrument?.underlying || "BTCUSD";
+  const optionName = instrument?.instrument_name || "";
+  const cachedIndex = data.index[resolutionKey];
+  const cachedMark = data.optionMark[resolutionKey];
+  const canUseCachedIndex =
+    Array.isArray(cachedIndex) &&
+    cachedIndex.length &&
+    data.indexKey[resolutionKey] === indexName;
+  const canUseCachedMark =
+    Array.isArray(cachedMark) &&
+    cachedMark.length &&
+    data.optionMarkKey[resolutionKey] === optionName;
+
+  if (canUseCachedIndex && canUseCachedMark) {
+    return;
+  }
 
   ui.loading = true;
   ui.error = "";
@@ -310,7 +389,8 @@ async function load(instrument) {
   const { resolution, from, to } = getTimestampRange();
   const canUsePrefetchedIndex =
     prefetchedIndexForInitialLoad &&
-    prefetchedIndexForInitialLoad.resolutionKey === ui.resolutionKey;
+    prefetchedIndexForInitialLoad.resolutionKey === resolutionKey &&
+    prefetchedIndexForInitialLoad.indexName === indexName;
   const prefetchedIndex = canUsePrefetchedIndex
     ? prefetchedIndexForInitialLoad.rows
     : null;
@@ -319,38 +399,41 @@ async function load(instrument) {
   }
 
   try {
-    const optionInstrument = instrument;
-    const indexName = optionInstrument?.underlying || "BTCUSD";
-    const optionName = optionInstrument?.instrument_name || "";
-    const indexPromise = prefetchedIndex
-      ? Promise.resolve(prefetchedIndex)
-      : fetchIndexHistory({
-          index_name: indexName,
-          resolution,
-          from,
-          to,
-        });
-    const [mainIndex, optionMark] = await Promise.all([
-      indexPromise,
-      optionName
-        ? fetchMarkHistory({
-            instrument_name: optionName,
+    const indexPromise = canUseCachedIndex
+      ? Promise.resolve(cachedIndex)
+      : prefetchedIndex
+        ? Promise.resolve(prefetchedIndex)
+        : fetchIndexHistory({
+            index_name: indexName,
             resolution,
             from,
             to,
-          })
-        : Promise.resolve([]),
+          });
+    const [mainIndex, optionMark] = await Promise.all([
+      indexPromise,
+      canUseCachedMark
+        ? Promise.resolve(cachedMark)
+        : optionName
+          ? fetchMarkHistory({
+              instrument_name: optionName,
+              resolution,
+              from,
+              to,
+            })
+          : Promise.resolve([]),
     ]);
 
     if (requestId !== loadRequestId) return;
 
-    data.index[ui.resolutionKey] = mainIndex || [];
-    data.optionMark[ui.resolutionKey] = optionMark || [];
+    data.index[resolutionKey] = mainIndex || [];
+    data.indexKey[resolutionKey] = indexName;
+    data.optionMark[resolutionKey] = optionMark || [];
+    data.optionMarkKey[resolutionKey] = optionName;
   } catch (e) {
     if (requestId !== loadRequestId) return;
     ui.error = e instanceof Error ? e.message : String(e);
-    data.index = {};
-    data.optionMark = {};
+    data.index[resolutionKey] = [];
+    data.optionMark[resolutionKey] = [];
   } finally {
     if (requestId === loadRequestId) {
       ui.loading = false;
@@ -358,15 +441,9 @@ async function load(instrument) {
   }
 }
 
-function clearActiveSeries() {
-  const resolutionKey = ui.resolutionKey;
-  data.index[resolutionKey] = [];
-  data.optionMark[resolutionKey] = [];
-}
-
 function handleSavePng() {
   if (!chartRef.value) return;
-  const base = optionInstrumentName.value || "option-pnl";
+  const base = optionInstrumentName.value || "dhedge-replication";
   const filename = ui.resolutionKey
     ? `${base}-${ui.resolutionKey}.png`
     : `${base}.png`;
@@ -401,8 +478,10 @@ onMounted(async () => {
     data.index[ui.resolutionKey] = prefetchedIndex || [];
     prefetchedIndexForInitialLoad = {
       resolutionKey: ui.resolutionKey,
+      indexName: "BTCUSD",
       rows: prefetchedIndex || [],
     };
+    data.indexKey[ui.resolutionKey] = "BTCUSD";
     const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
     ui.optionStrike = getDefaultStrikeValue({
       maturityInstruments: optionInstrumentsForMaturity.value,
@@ -410,11 +489,6 @@ onMounted(async () => {
       indexPrice: latestIndexClose,
       fallbackStrikes: optionStrikes.value,
     });
-  } catch (e) {
-    ui.error = e instanceof Error ? e.message : String(e);
-    data.optionInstruments = [];
-    data.index = {};
-    data.optionMark = {};
   } finally {
     isInitializing.value = false;
   }
@@ -456,12 +530,7 @@ watch(
   () => [ui.resolutionKey, ui.optionMaturity, ui.optionStrike, ui.optionType],
   async () => {
     const instrument = selectedOptionInstrument.value;
-    if (!instrument) {
-      loadRequestId += 1;
-      ui.loading = false;
-      clearActiveSeries();
-      return;
-    }
+    if (!instrument) return;
     await load(instrument);
   },
   { immediate: false },
@@ -472,7 +541,7 @@ watch(
   <div class="app">
     <header class="header">
       <div class="titleRow">
-        <h1>Option P&amp;L Analyzer</h1>
+        <h1>Option Replication Cost</h1>
       </div>
 
       <div class="controls">
@@ -527,10 +596,33 @@ watch(
         <div class="field">
           <label for="resolution">Resolution</label>
           <select id="resolution" v-model="ui.resolutionKey">
-            <option v-for="key in RESOLUTION_KEYS" :key="key" :value="key">
+            <option
+              v-for="key in Object.keys(RESOLUTION_CONFIG)"
+              :key="key"
+              :value="key"
+            >
               {{ RESOLUTION_CONFIG[key].label }}
             </option>
           </select>
+        </div>
+
+        <div class="modeToggle" role="group" aria-label="Chart mode">
+          <button
+            class="modeToggleButton"
+            type="button"
+            :class="{ active: !showPnlMode }"
+            @click="showPnlMode = false"
+          >
+            Mark
+          </button>
+          <button
+            class="modeToggleButton"
+            type="button"
+            :class="{ active: showPnlMode }"
+            @click="showPnlMode = true"
+          >
+            Pnl
+          </button>
         </div>
 
         <button
@@ -546,12 +638,13 @@ watch(
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
-    <OptionPnlChart
+    <ReplicationCostChart
       ref="chartRef"
       :data="mainSeries"
-      :option-pnl-data="optionPnlSeries"
+      :replication-data="replicationSeries"
       :option-instrument-name="optionInstrumentName"
       :loading="ui.loading"
+      :show-pnl-mode="showPnlMode"
     />
   </div>
 </template>

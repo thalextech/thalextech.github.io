@@ -1,6 +1,6 @@
 <script setup>
 import * as d3 from "d3";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { SECONDS_PER_YEAR } from "../../../../lib/thalex.js";
 import {
   getDatumTs,
@@ -92,7 +92,11 @@ const chartState = {
 const POINT_RADIUS = 4;
 const POINT_RADIUS_DIMMED = 2.8;
 const POINT_RADIUS_HOVER = 10;
-const LAYOUT_TRANSITION_MS = 260;
+const HOVER_RELEASE_HITBOX_PX = 14;
+const TAP_SELECT_HITBOX_PX = 22;
+const TOOLTIP_HITBOX_PX = 18;
+const TOOLTIP_FADE_DELAY_MS = 1000;
+const LAYOUT_TRANSITION_MS = 160;
 const DETAIL_COLORS = {
   carry: { funding: "#c9c9cf", secondary: "#7aa2ff" },
   roll: { funding: "#f0c58a", secondary: "#ffffff" },
@@ -104,6 +108,45 @@ let detailActive = false;
 let lineRevealTimer = null;
 let lineRevealPending = false;
 const legendMetricMode = ref("funding");
+let suppressClearClick = false;
+let tooltipDatum = null;
+let lastPointerInMain = null;
+let tooltipFadeTimer = null;
+
+const clearTooltipFadeTimer = () => {
+  if (tooltipFadeTimer) {
+    clearTimeout(tooltipFadeTimer);
+    tooltipFadeTimer = null;
+  }
+};
+
+const isCursorInTooltipDatumHitbox = (datum) => {
+  const x = chartState.currentXScale;
+  const y = chartState.currentYScale;
+  if (!datum || !x || !y || !lastPointerInMain) return false;
+  if (!(datum.date instanceof Date)) return false;
+  if (!Number.isFinite(datum.index_price_close)) return false;
+  const px = x(datum.date);
+  const py = y(datum.index_price_close);
+  if (!Number.isFinite(px) || !Number.isFinite(py)) return false;
+  return (
+    Math.abs(lastPointerInMain.x - px) <= TOOLTIP_HITBOX_PX &&
+    Math.abs(lastPointerInMain.y - py) <= TOOLTIP_HITBOX_PX
+  );
+};
+
+const scheduleTooltipAutoFade = () => {
+  clearTooltipFadeTimer();
+  tooltipFadeTimer = setTimeout(() => {
+    tooltipFadeTimer = null;
+    if (!tooltipDatum) return;
+    if (isCursorInTooltipDatumHitbox(tooltipDatum)) {
+      scheduleTooltipAutoFade();
+      return;
+    }
+    hideTooltip();
+  }, TOOLTIP_FADE_DELAY_MS);
+};
 
 const updateSelectedRange = () => {
   selectedRange = computeSelectedRange(selectedDatums);
@@ -121,6 +164,10 @@ const syncSelectionWithData = (data) => {
 };
 
 const handleChartClick = (event) => {
+  if (suppressClearClick) {
+    suppressClearClick = false;
+    return;
+  }
   const target = event?.target;
   const isPoint = target?.closest?.("circle.main-point");
   if (isPoint) return;
@@ -266,8 +313,18 @@ const resetHoverStyles = () => {
 
 const showTooltip = (event, datum, metricLabel, metricValue) => {
   const tooltip = tooltipRef.value;
-  const wrapper = svgRef.value?.closest(".chartWrap");
-  if (!tooltip || !wrapper) return;
+  const svgEl = svgRef.value;
+  const wrapper = svgEl?.closest(".chartWrap");
+  if (!tooltip || !wrapper || !svgEl) return;
+  const mainNode = chartState.mainGroup?.node();
+  if (mainNode) {
+    const [px, py] = d3.pointer(event, mainNode);
+    if (Number.isFinite(px) && Number.isFinite(py)) {
+      lastPointerInMain = { x: px, y: py };
+    }
+  }
+  tooltipDatum = datum;
+  clearTooltipFadeTimer();
   const wrapperRect = wrapper.getBoundingClientRect();
   const x = event.clientX - wrapperRect.left;
   const y = event.clientY - wrapperRect.top;
@@ -282,25 +339,113 @@ const showTooltip = (event, datum, metricLabel, metricValue) => {
     <div>Index: ${indexValue}</div>
     <div>${metricLabel}: ${legendMetricValue}</div>
   `;
-  tooltip.style.left = `${x}px`;
-  tooltip.style.top = `${y}px`;
+  const xScale = chartState.currentXScale;
+  const yScale = chartState.currentYScale;
+  let anchorX = x;
+  let anchorY = y;
+  if (
+    xScale &&
+    yScale &&
+    datum?.date instanceof Date &&
+    Number.isFinite(datum?.index_price_close)
+  ) {
+    const viewBox = svgEl.viewBox?.baseVal;
+    const viewBoxWidth = Number(viewBox?.width);
+    const viewBoxHeight = Number(viewBox?.height);
+    const anchorSvgX = layout.margin.left + xScale(datum.date);
+    const anchorSvgY = layout.margin.top + yScale(datum.index_price_close);
+    const svgRect = svgEl.getBoundingClientRect();
+    const wrapperOffsetX = svgRect.left - wrapperRect.left;
+    const wrapperOffsetY = svgRect.top - wrapperRect.top;
+    if (
+      Number.isFinite(viewBoxWidth) &&
+      viewBoxWidth > 0 &&
+      Number.isFinite(viewBoxHeight) &&
+      viewBoxHeight > 0
+    ) {
+      anchorX = wrapperOffsetX + (anchorSvgX / viewBoxWidth) * svgRect.width;
+      anchorY = wrapperOffsetY + (anchorSvgY / viewBoxHeight) * svgRect.height;
+    } else {
+      anchorX = anchorSvgX;
+      anchorY = anchorSvgY;
+    }
+  }
+  tooltip.style.left = `${anchorX}px`;
+  tooltip.style.top = `${anchorY}px`;
   tooltip.style.opacity = "1";
   const tooltipRect = tooltip.getBoundingClientRect();
   const wrapperRectUpdated = wrapper.getBoundingClientRect();
-  const centeredLeft = x - tooltipRect.width / 2;
+  const edgePadding = 8;
+  const verticalGap = 36;
+  const centeredLeft = anchorX - tooltipRect.width / 2;
   const clampedLeft = Math.max(
-    8,
-    Math.min(wrapperRectUpdated.width - tooltipRect.width - 8, centeredLeft),
+    edgePadding,
+    Math.min(
+      wrapperRectUpdated.width - tooltipRect.width - edgePadding,
+      centeredLeft,
+    ),
   );
-  const top = y - tooltipRect.height - 12;
+  const minTop = layout.margin.top + 4;
+  const maxTop = Math.max(
+    minTop,
+    wrapperRectUpdated.height - tooltipRect.height - edgePadding,
+  );
+  const aboveTop = anchorY - tooltipRect.height - verticalGap;
   tooltip.style.left = `${clampedLeft}px`;
-  tooltip.style.top = `${Math.max(8, top)}px`;
+  tooltip.style.top = `${Math.max(minTop, Math.min(maxTop, aboveTop))}px`;
+  scheduleTooltipAutoFade();
 };
 
 const hideTooltip = () => {
   const tooltip = tooltipRef.value;
   if (!tooltip) return;
   tooltip.style.opacity = "0";
+  tooltipDatum = null;
+  clearTooltipFadeTimer();
+};
+
+const handlePointerMove = (event) => {
+  const mainNode = chartState.mainGroup?.node();
+  if (!mainNode) return;
+  const [px, py] = d3.pointer(event, mainNode);
+  if (Number.isFinite(px) && Number.isFinite(py)) {
+    lastPointerInMain = { x: px, y: py };
+    if (
+      hoveredDatum &&
+      chartState.currentXScale &&
+      chartState.currentYScale &&
+      hoveredDatum.date instanceof Date &&
+      Number.isFinite(hoveredDatum.index_price_close)
+    ) {
+      const hx = chartState.currentXScale(hoveredDatum.date);
+      const hy = chartState.currentYScale(hoveredDatum.index_price_close);
+      const cursorOutsideHoveredDot =
+        !Number.isFinite(hx) ||
+        !Number.isFinite(hy) ||
+        Math.abs(px - hx) > HOVER_RELEASE_HITBOX_PX ||
+        Math.abs(py - hy) > HOVER_RELEASE_HITBOX_PX;
+      if (cursorOutsideHoveredDot) {
+        hoveredDatum = null;
+        resetHoverStyles();
+        updateSelectionLine();
+        if (tooltipDatum) {
+          scheduleTooltipAutoFade();
+        }
+      }
+    }
+  }
+};
+
+const handlePointerLeave = () => {
+  lastPointerInMain = null;
+  if (hoveredDatum) {
+    hoveredDatum = null;
+    resetHoverStyles();
+    updateSelectionLine();
+  }
+  if (tooltipDatum) {
+    scheduleTooltipAutoFade();
+  }
 };
 
 const ensureChartElements = () => {
@@ -1118,6 +1263,79 @@ function render() {
     .selectAll("circle.main-point")
     .data(data, (d) => (d.date ? d.date.getTime() : d.index_price_close));
 
+  const handlePointSelect = (event, datum, fromNearestTap = false) => {
+    event.stopPropagation();
+    if (event.type === "pointerdown") {
+      event.preventDefault();
+    }
+    if (fromNearestTap) {
+      suppressClearClick = true;
+    }
+    if (selectedDatums.includes(datum)) return;
+    if (selectedDatums.length < 2) {
+      selectedDatums = [...selectedDatums, datum];
+    } else {
+      const [first, second] = selectedDatums;
+      const firstDate = first?.date;
+      const secondDate = second?.date;
+      const nextDate = datum?.date;
+      if (
+        firstDate instanceof Date &&
+        secondDate instanceof Date &&
+        nextDate instanceof Date
+      ) {
+        const distToFirst = Math.abs(nextDate - firstDate);
+        const distToSecond = Math.abs(nextDate - secondDate);
+        const keep = distToFirst <= distToSecond ? second : first;
+        selectedDatums = [keep, datum];
+      } else {
+        selectedDatums = [second || first, datum].filter(Boolean);
+      }
+    }
+    updateSelectedRange();
+    render();
+  };
+
+  const findNearestDatumForTap = (event) => {
+    const mainNode = chartState.mainGroup?.node();
+    if (!mainNode) return null;
+    const [px, py] = d3.pointer(event, mainNode);
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+    if (
+      px < -TAP_SELECT_HITBOX_PX ||
+      px > innerWidth + TAP_SELECT_HITBOX_PX ||
+      py < -TAP_SELECT_HITBOX_PX ||
+      py > innerHeight + TAP_SELECT_HITBOX_PX
+    ) {
+      return null;
+    }
+    let nearest = null;
+    let bestDistSq = TAP_SELECT_HITBOX_PX * TAP_SELECT_HITBOX_PX + 1;
+    for (const datum of data) {
+      if (!(datum?.date instanceof Date)) continue;
+      if (!Number.isFinite(datum?.index_price_close)) continue;
+      const dx = x(datum.date) - px;
+      const dy = y(datum.index_price_close) - py;
+      if (Math.abs(dx) > TAP_SELECT_HITBOX_PX || Math.abs(dy) > TAP_SELECT_HITBOX_PX) {
+        continue;
+      }
+      const distSq = dx * dx + dy * dy;
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq;
+        nearest = datum;
+      }
+    }
+    return nearest;
+  };
+
+  chartState.mainGroup.on("pointerdown.nearest-select", (event) => {
+    const target = event?.target;
+    if (target?.closest?.("circle.main-point")) return;
+    const nearest = findNearestDatumForTap(event);
+    if (!nearest) return;
+    handlePointSelect(event, nearest, true);
+  });
+
   const pointUpdate = mainPoints
     .join((enter) => {
       const circles = enter
@@ -1161,34 +1379,9 @@ function render() {
       hoveredDatum = null;
       resetHoverStyles();
       updateSelectionLine();
-      hideTooltip();
+      scheduleTooltipAutoFade();
     })
-    .on("click", (event, datum) => {
-      event.stopPropagation();
-      if (selectedDatums.includes(datum)) return;
-      if (selectedDatums.length < 2) {
-        selectedDatums = [...selectedDatums, datum];
-      } else {
-        const [first, second] = selectedDatums;
-        const firstDate = first?.date;
-        const secondDate = second?.date;
-        const nextDate = datum?.date;
-        if (
-          firstDate instanceof Date &&
-          secondDate instanceof Date &&
-          nextDate instanceof Date
-        ) {
-          const distToFirst = Math.abs(nextDate - firstDate);
-          const distToSecond = Math.abs(nextDate - secondDate);
-          const keep = distToFirst <= distToSecond ? second : first;
-          selectedDatums = [keep, datum];
-        } else {
-          selectedDatums = [second || first, datum].filter(Boolean);
-        }
-      }
-      updateSelectedRange();
-      render();
-    });
+    .on("pointerdown", (event, datum) => handlePointSelect(event, datum));
 
   const pointPosition = animateLayout
     ? pointUpdate.transition().duration(LAYOUT_TRANSITION_MS)
@@ -1268,10 +1461,18 @@ watch(
 );
 
 onMounted(() => render());
+onUnmounted(() => {
+  clearTooltipFadeTimer();
+});
 </script>
 
 <template>
-  <div class="chartWrap" @click="handleChartClick">
+  <div
+    class="chartWrap"
+    @click="handleChartClick"
+    @pointermove="handlePointerMove"
+    @pointerleave="handlePointerLeave"
+  >
     <svg ref="svgRef" />
     <div ref="tooltipRef" class="tooltip" />
     <div v-if="loading" class="overlay">Loading...</div>

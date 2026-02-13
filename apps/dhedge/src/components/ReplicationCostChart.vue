@@ -1,18 +1,24 @@
 <script setup>
 import * as d3 from "d3";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import {
+  getDatumTs,
+  syncSelectionWithData as syncSelectionWithDataUtil,
+  updateSelectedRange as computeSelectedRange,
+} from "../../../../lib/chartUtils.js";
 import { exportChartToPng } from "../../../../lib/export-png.js";
 
 const props = defineProps({
   data: { type: Array, default: () => [] },
-  optionPnlData: { type: Array, default: () => [] },
+  replicationData: { type: Array, default: () => [] },
   optionInstrumentName: { type: String, default: "" },
   loading: { type: Boolean, default: false },
+  showPnlMode: { type: Boolean, default: false },
 });
 
 const svgRef = ref(null);
 const tooltipRef = ref(null);
-const gradientId = `iv-gradient-${Math.random().toString(16).slice(2)}`;
+const gradientId = `gamma-gradient-${Math.random().toString(16).slice(2)}`;
 const SVG_FONT_FAMILY =
   'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
 
@@ -42,29 +48,41 @@ const TEXT_STYLES = {
   detailMessage: { fill: "#c9c9cf", size: "12px" },
 };
 
-const DETAIL_SERIES_ORDER = [
+const DETAIL_SERIES_CONFIG_MARK = [
   {
-    key: "gammaTheta",
-    label: "Gamma + Theta",
-    strokeWidth: 0.8,
-    areaOpacity: 0.04,
+    key: "replication_cost",
+    label: "Replication cost",
+    color: "#2f5aa6",
+    strokeWidth: 1.2,
   },
-  { key: "vega", label: "Vega", strokeWidth: 0.8, areaOpacity: 0.04 },
-  { key: "total", label: "Total", strokeWidth: 0.8, areaOpacity: 0.04 },
-  { key: "residual", label: "Residual", strokeWidth: 0.8, areaOpacity: 0.04 },
-  { key: "delta", label: "Delta", strokeWidth: 0.8, areaOpacity: 0.04 },
+  {
+    key: "option_mark_change",
+    label: "Option mark change",
+    color: "#ffb703",
+    strokeWidth: 1.2,
+  },
 ];
-const DETAIL_SERIES_COLOR_STEP = 1 / DETAIL_SERIES_ORDER.length;
-const DETAIL_SERIES_COLOR_INDEX_OFFSET = 0.5;
-const DETAIL_SERIES_CONFIG = DETAIL_SERIES_ORDER.map((series, index) => ({
-  ...series,
-  color: d3.interpolateRdBu(
-    Math.min(
-      1,
-      (index + DETAIL_SERIES_COLOR_INDEX_OFFSET) * DETAIL_SERIES_COLOR_STEP,
-    ),
-  ),
-}));
+
+const DETAIL_SERIES_CONFIG_PNL = [
+  {
+    key: "total_pnl",
+    label: "Total P&L",
+    color: "#94b3fd",
+    strokeWidth: 1.6,
+  },
+  {
+    key: "hedge_pnl",
+    label: "Delta hedge P&L",
+    color: "#8ecae6",
+    strokeWidth: 1.2,
+  },
+  {
+    key: "short_option_pnl",
+    label: "Short option P&L",
+    color: "#ffb703",
+    strokeWidth: 1.2,
+  },
+];
 
 const chartState = {
   gradient: null,
@@ -97,6 +115,7 @@ const chartState = {
   detailMessageText: null,
   detailLegendGroup: null,
   detailSeriesGroup: null,
+  detailAreaPath: null,
   currentXScale: null,
   currentYScale: null,
   noDataText: null,
@@ -109,7 +128,7 @@ const HOVER_RELEASE_HITBOX_PX = 14;
 const TAP_SELECT_HITBOX_PX = 22;
 const TOOLTIP_HITBOX_PX = 18;
 const TOOLTIP_FADE_DELAY_MS = 1000;
-const LAYOUT_TRANSITION_MS = 160;
+const LAYOUT_TRANSITION_MS = 260;
 let hoveredDatum = null;
 let selectedDatums = [];
 let selectedRange = null;
@@ -157,85 +176,19 @@ const scheduleTooltipAutoFade = () => {
   }, TOOLTIP_FADE_DELAY_MS);
 };
 
-const getDatumTs = (datum) => {
-  const ts = datum?.ts;
-  if (Number.isFinite(ts)) return ts;
-  const date = datum?.date;
-  return date instanceof Date ? Math.round(date.getTime() / 1000) : null;
-};
-
-const findClosestDatumByTs = (data, targetTs, excludedDatum = null) => {
-  if (!Number.isFinite(targetTs)) return null;
-  let closest = null;
-  let bestDist = Infinity;
-  for (const datum of data || []) {
-    const ts = getDatumTs(datum);
-    if (!Number.isFinite(ts)) continue;
-    if (excludedDatum && datum === excludedDatum) continue;
-    const dist = Math.abs(ts - targetTs);
-    if (dist < bestDist) {
-      bestDist = dist;
-      closest = datum;
-    }
-  }
-  return closest;
-};
-
-const normalizeRange = (range) => {
-  if (!range) return null;
-  const from = Number(range.from);
-  const to = Number(range.to);
-  if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
-  return from <= to ? { from, to } : { from: to, to: from };
-};
-
 const updateSelectedRange = () => {
-  if (selectedDatums.length !== 2) {
-    selectedRange = null;
-    return;
-  }
-  const firstTs = getDatumTs(selectedDatums[0]);
-  const secondTs = getDatumTs(selectedDatums[1]);
-  if (!Number.isFinite(firstTs) || !Number.isFinite(secondTs)) {
-    selectedRange = null;
-    return;
-  }
-  selectedRange = normalizeRange({ from: firstTs, to: secondTs });
+  selectedRange = computeSelectedRange(selectedDatums);
 };
 
 const syncSelectionWithData = (data) => {
-  if (!Array.isArray(data) || !data.length) {
-    selectedDatums = [];
-    selectedRange = null;
-    return;
-  }
-
-  selectedDatums = selectedDatums.filter((datum) => data.includes(datum));
-  if (selectedDatums.length === 2) {
-    updateSelectedRange();
-    return;
-  }
-
-  const range = normalizeRange(selectedRange);
-  if (!range) {
-    selectedRange = null;
-    return;
-  }
-
-  const first = findClosestDatumByTs(data, range.from);
-  if (!first) {
-    selectedDatums = [];
-    selectedRange = null;
-    return;
-  }
-  const second = findClosestDatumByTs(data, range.to, first);
-  if (!second) {
-    selectedDatums = [first];
-    selectedRange = null;
-    return;
-  }
-  selectedDatums = [first, second];
-  updateSelectedRange();
+  const synced = syncSelectionWithDataUtil({
+    data,
+    selectedDatums,
+    selectedRange,
+    getTs: getDatumTs,
+  });
+  selectedDatums = synced.selectedDatums;
+  selectedRange = synced.selectedRange;
 };
 
 const toggleDetailSeries = (key) => {
@@ -298,7 +251,7 @@ const formatDate = d3.utcFormat("%d %b %y %H:%M");
 const formatIndex = d3.format(",.2f");
 const formatIndexAxis = d3.format(",.0f");
 const formatPnl = d3.format("$,.0f");
-const formatVol = d3.format(".1%");
+const formatGamma = d3.format(".2e");
 
 const scheduleLineReveal = () => {
   lineRevealPending = true;
@@ -409,8 +362,8 @@ const showTooltip = (event, datum) => {
   const indexValue = Number.isFinite(datum.index_price_close)
     ? formatIndex(datum.index_price_close)
     : "n/a";
-  const ivValue = Number.isFinite(datum.iv_close)
-    ? formatVol(datum.iv_close)
+  const gammaValue = Number.isFinite(datum.gamma)
+    ? formatGamma(Math.abs(datum.gamma))
     : "n/a";
   const optionMarkValue = Number.isFinite(datum.option_mark_price)
     ? formatIndex(datum.option_mark_price)
@@ -419,7 +372,7 @@ const showTooltip = (event, datum) => {
     <div class="tooltip-title">${formatDate(datum.date)}</div>
     <div>Index: ${indexValue}</div>
     <div>Option Mark: ${optionMarkValue}</div>
-    <div>IV: ${ivValue}</div>
+    <div>Gamma: ${gammaValue}</div>
   `;
   const xScale = chartState.currentXScale;
   const yScale = chartState.currentYScale;
@@ -576,7 +529,7 @@ const ensureChartElements = () => {
   if (!chartState.legendGroup) {
     chartState.legendGroup = svg.append("g");
     chartState.legendTitle = appendText(chartState.legendGroup, "legendTitle", {
-      text: "Implied volatility",
+      text: "|Gamma|",
     });
     chartState.legendRect = chartState.legendGroup
       .append("rect")
@@ -660,6 +613,13 @@ const ensureChartElements = () => {
     chartState.detailXAxisGroup = chartState.detailLayer.append("g");
     chartState.detailYAxisGroup = chartState.detailLayer.append("g");
     chartState.detailSeriesGroup = chartState.detailLayer.append("g");
+    chartState.detailAreaPath = chartState.detailSeriesGroup
+      .append("path")
+      .attr("class", "detail-area")
+      .attr("fill", "#94b3fd")
+      .attr("fill-opacity", 0.16)
+      .attr("stroke", "none")
+      .attr("display", "none");
     chartState.detailMessageText = appendText(
       chartState.detailLayer,
       "detailMessage",
@@ -671,7 +631,7 @@ const ensureChartElements = () => {
     );
     chartState.detailYAxisLabel = appendAxisLabel(
       chartState.detailLayer,
-      "Cumulative P&L ($)",
+      "Cumulative ($)",
     );
   }
 
@@ -679,7 +639,7 @@ const ensureChartElements = () => {
 };
 
 function exportPng({
-  filename = "option-chart.png",
+  filename = "replication-chart.png",
   scale = 4,
   padding = 24,
 } = {}) {
@@ -716,6 +676,8 @@ function render() {
   const animateLayout = isDetailActive !== detailActive;
   detailActive = isDetailActive;
   if (animateLayout && isDetailActive) {
+    hoveredDatum = null;
+    hideTooltip();
     scheduleLineReveal();
   } else if (!isDetailActive) {
     if (lineRevealTimer) clearTimeout(lineRevealTimer);
@@ -786,23 +748,23 @@ function render() {
   let rangeStart = null;
   let rangeEnd = null;
   if (selectedDatums.length === 2) {
-    const first = selectedDatums[0]?.date;
-    const second = selectedDatums[1]?.date;
-    if (first instanceof Date && second instanceof Date) {
-      rangeStart = first <= second ? first : second;
-      rangeEnd = first <= second ? second : first;
-    }
+    const first = selectedDatums[0];
+    const second = selectedDatums[1];
+    rangeStart = first.date <= second.date ? first.date : second.date;
+    rangeEnd = first.date <= second.date ? second.date : first.date;
   }
   if (!rangeStart && hasSelectionRange) {
-    rangeStart = new Date(selectedRange.from * 1000);
-    rangeEnd = new Date(selectedRange.to * 1000);
+    const startTs = Math.min(selectedRange.from, selectedRange.to);
+    const endTs = Math.max(selectedRange.from, selectedRange.to);
+    rangeStart = new Date(startTs * 1000);
+    rangeEnd = new Date(endTs * 1000);
   }
   if (rangeStart instanceof Date && rangeEnd instanceof Date) {
     const msPerDay = 24 * 60 * 60 * 1000;
     const days = (rangeEnd - rangeStart) / msPerDay;
-    detailRangeLabel = `${formatDate(rangeStart)} - ${formatDate(
-      rangeEnd,
-    )} (${days.toFixed(1)} days)`;
+    detailRangeLabel = `${formatDate(rangeStart)} - ${formatDate(rangeEnd)} (${days.toFixed(
+      1,
+    )} days)`;
   }
   chartState.detailGroup
     .call(withLayoutTransition)
@@ -815,7 +777,7 @@ function render() {
   chartState.detailTitleText
     .attr("x", detailWidth / 2)
     .attr("y", 30)
-    .text("Greeks P&L");
+    .text(props.showPnlMode ? "Short Option + Delta Hedge P&L" : "Replication vs Option");
   chartState.detailSubtitleText
     .attr("x", detailWidth / 2)
     .attr("y", 54)
@@ -832,8 +794,8 @@ function render() {
   const legendLineLength = 18;
   const legendLabelOffset = 6;
   const legendRowGap = 20;
-  const legendColGap = 130;
-  const legendCols = 3;
+  const legendColGap = 150;
+  const legendCols = 2;
   const detailLegendX = margin.left;
   const detailLegendY = 92;
   chartState.detailLegendGroup.attr(
@@ -843,16 +805,16 @@ function render() {
 
   const validDates = [];
   const validIndex = [];
-  const ivValues = [];
+  const gammaValues = [];
   for (const d of data) {
     if (d.date instanceof Date) validDates.push(d.date);
     if (Number.isFinite(d.index_price_close))
       validIndex.push(d.index_price_close);
-    if (Number.isFinite(d.iv_close)) ivValues.push(d.iv_close);
+    if (Number.isFinite(d.gamma)) gammaValues.push(Math.abs(d.gamma));
   }
   const xDomain = d3.extent(validDates);
   const yDomain = d3.extent(validIndex);
-  const [extentMin, extentMax] = d3.extent(ivValues);
+  const [extentMin, extentMax] = d3.extent(gammaValues);
 
   const x = d3.scaleUtc().domain(xDomain).range([0, innerWidth]);
   const y = d3
@@ -869,7 +831,7 @@ function render() {
   const domainSpan = domainMax - domainMin;
   const hasSpread = hasValidExtent && domainSpan !== 0;
   const fallbackColor = "#7c7f8f";
-  const colorForVol = (value) => {
+  const colorForGamma = (value) => {
     if (!Number.isFinite(value) || !hasValidExtent) {
       return fallbackColor;
     }
@@ -881,8 +843,8 @@ function render() {
     const ramp = 0.12 + 0.88 * clamped;
     return d3.interpolateRdBu(1 - ramp);
   };
-  const formatVolPct = (value) =>
-    Number.isFinite(value) ? formatVol(value) : "n/a";
+  const formatGammaValue = (value) =>
+    Number.isFinite(value) ? formatGamma(value) : "n/a";
 
   const axisTitlePadding = 10;
 
@@ -933,19 +895,15 @@ function render() {
         end = firstDate <= secondDate ? secondDate : firstDate;
       }
     }
-    if (
-      !start &&
-      range &&
-      Number.isFinite(range.from) &&
-      Number.isFinite(range.to)
-    ) {
-      start = new Date(range.from * 1000);
-      end = new Date(range.to * 1000);
+    if (!start && range && Number.isFinite(range.from) && Number.isFinite(range.to)) {
+      start = new Date(Math.min(range.from, range.to) * 1000);
+      end = new Date(Math.max(range.from, range.to) * 1000);
     }
     if (!(start instanceof Date) || !(end instanceof Date)) {
       chartState.detailSeriesGroup
-        .selectAll("path.detail-line, path.detail-area")
+        .selectAll("path.detail-line")
         .attr("display", "none");
+      chartState.detailAreaPath?.attr("display", "none");
       chartState.detailXAxisGroup.attr("display", "none");
       chartState.detailYAxisGroup.attr("display", "none");
       chartState.detailXAxisLabel.attr("display", "none");
@@ -957,25 +915,19 @@ function render() {
       return;
     }
 
-    const window = data
-      .filter(
-        (point) =>
-          point.date instanceof Date &&
-          point.date >= start &&
-          point.date <= end,
-      )
-      .sort((a, b) => a.date - b.date);
-
-    const pnlWindow = props.optionPnlData.filter(
+    const replicationWindow = props.replicationData.filter(
       (point) =>
-        point.date instanceof Date && point.date >= start && point.date <= end,
+        point.date instanceof Date &&
+        point.date >= start &&
+        point.date <= end,
     );
 
-    if (!pnlWindow.length) {
+    if (!replicationWindow.length) {
       chartState.detailLegendGroup.attr("display", "none");
       chartState.detailSeriesGroup
-        .selectAll("path.detail-line, path.detail-area")
+        .selectAll("path.detail-line")
         .attr("display", "none");
+      chartState.detailAreaPath?.attr("display", "none");
       chartState.detailXAxisGroup.attr("display", "none");
       chartState.detailYAxisGroup.attr("display", "none");
       chartState.detailXAxisLabel.attr("display", "none");
@@ -988,69 +940,42 @@ function render() {
         .attr("display", null)
         .text(
           props.optionInstrumentName
-            ? "No option P&L data for this range."
-            : "Select an option instrument to see Greeks P&L.",
+            ? props.showPnlMode
+              ? "No strategy P&L data for this range."
+              : "No replication data for this range."
+            : props.showPnlMode
+              ? "Select an option instrument to view strategy P&L."
+              : "Select an option instrument to view replication cost.",
         );
       return;
     }
 
-    const cumulative = {
-      total: 0,
-      delta: 0,
-      gammaTheta: 0,
-      vega: 0,
-      residual: 0,
-    };
-    const seriesByKey = {
-      total: [],
-      delta: [],
-      gammaTheta: [],
-      vega: [],
-      residual: [],
-    };
+    const detailSeriesConfig = props.showPnlMode
+      ? DETAIL_SERIES_CONFIG_PNL
+      : DETAIL_SERIES_CONFIG_MARK;
+    const firstPoint = replicationWindow[0] || {};
+    const baseByKey = {};
+    for (const series of detailSeriesConfig) {
+      const baseValue = Number(firstPoint?.[series.key]);
+      baseByKey[series.key] = Number.isFinite(baseValue) ? baseValue : 0;
+    }
+    const seriesByKey = Object.fromEntries(
+      detailSeriesConfig.map((series) => [series.key, []]),
+    );
 
-    pnlWindow.forEach((point, index) => {
+    replicationWindow.forEach((point) => {
       const date = point.date;
-
-      // The first point marks the start of our range (t=0).
-      // We set it to zero and skip its P&L values, because point.PL
-      // represents the interval *ending* at this timestamp (before our window).
-      if (index === 0) {
-        seriesByKey.total.push({ date, value: 0 });
-        seriesByKey.delta.push({ date, value: 0 });
-        seriesByKey.gammaTheta.push({ date, value: 0 });
-        seriesByKey.vega.push({ date, value: 0 });
-        seriesByKey.residual.push({ date, value: 0 });
-        return;
+      if (!(date instanceof Date)) return;
+      for (const series of detailSeriesConfig) {
+        const rawValue = Number(point?.[series.key]);
+        if (!Number.isFinite(rawValue)) continue;
+        const baseValue = Number(baseByKey[series.key]);
+        const normalizedValue = rawValue - (Number.isFinite(baseValue) ? baseValue : 0);
+        seriesByKey[series.key].push({ date, value: normalizedValue });
       }
-
-      // Accumulate P&L for all points after the first
-      const deltaPL = Number.isFinite(point.delta_PL) ? point.delta_PL : 0;
-      const gammaThetaPL = Number.isFinite(point.gamma_theta_PL)
-        ? point.gamma_theta_PL
-        : 0;
-      const vegaPL = Number.isFinite(point.vega_PL) ? point.vega_PL : 0;
-      const residualPL = Number.isFinite(point.residual_PL)
-        ? point.residual_PL
-        : 0;
-      const totalPL = Number.isFinite(point.PL)
-        ? point.PL
-        : deltaPL + gammaThetaPL + vegaPL + residualPL;
-
-      cumulative.delta += deltaPL;
-      cumulative.gammaTheta += gammaThetaPL;
-      cumulative.vega += vegaPL;
-      cumulative.residual += residualPL;
-      cumulative.total += totalPL;
-
-      seriesByKey.total.push({ date, value: cumulative.total });
-      seriesByKey.delta.push({ date, value: cumulative.delta });
-      seriesByKey.gammaTheta.push({ date, value: cumulative.gammaTheta });
-      seriesByKey.vega.push({ date, value: cumulative.vega });
-      seriesByKey.residual.push({ date, value: cumulative.residual });
     });
 
-    const seriesList = DETAIL_SERIES_CONFIG.map((series) => ({
+    const seriesList = detailSeriesConfig.map((series) => ({
       ...series,
       values: seriesByKey[series.key] || [],
     }));
@@ -1117,33 +1042,9 @@ function render() {
       .x((d) => detailX(d.date))
       .y((d) => detailY(d.value))
       .curve(d3.curveMonotoneX);
-    const area = d3
-      .area()
-      .x((d) => detailX(d.date))
-      .y0(detailY(0))
-      .y1((d) => detailY(d.value))
-      .curve(d3.curveMonotoneX);
 
     const isHiddenSeries = (key) => hiddenDetailSeriesKeys.has(key);
-
-    const seriesAreas = chartState.detailSeriesGroup
-      .selectAll("path.detail-area")
-      .data(seriesList, (d) => d.key)
-      .join((enter) =>
-        enter
-          .append("path")
-          .attr("class", "detail-area")
-          .attr("stroke", "none")
-          .attr("pointer-events", "none"),
-      );
-
-    seriesAreas
-      .attr("fill", (d) => d.color)
-      .attr("fill-opacity", (d) => d.areaOpacity ?? 0.12)
-      .attr("d", (d) => area(d.values))
-      .attr("display", (d) =>
-        d.values.length && !isHiddenSeries(d.key) ? null : "none",
-      );
+    chartState.detailAreaPath?.attr("display", "none");
 
     const seriesPaths = chartState.detailSeriesGroup
       .selectAll("path.detail-line")
@@ -1160,10 +1061,8 @@ function render() {
       .attr("stroke", (d) => d.color)
       .attr("stroke-width", (d) => d.strokeWidth || 1.6)
       .attr("d", (d) => line(d.values))
-      .attr("display", (d) =>
-        d.values.length && !isHiddenSeries(d.key) ? null : "none",
-      )
-      .attr("stroke-opacity", (d) => (d.key === "total" ? 0.92 : 0.78));
+      .attr("display", (d) => (d.values.length ? null : "none"))
+      .attr("stroke-opacity", (d) => (isHiddenSeries(d.key) ? 0.16 : 1));
 
     const legendItems = chartState.detailLegendGroup
       .selectAll("g.detail-legend-item")
@@ -1209,25 +1108,43 @@ function render() {
     chartState.detailLegendGroup.attr("display", null);
     chartState.detailMessageText.attr("display", "none");
 
-    const totalLabel = Number.isFinite(cumulative.total)
-      ? formatPnl(cumulative.total)
-      : "n/a";
-    chartState.detailMetricText
-      .text(`Total P&L: ${totalLabel}`)
-      .attr("display", null);
-
-    const initialOptionMark = window[0]?.option_mark_price;
-    if (
-      Number.isFinite(cumulative.total) &&
-      Number.isFinite(initialOptionMark) &&
-      initialOptionMark !== 0
-    ) {
-      const roi = cumulative.total / initialOptionMark;
+    if (props.showPnlMode) {
+      const lastTotal = seriesByKey.total_pnl?.[seriesByKey.total_pnl.length - 1];
+      const lastHedge = seriesByKey.hedge_pnl?.[seriesByKey.hedge_pnl.length - 1];
+      const lastShort =
+        seriesByKey.short_option_pnl?.[seriesByKey.short_option_pnl.length - 1];
+      const totalLabel = Number.isFinite(lastTotal?.value)
+        ? formatPnl(lastTotal.value)
+        : "n/a";
+      const hedgeLabel = Number.isFinite(lastHedge?.value)
+        ? formatPnl(lastHedge.value)
+        : "n/a";
+      const shortLabel = Number.isFinite(lastShort?.value)
+        ? formatPnl(lastShort.value)
+        : "n/a";
+      chartState.detailMetricText
+        .text(`Total P&L: ${totalLabel}`)
+        .attr("display", null);
       chartState.detailRoiText
-        .text(`ROI: ${formatVol(roi)}`)
+        .text(`Hedge: ${hedgeLabel} | Short: ${shortLabel}`)
         .attr("display", null);
     } else {
-      chartState.detailRoiText.attr("display", "none");
+      const lastReplication =
+        seriesByKey.replication_cost[seriesByKey.replication_cost.length - 1];
+      const lastOption =
+        seriesByKey.option_mark_change[seriesByKey.option_mark_change.length - 1];
+      const replicationLabel = Number.isFinite(lastReplication?.value)
+        ? formatPnl(lastReplication.value)
+        : "n/a";
+      const optionLabel = Number.isFinite(lastOption?.value)
+        ? formatPnl(lastOption.value)
+        : "n/a";
+      chartState.detailMetricText
+        .text(`Replication: ${replicationLabel}`)
+        .attr("display", null);
+      chartState.detailRoiText
+        .text(`Option: ${optionLabel}`)
+        .attr("display", null);
     }
   };
 
@@ -1265,6 +1182,8 @@ function render() {
       }
     }
     updateSelectedRange();
+    hoveredDatum = null;
+    hideTooltip();
     render();
   };
 
@@ -1276,7 +1195,7 @@ function render() {
     if (
       px < -TAP_SELECT_HITBOX_PX ||
       px > innerWidth + TAP_SELECT_HITBOX_PX ||
-      py < -TAP_SELECT_HITBOX_PX ||
+      py < MAIN_TOP_INSET - TAP_SELECT_HITBOX_PX ||
       py > innerHeight + TAP_SELECT_HITBOX_PX
     ) {
       return null;
@@ -1288,10 +1207,7 @@ function render() {
       if (!Number.isFinite(datum?.index_price_close)) continue;
       const dx = x(datum.date) - px;
       const dy = y(datum.index_price_close) - py;
-      if (
-        Math.abs(dx) > TAP_SELECT_HITBOX_PX ||
-        Math.abs(dy) > TAP_SELECT_HITBOX_PX
-      ) {
+      if (Math.abs(dx) > TAP_SELECT_HITBOX_PX || Math.abs(dy) > TAP_SELECT_HITBOX_PX) {
         continue;
       }
       const distSq = dx * dx + dy * dy;
@@ -1322,7 +1238,10 @@ function render() {
         .attr("opacity", 0.8);
       return circles;
     })
-    .attr("fill", (d) => colorForVol(d.iv_close))
+    .attr("fill", (d) => {
+      const gammaValue = Number.isFinite(d.gamma) ? Math.abs(d.gamma) : NaN;
+      return colorForGamma(gammaValue);
+    })
     .on("mouseenter", (event, datum) => {
       hoveredDatum = datum;
       updateSelectionLine();
@@ -1385,7 +1304,7 @@ function render() {
     .data(gradientStops)
     .join((enter) => enter.append("stop"))
     .attr("offset", (d) => d.offset)
-    .attr("stop-color", (d) => colorForVol(d.value));
+    .attr("stop-color", (d) => colorForGamma(d.value));
 
   const legendWidth = 220;
   const legendHeight = 10;
@@ -1410,15 +1329,20 @@ function render() {
   chartState.legendMinText
     .attr("x", 0)
     .attr("y", legendLabelY)
-    .text(formatVolPct(extentMin));
+    .text(formatGammaValue(extentMin));
   chartState.legendMaxText
     .attr("x", legendWidth)
     .attr("y", legendLabelY)
-    .text(formatVolPct(domainMax));
+    .text(formatGammaValue(domainMax));
 }
 
 watch(
-  () => [props.data, props.optionPnlData, props.optionInstrumentName],
+  () => [
+    props.data,
+    props.replicationData,
+    props.optionInstrumentName,
+    props.showPnlMode,
+  ],
   () => render(),
   { deep: false },
 );

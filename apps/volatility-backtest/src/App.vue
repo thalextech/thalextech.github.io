@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, reactive, watch } from "vue";
 import BacktestChart from "./components/BacktestChart.vue";
 import {
   DEFAULT_DELTA_TOLERANCE,
@@ -7,12 +7,9 @@ import {
   DEFAULT_RESOLUTION,
   filterActiveOptions,
   FREQUENCY_OPTIONS,
-  getLongestDatedStraddle,
-  getStrike,
   loadInstruments,
-  parseExpirationTs,
   RESOLUTION_OPTIONS,
-  runBacktestStraddle,
+  runBacktestOptionsBasket,
   validateDateRange,
 } from "./lib/backtest.js";
 import { fetchIndexHistory } from "../../../lib/thalex.js";
@@ -21,9 +18,18 @@ const MAX_RANGE_DAYS = 365;
 const PREVIEW_POINTS = 120; // chart shows this many points; visible time range adapts with resolution
 const VOL_WINDOW = 20; // rolling window for realised vol
 const PREVIEW_FETCH_EXTRA = 30; // extra points fetched so realised vol has history
+let previewRequestId = 0;
+let instrumentsLoaded = false;
+let instrumentsPromise = null;
 
 function resolutionSeconds(resolution) {
-  const map = { "1m": 60, "5m": 5 * 60, "15m": 15 * 60, "1h": 60 * 60, "1d": 24 * 60 * 60 };
+  const map = {
+    "1m": 60,
+    "5m": 5 * 60,
+    "15m": 15 * 60,
+    "1h": 60 * 60,
+    "1d": 24 * 60 * 60,
+  };
   return map[resolution] ?? 24 * 60 * 60;
 }
 
@@ -35,7 +41,9 @@ const ui = reactive({
   direction: "long",
   deltaTolerance: DEFAULT_DELTA_TOLERANCE,
   frequencyMinutes: DEFAULT_FREQUENCY_MINUTES,
-  selectedExpiryTs: null,
+  primaryInstrumentName: "",
+  includeSecondInstrument: false,
+  secondaryInstrumentName: "",
   loading: false,
   loadingOptions: false,
   loadingPreview: false,
@@ -66,89 +74,32 @@ const dateRangeValid = computed(() => {
   return v.ok;
 });
 
-// Index price at (or closest to) the start of the selected range (for ATM strike selection).
-const atmReferencePrice = computed(() => {
-  const from = startTs.value;
-  const raw = data.previewIndex || [];
-  if (from == null || !raw.length) return null;
-  const withPrice = raw.filter(
-    (r) => Number.isFinite(r.ts) && Number.isFinite(r.index_price_close)
-  );
-  if (!withPrice.length) return null;
-  let best = withPrice[0];
-  let bestDist = Math.abs(best.ts - from);
-  for (const r of withPrice) {
-    const dist = Math.abs(r.ts - from);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = r;
-    }
-  }
-  return best.index_price_close;
-});
-
-// All candidate straddles across expiries in the selected range.
-// For each expiry we pick the strike closest to ATM (index at start date); fallback to lowest strike if no price.
-const availableStraddles = computed(() => {
-  if (!Array.isArray(data.activeOptions) || !data.activeOptions.length) return [];
-  const byExpiry = new Map();
+const instrumentByName = computed(() => {
+  const map = new Map();
   for (const inst of data.activeOptions) {
-    const expTs = parseExpirationTs(inst);
-    if (expTs == null) continue;
-    if (!byExpiry.has(expTs)) byExpiry.set(expTs, []);
-    byExpiry.get(expTs).push(inst);
+    const name = inst?.instrument_name || "";
+    if (name) map.set(name, inst);
   }
-
-  const atm = atmReferencePrice.value;
-  const result = [];
-  for (const [expTs, group] of byExpiry.entries()) {
-    const byStrike = new Map();
-    for (const inst of group) {
-      const k = getStrike(inst);
-      if (k == null) continue;
-      if (!byStrike.has(k)) byStrike.set(k, { expiryTs: expTs, strike: k, call: null, put: null });
-      const bucket = byStrike.get(k);
-      const type = (inst.option_type || "").toLowerCase();
-      const name = (inst.instrument_name || "").toUpperCase();
-      const isCall =
-        type === "call" ? true : type === "put" ? false : name.includes("-C-");
-      if (isCall) bucket.call = inst;
-      else bucket.put = inst;
-    }
-    const candidates = [...byStrike.entries()]
-      .filter(([, b]) => b.call && b.put)
-      .map(([, b]) => b);
-    if (!candidates.length) continue;
-    let chosen = candidates[0];
-    if (atm != null && Number.isFinite(atm)) {
-      let bestDist = Infinity;
-      for (const b of candidates) {
-        const dist = Math.abs(b.strike - atm);
-        if (dist < bestDist) {
-          bestDist = dist;
-          chosen = b;
-        }
-      }
-    } else {
-      chosen = candidates.sort((a, b) => a.strike - b.strike)[0];
-    }
-    result.push(chosen);
-  }
-  return result.sort((a, b) => a.expiryTs - b.expiryTs);
+  return map;
 });
 
-// Selected straddle: by default the longest-dated one, but user can choose another expiry.
-const selectedStraddle = computed(() => {
-  const list = availableStraddles.value;
-  if (!list.length) return null;
-  const current = list.find((s) => s.expiryTs === ui.selectedExpiryTs);
-  if (current) return current;
-  // Default: longest-dated (max expiry), same as original behaviour.
-  return list[list.length - 1];
+const selectedInstruments = computed(() => {
+  const first = instrumentByName.value.get(ui.primaryInstrumentName);
+  if (!first) return [];
+  const list = [first];
+  if (
+    ui.includeSecondInstrument &&
+    ui.secondaryInstrumentName &&
+    ui.secondaryInstrumentName !== ui.primaryInstrumentName
+  ) {
+    const second = instrumentByName.value.get(ui.secondaryInstrumentName);
+    if (second) list.push(second);
+  }
+  return list;
 });
 
 const canRunBacktest = computed(() => {
-  return dateRangeValid.value && selectedStraddle.value && !ui.loading;
+  return dateRangeValid.value && selectedInstruments.value.length > 0 && !ui.loading;
 });
 
 const startIv = computed(() => {
@@ -172,8 +123,8 @@ function setDefaultDates() {
 }
 
 async function loadPreviewIndex() {
+  const requestId = ++previewRequestId;
   ui.loadingPreview = true;
-  data.previewIndex = [];
   try {
     const now = Math.floor(Date.now() / 1000);
     const resSec = resolutionSeconds(ui.resolution || DEFAULT_RESOLUTION);
@@ -185,24 +136,64 @@ async function loadPreviewIndex() {
       from,
       to: now,
     });
+    if (requestId !== previewRequestId) return;
     data.previewIndex = (rows || []).map((r) => ({
       ts: r.ts,
       date: new Date(r.ts * 1000),
       index_price_close: r.index_price_close,
     }));
   } catch (e) {
+    if (requestId !== previewRequestId) return;
     ui.error = e?.message || String(e);
   } finally {
+    if (requestId !== previewRequestId) return;
     ui.loadingPreview = false;
   }
 }
 
-function onRangeSelected(range) {
+function getDefaultInstrumentName(excludeName = "") {
+  const candidate = data.activeOptions.find(
+    (inst) => inst?.instrument_name && inst.instrument_name !== excludeName,
+  );
+  return candidate?.instrument_name || "";
+}
+
+function syncInstrumentSelection() {
+  if (!data.activeOptions.length) {
+    ui.primaryInstrumentName = "";
+    ui.includeSecondInstrument = false;
+    ui.secondaryInstrumentName = "";
+    return;
+  }
+
+  if (!instrumentByName.value.has(ui.primaryInstrumentName)) {
+    ui.primaryInstrumentName = getDefaultInstrumentName();
+  }
+
+  if (!ui.includeSecondInstrument) {
+    ui.secondaryInstrumentName = "";
+    return;
+  }
+
+  if (
+    !instrumentByName.value.has(ui.secondaryInstrumentName) ||
+    ui.secondaryInstrumentName === ui.primaryInstrumentName
+  ) {
+    ui.secondaryInstrumentName = getDefaultInstrumentName(ui.primaryInstrumentName);
+  }
+
+  if (!ui.secondaryInstrumentName) {
+    ui.includeSecondInstrument = false;
+  }
+}
+
+async function onRangeSelected(range) {
   if (!range || typeof range.from !== "number" || typeof range.to !== "number") {
     ui.startDate = "";
     ui.endDate = "";
     data.backtest = null;
-    ui.selectedExpiryTs = null;
+    data.activeOptions = [];
+    syncInstrumentSelection();
     return;
   }
   const from = Math.min(range.from, range.to);
@@ -211,62 +202,98 @@ function onRangeSelected(range) {
   ui.startDate = new Date(from * 1000).toISOString().slice(0, 19);
   ui.endDate = new Date(to * 1000).toISOString().slice(0, 19);
   data.backtest = null;
-  loadOptions().then(() => {
-    if (dateRangeValid.value && selectedStraddle.value) run();
-  });
+  filterOptions();
+  if (dateRangeValid.value && selectedInstruments.value.length > 0) {
+    await run();
+  }
 }
 
-async function loadOptions() {
-  if (!startTs.value || !endTs.value) return;
+function filterOptions() {
+  if (!instrumentsLoaded || !startTs.value || !endTs.value) {
+    data.activeOptions = [];
+    syncInstrumentSelection();
+    return;
+  }
   const v = validateDateRange(startTs.value, endTs.value);
   if (!v.ok) {
     data.activeOptions = [];
-    ui.selectedExpiryTs = null;
+    syncInstrumentSelection();
     return;
   }
-  ui.loadingOptions = true;
   ui.error = "";
-  data.activeOptions = [];
-  try {
-    const instruments = await loadInstruments();
-    const active = filterActiveOptions(
-      instruments,
-      ui.indexName,
-      startTs.value,
-      endTs.value
-    );
-    data.activeOptions = active.sort((a, b) => {
-      const nameA = a.instrument_name || "";
-      const nameB = b.instrument_name || "";
-      return nameA.localeCompare(nameB);
-    });
-    if (data.activeOptions.length === 0) {
-      ui.error = "No options were active (tradable) for the full date range. Try a shorter range or different index.";
-    }
-    // Reset selected expiry to default (longest-dated) if current selection is no longer valid.
-    const list = availableStraddles.value;
-    if (!list.length) {
-      ui.selectedExpiryTs = null;
-    } else if (!list.some((s) => s.expiryTs === ui.selectedExpiryTs)) {
-      ui.selectedExpiryTs = list[list.length - 1].expiryTs;
-    }
-  } catch (e) {
-    ui.error = e?.message || String(e);
-  } finally {
-    ui.loadingOptions = false;
+  const active = filterActiveOptions(
+    data.allInstruments,
+    ui.indexName,
+    startTs.value,
+    endTs.value,
+  );
+  data.activeOptions = active.sort((a, b) => {
+    const nameA = a.instrument_name || "";
+    const nameB = b.instrument_name || "";
+    return nameA.localeCompare(nameB);
+  });
+  syncInstrumentSelection();
+  if (data.activeOptions.length === 0) {
+    ui.error =
+      "No options were active (tradable) for the full date range. Try a shorter range or different index.";
   }
 }
 
+async function ensureInstrumentsLoaded() {
+  if (instrumentsLoaded) return data.allInstruments;
+  if (!instrumentsPromise) {
+    ui.loadingOptions = true;
+    ui.error = "";
+    instrumentsPromise = loadInstruments()
+      .then((instruments) => {
+        data.allInstruments = Array.isArray(instruments) ? instruments : [];
+        instrumentsLoaded = true;
+        filterOptions();
+        return data.allInstruments;
+      })
+      .catch((e) => {
+        ui.error = e?.message || String(e);
+        data.allInstruments = [];
+        return data.allInstruments;
+      })
+      .finally(() => {
+        ui.loadingOptions = false;
+        instrumentsPromise = null;
+      });
+  }
+  return instrumentsPromise;
+}
+
+function addSecondInstrument() {
+  ui.includeSecondInstrument = true;
+  if (
+    !ui.secondaryInstrumentName ||
+    ui.secondaryInstrumentName === ui.primaryInstrumentName
+  ) {
+    ui.secondaryInstrumentName = getDefaultInstrumentName(ui.primaryInstrumentName);
+  }
+  if (!ui.secondaryInstrumentName) {
+    ui.includeSecondInstrument = false;
+    return;
+  }
+  data.backtest = null;
+}
+
+function removeSecondInstrument() {
+  ui.includeSecondInstrument = false;
+  ui.secondaryInstrumentName = "";
+  data.backtest = null;
+}
+
 async function run() {
-  const straddle = selectedStraddle.value;
-  if (!canRunBacktest.value || !straddle) return;
+  const instruments = selectedInstruments.value;
+  if (!canRunBacktest.value || !instruments.length) return;
   ui.loading = true;
   ui.error = "";
   data.backtest = null;
   try {
-    const result = await runBacktestStraddle({
-      callInstrument: straddle.call,
-      putInstrument: straddle.put,
+    const result = await runBacktestOptionsBasket({
+      instruments,
       startTs: startTs.value,
       endTs: endTs.value,
       direction: ui.direction,
@@ -304,36 +331,47 @@ function formatPercent(value) {
   return `${value.toFixed(2)}%`;
 }
 
-function formatDate(date) {
-  if (!date) return "—";
-  const d = date instanceof Date ? date : new Date(date);
-  return d.toLocaleDateString("en-US", {
-    month: "short",
-    day: "2-digit",
-    year: "numeric",
-  });
-}
-
-onMounted(() => {
+onMounted(async () => {
   setDefaultDates();
-  loadPreviewIndex();
+  await Promise.all([ensureInstrumentsLoaded(), loadPreviewIndex()]);
 });
 
 watch(
   () => [ui.indexName, ui.resolution],
   () => {
-    loadPreviewIndex();
+    void loadPreviewIndex();
   },
-  { immediate: false }
+  { immediate: false },
 );
 
 watch(
-  () => [ui.indexName, startTs.value, endTs.value],
+  [() => ui.indexName, startTs, endTs],
   () => {
     data.backtest = null;
-    if (startTs.value && endTs.value) loadOptions();
+    filterOptions();
   },
-  { immediate: false }
+  { immediate: false },
+);
+
+watch(
+  () => ui.resolution,
+  () => {
+    data.backtest = null;
+  },
+  { immediate: false },
+);
+
+watch(
+  [
+    () => ui.primaryInstrumentName,
+    () => ui.includeSecondInstrument,
+    () => ui.secondaryInstrumentName,
+  ],
+  () => {
+    syncInstrumentSelection();
+    data.backtest = null;
+  },
+  { immediate: false },
 );
 </script>
 
@@ -343,7 +381,10 @@ watch(
       <div class="titleRow">
         <h1>Volatility Arbitrage Backtest</h1>
       </div>
-      <p class="subtitle">Select a past date range (max 1 year). The backtest uses the longest-dated straddle available (same strike, same expiry). Set direction and simulate PnL.</p>
+      <p class="subtitle">
+        Select a past date range (max 1 year), then pick one or two option
+        instruments active for that full range. Set direction and simulate PnL.
+      </p>
 
       <div class="controls">
         <div class="field">
@@ -369,7 +410,10 @@ watch(
       </div>
 
       <div class="hint">
-        Click two points on the index chart to select the backtest date range (max {{ MAX_RANGE_DAYS }} days). Chart shows {{ PREVIEW_POINTS }} points; visible range adapts with resolution. Backtest runs automatically.
+        Click two points on the index chart to select the backtest date range
+        (max {{ MAX_RANGE_DAYS }} days). Chart shows
+        {{ PREVIEW_POINTS }} points; visible range adapts with resolution.
+        Backtest runs automatically.
       </div>
     </header>
 
@@ -402,42 +446,58 @@ watch(
         </button>
       </div>
 
-      <div v-if="availableStraddles.length" class="straddle-detail">
+      <div v-if="data.activeOptions.length" class="straddle-detail">
         <div class="straddle-detail-header">
-          <h3 class="straddle-detail-title">Straddle used for backtest</h3>
-          <div class="straddle-detail-expiry">
-            <label for="expirySelect">Expiry</label>
-            <select
-              id="expirySelect"
-              v-model.number="ui.selectedExpiryTs"
-            >
+          <h3 class="straddle-detail-title">Option instruments</h3>
+        </div>
+
+        <div class="field">
+          <label for="primaryInstrument">Instrument 1</label>
+          <div class="controls options-row" style="align-items: end">
+            <select id="primaryInstrument" v-model="ui.primaryInstrumentName">
               <option
-                v-for="s in availableStraddles"
-                :key="s.expiryTs"
-                :value="s.expiryTs"
+                v-for="inst in data.activeOptions"
+                :key="inst.instrument_name"
+                :value="inst.instrument_name"
               >
-                {{ formatDate(new Date(s.expiryTs * 1000)) }}
+                {{ inst.instrument_name }}
               </option>
             </select>
+            <button
+              v-if="!ui.includeSecondInstrument"
+              class="saveButton"
+              type="button"
+              @click="addSecondInstrument"
+            >
+              +
+            </button>
+            <button
+              v-else
+              class="saveButton"
+              type="button"
+              @click="removeSecondInstrument"
+            >
+              −
+            </button>
           </div>
         </div>
-        <p class="straddle-detail-note">
-          Strike is at-the-money (closest to index price at start of selected range). You can switch expiry if other straddles are active.
-        </p>
-        <dl v-if="selectedStraddle" class="straddle-detail-grid">
-          <template v-if="atmReferencePrice != null">
-            <dt>Reference (index at start)</dt>
-            <dd>{{ formatCurrency(atmReferencePrice) }}</dd>
-          </template>
-          <dt>Strike</dt>
-          <dd>{{ formatCurrency(selectedStraddle.strike) }}</dd>
-          <dt>Expiry</dt>
-          <dd>{{ formatDate(new Date(selectedStraddle.expiryTs * 1000)) }}</dd>
-          <dt>Call</dt>
-          <dd class="mono">{{ selectedStraddle.call.instrument_name || "—" }}</dd>
-          <dt>Put</dt>
-          <dd class="mono">{{ selectedStraddle.put.instrument_name || "—" }}</dd>
-        </dl>
+
+        <div v-if="ui.includeSecondInstrument" class="field">
+          <label for="secondaryInstrument">Instrument 2 (optional)</label>
+          <select
+            id="secondaryInstrument"
+            v-model="ui.secondaryInstrumentName"
+          >
+            <option
+              v-for="inst in data.activeOptions"
+              :key="`second-${inst.instrument_name}`"
+              :value="inst.instrument_name"
+              :disabled="inst.instrument_name === ui.primaryInstrumentName"
+            >
+              {{ inst.instrument_name }}
+            </option>
+          </select>
+        </div>
       </div>
 
       <div class="controls hedge-row">
@@ -467,8 +527,10 @@ watch(
           </select>
         </div>
       </div>
-      <div class="hint" style="margin-top: 4px;">
-        Rehedge when time elapsed or delta drifts beyond tolerance. With 1d resolution, frequency only reduces rehedges when set longer than 1 day (e.g. 2 days, 1 week).
+      <div class="hint" style="margin-top: 4px">
+        Rehedge when time elapsed or delta drifts beyond tolerance. With 1d
+        resolution, frequency only reduces rehedges when set longer than 1 day
+        (e.g. 2 days, 1 week).
       </div>
 
       <div v-if="ui.loadingOptions" class="status">Loading options…</div>
@@ -480,13 +542,21 @@ watch(
         <h2>Summary</h2>
         <div class="summary-grid">
           <span class="label">Start value</span>
-          <span class="value">{{ formatCurrency(data.backtest.startValue) }}</span>
+          <span class="value">{{
+            formatCurrency(data.backtest.startValue)
+          }}</span>
           <span class="label">End value</span>
-          <span class="value">{{ formatCurrency(data.backtest.endValue) }}</span>
+          <span class="value">{{
+            formatCurrency(data.backtest.endValue)
+          }}</span>
           <span class="label">PnL</span>
           <span
             class="value"
-            :class="data.backtest.pnl != null && data.backtest.pnl < 0 ? 'negative' : 'positive'"
+            :class="
+              data.backtest.pnl != null && data.backtest.pnl < 0
+                ? 'negative'
+                : 'positive'
+            "
           >
             {{ formatCurrency(data.backtest.pnl) }}
           </span>
@@ -501,14 +571,22 @@ watch(
           <span class="label">Delta hedge PnL</span>
           <span
             class="value"
-            :class="data.backtest.hedgePnl != null && data.backtest.hedgePnl < 0 ? 'negative' : 'positive'"
+            :class="
+              data.backtest.hedgePnl != null && data.backtest.hedgePnl < 0
+                ? 'negative'
+                : 'positive'
+            "
           >
             {{ formatCurrency(data.backtest.hedgePnl) }}
           </span>
           <span class="label">Cumulative total PnL</span>
           <span
             class="value"
-            :class="data.backtest.totalPnl != null && data.backtest.totalPnl < 0 ? 'negative' : 'positive'"
+            :class="
+              data.backtest.totalPnl != null && data.backtest.totalPnl < 0
+                ? 'negative'
+                : 'positive'
+            "
           >
             {{ formatCurrency(data.backtest.totalPnl) }}
           </span>

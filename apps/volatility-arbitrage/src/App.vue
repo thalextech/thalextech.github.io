@@ -5,8 +5,8 @@ import {
   computeVolatilitySeries,
   fetchIndexHistory,
   fetchInstruments,
-  fetchOptionsData,
-} from "./lib/thalex.js";
+} from "../../../lib/thalex.js";
+import { fetchOptionsData } from "./lib/thalex.js";
 
 const RESOLUTION_CONFIG = {
   "1m": { label: "1m", seconds: 60, detail: "1m" },
@@ -16,14 +16,14 @@ const RESOLUTION_CONFIG = {
   "1d": { label: "1d", seconds: 24 * 60 * 60, detail: "1h" },
 };
 const MAIN_POINT_LIMIT = 400;
-const VOLATILITY_WINDOW = 20; // Rolling window for volatility calculation
+const VOLATILITY_WINDOW = 30; // Rolling window for volatility calculation
 
 const ui = reactive({
   resolution: "1d",
   indexName: "BTCUSD",
   loading: false,
   error: "",
-  visualizationMode: "gradient", // "gradient" or "histogram"
+  visualizationMode: "heatmap", // "heatmap" or "line"
 });
 
 const data = reactive({
@@ -33,6 +33,7 @@ const data = reactive({
 });
 
 const chartRef = ref(null);
+let loadRequestId = 0;
 
 const mainSeries = computed(() => {
   const index = data.index[ui.resolution] || [];
@@ -81,9 +82,16 @@ const averageVolatility = computed(() => {
 async function load() {
   if (!ui.indexName) return;
 
+  // Check if already cached in memory
+  const resKey = ui.resolution;
+  const detailKey = RESOLUTION_CONFIG[resKey].detail;
+  if (data.index[resKey]?.length && data.index[detailKey]?.length) {
+    return;
+  }
+
+  const currentRequest = ++loadRequestId;
   ui.loading = true;
   ui.error = "";
-  data.index = {};
 
   const now = Math.floor(Date.now() / 1000);
   const seconds = RESOLUTION_CONFIG[ui.resolution].seconds;
@@ -108,6 +116,8 @@ async function load() {
       }),
     ]);
 
+    if (currentRequest !== loadRequestId) return;
+
     data.index[ui.resolution] = mainIndex || [];
     data.index[RESOLUTION_CONFIG[ui.resolution].detail] = detailIndex || [];
 
@@ -115,10 +125,14 @@ async function load() {
       throw new Error("No volatility data returned for this time range.");
     }
   } catch (e) {
+    if (currentRequest !== loadRequestId) return;
     ui.error = e instanceof Error ? e.message : String(e);
-    data.index = {};
+    data.index[ui.resolution] = [];
+    data.index[RESOLUTION_CONFIG[ui.resolution].detail] = [];
   } finally {
-    ui.loading = false;
+    if (currentRequest === loadRequestId) {
+      ui.loading = false;
+    }
   }
 }
 
@@ -133,23 +147,10 @@ function handleSavePng() {
 
 async function loadOptions() {
   try {
-    console.log("Loading options for:", ui.indexName);
     const options = await fetchOptionsData(ui.indexName);
-    console.log("Options loaded:", options.length);
-    if (options.length > 0) {
-      console.log("First option sample:", options[0]);
-      data.options = options; // Only update if we got results
-    } else {
-      // Only clear if we explicitly got empty results (not on error)
-      data.options = [];
-    }
+    data.options = options || [];
   } catch (e) {
-    console.error("Failed to load options data:", e);
-    console.error("Error details:", e.message, e.stack);
     // Don't clear existing options on error - keep what we have
-    if (data.options.length === 0) {
-      data.options = [];
-    }
   }
 }
 
@@ -184,16 +185,14 @@ function formatDate(date) {
 
 onMounted(async () => {
   data.allInstruments = await fetchInstruments();
-  await load();
-  await loadOptions();
+  await Promise.all([load(), loadOptions()]);
 });
 
 watch(
-  () => [ui.resolution, ui.indexName, ui.visualizationMode],
+  () => [ui.resolution, ui.indexName],
   async () => {
     if (!ui.indexName) return;
-    await load();
-    await loadOptions();
+    await Promise.all([load(), loadOptions()]);
   },
 );
 </script>
@@ -203,6 +202,7 @@ watch(
     <header class="header">
       <div class="titleRow">
         <h1>Realized Volatility - thalex</h1>
+        <span class="lookback-label">{{ VOLATILITY_WINDOW }}-period rolling window</span>
       </div>
 
       <div class="controls">
@@ -230,8 +230,8 @@ watch(
         <div class="field">
           <label for="visualization-mode">View</label>
           <select id="visualization-mode" v-model="ui.visualizationMode">
-            <option value="gradient">Gradient</option>
-            <option value="histogram">Histogram</option>
+            <option value="heatmap">Heatmap</option>
+            <option value="line">Line</option>
           </select>
         </div>
 

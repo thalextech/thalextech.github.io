@@ -66,6 +66,12 @@ a {
   letter-spacing: 0.2px;
 }
 
+.lookback-label {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
 .controls {
   display: flex;
   gap: 12px;

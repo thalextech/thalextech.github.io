@@ -8,7 +8,7 @@ const props = defineProps({
   indexName: { type: String, default: "" },
   detailResolution: { type: String, default: "" },
   loading: { type: Boolean, default: false },
-  visualizationMode: { type: String, default: "gradient" }, // "gradient" or "histogram"
+  visualizationMode: { type: String, default: "heatmap" }, // "heatmap" or "line"
 });
 
 const svgRef = ref(null);
@@ -77,10 +77,10 @@ const chartState = {
 let detailRenderContext = null;
 
 const mainTitle = computed(() => {
-  if (props.visualizationMode === "histogram") {
-    return `${props.indexName || "Index"} Realized Volatility (Histogram)`;
+  if (props.visualizationMode === "line") {
+    return `${props.indexName || "Index"} Price & Realized Volatility`;
   }
-  return `${props.indexName || "Index"} Realized Volatility (Gradient)`;
+  return `${props.indexName || "Index"} Realized Volatility (Heatmap)`;
 });
 
 const subtitle = computed(() => {
@@ -609,8 +609,8 @@ function render() {
     .attr("y", 54)
     .text(subtitle.value);
 
-  // Calculate and display average volatility for histogram mode
-  if (props.visualizationMode === "histogram") {
+  // Calculate and display average volatility for line mode
+  if (props.visualizationMode === "line") {
     const volValues = data
       .map((d) => d?.realized_vol)
       .filter((v) => typeof v === "number" && Number.isFinite(v));
@@ -629,9 +629,7 @@ function render() {
     chartState.avgVolatilityText.attr("display", "none");
   }
 
-  const detailTitle = props.visualizationMode === "histogram" 
-    ? "Realized Volatility vs Price" 
-    : "Realized Volatility vs Price";
+  const detailTitle = "Realized Volatility vs Price";
   const detailSubtitle = props.detailResolution
     ? `${props.detailResolution} resolution`
     : "";
@@ -639,12 +637,12 @@ function render() {
     .attr("x", scatterOffsetX + scatterWidth / 2)
     .attr("y", 30)
     .text(detailTitle)
-    .attr("display", detailActive && props.visualizationMode === "gradient" ? null : "none");
+    .attr("display", detailActive && props.visualizationMode === "heatmap" ? null : "none");
   chartState.detailSubtitleText
     .attr("x", scatterOffsetX + scatterWidth / 2)
     .attr("y", 54)
     .text(detailSubtitle)
-    .attr("display", detailActive && props.visualizationMode === "basis" ? null : "none");
+    .attr("display", detailActive && props.visualizationMode === "heatmap" ? null : "none");
 
   if (!data.length) {
     chartState.noDataText
@@ -652,10 +650,10 @@ function render() {
       .attr("y", height / 2)
       .attr("visibility", props.loading ? "hidden" : "visible")
       .text("No data for this range.");
-    chartState.pointsGroup
-      .selectAll("circle.main-point")
-      .data([])
-      .join("circle");
+    chartState.pointsGroup.selectAll("circle.main-point").remove();
+    chartState.lineGroup.selectAll("path").remove();
+    chartState.barsGroup.selectAll("rect").remove();
+    chartState.yAxisGroupRight.selectAll("*").remove();
     chartState.legendGroup.attr("display", "none");
     chartState.detailContainer.attr("display", "none");
     clearScatterCanvas();
@@ -693,13 +691,16 @@ function render() {
     .attr("x", innerWidth / 2)
     .attr("y", innerHeight + 42 + axisTitlePadding);
 
-  if (props.visualizationMode === "histogram") {
-    // Histogram visualization mode
+  if (props.visualizationMode === "line") {
+    // Line visualization mode - index price + volatility lines
     chartState.legendGroup.attr("display", "none");
     chartState.detailContainer.attr("display", "none");
-    chartState.pointsGroup.selectAll("circle.main-point").data([]).join("circle");
-    
-    // Left Y-axis for mark price
+    clearScatterCanvas();
+    // Clear heatmap elements
+    chartState.pointsGroup.selectAll("circle.main-point").remove();
+    chartState.barsGroup.selectAll("rect.volatility-bar").remove();
+
+    // Left Y-axis for index price
     const yAxis = d3.axisLeft(y).ticks(6).tickSize(0).tickPadding(10);
     chartState.yAxisGroup.call(yAxis).call(axisStyle);
     chartState.mainYAxisLabel
@@ -715,7 +716,7 @@ function render() {
     const hasVolData = volValues.length > 0;
     const [volMin, volMax] = d3.extent(volValues);
     const volDomain = hasVolData && Number.isFinite(volMax)
-      ? [0, Math.max(volMax, 100)]
+      ? [Math.max(0, volMin - 5), volMax + 5]
       : [0, 100];
     const yRight = d3
       .scaleLinear()
@@ -728,7 +729,7 @@ function render() {
       .tickSize(0)
       .tickPadding(10)
       .tickFormat((d) => `${d.toFixed(0)}%`);
-    
+
     chartState.yAxisGroupRight
       .attr("transform", `translate(${innerWidth},0)`)
       .call(yAxisRight)
@@ -740,72 +741,56 @@ function render() {
       .attr("display", null);
 
     // Index price line
-    const line = d3
+    const priceLine = d3
       .line()
       .x((d) => x(d.date))
       .y((d) => y(d.index_price_close))
       .defined((d) => Number.isFinite(d.index_price_close));
 
-    const linePath = chartState.lineGroup
+    chartState.lineGroup
       .selectAll("path.price-line")
-      .data([data], (d) => d.length);
+      .data([data])
+      .join("path")
+      .attr("class", "price-line")
+      .attr("fill", "none")
+      .attr("stroke", "#00d4aa")
+      .attr("stroke-width", 2)
+      .attr("opacity", 0.9)
+      .attr("d", priceLine);
 
-    linePath
-      .join((enter) => {
-        const path = enter
-          .append("path")
-          .attr("class", "price-line")
-          .attr("fill", "none")
-          .attr("stroke", "#00d4aa")
-          .attr("stroke-width", 2)
-          .attr("opacity", 0.9);
-        path.attr("d", line);
-        return path;
-      })
-      .attr("d", line);
+    // Realized volatility line
+    if (hasVolData) {
+      chartState.noDataText.attr("visibility", "hidden");
 
-    // Volatility bars
-    const volDataPoints = data.filter((d) => Number.isFinite(d.realized_vol));
-    
-    if (!hasVolData) {
-      // Show message if no volatility data available
+      const volLine = d3
+        .line()
+        .x((d) => x(d.date))
+        .y((d) => yRight(d.realized_vol))
+        .defined((d) => Number.isFinite(d.realized_vol));
+
+      chartState.lineGroup
+        .selectAll("path.volatility-line")
+        .data([data])
+        .join("path")
+        .attr("class", "volatility-line")
+        .attr("fill", "none")
+        .attr("stroke", "#f9b113")
+        .attr("stroke-width", 2)
+        .attr("opacity", 0.9)
+        .attr("d", volLine);
+    } else {
       chartState.noDataText
         .attr("x", width / 2)
         .attr("y", height / 2 + 20)
         .attr("visibility", "visible")
         .text("No volatility data available.");
-    } else {
-      chartState.noDataText.attr("visibility", "hidden");
-      
-      const barWidth = Math.max(1, innerWidth / data.length * 0.8);
-      const bars = chartState.barsGroup
-        .selectAll("rect.volatility-bar")
-        .data(
-          volDataPoints,
-          (d) => (d.date ? d.date.getTime() : null)
-        );
-
-      bars
-        .join((enter) => {
-          const rects = enter
-            .append("rect")
-            .attr("class", "volatility-bar")
-            .attr("fill", "#f9b113")
-            .attr("opacity", 0.4)
-            .attr("stroke", "#f9b113")
-            .attr("stroke-width", 1);
-          return rects;
-        })
-        .attr("x", (d) => x(d.date) - barWidth / 2)
-        .attr("y", (d) => yRight(d.realized_vol))
-        .attr("width", barWidth)
-        .attr("height", (d) => innerHeight - yRight(d.realized_vol));
+      chartState.lineGroup.selectAll("path.volatility-line").remove();
     }
 
-    // Disable brush for histogram mode
+    // Disable brush for line mode
     chartState.brushGroup.call(brush.move, null);
   } else {
-    // Gradient visualization mode
+    // Heatmap visualization mode
     chartState.legendGroup.attr("display", null);
 
     const yAxis = d3.axisLeft(y).ticks(6).tickSize(0).tickPadding(10);
@@ -816,7 +801,8 @@ function render() {
       .attr("y", -52 - axisTitlePadding)
       .attr("display", null);
     chartState.mainYAxisLabelRight.attr("display", "none");
-    chartState.yAxisGroupRight.call(() => {}); // Clear right axis
+    // Clear right axis completely
+    chartState.yAxisGroupRight.selectAll("*").remove();
 
     const volValues = [...data, ...detailData]
       .map((d) => d?.realized_vol)
@@ -834,11 +820,12 @@ function render() {
         return fallbackColor;
       }
       if (!hasSpread) {
-        return d3.interpolateViridis(0.5);
+        return d3.interpolateRdBu(0.5);
       }
       const normalized = (value - domainMin) / domainSpan;
       const clamped = Math.max(0, Math.min(1, normalized));
-      return d3.interpolateViridis(clamped);
+      // RdBu goes red->blue, reverse so low vol = blue, high vol = red
+      return d3.interpolateRdBu(1 - clamped);
     };
     const formatVolPct = (value) =>
       Number.isFinite(value) ? `${value.toFixed(2)}%` : "n/a";
@@ -863,9 +850,10 @@ function render() {
       .attr("cy", (d) => y(d.index_price_close))
       .attr("fill", (d) => colorForVol(d.realized_vol));
 
-    // Clear bars and line for gradient mode
-    chartState.barsGroup.selectAll("rect.volatility-bar").data([]).join("rect");
-    chartState.lineGroup.selectAll("path.price-line").data([]).join("path");
+    // Clear bars and lines for heatmap mode
+    chartState.barsGroup.selectAll("rect.volatility-bar").remove();
+    chartState.lineGroup.selectAll("path.price-line").remove();
+    chartState.lineGroup.selectAll("path.volatility-line").remove();
 
     const gradientStops = hasValidExtent
       ? [
