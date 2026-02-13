@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import * as d3 from "d3";
 import DeltaSkewChart from "./components/DeltaSkewChart.vue";
 import {
@@ -28,6 +28,12 @@ const ui = reactive({
   loading: false,
   error: "",
 });
+const visualSettings = reactive({
+  opacityMin: 0.12,
+  opacityMax: 0.9,
+  sizeMin: 0.7,
+  sizeMax: 1.55,
+});
 
 const data = reactive({
   instruments: [],
@@ -38,6 +44,38 @@ const data = reactive({
 
 const chartRef = ref(null);
 const isBootstrapping = ref(true);
+const showSettings = ref(false);
+const settingsRef = ref(null);
+
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+function setOpacityMin(value) {
+  const next = clamp(Number(value), 0, 1);
+  visualSettings.opacityMin = Math.min(next, visualSettings.opacityMax);
+}
+
+function setOpacityMax(value) {
+  const next = clamp(Number(value), 0, 1);
+  visualSettings.opacityMax = Math.max(next, visualSettings.opacityMin);
+}
+
+function setSizeMin(value) {
+  const next = clamp(Number(value), 0.2, 2.5);
+  visualSettings.sizeMin = Math.min(next, visualSettings.sizeMax);
+}
+
+function setSizeMax(value) {
+  const next = clamp(Number(value), 0.2, 2.5);
+  visualSettings.sizeMax = Math.max(next, visualSettings.sizeMin);
+}
+
+function handleDocumentPointerDown(event) {
+  if (!showSettings.value) return;
+  const root = settingsRef.value;
+  if (!root?.contains(event.target)) {
+    showSettings.value = false;
+  }
+}
 
 const expirationOptions = computed(() => {
   const map = new Map();
@@ -193,6 +231,15 @@ function finishLoad() {
 
 function buildMarkCacheKey({ expiry, resolution }) {
   return `${expiry}|${resolution}`;
+}
+
+function getLongestRunningExpiration(options) {
+  if (!Array.isArray(options) || !options.length) return null;
+  return (
+    [...options].sort(
+      (a, b) => (Number(b.expiration_timestamp) || 0) - (Number(a.expiration_timestamp) || 0),
+    )[0] || null
+  );
 }
 
 const sleep = (ms) =>
@@ -380,6 +427,7 @@ async function reloadAll() {
 }
 
 onMounted(async () => {
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
     const all = await fetchInstruments();
     data.instruments = Array.isArray(all) ? all : [];
@@ -390,25 +438,18 @@ onMounted(async () => {
       return;
     }
 
-    const now = Date.now() / 1000;
-    const target = now + 30 * 24 * 60 * 60;
-    const upcoming = options.filter((option) => option.expiration_timestamp > now);
-    const pickFrom = upcoming.length ? upcoming : options;
-
-    const closest = pickFrom.reduce((best, option) => {
-      if (!best) return option;
-      const bestDiff = Math.abs(best.expiration_timestamp - target);
-      const optionDiff = Math.abs(option.expiration_timestamp - target);
-      return optionDiff < bestDiff ? option : best;
-    }, null);
-
-    ui.expiration = (closest || options[0]).value;
+    const longestRunning = getLongestRunningExpiration(options);
+    ui.expiration = (longestRunning || options[0]).value;
     await reloadAll();
   } catch (error) {
     ui.error = error instanceof Error ? error.message : String(error);
   } finally {
     isBootstrapping.value = false;
   }
+});
+
+onUnmounted(() => {
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
 });
 
 watch(
@@ -435,9 +476,73 @@ watch(
     <header class="header">
       <div class="titleRow">
         <h1>Call/Put Delta Skew</h1>
-        <div v-if="chartSubtitle || metaSummary" class="titleMetaGroup">
-          <div v-if="chartSubtitle" class="meta">{{ chartSubtitle }}</div>
-          <div v-if="metaSummary" class="meta">{{ metaSummary }}</div>
+        <div class="titleRight">
+          <div v-if="chartSubtitle || metaSummary" class="titleMetaGroup">
+            <div v-if="chartSubtitle" class="meta">{{ chartSubtitle }}</div>
+            <div v-if="metaSummary" class="meta">{{ metaSummary }}</div>
+          </div>
+          <div ref="settingsRef" class="settingsMenu">
+            <button
+              class="settingsButton"
+              type="button"
+              title="Chart settings"
+              aria-label="Chart settings"
+              @click.stop="showSettings = !showSettings"
+            >
+              ⚙
+            </button>
+            <div v-if="showSettings" class="settingsDropdown" @click.stop>
+              <div class="settingsTitle">Point Settings</div>
+              <div class="settingsRow">
+                <label>Opacity Min</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  :value="visualSettings.opacityMin"
+                  @input="setOpacityMin($event.target.value)"
+                />
+                <span>{{ (visualSettings.opacityMin * 100).toFixed(0) }}%</span>
+              </div>
+              <div class="settingsRow">
+                <label>Opacity Max</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  :value="visualSettings.opacityMax"
+                  @input="setOpacityMax($event.target.value)"
+                />
+                <span>{{ (visualSettings.opacityMax * 100).toFixed(0) }}%</span>
+              </div>
+              <div class="settingsRow">
+                <label>Size Min</label>
+                <input
+                  type="range"
+                  min="0.2"
+                  max="2.5"
+                  step="0.05"
+                  :value="visualSettings.sizeMin"
+                  @input="setSizeMin($event.target.value)"
+                />
+                <span>{{ visualSettings.sizeMin.toFixed(2) }}x</span>
+              </div>
+              <div class="settingsRow">
+                <label>Size Max</label>
+                <input
+                  type="range"
+                  min="0.2"
+                  max="2.5"
+                  step="0.05"
+                  :value="visualSettings.sizeMax"
+                  @input="setSizeMax($event.target.value)"
+                />
+                <span>{{ visualSettings.sizeMax.toFixed(2) }}x</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -485,15 +590,92 @@ watch(
       :data="chartRows"
       :loading="chartLoading"
       :subtitle="chartSubtitle"
+      :opacity-range="[visualSettings.opacityMin, visualSettings.opacityMax]"
+      :size-range="[visualSettings.sizeMin, visualSettings.sizeMax]"
     />
   </div>
 </template>
 
 <style scoped>
+.titleRight {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
 .titleMetaGroup {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 4px;
+}
+
+.settingsMenu {
+  position: relative;
+}
+
+.settingsButton {
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.settingsButton:hover {
+  color: var(--text);
+}
+
+.settingsDropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  width: 300px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
+}
+
+.settingsTitle {
+  font-size: 12px;
+  color: var(--text);
+  margin-bottom: 8px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.settingsRow {
+  display: grid;
+  grid-template-columns: 86px 1fr 50px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.settingsRow:last-child {
+  margin-bottom: 0;
+}
+
+.settingsRow label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settingsRow input[type="range"] {
+  width: 100%;
+}
+
+.settingsRow span {
+  font-size: 12px;
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 </style>

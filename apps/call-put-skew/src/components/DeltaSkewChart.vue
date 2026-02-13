@@ -7,6 +7,8 @@ const props = defineProps({
   data: { type: Array, default: () => [] },
   subtitle: { type: String, default: "" },
   loading: { type: Boolean, default: false },
+  opacityRange: { type: Array, default: () => [0.12, 0.9] },
+  sizeRange: { type: Array, default: () => [0.7, 1.55] },
 });
 
 const svgRef = ref(null);
@@ -201,6 +203,40 @@ const render = () => {
     .domain([sizeMin, sizeMax])
     .range(DOT_AREA_RANGE)
     .clamp(true);
+  const opacityRangeMinRaw = Number(props.opacityRange?.[0]);
+  const opacityRangeMaxRaw = Number(props.opacityRange?.[1]);
+  const opacityRangeMin = Number.isFinite(opacityRangeMinRaw)
+    ? Math.max(0, Math.min(1, Math.min(opacityRangeMinRaw, opacityRangeMaxRaw)))
+    : 0.12;
+  const opacityRangeMax = Number.isFinite(opacityRangeMaxRaw)
+    ? Math.max(0, Math.min(1, Math.max(opacityRangeMinRaw, opacityRangeMaxRaw)))
+    : 0.9;
+  const sizeRangeMinRaw = Number(props.sizeRange?.[0]);
+  const sizeRangeMaxRaw = Number(props.sizeRange?.[1]);
+  const sizeRangeMin = Number.isFinite(sizeRangeMinRaw)
+    ? Math.max(0.2, Math.min(2.5, Math.min(sizeRangeMinRaw, sizeRangeMaxRaw)))
+    : 0.7;
+  const sizeRangeMax = Number.isFinite(sizeRangeMaxRaw)
+    ? Math.max(0.2, Math.min(2.5, Math.max(sizeRangeMinRaw, sizeRangeMaxRaw)))
+    : 1.55;
+  const tsExtent = d3.extent(rows, (row) => row.ts);
+  const tsMin = Number.isFinite(tsExtent[0]) ? tsExtent[0] : 0;
+  const tsMax = Number.isFinite(tsExtent[1]) ? tsExtent[1] : tsMin;
+  const tsSpan = tsMax - tsMin;
+  const recencyNorm = (row) => {
+    const ts = Number(row?.ts);
+    if (!Number.isFinite(ts)) return 0;
+    if (!(tsSpan > 0)) return 1;
+    return Math.max(0, Math.min(1, (ts - tsMin) / tsSpan));
+  };
+  const opacityForRow = (row) =>
+    opacityRangeMin + (opacityRangeMax - opacityRangeMin) * recencyNorm(row);
+  const radiusForRow = (row) => {
+    const baseRadius = Math.sqrt(sizeScale(row.mark_price_close) / Math.PI);
+    const recencySizeFactor =
+      sizeRangeMin + (sizeRangeMax - sizeRangeMin) * recencyNorm(row);
+    return baseRadius * recencySizeFactor;
+  };
 
   const defs = svg.append("defs");
   const gradient = defs
@@ -365,9 +401,9 @@ const render = () => {
       .attr("class", "skew-point")
       .attr("cx", (row) => x(row.delta_abs))
       .attr("cy", (row) => sharedY(row.iv_close))
-      .attr("r", (row) => Math.sqrt(sizeScale(row.mark_price_close) / Math.PI))
+      .attr("r", (row) => radiusForRow(row))
       .attr("fill", (row) => colorForIndex(row.index_price_close))
-      .attr("opacity", 0.8)
+      .attr("opacity", (row) => opacityForRow(row))
       .attr("stroke", "#ffffff")
       .attr("stroke-width", 0.2)
       .on("mouseenter", (event, row) => {
@@ -386,15 +422,17 @@ const render = () => {
         });
         d3.select(event.currentTarget).attr("opacity", 1).attr("stroke-width", 0.8);
       })
-      .on("mouseleave", (event) => {
+      .on("mouseleave", (event, row) => {
         hideTooltip();
-        d3.select(event.currentTarget).attr("opacity", 0.8).attr("stroke-width", 0.2);
+        d3.select(event.currentTarget)
+          .attr("opacity", opacityForRow(row))
+          .attr("stroke-width", 0.2);
       });
   });
 };
 
 watch(
-  () => [props.data, props.subtitle, props.loading],
+  () => [props.data, props.subtitle, props.loading, props.opacityRange, props.sizeRange],
   () => render(),
   { deep: false },
 );
