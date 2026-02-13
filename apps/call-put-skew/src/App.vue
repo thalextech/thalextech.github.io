@@ -17,14 +17,15 @@ const RESOLUTION_KEYS = Object.keys(RESOLUTION_CONFIG);
 
 const RANGE_DAYS = 21;
 const ONE_HOUR_SECONDS = 60 * 60;
-const MAX_1H_POINTS_PER_INSTRUMENT = 72;
-const MAX_INSTRUMENTS_PER_SIDE = 8;
+const MAX_1H_POINTS_PER_INSTRUMENT = 120;
+const MAX_INSTRUMENTS_PER_SIDE = 16;
+const MAX_MARK_REQUEST_CONCURRENCY = 30;
 const MARK_REQUEST_PACING_MS = 180;
 const MARK_REQUEST_MAX_RETRIES = 3;
 
 const ui = reactive({
   expiration: "",
-  resolution: "1d",
+  resolution: "1h",
   loading: false,
   error: "",
 });
@@ -237,7 +238,9 @@ function getLongestRunningExpiration(options) {
   if (!Array.isArray(options) || !options.length) return null;
   return (
     [...options].sort(
-      (a, b) => (Number(b.expiration_timestamp) || 0) - (Number(a.expiration_timestamp) || 0),
+      (a, b) =>
+        (Number(b.expiration_timestamp) || 0) -
+        (Number(a.expiration_timestamp) || 0),
     )[0] || null
   );
 }
@@ -291,16 +294,21 @@ function pickInstrumentSubset(instruments, referencePrice) {
   return [...pickSide(calls), ...pickSide(puts)];
 }
 
-async function fetchMarkRows(instruments, range, resolution) {
+async function fetchMarkRows(
+  instruments,
+  range,
+  resolution,
+  { onInstrumentRows = null, isCanceled = null } = {},
+) {
   const rows = [];
   let rateLimitedCount = 0;
 
-  for (let index = 0; index < instruments.length; index += 1) {
-    const instrument = instruments[index];
+  const fetchInstrumentRows = async (instrument, index) => {
     let fetchedRows = null;
     let lastError = null;
 
     for (let attempt = 0; attempt <= MARK_REQUEST_MAX_RETRIES; attempt += 1) {
+      if (isCanceled?.()) break;
       try {
         fetchedRows = await fetchMarkHistory({
           instrument_name: instrument.instrument_name,
@@ -315,23 +323,56 @@ async function fetchMarkRows(instruments, range, resolution) {
         if (reason?.status !== 429 || attempt >= MARK_REQUEST_MAX_RETRIES) {
           break;
         }
-        const backoffMs = 600 * Math.pow(2, attempt) + Math.floor(Math.random() * 180);
+        const backoffMs =
+          600 * Math.pow(2, attempt) + Math.floor(Math.random() * 180);
         await sleep(backoffMs);
       }
     }
 
-    if (!Array.isArray(fetchedRows)) {
-      if (lastError?.status === 429) {
-        rateLimitedCount += 1;
+    return { instrument, index, fetchedRows, lastError };
+  };
+
+  for (
+    let batchStart = 0;
+    batchStart < instruments.length;
+    batchStart += MAX_MARK_REQUEST_CONCURRENCY
+  ) {
+    if (isCanceled?.()) break;
+    const batch = instruments.slice(
+      batchStart,
+      batchStart + MAX_MARK_REQUEST_CONCURRENCY,
+    );
+    const batchResults = await Promise.all(
+      batch.map((instrument, offset) =>
+        fetchInstrumentRows(instrument, batchStart + offset),
+      ),
+    );
+
+    for (const result of batchResults) {
+      if (isCanceled?.()) break;
+      if (!Array.isArray(result.fetchedRows)) {
+        if (result.lastError?.status === 429) {
+          rateLimitedCount += 1;
+        }
+        continue;
       }
-    } else {
-      const instrumentName = instrument?.instrument_name;
-      fetchedRows.forEach((row) => {
-        rows.push({ ...row, instrument_name: instrumentName });
+
+      const instrumentName = result.instrument?.instrument_name;
+      const nextRows = result.fetchedRows.map((row) => ({
+        ...row,
+        instrument_name: instrumentName,
+      }));
+      rows.push(...nextRows);
+      onInstrumentRows?.(nextRows, {
+        instrumentName,
+        index: result.index,
+        total: instruments.length,
       });
     }
 
-    if (index < instruments.length - 1) {
+    const hasMore =
+      batchStart + MAX_MARK_REQUEST_CONCURRENCY < instruments.length;
+    if (hasMore) {
       await sleep(MARK_REQUEST_PACING_MS);
     }
   }
@@ -339,20 +380,51 @@ async function fetchMarkRows(instruments, range, resolution) {
   return { rows, rateLimitedCount };
 }
 
-async function loadMarkRowsForExpiry(expiry, range, resolution, referencePrice) {
+async function loadMarkRowsForExpiry(
+  expiry,
+  range,
+  resolution,
+  referencePrice,
+  { onInstrumentRows = null, isCanceled = null } = {},
+) {
   const cacheKey = buildMarkCacheKey({ expiry, resolution });
-  const cachedRows = markRowsCache.get(cacheKey);
-  if (cachedRows) {
-    return cachedRows;
-  }
-
   const allInstruments = getAllInstrumentsForExpiry(expiry);
   const instruments = pickInstrumentSubset(allInstruments, referencePrice);
   if (!instruments.length) {
     throw new Error(`No call/put instruments available for expiry ${expiry}.`);
   }
 
-  const markResult = await fetchMarkRows(instruments, range, resolution);
+  const cachedRows = markRowsCache.get(cacheKey);
+  if (cachedRows) {
+    if (onInstrumentRows) {
+      const rowsByInstrument = new Map();
+      cachedRows.forEach((row) => {
+        const key = row?.instrument_name;
+        if (!key) return;
+        const list = rowsByInstrument.get(key) || [];
+        list.push(row);
+        rowsByInstrument.set(key, list);
+      });
+      instruments.forEach((instrument, index) => {
+        const instrumentName = instrument?.instrument_name;
+        const nextRows = rowsByInstrument.get(instrumentName) || [];
+        if (nextRows.length) {
+          onInstrumentRows(nextRows, {
+            instrumentName,
+            index,
+            total: instruments.length,
+            cached: true,
+          });
+        }
+      });
+    }
+    return cachedRows;
+  }
+
+  const markResult = await fetchMarkRows(instruments, range, resolution, {
+    onInstrumentRows,
+    isCanceled,
+  });
   const nextRows = markResult?.rows || [];
   if (!nextRows.length) {
     if (markResult?.rateLimitedCount > 0) {
@@ -399,19 +471,35 @@ async function reloadAll() {
       throw new Error("No index datapoints returned for this range.");
     }
 
+    data.indexRows = nextIndexRows;
+    data.markRows = [];
+
     const latestIndex = nextIndexRows[nextIndexRows.length - 1];
     const referencePrice = Number(latestIndex?.index_price_close);
+    let progressiveRowsCount = 0;
     const markRows = await loadMarkRowsForExpiry(
       ui.expiration,
       range,
       ui.resolution,
       referencePrice,
+      {
+        onInstrumentRows: (nextRows) => {
+          if (requestId !== reloadRequestId) return;
+          if (!Array.isArray(nextRows) || !nextRows.length) return;
+          data.markRows.push(...nextRows);
+          progressiveRowsCount += nextRows.length;
+        },
+        isCanceled: () => requestId !== reloadRequestId,
+      },
     );
 
     if (requestId !== reloadRequestId) return;
 
-    data.indexRows = nextIndexRows;
-    data.markRows = markRows;
+    if (!progressiveRowsCount) {
+      data.markRows = markRows;
+    } else if (data.markRows.length !== markRows.length) {
+      data.markRows = markRows;
+    }
   } catch (error) {
     if (requestId !== reloadRequestId) return;
     if (error?.status === 429) {
