@@ -563,7 +563,7 @@ watch(
   <div class="app">
     <header class="header">
       <div class="titleRow">
-        <h1>Call/Put Delta Skew</h1>
+        <h1>Call-Put Skew</h1>
         <div class="titleRight">
           <div v-if="chartSubtitle || metaSummary" class="titleMetaGroup">
             <div v-if="chartSubtitle" class="meta">{{ chartSubtitle }}</div>
