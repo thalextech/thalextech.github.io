@@ -854,16 +854,31 @@ const render = () => {
       values: seriesByKey[series.key] || [],
     }));
 
-    const allDates = [];
-    const allValues = [];
-    for (const series of seriesList) {
-      for (const d of series.values) {
-        allDates.push(d.date);
-        allValues.push(d.value);
+    const componentSeries = DETAIL_SERIES_CONFIG.filter(
+      (series) => series.key !== "total",
+    );
+    const componentSeriesByKey = new Map(
+      componentSeries.map((series) => [series.key, series]),
+    );
+    const totalSeries = seriesList.find((series) => series.key === "total");
+    const totalLinePoints = (totalSeries?.values || []).filter(
+      (point) =>
+        point?.date instanceof Date &&
+        !Number.isNaN(point.date.getTime()) &&
+        Number.isFinite(point.value),
+    );
+    const stackRows = totalLinePoints.map((totalPoint, index) => {
+      const row = { date: totalPoint.date };
+      for (const series of componentSeries) {
+        row[series.key] = Number(seriesByKey[series.key]?.[index]?.value) || 0;
       }
-    }
+      return row;
+    });
+    const visibleComponentKeys = componentSeries
+      .map((series) => series.key)
+      .filter((key) => !isHiddenSeries(key));
 
-    if (!allDates.length || !allValues.length) {
+    if (!stackRows.length) {
       plotGroup
         .append("text")
         .attr("x", innerWidth / 2)
@@ -877,14 +892,25 @@ const render = () => {
 
     const xBottom = d3
       .scaleUtc()
-      .domain(d3.extent(allDates))
+      .domain(d3.extent(stackRows, (row) => row.date))
       .range([0, innerWidth]);
 
-    const [rawMin, rawMax] = d3.extent(allValues);
-    let yMin = rawMin ?? 0;
-    let yMax = rawMax ?? 0;
-    yMin = Math.min(yMin, 0);
-    yMax = Math.max(yMax, 0);
+    const stackedSeries = d3
+      .stack()
+      .keys(visibleComponentKeys)
+      .offset(d3.stackOffsetDiverging)(stackRows);
+    let yMin = 0;
+    let yMax = 0;
+    for (const layer of stackedSeries) {
+      for (const point of layer) {
+        yMin = Math.min(yMin, point[0], point[1]);
+        yMax = Math.max(yMax, point[0], point[1]);
+      }
+    }
+    for (const point of totalLinePoints) {
+      yMin = Math.min(yMin, point.value);
+      yMax = Math.max(yMax, point.value);
+    }
     if (yMin === yMax) {
       const pad = yMin === 0 ? 0.0001 : Math.abs(yMin) * 0.1;
       yMin -= pad;
@@ -940,69 +966,38 @@ const render = () => {
       .y((d) => yBottom(d.value))
       .curve(d3.curveMonotoneX);
 
-    const area = d3
+    const stackedArea = d3
       .area()
-      .x((d) => xBottom(d.date))
-      .y0(yBottom(0))
-      .y1((d) => yBottom(d.value))
+      .x((d) => xBottom(d.data.date))
+      .y0((d) => yBottom(d[0]))
+      .y1((d) => yBottom(d[1]))
       .curve(d3.curveMonotoneX);
 
-    const deltaAreaColor = "#3b82f6";
-    const deltaAreaGradientId = `greeks-delta-area-${Math.random()
-      .toString(36)
-      .slice(2, 9)}`;
-    const deltaAreaDefs = bottomPanelGroup.append("defs");
-    const deltaAreaGradient = deltaAreaDefs
-      .append("linearGradient")
-      .attr("id", deltaAreaGradientId)
-      .attr("x1", "0%")
-      .attr("x2", "0%")
-      .attr("y1", "0%")
-      .attr("y2", "100%");
-    deltaAreaGradient
-      .append("stop")
-      .attr("offset", "0%")
-      .attr("stop-color", deltaAreaColor)
-      .attr("stop-opacity", 0.24);
-    deltaAreaGradient
-      .append("stop")
-      .attr("offset", "55%")
-      .attr("stop-color", deltaAreaColor)
-      .attr("stop-opacity", 0.1);
-    deltaAreaGradient
-      .append("stop")
-      .attr("offset", "100%")
-      .attr("stop-color", deltaAreaColor)
-      .attr("stop-opacity", 0.02);
-
     plotGroup
       .append("g")
-      .selectAll("path.detail-area")
-      .data(seriesList.filter((series) => series.key === "delta"))
+      .selectAll("path.stacked-area")
+      .data(stackedSeries)
       .join("path")
-      .attr("class", "detail-area")
-      .attr("fill", `url(#${deltaAreaGradientId})`)
-      .attr("stroke", "none")
-      .attr("d", (d) => area(d.values))
-      .attr("display", (d) =>
-        d.values.length && !isHiddenSeries(d.key) ? null : "none",
-      );
-
-    plotGroup
-      .append("g")
-      .selectAll("path.detail-line")
-      .data(seriesList)
-      .join("path")
-      .attr("class", "detail-line")
-      .attr("fill", "none")
-      .attr("stroke", (d) => d.color)
-      .attr("stroke-width", (d) => d.strokeWidth || 1.1)
-      .attr("stroke-linecap", "round")
-      .attr("d", (d) => line(d.values))
-      .attr("display", (d) =>
-        d.values.length && !isHiddenSeries(d.key) ? null : "none",
+      .attr("class", "stacked-area")
+      .attr(
+        "fill",
+        (layer) => componentSeriesByKey.get(layer.key)?.color ?? "#94b3fd",
       )
-      .attr("stroke-opacity", (d) => (d.key === "total" ? 0.92 : 0.78));
+      .attr("fill-opacity", 0.54)
+      .attr("stroke", "none")
+      .attr("d", (layer) => stackedArea(layer));
+
+    plotGroup
+      .append("path")
+      .datum(totalLinePoints)
+      .attr("fill", "none")
+      .attr("stroke", "#1e3a8a")
+      .attr("stroke-width", totalSeries?.strokeWidth || 1.1)
+      .attr("stroke-linecap", "round")
+      .attr("stroke-linejoin", "round")
+      .attr("stroke-opacity", 0.92)
+      .attr("display", !isHiddenSeries("total") ? null : "none")
+      .attr("d", line);
 
     bottomPanelGroup
       .append("text")
