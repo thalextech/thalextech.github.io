@@ -19,7 +19,7 @@ const SVG_FONT_FAMILY =
 
 let brushedDomain = null;
 let hiddenDetailSeriesKeys = new Set();
-let bottomMode = "greeks";
+let bottomMode = "mark";
 let resolutionMenuOpen = false;
 let lastResolutionKey = null;
 
@@ -285,17 +285,21 @@ const drawResolutionControl = (svg) => {
 
   for (let i = 0; i < options.length; i += 1) {
     const option = options[i];
+    const rowRectFillDefault = "#0f131b";
+    const rowRectFillHover = "#1a212d";
     const row = menu
       .append("g")
       .attr("transform", `translate(0,${i * rowHeight})`)
       .style("cursor", "pointer")
-      .on("mouseenter", function () {
+      .on("mouseover", function () {
+        d3.select(this).select("rect").attr("fill", rowRectFillHover);
         d3.select(this)
           .select("text")
           .attr("fill", "#f2f4ff")
           .style("font-weight", 700);
       })
-      .on("mouseleave", function () {
+      .on("mouseout", function () {
+        d3.select(this).select("rect").attr("fill", rowRectFillDefault);
         d3.select(this)
           .select("text")
           .attr("fill", "#a9abb6")
@@ -319,7 +323,7 @@ const drawResolutionControl = (svg) => {
       .attr("y", 0)
       .attr("width", menuWidth)
       .attr("height", rowHeight)
-      .attr("fill", "#0f131b");
+      .attr("fill", rowRectFillDefault);
 
     row
       .append("text")
@@ -492,7 +496,7 @@ const render = () => {
     .call(
       d3
         .axisLeft(yTop)
-        .ticks(5)
+        .ticks(3)
         .tickSize(0)
         .tickPadding(10)
         .tickFormat(d3.format(",.0f")),
@@ -524,7 +528,7 @@ const render = () => {
     .line()
     .x((point) => xTop(point.date))
     .y((point) => yTop(point.value))
-    .curve(d3.curveBasis);
+    .curve(d3.curveMonotoneX);
 
   topGroup
     .append("path")
@@ -642,7 +646,7 @@ const render = () => {
       const xAxis = d3.axisBottom(xBottom).ticks(6).tickSize(0).tickPadding(10);
       const yAxis = d3
         .axisLeft(yBottom)
-        .ticks(5)
+        .ticks(3)
         .tickSize(0)
         .tickPadding(10)
         .tickFormat(formatMarkAxis);
@@ -943,14 +947,41 @@ const render = () => {
       .y1((d) => yBottom(d.value))
       .curve(d3.curveMonotoneX);
 
+    const deltaAreaColor = "#3b82f6";
+    const deltaAreaGradientId = `greeks-delta-area-${Math.random()
+      .toString(36)
+      .slice(2, 9)}`;
+    const deltaAreaDefs = bottomPanelGroup.append("defs");
+    const deltaAreaGradient = deltaAreaDefs
+      .append("linearGradient")
+      .attr("id", deltaAreaGradientId)
+      .attr("x1", "0%")
+      .attr("x2", "0%")
+      .attr("y1", "0%")
+      .attr("y2", "100%");
+    deltaAreaGradient
+      .append("stop")
+      .attr("offset", "0%")
+      .attr("stop-color", deltaAreaColor)
+      .attr("stop-opacity", 0.24);
+    deltaAreaGradient
+      .append("stop")
+      .attr("offset", "55%")
+      .attr("stop-color", deltaAreaColor)
+      .attr("stop-opacity", 0.1);
+    deltaAreaGradient
+      .append("stop")
+      .attr("offset", "100%")
+      .attr("stop-color", deltaAreaColor)
+      .attr("stop-opacity", 0.02);
+
     plotGroup
       .append("g")
       .selectAll("path.detail-area")
-      .data(seriesList)
+      .data(seriesList.filter((series) => series.key === "delta"))
       .join("path")
       .attr("class", "detail-area")
-      .attr("fill", (d) => d.color)
-      .attr("fill-opacity", (d) => d.areaOpacity ?? 0.12)
+      .attr("fill", `url(#${deltaAreaGradientId})`)
       .attr("stroke", "none")
       .attr("d", (d) => area(d.values))
       .attr("display", (d) =>
@@ -998,9 +1029,9 @@ const render = () => {
     const legendColGap = 130;
     const legendCols = 3;
     const legendTextMaxWidth = 84;
-    const legendItemWidth = legendLineLength + legendLabelOffset + legendTextMaxWidth;
-    const legendTotalWidth =
-      (legendCols - 1) * legendColGap + legendItemWidth;
+    const legendItemWidth =
+      legendLineLength + legendLabelOffset + legendTextMaxWidth;
+    const legendTotalWidth = (legendCols - 1) * legendColGap + legendItemWidth;
     const legendX = layout.width - layout.margin.right - legendTotalWidth;
     const legendY = 24;
 
