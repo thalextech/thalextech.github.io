@@ -3,7 +3,6 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import PositionBuilder from "../../simulator/src/components/PositionBuilder.vue";
 import IndexMarkComboChart from "./components/Chart.vue";
 import {
-  calcGreeks,
   computeGreeksPnlSeries,
   fetchInstruments,
   fetchIndexHistory,
@@ -154,8 +153,6 @@ const selectedLegInstruments = computed(() => {
       label: `${leg.side === "sell" ? "Sell" : "Buy"} ${qty} ${instrument.instrument_name}`,
       instrumentName: instrument.instrument_name,
       signedQty: sideSign * qty,
-      qty,
-      side: leg.side,
       optionType: instrument.option_type_normalized,
       strike: Number(instrument.strike),
       expirationTs: Number(instrument.expiration_ts),
@@ -299,15 +296,11 @@ const loadSeries = async () => {
         for (const row of markByInstrument[entry.instrumentName] || []) {
           const ts = Number(row?.ts);
           const markClose = Number(row?.mark_price_close);
-          const markOpen = Number(row?.mark_price_open);
           const ivClose = Number(row?.iv_close);
-          const ivOpen = Number(row?.iv_open);
           if (!Number.isFinite(ts) || !Number.isFinite(markClose)) continue;
           map.set(ts, {
             markClose,
-            markOpen: Number.isFinite(markOpen) ? markOpen : markClose,
             ivClose: Number.isFinite(ivClose) ? ivClose : null,
-            ivOpen: Number.isFinite(ivOpen) ? ivOpen : ivClose,
           });
         }
 
@@ -353,7 +346,6 @@ const loadSeries = async () => {
       if (!legSeries.every((entry) => entry.byTs.has(ts))) continue;
       const indexRow = indexByTs.get(ts);
       const indexClose = Number(indexRow?.index_price_close);
-      const indexOpen = Number(indexRow?.index_price_open);
       if (!Number.isFinite(indexClose)) continue;
 
       let totalMark = 0;
@@ -410,56 +402,9 @@ const loadSeries = async () => {
         iv_close: ivClose,
       });
 
-      const legs = [];
-      let totalDelta = 0;
-      let totalGamma = 0;
-      let totalTheta = 0;
-      let totalVega = 0;
-      for (let i = 0; i < selected.length; i += 1) {
-        const selectedLeg = selected[i];
-        const legPoint = legSeries[i].byTs.get(ts);
-        if (!legPoint) continue;
-        const tteSeconds = Number(selectedLeg.expirationTs) - ts;
-        const greeks = calcGreeks(
-          indexClose,
-          Number(selectedLeg.strike),
-          tteSeconds,
-          Number(legPoint.ivClose),
-          selectedLeg.optionType,
-        );
-        const signedDelta = Number.isFinite(greeks?.delta)
-          ? Number(greeks.delta) * Number(selectedLeg.signedQty)
-          : null;
-        const signedGamma = Number.isFinite(greeks?.gamma)
-          ? Number(greeks.gamma) * Number(selectedLeg.signedQty)
-          : null;
-        const signedTheta = Number.isFinite(greeks?.theta)
-          ? Number(greeks.theta) * Number(selectedLeg.signedQty)
-          : null;
-        const signedVega = Number.isFinite(greeks?.vega)
-          ? Number(greeks.vega) * Number(selectedLeg.signedQty)
-          : null;
-        if (Number.isFinite(signedDelta)) totalDelta += Number(signedDelta);
-        if (Number.isFinite(signedGamma)) totalGamma += Number(signedGamma);
-        if (Number.isFinite(signedTheta)) totalTheta += Number(signedTheta);
-        if (Number.isFinite(signedVega)) totalVega += Number(signedVega);
-
-        legs.push({
-          label: selectedLeg.label,
-          mark: Number(legPoint.markClose),
-          signedMark:
-            Number(selectedLeg.signedQty) * Number(legPoint.markClose),
-          delta: signedDelta,
-          gamma: signedGamma,
-          theta: signedTheta,
-          vega: signedVega,
-        });
-      }
-
       bottom.push({
         ts,
         date,
-        index_price_open: Number.isFinite(indexOpen) ? indexOpen : null,
         index_price_close: indexClose,
         mark_price_close: totalMark,
         PL: hasPL ? totalPL : null,
@@ -467,13 +412,6 @@ const loadSeries = async () => {
         gamma_theta_PL: hasGammaThetaPL ? totalGammaThetaPL : null,
         vega_PL: hasVegaPL ? totalVegaPL : null,
         residual_PL: hasResidualPL ? totalResidualPL : null,
-        legs,
-        total_greeks: {
-          delta: totalDelta,
-          gamma: totalGamma,
-          theta: totalTheta,
-          vega: totalVega,
-        },
       });
     }
 
@@ -522,16 +460,12 @@ const refreshSelectedTickers = async () => {
   const names = selectedInstrumentNames.value;
   if (!names.length) return;
   await runWithConcurrency(names, MARK_CONCURRENCY, async (instrumentName) => {
-    if (tickerByInstrument.value[instrumentName]) return;
     try {
       const ticker = await fetchLatestMarkPrice(instrumentName);
       if (!ticker) return;
-      tickerByInstrument.value = {
-        ...tickerByInstrument.value,
-        [instrumentName]: {
-          data: ticker,
-          fetchedAt: Date.now(),
-        },
+      tickerByInstrument.value[instrumentName] = {
+        data: ticker,
+        fetchedAt: Date.now(),
       };
     } catch (error) {
       console.warn("Failed to refresh ticker", instrumentName, error);
@@ -645,6 +579,38 @@ onUnmounted(() => {
   --leg-row-gap-total: 32px;
   --leg-greeks-gap-total: 44px;
   --strike-greeks-gap: 10px;
+}
+
+.builderMain :deep(.index-summary) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.index-label) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.index-value) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.index-time) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.leg-greek-header) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.leg-greek-value) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.leg-greeks) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.total-greeks) {
+  font-size: 10px;
 }
 
 .chartBlock {
