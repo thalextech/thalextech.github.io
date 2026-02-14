@@ -45,13 +45,13 @@ const DETAIL_SERIES_ORDER = [
   {
     key: "gammaTheta",
     label: "Gamma + Theta",
-    strokeWidth: 0.8,
+    strokeWidth: 0.65,
     areaOpacity: 0.04,
   },
-  { key: "vega", label: "Vega", strokeWidth: 0.8, areaOpacity: 0.04 },
-  { key: "total", label: "Total", strokeWidth: 0.8, areaOpacity: 0.04 },
-  { key: "residual", label: "Residual", strokeWidth: 0.8, areaOpacity: 0.04 },
-  { key: "delta", label: "Delta", strokeWidth: 0.8, areaOpacity: 0.04 },
+  { key: "vega", label: "Vega", strokeWidth: 0.65, areaOpacity: 0.04 },
+  { key: "total", label: "Total", strokeWidth: 0.65, areaOpacity: 0.04 },
+  { key: "residual", label: "Residual", strokeWidth: 0.65, areaOpacity: 0.04 },
+  { key: "delta", label: "Delta", strokeWidth: 0.65, areaOpacity: 0.04 },
 ];
 const DETAIL_SERIES_COLOR_STEP = 1 / DETAIL_SERIES_ORDER.length;
 const DETAIL_SERIES_COLOR_INDEX_OFFSET = 0.5;
@@ -349,8 +349,8 @@ const render = () => {
     .select(svgRef.value)
     .attr("viewBox", `0 0 ${layout.width} ${totalHeight}`)
     .attr("width", "100%")
-    .attr("height", "auto")
     .style("display", "block")
+    .style("height", "auto")
     .style("font-family", SVG_FONT_FAMILY)
     .attr("role", "img");
 
@@ -388,17 +388,17 @@ const render = () => {
     .attr("y", 16)
     .attr("text-anchor", "middle")
     .attr("fill", "#fff")
-    .style("font-size", "10px")
+    .style("font-size", "14px")
     .style("font-weight", 650)
     .text(titleText);
 
   svg
     .append("text")
     .attr("x", layout.width / 2)
-    .attr("y", 30)
+    .attr("y", 36)
     .attr("text-anchor", "middle")
     .attr("fill", "#c9c9cf")
-    .style("font-size", "10px")
+    .style("font-size", "12px")
     .text(props.subtitle || "");
 
   const xDomain = d3.extent(index, (point) => point.date);
@@ -467,7 +467,7 @@ const render = () => {
     .datum(index)
     .attr("fill", "none")
     .attr("stroke", "mistyrose")
-    .attr("stroke-width", 1.5)
+    .attr("stroke-width", 1.2)
     .attr("d", topLine);
 
   const bottomPanelGroup = svg
@@ -639,7 +639,7 @@ const render = () => {
         .datum(markPoints)
         .attr("fill", "none")
         .attr("stroke", "#94b3fd")
-        .attr("stroke-width", 1.7)
+        .attr("stroke-width", 1.25)
         .attr("stroke-linecap", "round")
         .attr("stroke-linejoin", "round")
         .attr("d", line);
@@ -818,7 +818,7 @@ const render = () => {
       .attr("class", "detail-line")
       .attr("fill", "none")
       .attr("stroke", (d) => d.color)
-      .attr("stroke-width", (d) => d.strokeWidth || 1.6)
+      .attr("stroke-width", (d) => d.strokeWidth || 1.1)
       .attr("stroke-linecap", "round")
       .attr("d", (d) => line(d.values))
       .attr("display", (d) =>
@@ -845,38 +845,21 @@ const render = () => {
       .style("font-size", "12px")
       .text(subtitle);
 
-    const initialMark = Number(comboFiltered[0]?.mark_price_close);
-    const totalLabel = Number.isFinite(cumulative.total)
-      ? formatPnl(cumulative.total)
-      : "n/a";
-    let metricText = `Total P&L: ${totalLabel}`;
-    if (
-      Number.isFinite(cumulative.total) &&
-      Number.isFinite(initialMark) &&
-      initialMark !== 0
-    ) {
-      metricText += `    ROI: ${formatVol(cumulative.total / initialMark)}`;
-    }
-
-    bottomPanelGroup
-      .append("text")
-      .attr("x", layout.width / 2)
-      .attr("y", 64)
-      .attr("text-anchor", "middle")
-      .attr("fill", "#a9abb6")
-      .style("font-size", "12px")
-      .style("font-weight", 400)
-      .text(metricText);
-
     const legendLineLength = 18;
     const legendLabelOffset = 6;
     const legendRowGap = 20;
     const legendColGap = 130;
     const legendCols = 3;
+    const legendTextMaxWidth = 84;
+    const legendItemWidth = legendLineLength + legendLabelOffset + legendTextMaxWidth;
+    const legendTotalWidth =
+      (legendCols - 1) * legendColGap + legendItemWidth;
+    const legendX = layout.width - layout.margin.right - legendTotalWidth;
+    const legendY = 24;
 
     const legendGroup = bottomPanelGroup
       .append("g")
-      .attr("transform", `translate(${layout.margin.left},84)`);
+      .attr("transform", `translate(${legendX},${legendY})`);
 
     const legendItems = legendGroup
       .selectAll("g.detail-legend-item")
@@ -901,7 +884,7 @@ const render = () => {
       .attr("x2", legendLineLength)
       .attr("y2", 0)
       .attr("stroke", (d) => d.color)
-      .attr("stroke-width", (d) => d.strokeWidth || 1.6)
+      .attr("stroke-width", (d) => d.strokeWidth || 1.1)
       .attr("stroke-opacity", (d) => (isHiddenSeries(d.key) ? 0.28 : 1));
 
     legendItems
@@ -996,6 +979,7 @@ onMounted(() => {
 <style scoped>
 .chartContainer {
   width: 100%;
+  margin: 0;
   border: 0;
   background: transparent;
   overflow: visible;
