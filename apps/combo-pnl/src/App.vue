@@ -640,8 +640,17 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.builderMain :deep(.legs-section) {
+  --layout-gap: 8px;
+  --leg-row-gap-total: 32px;
+  --leg-greeks-gap-total: 44px;
+  --strike-greeks-gap: 10px;
+}
+
 .chartBlock {
   margin-top: 28px;
+  width: min(100%, 960px);
+  margin-left: 8px;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -666,6 +675,11 @@ onUnmounted(() => {
   .builderRow {
     flex-direction: column;
     gap: 10px;
+  }
+
+  .chartBlock {
+    width: 100%;
+    margin-left: 0;
   }
 }
 </style>

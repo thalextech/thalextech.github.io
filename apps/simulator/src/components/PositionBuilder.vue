@@ -832,7 +832,7 @@ const totalMarkPrice = computed<number | null>(() => {
   box-sizing: border-box;
   height: var(--control-height);
   padding: 0 6px;
-  border-radius: 6px;
+  border-radius: 12px;
   font-size: 10px;
   line-height: 1;
   font-weight: 600;
@@ -858,7 +858,7 @@ const totalMarkPrice = computed<number | null>(() => {
 .qty-spinner {
   display: flex;
   align-items: stretch;
-  border-radius: 8px;
+  border-radius: 12px;
   background: transparent;
   border: none;
   overflow: hidden;
@@ -872,7 +872,7 @@ const totalMarkPrice = computed<number | null>(() => {
   min-height: var(--control-height);
   padding: 0 5px;
   line-height: var(--control-height);
-  border-radius: 8px;
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: transparent;
   color: #f8fafc;
@@ -918,11 +918,13 @@ const totalMarkPrice = computed<number | null>(() => {
   min-height: var(--control-height);
   padding: 0 7px;
   line-height: var(--control-height);
-  border-radius: 8px;
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: transparent;
   color: #f8fafc;
   font-size: 10px;
+  text-align: center;
+  text-align-last: center;
   cursor: pointer;
   appearance: none;
   background-image: none;
@@ -942,7 +944,7 @@ const totalMarkPrice = computed<number | null>(() => {
   box-sizing: border-box;
   height: var(--control-height);
   padding: 0 6px;
-  border-radius: 7px;
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: #0f1318;
   color: #f8fafc;
@@ -1017,7 +1019,7 @@ const totalMarkPrice = computed<number | null>(() => {
   text-align: right;
   font-size: 10px;
   line-height: 1;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
   color: #f8fafc;
