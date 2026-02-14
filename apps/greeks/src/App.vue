@@ -22,7 +22,9 @@ const GREEK_OPTIONS = [
 const RANGE_DAYS = 21;
 const ONE_HOUR_SECONDS = 60 * 60;
 const MAX_1H_POINTS_PER_INSTRUMENT = 72;
-const MAX_MARK_REQUEST_CONCURRENCY = 2;
+const MAX_MARK_REQUEST_CONCURRENCY = 30;
+const MARK_REQUEST_PACING_MS = 180;
+const MARK_REQUEST_MAX_RETRIES = 3;
 
 const ui = reactive({
   expirationPrimary: "",
@@ -260,6 +262,11 @@ const markRequestIdByExpiry = new Map();
 const markRowsCache = new Map();
 let pendingLoads = 0;
 
+const sleep = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
 function startLoad() {
   pendingLoads += 1;
   ui.loading = true;
@@ -312,47 +319,89 @@ function buildMarkCacheKey({ expiry, resolution }) {
   return `${expiry}|${resolution}`;
 }
 
-async function fetchMarkRows(instruments, range, resolution) {
-  const results = new Array(instruments.length);
-  let cursor = 0;
+async function fetchMarkRows(
+  instruments,
+  range,
+  resolution,
+  { onInstrumentRows = null, isCanceled = null } = {},
+) {
+  const rows = [];
+  let rateLimitedCount = 0;
 
-  async function worker() {
-    while (cursor < instruments.length) {
-      const index = cursor;
-      cursor += 1;
-      const instrument = instruments[index];
+  const fetchInstrumentRows = async (instrument, index) => {
+    let fetchedRows = null;
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= MARK_REQUEST_MAX_RETRIES; attempt += 1) {
+      if (isCanceled?.()) break;
       try {
-        const rows = await fetchMarkHistory({
+        fetchedRows = await fetchMarkHistory({
           instrument_name: instrument.instrument_name,
           resolution,
           from: range.from,
           to: range.to,
         });
-        results[index] = { status: "fulfilled", value: rows };
+        lastError = null;
+        break;
       } catch (reason) {
-        results[index] = { status: "rejected", reason };
+        lastError = reason;
+        if (reason?.status !== 429 || attempt >= MARK_REQUEST_MAX_RETRIES) {
+          break;
+        }
+        const backoffMs =
+          600 * Math.pow(2, attempt) + Math.floor(Math.random() * 180);
+        await sleep(backoffMs);
       }
+    }
+
+    return { instrument, index, fetchedRows, lastError };
+  };
+
+  for (
+    let batchStart = 0;
+    batchStart < instruments.length;
+    batchStart += MAX_MARK_REQUEST_CONCURRENCY
+  ) {
+    if (isCanceled?.()) break;
+    const batch = instruments.slice(
+      batchStart,
+      batchStart + MAX_MARK_REQUEST_CONCURRENCY,
+    );
+    const batchResults = await Promise.all(
+      batch.map((instrument, offset) =>
+        fetchInstrumentRows(instrument, batchStart + offset),
+      ),
+    );
+
+    for (const result of batchResults) {
+      if (isCanceled?.()) break;
+      if (!Array.isArray(result.fetchedRows)) {
+        if (result.lastError?.status === 429) {
+          rateLimitedCount += 1;
+        }
+        continue;
+      }
+
+      const instrumentName = result.instrument?.instrument_name;
+      const nextRows = result.fetchedRows.map((row) => ({
+        ...row,
+        instrument_name: instrumentName,
+      }));
+      rows.push(...nextRows);
+      onInstrumentRows?.(nextRows, {
+        instrumentName,
+        index: result.index,
+        total: instruments.length,
+      });
+    }
+
+    const hasMore =
+      batchStart + MAX_MARK_REQUEST_CONCURRENCY < instruments.length;
+    if (hasMore) {
+      await sleep(MARK_REQUEST_PACING_MS);
     }
   }
 
-  const workers = Math.min(MAX_MARK_REQUEST_CONCURRENCY, instruments.length);
-  await Promise.all(Array.from({ length: workers }, () => worker()));
-
-  const rows = [];
-  let rateLimitedCount = 0;
-  results.forEach((result, index) => {
-    if (result.status !== "fulfilled") {
-      if (result.reason?.status === 429) {
-        rateLimitedCount += 1;
-      }
-      return;
-    }
-    const instrumentName = instruments[index].instrument_name;
-    const dataRows = Array.isArray(result.value) ? result.value : [];
-    dataRows.forEach((row) => {
-      rows.push({ ...row, instrument_name: instrumentName });
-    });
-  });
   return { rows, rateLimitedCount };
 }
 
@@ -411,7 +460,8 @@ async function loadExpiry(expiry, { rebuild = true, panelKey = null } = {}) {
   const current = prevRequestId + 1;
   markRequestIdByExpiry.set(expiry, current);
 
-  const range = data.requestedRange || computeRange(option?.expiration_timestamp);
+  const range =
+    data.requestedRange || computeRange(option?.expiration_timestamp);
   data.requestedRange = range;
   const cacheKey = buildMarkCacheKey({
     expiry,
@@ -429,7 +479,9 @@ async function loadExpiry(expiry, { rebuild = true, panelKey = null } = {}) {
   ui.error = "";
 
   try {
-    const markResult = await fetchMarkRows(instruments, range, resolution);
+    const markResult = await fetchMarkRows(instruments, range, resolution, {
+      isCanceled: () => markRequestIdByExpiry.get(expiry) !== current,
+    });
     if (markRequestIdByExpiry.get(expiry) !== current) return;
 
     const nextRows = markResult?.rows || [];
@@ -468,7 +520,10 @@ async function reloadAll() {
   if (ui.expirationPrimary) {
     expiriesToLoad.push({ expiry: ui.expirationPrimary, panelKey: "primary" });
   }
-  if (ui.expirationSecondary && ui.expirationSecondary !== ui.expirationPrimary) {
+  if (
+    ui.expirationSecondary &&
+    ui.expirationSecondary !== ui.expirationPrimary
+  ) {
     expiriesToLoad.push({
       expiry: ui.expirationSecondary,
       panelKey: "secondary",
@@ -502,12 +557,16 @@ onMounted(async () => {
       return optionDiff < bestDiff ? option : best;
     }, null);
     const primary = (closest || options[0]).value;
-    const primaryIndex = options.findIndex((option) => option.value === primary);
+    const primaryIndex = options.findIndex(
+      (option) => option.value === primary,
+    );
     const secondaryFallback =
       options[primaryIndex + 1] || options[primaryIndex - 1] || options[0];
     ui.expirationPrimary = primary;
     ui.expirationSecondary =
-      secondaryFallback?.value === primary ? "" : secondaryFallback?.value || "";
+      secondaryFallback?.value === primary
+        ? ""
+        : secondaryFallback?.value || "";
     await reloadAll();
   } catch (error) {
     ui.error = error instanceof Error ? error.message : String(error);
@@ -559,10 +618,7 @@ watch(
     <header class="header">
       <div class="titleRow">
         <h1>Options {{ activeGreekSymbol }} vs moneyness</h1>
-        <div
-          v-if="chartSubtitle || metaSummary"
-          class="titleMetaGroup"
-        >
+        <div v-if="chartSubtitle || metaSummary" class="titleMetaGroup">
           <div v-if="chartSubtitle" class="meta">{{ chartSubtitle }}</div>
           <div v-if="metaSummary" class="meta">{{ metaSummary }}</div>
         </div>
