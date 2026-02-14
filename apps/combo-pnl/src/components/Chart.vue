@@ -45,13 +45,13 @@ const DETAIL_SERIES_ORDER = [
   {
     key: "gammaTheta",
     label: "Gamma + Theta",
-    strokeWidth: 0.65,
-    areaOpacity: 0.04,
+    strokeWidth: 0.9,
+    areaOpacity: 0.08,
   },
-  { key: "vega", label: "Vega", strokeWidth: 0.65, areaOpacity: 0.04 },
-  { key: "total", label: "Total", strokeWidth: 0.65, areaOpacity: 0.04 },
-  { key: "residual", label: "Residual", strokeWidth: 0.65, areaOpacity: 0.04 },
-  { key: "delta", label: "Delta", strokeWidth: 0.65, areaOpacity: 0.04 },
+  { key: "vega", label: "Vega", strokeWidth: 0.9, areaOpacity: 0.08 },
+  { key: "total", label: "Total", strokeWidth: 0.9, areaOpacity: 0.08 },
+  { key: "residual", label: "Residual", strokeWidth: 0.9, areaOpacity: 0.08 },
+  { key: "delta", label: "Delta", strokeWidth: 0.9, areaOpacity: 0.08 },
 ];
 const DETAIL_SERIES_COLOR_STEP = 1 / DETAIL_SERIES_ORDER.length;
 const DETAIL_SERIES_COLOR_INDEX_OFFSET = 0.5;
@@ -111,6 +111,70 @@ const normalizeSeriesPoints = (rows, valueKey = "value") =>
     })
     .filter(Boolean)
     .sort((a, b) => a.ts - b.ts);
+
+const buildMarkTrendSegments = (points, baselineMark) => {
+  const validPoints = (points || []).filter(
+    (point) =>
+      point?.date instanceof Date &&
+      !Number.isNaN(point.date.getTime()) &&
+      Number.isFinite(point.mark_price_close),
+  );
+  if (validPoints.length < 2) return [];
+
+  const segments = [];
+  const appendSegment = (color, segmentPoints) => {
+    if (!segmentPoints || segmentPoints.length < 2) return;
+    const last = segments[segments.length - 1];
+    if (last && last.color === color) {
+      const merged = [...last.points];
+      const firstNew = segmentPoints[0];
+      const lastExisting = merged[merged.length - 1];
+      const sameFirst =
+        lastExisting?.date?.getTime?.() === firstNew?.date?.getTime?.() &&
+        lastExisting?.mark_price_close === firstNew?.mark_price_close;
+      merged.push(...(sameFirst ? segmentPoints.slice(1) : segmentPoints));
+      last.points = merged;
+      return;
+    }
+    segments.push({ color, points: segmentPoints });
+  };
+
+  const colorForPoint = (point) =>
+    point.mark_price_close > baselineMark ? "#22c55e" : "#ef4444";
+
+  for (let i = 0; i < validPoints.length - 1; i += 1) {
+    const start = validPoints[i];
+    const end = validPoints[i + 1];
+    const startColor = colorForPoint(start);
+    const endColor = colorForPoint(end);
+
+    if (
+      startColor === endColor ||
+      end.mark_price_close === start.mark_price_close
+    ) {
+      appendSegment(startColor, [start, end]);
+      continue;
+    }
+
+    const ratio =
+      (baselineMark - start.mark_price_close) /
+      (end.mark_price_close - start.mark_price_close);
+    const clampedRatio = Math.max(0, Math.min(1, ratio));
+    const startMs = start.date.getTime();
+    const endMs = end.date.getTime();
+    const crossMs = startMs + (endMs - startMs) * clampedRatio;
+    const crossPoint = {
+      ...start,
+      date: new Date(crossMs),
+      mark_price_close: baselineMark,
+    };
+
+    appendSegment(startColor, [start, crossPoint]);
+    appendSegment(endColor, [crossPoint, end]);
+  }
+
+  return segments;
+};
 
 const formatDate = d3.utcFormat("%d %b %y %H:%M");
 const formatPnl = d3.format("$,.0f");
@@ -611,13 +675,86 @@ const render = () => {
         .style("font-weight", 700)
         .text("Mark Price");
 
-      const area = d3
+      const firstFinitePoint = markPoints.find((point) =>
+        Number.isFinite(point.mark_price_close),
+      );
+      const initialMark = Number(firstFinitePoint?.mark_price_close);
+      const baselineMark = Number.isFinite(initialMark) ? initialMark : 0;
+
+      const gradientIdSuffix = Math.random().toString(36).slice(2, 9);
+      const gradientAboveId = `mark-above-${gradientIdSuffix}`;
+      const gradientBelowId = `mark-below-${gradientIdSuffix}`;
+      const defs = bottomPanelGroup.append("defs");
+
+      const gradientAbove = defs
+        .append("linearGradient")
+        .attr("id", gradientAboveId)
+        .attr("x1", "0%")
+        .attr("x2", "0%")
+        .attr("y1", "0%")
+        .attr("y2", "100%");
+      gradientAbove
+        .append("stop")
+        .attr("offset", "0%")
+        .attr("stop-color", "#22c55e")
+        .attr("stop-opacity", 0.3);
+      gradientAbove
+        .append("stop")
+        .attr("offset", "55%")
+        .attr("stop-color", "#22c55e")
+        .attr("stop-opacity", 0.14);
+      gradientAbove
+        .append("stop")
+        .attr("offset", "100%")
+        .attr("stop-color", "#22c55e")
+        .attr("stop-opacity", 0.03);
+
+      const gradientBelow = defs
+        .append("linearGradient")
+        .attr("id", gradientBelowId)
+        .attr("x1", "0%")
+        .attr("x2", "0%")
+        .attr("y1", "0%")
+        .attr("y2", "100%");
+      gradientBelow
+        .append("stop")
+        .attr("offset", "0%")
+        .attr("stop-color", "#ef4444")
+        .attr("stop-opacity", 0.03);
+      gradientBelow
+        .append("stop")
+        .attr("offset", "45%")
+        .attr("stop-color", "#ef4444")
+        .attr("stop-opacity", 0.14);
+      gradientBelow
+        .append("stop")
+        .attr("offset", "100%")
+        .attr("stop-color", "#ef4444")
+        .attr("stop-opacity", 0.3);
+
+      const areaAbove = d3
         .area()
         .x((point) => xBottom(point.date))
-        .y0(yBottom(yBottom.domain()[0]))
+        .y0(yBottom(baselineMark))
         .y1((point) => yBottom(point.mark_price_close))
         .curve(d3.curveMonotoneX)
-        .defined((point) => Number.isFinite(point.mark_price_close));
+        .defined(
+          (point) =>
+            Number.isFinite(point.mark_price_close) &&
+            point.mark_price_close >= baselineMark,
+        );
+
+      const areaBelow = d3
+        .area()
+        .x((point) => xBottom(point.date))
+        .y0(yBottom(baselineMark))
+        .y1((point) => yBottom(point.mark_price_close))
+        .curve(d3.curveMonotoneX)
+        .defined(
+          (point) =>
+            Number.isFinite(point.mark_price_close) &&
+            point.mark_price_close < baselineMark,
+        );
 
       const line = d3
         .line()
@@ -625,24 +762,34 @@ const render = () => {
         .y((point) => yBottom(point.mark_price_close))
         .curve(d3.curveMonotoneX)
         .defined((point) => Number.isFinite(point.mark_price_close));
+      const lineSegments = buildMarkTrendSegments(markPoints, baselineMark);
 
       plotGroup
         .append("path")
         .datum(markPoints)
-        .attr("fill", "#94b3fd")
-        .attr("fill-opacity", 0.15)
+        .attr("fill", `url(#${gradientAboveId})`)
         .attr("stroke", "none")
-        .attr("d", area);
+        .attr("d", areaAbove);
 
       plotGroup
         .append("path")
         .datum(markPoints)
+        .attr("fill", `url(#${gradientBelowId})`)
+        .attr("stroke", "none")
+        .attr("d", areaBelow);
+
+      plotGroup
+        .append("g")
+        .selectAll("path.mark-trend-line")
+        .data(lineSegments)
+        .join("path")
+        .attr("class", "mark-trend-line")
         .attr("fill", "none")
-        .attr("stroke", "#94b3fd")
+        .attr("stroke", (segment) => segment.color)
         .attr("stroke-width", 1.25)
         .attr("stroke-linecap", "round")
         .attr("stroke-linejoin", "round")
-        .attr("d", line);
+        .attr("d", (segment) => line(segment.points));
 
       return;
     }
