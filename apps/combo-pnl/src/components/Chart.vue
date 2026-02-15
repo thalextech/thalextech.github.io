@@ -11,7 +11,7 @@ const props = defineProps({
   resolutionKey: { type: String, default: "900" },
   resolutionOptions: { type: Array, default: () => [] },
 });
-const emit = defineEmits(["update:resolutionKey"]);
+const emit = defineEmits(["update:resolutionKey", "update:timeAnchorTs"]);
 
 const svgRef = ref(null);
 const SVG_FONT_FAMILY =
@@ -22,6 +22,7 @@ let hiddenDetailSeriesKeys = new Set();
 let bottomMode = "mark";
 let resolutionMenuOpen = false;
 let lastResolutionKey = null;
+let lastEmittedTimeAnchorTs = null;
 
 const layout = {
   width: 1200,
@@ -326,6 +327,10 @@ const drawResolutionControl = (svg) => {
         const nextKey = String(option?.key ?? "");
         if (nextKey && nextKey !== String(props.resolutionKey)) {
           brushedDomain = null;
+          if (lastEmittedTimeAnchorTs !== null) {
+            emit("update:timeAnchorTs", null);
+            lastEmittedTimeAnchorTs = null;
+          }
           emit("update:resolutionKey", nextKey);
           return;
         }
@@ -400,6 +405,34 @@ const drawLowerModeToggle = (group) => {
   }
 };
 
+const emitTimeAnchorIfChanged = (indexPoints, domain = null) => {
+  const points = Array.isArray(indexPoints) ? indexPoints : [];
+  if (!points.length) {
+    if (lastEmittedTimeAnchorTs !== null) {
+      emit("update:timeAnchorTs", null);
+      lastEmittedTimeAnchorTs = null;
+    }
+    return;
+  }
+
+  let anchorPoint = points[0];
+  if (Array.isArray(domain) && domain.length === 2 && domain[0] instanceof Date) {
+    const domainStartMs = domain[0].getTime();
+    const firstInsideDomain = points.find(
+      (point) => point?.date instanceof Date && point.date.getTime() >= domainStartMs,
+    );
+    anchorPoint = firstInsideDomain ?? points[points.length - 1] ?? points[0];
+  }
+
+  const nextAnchorTs = Number.isFinite(Number(anchorPoint?.ts))
+    ? Number(anchorPoint.ts)
+    : null;
+  if (nextAnchorTs !== lastEmittedTimeAnchorTs) {
+    emit("update:timeAnchorTs", nextAnchorTs);
+    lastEmittedTimeAnchorTs = nextAnchorTs;
+  }
+};
+
 const render = () => {
   const svgEl = svgRef.value;
   if (!svgEl) return;
@@ -453,6 +486,7 @@ const render = () => {
     .attr("fill", "#000");
 
   if (!index.length) {
+    emitTimeAnchorIfChanged([], null);
     svg
       .append("text")
       .attr("x", layout.width / 2)
@@ -1116,21 +1150,25 @@ const render = () => {
     .on("brush", (event) => {
       if (!event.selection) {
         drawBottom(null);
+        emitTimeAnchorIfChanged(index, null);
         return;
       }
       const [from, to] = event.selection.map(xTop.invert);
       const domain = from <= to ? [from, to] : [to, from];
       drawBottom(domain);
+      emitTimeAnchorIfChanged(index, domain);
     })
     .on("end", (event) => {
       if (!event.selection) {
         brushedDomain = null;
         drawBottom(null);
+        emitTimeAnchorIfChanged(index, null);
         return;
       }
       const [from, to] = event.selection.map(xTop.invert);
       brushedDomain = from <= to ? [from, to] : [to, from];
       drawBottom(brushedDomain);
+      emitTimeAnchorIfChanged(index, brushedDomain);
     });
 
   const brushGroup = topGroup.append("g").attr("class", "brush");
@@ -1144,6 +1182,7 @@ const render = () => {
   }
 
   drawBottom(brushedDomain);
+  emitTimeAnchorIfChanged(index, brushedDomain);
   drawResolutionControl(svg);
 };
 

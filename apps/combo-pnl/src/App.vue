@@ -6,8 +6,6 @@ import {
   computeGreeksPnlSeries,
   fetchInstruments,
   fetchIndexHistory,
-  fetchLatestIndexPrice,
-  fetchLatestMarkPrice,
   fetchMarkHistory,
 } from "../../../lib/thalex.js";
 
@@ -64,11 +62,12 @@ const tickerByInstrument = ref({});
 const indexByName = ref({});
 const indexSeries = ref([]);
 const comboSeries = ref([]);
+const indexHistoryRows = ref([]);
+const markHistoryByInstrument = ref({});
+const chartAnchorTs = ref(null);
 
 let loadRequestId = 0;
 let loadTimer = null;
-let indexRefreshTimer = null;
-let tickerRefreshTimer = null;
 
 const clampQty = (value) => {
   const n = Number(value);
@@ -240,6 +239,91 @@ const runWithConcurrency = async (items, limit, worker) => {
   await Promise.all(workers);
 };
 
+const normalizeTimestampSeconds = (value) => {
+  const ts = Number(value);
+  if (!Number.isFinite(ts)) return null;
+  return ts > 1e12 ? Math.floor(ts / 1000) : Math.floor(ts);
+};
+
+const sortRowsByTs = (rows) =>
+  (rows || [])
+    .filter((row) => Number.isFinite(normalizeTimestampSeconds(row?.ts)))
+    .slice()
+    .sort(
+      (a, b) =>
+        normalizeTimestampSeconds(a?.ts) - normalizeTimestampSeconds(b?.ts),
+    );
+
+const getAnchorRow = (rows, anchorTs) => {
+  if (!rows?.length) return null;
+  if (!Number.isFinite(anchorTs)) return rows[0] ?? null;
+  const normalizedAnchorTs = normalizeTimestampSeconds(anchorTs);
+  if (!Number.isFinite(normalizedAnchorTs)) return rows[0] ?? null;
+  const firstAtOrAfter = rows.find(
+    (row) => normalizeTimestampSeconds(row?.ts) >= normalizedAnchorTs,
+  );
+  return firstAtOrAfter ?? rows[rows.length - 1] ?? null;
+};
+
+const resolveEffectiveAnchorTs = () => {
+  const explicitAnchor = normalizeTimestampSeconds(chartAnchorTs.value);
+  if (Number.isFinite(explicitAnchor)) return explicitAnchor;
+  const firstIndexTs = normalizeTimestampSeconds(indexHistoryRows.value?.[0]?.ts);
+  return Number.isFinite(firstIndexTs) ? firstIndexTs : null;
+};
+
+const rebuildBuilderSnapshots = () => {
+  const nextTickerByInstrument = {};
+  const effectiveAnchorTs = resolveEffectiveAnchorTs();
+
+  for (const instrumentName of selectedInstrumentNames.value) {
+    const rows = markHistoryByInstrument.value[instrumentName] || [];
+    const row = getAnchorRow(rows, effectiveAnchorTs);
+    if (!row) continue;
+    const ts = normalizeTimestampSeconds(row?.ts);
+    const markClose = Number(
+      row?.mark_price_close ?? row?.close ?? row?.mark_price,
+    );
+    const ivClose = Number(
+      row?.iv_close ?? row?.iv ?? row?.mark_iv ?? row?.implied_volatility,
+    );
+    const data = { ...row };
+    if (Number.isFinite(ts)) data.ts = ts;
+    if (Number.isFinite(markClose)) data.mark_price_close = markClose;
+    if (Number.isFinite(ivClose)) data.iv_close = ivClose;
+    nextTickerByInstrument[instrumentName] = {
+      data,
+      fetchedAt: Number.isFinite(ts) ? ts * 1000 : Date.now(),
+    };
+  }
+  tickerByInstrument.value = nextTickerByInstrument;
+
+  const indexName = activeIndexName.value;
+  if (!indexName) {
+    indexByName.value = {};
+    return;
+  }
+  const indexRow = getAnchorRow(indexHistoryRows.value, effectiveAnchorTs);
+  const indexClose = Number(
+    indexRow?.index_price_close ?? indexRow?.close ?? indexRow?.price,
+  );
+  const indexTs = normalizeTimestampSeconds(indexRow?.ts);
+  if (indexRow && Number.isFinite(indexClose)) {
+    indexByName.value = {
+      [indexName]: {
+        data: {
+          ...indexRow,
+          index_price_close: indexClose,
+          ts: Number.isFinite(indexTs) ? indexTs : indexRow?.ts,
+        },
+        fetchedAt: Number.isFinite(indexTs) ? indexTs * 1000 : Date.now(),
+      },
+    };
+  } else {
+    indexByName.value = {};
+  }
+};
+
 const loadSeries = async () => {
   const requestId = ++loadRequestId;
 
@@ -247,6 +331,10 @@ const loadSeries = async () => {
     ui.error = "Only option legs are supported in Option Strike.";
     indexSeries.value = [];
     comboSeries.value = [];
+    indexHistoryRows.value = [];
+    markHistoryByInstrument.value = {};
+    tickerByInstrument.value = {};
+    indexByName.value = {};
     return;
   }
 
@@ -255,6 +343,10 @@ const loadSeries = async () => {
     ui.error = "";
     indexSeries.value = [];
     comboSeries.value = [];
+    indexHistoryRows.value = [];
+    markHistoryByInstrument.value = {};
+    tickerByInstrument.value = {};
+    indexByName.value = {};
     return;
   }
 
@@ -286,6 +378,14 @@ const loadSeries = async () => {
     );
 
     if (requestId !== loadRequestId) return;
+
+    indexHistoryRows.value = sortRowsByTs(indexRows);
+    const sortedMarkByInstrument = {};
+    for (const [instrumentName, rows] of Object.entries(markByInstrument)) {
+      sortedMarkByInstrument[instrumentName] = sortRowsByTs(rows);
+    }
+    markHistoryByInstrument.value = sortedMarkByInstrument;
+    rebuildBuilderSnapshots();
 
     const indexByTs = new Map(
       (indexRows || [])
@@ -338,6 +438,7 @@ const loadSeries = async () => {
       indexSeries.value = [];
       comboSeries.value = [];
       ui.error = "Missing mark history for one or more selected legs.";
+      rebuildBuilderSnapshots();
       return;
     }
 
@@ -424,11 +525,16 @@ const loadSeries = async () => {
     if (!indexSeries.value.length || !comboSeries.value.length) {
       ui.error = "No overlapping index/mark history for selected legs.";
     }
+    rebuildBuilderSnapshots();
   } catch (error) {
     if (requestId !== loadRequestId) return;
     ui.error = error instanceof Error ? error.message : String(error);
     indexSeries.value = [];
     comboSeries.value = [];
+    indexHistoryRows.value = [];
+    markHistoryByInstrument.value = {};
+    tickerByInstrument.value = {};
+    indexByName.value = {};
   } finally {
     if (requestId === loadRequestId) {
       ui.loading = false;
@@ -444,38 +550,6 @@ const scheduleLoad = () => {
   }, LOAD_DEBOUNCE_MS);
 };
 
-const refreshIndexSnapshot = async () => {
-  const indexName = activeIndexName.value;
-  if (!indexName) return;
-  try {
-    const data = await fetchLatestIndexPrice(indexName, "1m");
-    if (!data) return;
-    indexByName.value = {
-      ...indexByName.value,
-      [indexName]: { data, fetchedAt: Date.now() },
-    };
-  } catch (error) {
-    console.warn("Failed to refresh index snapshot", error);
-  }
-};
-
-const refreshSelectedTickers = async () => {
-  const names = selectedInstrumentNames.value;
-  if (!names.length) return;
-  await runWithConcurrency(names, MARK_CONCURRENCY, async (instrumentName) => {
-    try {
-      const ticker = await fetchLatestMarkPrice(instrumentName);
-      if (!ticker) return;
-      tickerByInstrument.value[instrumentName] = {
-        data: ticker,
-        fetchedAt: Date.now(),
-      };
-    } catch (error) {
-      console.warn("Failed to refresh ticker", instrumentName, error);
-    }
-  });
-};
-
 watch(
   () => [ui.resolutionKey, positionLegs.value],
   () => {
@@ -485,12 +559,17 @@ watch(
 );
 
 watch(
-  () => [selectedInstrumentNames.value, activeIndexName.value],
+  () => [
+    chartAnchorTs.value,
+    selectedInstrumentNames.value,
+    activeIndexName.value,
+    indexHistoryRows.value,
+    markHistoryByInstrument.value,
+  ],
   () => {
-    refreshSelectedTickers();
-    refreshIndexSnapshot();
+    rebuildBuilderSnapshots();
   },
-  { deep: true, immediate: true },
+  { deep: true },
 );
 
 onMounted(async () => {
@@ -500,18 +579,11 @@ onMounted(async () => {
       instrument?.type === "option" && instrument?.underlying === "BTCUSD",
   );
 
-  await refreshIndexSnapshot();
-  await refreshSelectedTickers();
   await loadSeries();
-
-  indexRefreshTimer = setInterval(refreshIndexSnapshot, 30_000);
-  tickerRefreshTimer = setInterval(refreshSelectedTickers, 30_000);
 });
 
 onUnmounted(() => {
   if (loadTimer) clearTimeout(loadTimer);
-  if (indexRefreshTimer) clearInterval(indexRefreshTimer);
-  if (tickerRefreshTimer) clearInterval(tickerRefreshTimer);
 });
 </script>
 
@@ -549,6 +621,7 @@ onUnmounted(() => {
         :resolution-key="ui.resolutionKey"
         :resolution-options="RESOLUTION_OPTIONS"
         @update:resolution-key="ui.resolutionKey = $event"
+        @update:time-anchor-ts="chartAnchorTs = $event"
       />
     </div>
   </div>
