@@ -389,10 +389,14 @@ const render = () => {
   const expiryIndexByLabel = new Map(
     expiryLabels.map((label, index) => [label, index]),
   );
+  const expiryColorMinT = 0.08;
+  const expiryColorMaxT = 0.92;
   const expiryColorScale = d3
     .scaleSequential()
     .domain([0, Math.max(1, expiryLabels.length - 1)])
-    .interpolator((t) => d3.interpolateRdBu(t));
+    .interpolator(
+      (t) => d3.interpolateRdBu(expiryColorMinT + (expiryColorMaxT - expiryColorMinT) * t),
+    );
   const greekColorScale = d3
     .scaleSequential()
     .domain([domainMin, domainMax])
