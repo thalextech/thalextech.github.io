@@ -27,13 +27,13 @@ const RESOLUTION_SECONDS = {
   "1d": ONE_DAY_SECONDS,
 };
 const MAX_POINTS_PER_INSTRUMENT = 48;
-const MAX_MARK_REQUEST_CONCURRENCY = 20;
-const MARK_REQUEST_PACING_MS = 300;
-const MARK_REQUEST_MAX_RETRIES = 3;
+const MARK_FETCH_PARALLEL = 10;
+const MARK_REQUEST_LAUNCH_JITTER_MS = 2000;
 const REQUEST_TIMEOUT_MS = 45_000;
 const REQUEST_MAX_RETRIES = 3;
-const REQUEST_RETRY_DELAYS_MS = [1000, 10_000, 60_000];
+const REQUEST_RETRY_DELAY_MS = 1000;
 const ERROR_AUTO_CLEAR_MS = 5_000;
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
 const ui = reactive({
   expirationPrimary: "",
@@ -276,6 +276,49 @@ const sleep = (ms) =>
     setTimeout(resolve, ms);
   });
 
+function getRetryDelayMs() {
+  return REQUEST_RETRY_DELAY_MS;
+}
+
+function isRetryableRequestError(error) {
+  if (!error) return false;
+  if (RETRYABLE_STATUS.has(Number(error?.status))) return true;
+  if (error?.name === "AbortError") return true;
+  return error instanceof TypeError;
+}
+
+async function fetchWithRetries(
+  fetcher,
+  { maxRetries = REQUEST_MAX_RETRIES, isCanceled = null } = {},
+) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (isCanceled?.()) {
+      const canceledError = new Error("Request canceled");
+      canceledError.canceled = true;
+      throw canceledError;
+    }
+
+    try {
+      return await fetcher();
+    } catch (error) {
+      lastError = error;
+      const retryDelayMs = getRetryDelayMs(attempt);
+      const canRetry =
+        attempt < maxRetries &&
+        isRetryableRequestError(error) &&
+        !isCanceled?.();
+      if (!canRetry) {
+        throw error;
+      }
+      await sleep(retryDelayMs);
+    }
+  }
+
+  throw lastError || new Error("Request failed");
+}
+
 function startProgressiveDots() {
   if (progressiveDotsTimer) return;
   const sequence = [1, 2, 3, 0];
@@ -377,73 +420,72 @@ async function fetchMarkRows(
 ) {
   const rows = [];
   let rateLimitedCount = 0;
+  const parallel = Math.max(1, Math.floor(Number(MARK_FETCH_PARALLEL) || 1));
+  const launchJitterMaxMs = Math.max(
+    0,
+    Math.floor(Number(MARK_REQUEST_LAUNCH_JITTER_MS) || 0),
+  );
 
   const fetchInstrumentRows = async (instrument, index) => {
-    let fetchedRows = null;
-    let lastError = null;
-
-    for (let attempt = 0; attempt <= MARK_REQUEST_MAX_RETRIES; attempt += 1) {
-      if (isCanceled?.()) break;
-      try {
-        fetchedRows = await fetchMarkHistory({
-          instrument_name: instrument.instrument_name,
-          resolution,
-          from: range.from,
-          to: range.to,
-          requestOptions: {
-            timeoutMs: REQUEST_TIMEOUT_MS,
-            maxRetries: REQUEST_MAX_RETRIES,
-            retryDelaysMs: REQUEST_RETRY_DELAYS_MS,
-          },
-        });
-        lastError = null;
-        break;
-      } catch (reason) {
-        lastError = reason;
-        if (reason?.status !== 429 || attempt >= MARK_REQUEST_MAX_RETRIES) {
-          break;
-        }
-        const backoffMs =
-          2000 * Math.pow(2, attempt) + Math.floor(Math.random() * 180);
-        await sleep(backoffMs);
-      }
+    try {
+      const fetchedRows = await fetchWithRetries(
+        () =>
+          fetchMarkHistory({
+            instrument_name: instrument.instrument_name,
+            resolution,
+            from: range.from,
+            to: range.to,
+            requestOptions: {
+              timeoutMs: REQUEST_TIMEOUT_MS,
+              maxRetries: 0,
+            },
+          }),
+        { maxRetries: REQUEST_MAX_RETRIES, isCanceled },
+      );
+      return { instrument, index, fetchedRows, lastError: null };
+    } catch (lastError) {
+      return { instrument, index, fetchedRows: null, lastError };
     }
-
-    return { instrument, index, fetchedRows, lastError };
   };
 
-  for (
-    let batchStart = 0;
-    batchStart < instruments.length;
-    batchStart += MAX_MARK_REQUEST_CONCURRENCY
-  ) {
-    if (isCanceled?.()) break;
-    const batch = instruments.slice(
-      batchStart,
-      batchStart + MAX_MARK_REQUEST_CONCURRENCY,
-    );
-    const inFlight = new Map();
+  let nextIndex = 0;
+  const inFlight = new Map();
 
-    batch.forEach((instrument, offset) => {
-      const index = batchStart + offset;
-      const tracked = fetchInstrumentRows(instrument, index).then((result) => ({
-        key: index,
-        result,
-      }));
-      inFlight.set(index, tracked);
-    });
+  const launchOne = () => {
+    if (isCanceled?.()) return false;
+    if (nextIndex >= instruments.length) return false;
 
-    while (inFlight.size) {
-      if (isCanceled?.()) break;
-      const { key, result } = await Promise.race(inFlight.values());
-      inFlight.delete(key);
-      if (!Array.isArray(result.fetchedRows)) {
-        if (result.lastError?.status === 429) {
-          rateLimitedCount += 1;
-        }
-        continue;
+    const index = nextIndex;
+    nextIndex += 1;
+    const instrument = instruments[index];
+
+    const tracked = (async () => {
+      if (launchJitterMaxMs > 0) {
+        const jitterMs = Math.floor(Math.random() * (launchJitterMaxMs + 1));
+        if (jitterMs > 0) await sleep(jitterMs);
       }
+      const result = await fetchInstrumentRows(instrument, index);
+      return { key: index, result };
+    })();
 
+    inFlight.set(index, tracked);
+    return true;
+  };
+
+  while (inFlight.size < parallel && nextIndex < instruments.length) {
+    launchOne();
+  }
+
+  while (inFlight.size) {
+    if (isCanceled?.()) break;
+    const { key, result } = await Promise.race(inFlight.values());
+    inFlight.delete(key);
+
+    if (!Array.isArray(result.fetchedRows)) {
+      if (result.lastError?.status === 429) {
+        rateLimitedCount += 1;
+      }
+    } else {
       const instrumentName = result.instrument?.instrument_name;
       const nextRows = result.fetchedRows.map((row) => ({
         ...row,
@@ -457,10 +499,8 @@ async function fetchMarkRows(
       });
     }
 
-    const hasMore =
-      batchStart + MAX_MARK_REQUEST_CONCURRENCY < instruments.length;
-    if (hasMore) {
-      await sleep(MARK_REQUEST_PACING_MS);
+    while (inFlight.size < parallel && nextIndex < instruments.length) {
+      launchOne();
     }
   }
 
@@ -480,17 +520,20 @@ async function loadIndex() {
   data.requestedRange = range;
 
   try {
-    const indexRows = await fetchIndexHistory({
-      index_name: "BTCUSD",
-      resolution: ui.resolution,
-      from: range.from,
-      to: range.to,
-      requestOptions: {
-        timeoutMs: REQUEST_TIMEOUT_MS,
-        maxRetries: REQUEST_MAX_RETRIES,
-        retryDelaysMs: REQUEST_RETRY_DELAYS_MS,
-      },
-    });
+    const indexRows = await fetchWithRetries(
+      () =>
+        fetchIndexHistory({
+          index_name: "BTCUSD",
+          resolution: ui.resolution,
+          from: range.from,
+          to: range.to,
+          requestOptions: {
+            timeoutMs: REQUEST_TIMEOUT_MS,
+            maxRetries: 0,
+          },
+        }),
+      { maxRetries: REQUEST_MAX_RETRIES },
+    );
 
     if (current !== indexRequestId) return;
     data.indexRows = indexRows || [];
@@ -601,12 +644,14 @@ async function reloadAll() {
   data.markRows = [];
   if (!selectedExpirations.value.length) return;
   await loadIndex();
-  for (const expiry of selectedExpirations.value) {
-    await loadExpiry(expiry, {
-      rebuild: true,
-      panelKey: ui.mode === "single" ? "primary" : null,
-    });
-  }
+  await Promise.all(
+    selectedExpirations.value.map((expiry) =>
+      loadExpiry(expiry, {
+        rebuild: true,
+        panelKey: ui.mode === "single" ? "primary" : null,
+      }),
+    ),
+  );
 }
 
 onMounted(async () => {
