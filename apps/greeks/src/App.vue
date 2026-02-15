@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import * as d3 from "d3";
 import Greeks from "./components/Greeks.vue";
 import {
@@ -17,18 +17,27 @@ const GREEK_OPTIONS = [
   { value: "delta", symbol: "\u03b4" },
   { value: "gamma", symbol: "\u0393" },
   { value: "theta", symbol: "\u0398" },
-  { value: "vega", symbol: "\u03bd" },
+  { value: "vega", symbol: "\u03c3" },
+  { value: "vanna", symbol: "v" },
 ];
-const RANGE_DAYS = 30;
 const ONE_HOUR_SECONDS = 60 * 60;
-const MAX_1H_POINTS_PER_INSTRUMENT = 72;
-const MAX_MARK_REQUEST_CONCURRENCY = 30;
-const MARK_REQUEST_PACING_MS = 120;
+const ONE_DAY_SECONDS = 24 * ONE_HOUR_SECONDS;
+const RESOLUTION_SECONDS = {
+  "1h": ONE_HOUR_SECONDS,
+  "1d": ONE_DAY_SECONDS,
+};
+const MAX_POINTS_PER_INSTRUMENT = 48;
+const MAX_MARK_REQUEST_CONCURRENCY = 20;
+const MARK_REQUEST_PACING_MS = 300;
 const MARK_REQUEST_MAX_RETRIES = 3;
+const REQUEST_TIMEOUT_MS = 45_000;
+const REQUEST_MAX_RETRIES = 3;
+const REQUEST_RETRY_DELAYS_MS = [1000, 10_000, 60_000];
+const ERROR_AUTO_CLEAR_MS = 5_000;
 
 const ui = reactive({
   expirationPrimary: "",
-  expirationSecondary: "",
+  mode: "single",
   resolution: "1d",
   greek: "delta",
   loading: false,
@@ -44,6 +53,7 @@ const data = reactive({
 });
 const chartRef = ref(null);
 const isBootstrapping = ref(true);
+const progressiveDots = ref(0);
 const expiryPanelLoading = reactive({
   primary: false,
   secondary: false,
@@ -53,14 +63,18 @@ const expiryPanelLoadToken = {
   secondary: 0,
 };
 
+const multiModeExpirations = computed(() => {
+  const options = expirationOptions.value;
+  if (!Array.isArray(options) || options.length <= 2) return [];
+  return options.slice(1, -1).map((option) => option.value);
+});
+
 const selectedExpirations = computed(() =>
-  Array.from(
-    new Set(
-      [ui.expirationPrimary, ui.expirationSecondary].filter(
-        (expiry) => typeof expiry === "string" && expiry.length,
-      ),
-    ),
-  ),
+  ui.mode === "multi"
+    ? multiModeExpirations.value
+    : typeof ui.expirationPrimary === "string" && ui.expirationPrimary.length
+      ? [ui.expirationPrimary]
+      : [],
 );
 
 const expirationByValue = computed(() => {
@@ -129,7 +143,7 @@ const chartRows = computed(() => {
     const tte = instrument.expiration_timestamp - mark.ts;
     const spot = index.index_price_close;
     const iv = mark.iv_close;
-    const { delta, gamma, theta, vega } = calcGreeks(
+    const { delta, gamma, theta, vega, vanna } = calcGreeks(
       spot,
       strike,
       tte,
@@ -155,6 +169,7 @@ const chartRows = computed(() => {
       gamma,
       theta,
       vega,
+      vanna,
       delta_abs: Math.abs(delta),
       m,
       date_time: new Date(mark.ts * 1000),
@@ -221,25 +236,15 @@ const metaSummary = computed(() => {
 
 const chartLoading = computed(() => ui.loading && chartRows.value.length === 0);
 const loadingPanelIndexes = computed(() => {
-  const indexes = [];
-  if (expiryPanelLoading.primary) {
-    indexes.push(0);
-  }
-  if (
-    expiryPanelLoading.secondary &&
-    ui.expirationSecondary &&
-    ui.expirationSecondary !== ui.expirationPrimary
-  ) {
-    indexes.push(1);
-  }
-  return indexes;
+  if (ui.mode === "multi") return [];
+  return expiryPanelLoading.primary ? [0] : [];
 });
 
 function handleSavePng() {
   if (!chartRef.value) return;
-  const primary = ui.expirationPrimary || "expiry-a";
-  const secondary = ui.expirationSecondary || "expiry-b";
-  const filename = `greeks-${primary}-${secondary}-${ui.greek}.png`;
+  const expiryPart =
+    ui.mode === "multi" ? "all-expiries" : ui.expirationPrimary || "expiry";
+  const filename = `greeks-${expiryPart}-${ui.greek}.png`;
   chartRef.value.exportPng({ filename });
 }
 
@@ -249,11 +254,13 @@ const computeRange = (expirationTimestamp) => {
     ? Math.min(now, expirationTimestamp - 3600)
     : now;
   const to = Math.max(safeEnd, 0);
-  let from = Math.max(0, to - RANGE_DAYS * 24 * 60 * 60);
-  if (ui.resolution === "1h") {
-    const spanSeconds = MAX_1H_POINTS_PER_INSTRUMENT * ONE_HOUR_SECONDS;
-    from = Math.max(0, to - spanSeconds);
-  }
+  const resolutionSeconds =
+    RESOLUTION_SECONDS[ui.resolution] || ONE_HOUR_SECONDS;
+  const maxByPointsFrom = Math.max(
+    0,
+    to - MAX_POINTS_PER_INSTRUMENT * resolutionSeconds,
+  );
+  const from = maxByPointsFrom;
   return { from, to };
 };
 
@@ -261,11 +268,54 @@ let indexRequestId = 0;
 const markRequestIdByExpiry = new Map();
 const markRowsCache = new Map();
 let pendingLoads = 0;
+let errorAutoClearTimer = null;
+let progressiveDotsTimer = null;
 
 const sleep = (ms) =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+
+function startProgressiveDots() {
+  if (progressiveDotsTimer) return;
+  const sequence = [1, 2, 3, 0];
+  let sequenceIndex = 0;
+  progressiveDots.value = sequence[sequenceIndex];
+  progressiveDotsTimer = setInterval(() => {
+    sequenceIndex = (sequenceIndex + 1) % sequence.length;
+    progressiveDots.value = sequence[sequenceIndex];
+  }, 400);
+}
+
+function stopProgressiveDots() {
+  if (progressiveDotsTimer) {
+    clearInterval(progressiveDotsTimer);
+    progressiveDotsTimer = null;
+  }
+  progressiveDots.value = 0;
+}
+
+function clearError() {
+  ui.error = "";
+  if (errorAutoClearTimer) {
+    clearTimeout(errorAutoClearTimer);
+    errorAutoClearTimer = null;
+  }
+}
+
+function setError(message) {
+  ui.error = message || "";
+  if (errorAutoClearTimer) {
+    clearTimeout(errorAutoClearTimer);
+    errorAutoClearTimer = null;
+  }
+  if (ui.error.includes("No datapoints returned")) {
+    errorAutoClearTimer = setTimeout(() => {
+      ui.error = "";
+      errorAutoClearTimer = null;
+    }, ERROR_AUTO_CLEAR_MS);
+  }
+}
 
 function startLoad() {
   pendingLoads += 1;
@@ -340,6 +390,11 @@ async function fetchMarkRows(
           resolution,
           from: range.from,
           to: range.to,
+          requestOptions: {
+            timeoutMs: REQUEST_TIMEOUT_MS,
+            maxRetries: REQUEST_MAX_RETRIES,
+            retryDelaysMs: REQUEST_RETRY_DELAYS_MS,
+          },
         });
         lastError = null;
         break;
@@ -349,7 +404,7 @@ async function fetchMarkRows(
           break;
         }
         const backoffMs =
-          600 * Math.pow(2, attempt) + Math.floor(Math.random() * 180);
+          2000 * Math.pow(2, attempt) + Math.floor(Math.random() * 180);
         await sleep(backoffMs);
       }
     }
@@ -367,14 +422,21 @@ async function fetchMarkRows(
       batchStart,
       batchStart + MAX_MARK_REQUEST_CONCURRENCY,
     );
-    const batchResults = await Promise.all(
-      batch.map((instrument, offset) =>
-        fetchInstrumentRows(instrument, batchStart + offset),
-      ),
-    );
+    const inFlight = new Map();
 
-    for (const result of batchResults) {
+    batch.forEach((instrument, offset) => {
+      const index = batchStart + offset;
+      const tracked = fetchInstrumentRows(instrument, index).then((result) => ({
+        key: index,
+        result,
+      }));
+      inFlight.set(index, tracked);
+    });
+
+    while (inFlight.size) {
       if (isCanceled?.()) break;
+      const { key, result } = await Promise.race(inFlight.values());
+      inFlight.delete(key);
       if (!Array.isArray(result.fetchedRows)) {
         if (result.lastError?.status === 429) {
           rateLimitedCount += 1;
@@ -412,7 +474,7 @@ async function loadIndex() {
 
   const current = (indexRequestId += 1);
   startLoad();
-  ui.error = "";
+  clearError();
 
   const range = computeRange(referenceExpiryTs);
   data.requestedRange = range;
@@ -423,6 +485,11 @@ async function loadIndex() {
       resolution: ui.resolution,
       from: range.from,
       to: range.to,
+      requestOptions: {
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        maxRetries: REQUEST_MAX_RETRIES,
+        retryDelaysMs: REQUEST_RETRY_DELAYS_MS,
+      },
     });
 
     if (current !== indexRequestId) return;
@@ -433,7 +500,7 @@ async function loadIndex() {
     }
   } catch (error) {
     if (current !== indexRequestId) return;
-    ui.error = error instanceof Error ? error.message : String(error);
+    setError(error instanceof Error ? error.message : String(error));
     data.indexRows = [];
   } finally {
     finishLoad();
@@ -452,7 +519,7 @@ async function loadExpiry(expiry, { rebuild = true, panelKey = null } = {}) {
       (instrument?.option_type || "call").toLowerCase() === "call",
   );
   if (!instruments.length) {
-    ui.error = `No instruments available for expiry ${expiry}.`;
+    setError(`No instruments available for expiry ${expiry}.`);
     return;
   }
 
@@ -476,10 +543,23 @@ async function loadExpiry(expiry, { rebuild = true, panelKey = null } = {}) {
 
   const panelToken = startPanelLoad(panelKey);
   startLoad();
-  ui.error = "";
+  clearError();
 
   try {
+    data.markRowsByExpiry[expiry] = [];
+    if (rebuild) rebuildMarkRows();
+    let progressiveRowsCount = 0;
+
     const markResult = await fetchMarkRows(instruments, range, resolution, {
+      onInstrumentRows: (nextRows) => {
+        if (markRequestIdByExpiry.get(expiry) !== current) return;
+        if (!Array.isArray(nextRows) || !nextRows.length) return;
+        const existingRows = data.markRowsByExpiry[expiry] || [];
+        existingRows.push(...nextRows);
+        data.markRowsByExpiry[expiry] = existingRows;
+        progressiveRowsCount += nextRows.length;
+        if (rebuild) rebuildMarkRows();
+      },
       isCanceled: () => markRequestIdByExpiry.get(expiry) !== current,
     });
     if (markRequestIdByExpiry.get(expiry) !== current) return;
@@ -494,15 +574,20 @@ async function loadExpiry(expiry, { rebuild = true, panelKey = null } = {}) {
       throw new Error(`No datapoints returned for expiry ${expiry}.`);
     }
 
-    data.markRowsByExpiry[expiry] = nextRows;
+    if (
+      !progressiveRowsCount ||
+      data.markRowsByExpiry[expiry]?.length !== nextRows.length
+    ) {
+      data.markRowsByExpiry[expiry] = nextRows;
+    }
     markRowsCache.set(cacheKey, nextRows);
     if (rebuild) rebuildMarkRows();
   } catch (error) {
     if (markRequestIdByExpiry.get(expiry) !== current) return;
     if (error?.status === 429) {
-      ui.error = "Rate limited by Thalex (429). Please wait a bit and retry.";
+      setError("Rate limited by Thalex (429). Please wait a bit and retry.");
     } else {
-      ui.error = error instanceof Error ? error.message : String(error);
+      setError(error instanceof Error ? error.message : String(error));
     }
   } finally {
     finishPanelLoad(panelKey, panelToken);
@@ -511,28 +596,17 @@ async function loadExpiry(expiry, { rebuild = true, panelKey = null } = {}) {
 }
 
 async function reloadAll() {
-  if (!selectedExpirations.value.length) return;
   data.indexRows = [];
   data.markRowsByExpiry = {};
   data.markRows = [];
+  if (!selectedExpirations.value.length) return;
   await loadIndex();
-  const expiriesToLoad = [];
-  if (ui.expirationPrimary) {
-    expiriesToLoad.push({ expiry: ui.expirationPrimary, panelKey: "primary" });
-  }
-  if (
-    ui.expirationSecondary &&
-    ui.expirationSecondary !== ui.expirationPrimary
-  ) {
-    expiriesToLoad.push({
-      expiry: ui.expirationSecondary,
-      panelKey: "secondary",
+  for (const expiry of selectedExpirations.value) {
+    await loadExpiry(expiry, {
+      rebuild: true,
+      panelKey: ui.mode === "single" ? "primary" : null,
     });
   }
-  for (const { expiry, panelKey } of expiriesToLoad) {
-    await loadExpiry(expiry, { rebuild: false, panelKey });
-  }
-  rebuildMarkRows();
 }
 
 onMounted(async () => {
@@ -541,7 +615,7 @@ onMounted(async () => {
     data.instruments = Array.isArray(all) ? all : [];
     const options = expirationOptions.value;
     if (!options.length) {
-      ui.error = "No option expirations found.";
+      setError("No option expirations found.");
       return;
     }
     const now = Date.now() / 1000;
@@ -557,22 +631,21 @@ onMounted(async () => {
       return optionDiff < bestDiff ? option : best;
     }, null);
     const primary = (closest || options[0]).value;
-    const primaryIndex = options.findIndex(
-      (option) => option.value === primary,
-    );
-    const secondaryFallback =
-      options[primaryIndex + 1] || options[primaryIndex - 1] || options[0];
     ui.expirationPrimary = primary;
-    ui.expirationSecondary =
-      secondaryFallback?.value === primary
-        ? ""
-        : secondaryFallback?.value || "";
     await reloadAll();
   } catch (error) {
-    ui.error = error instanceof Error ? error.message : String(error);
+    setError(error instanceof Error ? error.message : String(error));
   } finally {
     isBootstrapping.value = false;
   }
+});
+
+onUnmounted(() => {
+  if (errorAutoClearTimer) {
+    clearTimeout(errorAutoClearTimer);
+    errorAutoClearTimer = null;
+  }
+  stopProgressiveDots();
 });
 
 watch(
@@ -588,6 +661,7 @@ watch(
   () => ui.expirationPrimary,
   async (next) => {
     if (isBootstrapping.value) return;
+    if (ui.mode !== "single") return;
     if (next) {
       await loadExpiry(next, { panelKey: "primary" });
     } else {
@@ -599,17 +673,24 @@ watch(
 );
 
 watch(
-  () => ui.expirationSecondary,
-  async (next) => {
+  () => ui.mode,
+  async () => {
     if (isBootstrapping.value) return;
-    if (next) {
-      await loadExpiry(next, { panelKey: "secondary" });
-    } else {
-      resetPanelLoad("secondary");
-      rebuildMarkRows();
-    }
+    await reloadAll();
   },
   { immediate: false },
+);
+
+watch(
+  () => ui.loading,
+  (isLoading) => {
+    if (isLoading) {
+      startProgressiveDots();
+    } else {
+      stopProgressiveDots();
+    }
+  },
+  { immediate: true },
 );
 </script>
 
@@ -625,8 +706,27 @@ watch(
       </div>
 
       <div class="controls">
-        <div class="field">
-          <label for="expiration-primary">Expiry A</label>
+        <div class="modeToggle">
+          <button
+            class="modeToggleButton"
+            type="button"
+            :class="{ active: ui.mode === 'single' }"
+            @click="ui.mode = 'single'"
+          >
+            Single
+          </button>
+          <button
+            class="modeToggleButton"
+            type="button"
+            :class="{ active: ui.mode === 'multi' }"
+            @click="ui.mode = 'multi'"
+          >
+            Multi
+          </button>
+        </div>
+
+        <div class="field" v-if="ui.mode === 'single'">
+          <label for="expiration-primary">Expiry</label>
           <select id="expiration-primary" v-model="ui.expirationPrimary">
             <option
               v-for="option in expirationOptions"
@@ -640,26 +740,6 @@ watch(
               :value="ui.expirationPrimary"
             >
               {{ ui.expirationPrimary || "No expirations" }}
-            </option>
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="expiration-secondary">Expiry B</label>
-          <select id="expiration-secondary" v-model="ui.expirationSecondary">
-            <option value="">None</option>
-            <option
-              v-for="option in expirationOptions"
-              :key="`secondary-${option.value}`"
-              :value="option.value"
-            >
-              {{ option.label }}
-            </option>
-            <option
-              v-if="!expirationOptions.length"
-              :value="ui.expirationSecondary"
-            >
-              {{ ui.expirationSecondary || "No expirations" }}
             </option>
           </select>
         </div>
@@ -700,6 +780,10 @@ watch(
         </button>
       </div>
 
+      <div v-if="ui.loading" class="progressiveFetchLabel">
+        Fetching progressively{{ ".".repeat(progressiveDots) }}
+      </div>
+
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
@@ -710,6 +794,7 @@ watch(
       subtitle=""
       :loading="chartLoading"
       :loading-panels="loadingPanelIndexes"
+      :mode="ui.mode"
       x-mode="m"
       :greek="ui.greek"
       :resolution="ui.resolution"
@@ -746,5 +831,12 @@ watch(
 .greekSymbolButton.active {
   color: var(--text);
   font-weight: 600;
+}
+
+.progressiveFetchLabel {
+  margin-top: 8px;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  color: color-mix(in oklab, var(--muted), #d8deee 16%);
 }
 </style>

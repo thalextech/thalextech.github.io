@@ -9,6 +9,7 @@ const props = defineProps({
   subtitle: { type: String, default: "" },
   loading: { type: Boolean, default: false },
   loadingPanels: { type: Array, default: () => [] },
+  mode: { type: String, default: "single" },
   xMode: { type: String, default: "strike" },
   greek: { type: String, default: "delta" },
   resolution: { type: String, default: "1h" },
@@ -170,7 +171,9 @@ const render = () => {
 
   const useStrike = props.xMode === "strike";
 
-  const greekKey = ["delta", "gamma", "theta", "vega"].includes(props.greek)
+  const greekKey = ["delta", "gamma", "theta", "vega", "vanna"].includes(
+    props.greek,
+  )
     ? props.greek
     : "delta";
   const xLabel = useStrike ? "strike" : "S/K";
@@ -193,33 +196,35 @@ const render = () => {
   const yValues = props.data.map(yAccessor).filter(Number.isFinite);
   if (!yValues.length) return;
 
+  const isMultiMode = props.mode === "multi";
   const mainChartRight = width - margin.right;
   const panelGap = 56;
-  const panelLabels = Array.from(
+  const expiryLabels = Array.from(
     new Set(
       props.data
         .map((point) => point?.expiry_date)
         .filter((expiry) => typeof expiry === "string" && expiry.length),
     ),
-  )
-    .sort(
-      (a, b) =>
-        (props.data.find((point) => point?.expiry_date === a)?.expiry_rank ??
-          Number.MAX_SAFE_INTEGER) -
-        (props.data.find((point) => point?.expiry_date === b)?.expiry_rank ??
-          Number.MAX_SAFE_INTEGER),
-    )
-    .slice(0, 2);
-  if (!panelLabels.length) return;
+  ).sort(
+    (a, b) =>
+      (props.data.find((point) => point?.expiry_date === a)?.expiry_rank ??
+        Number.MAX_SAFE_INTEGER) -
+      (props.data.find((point) => point?.expiry_date === b)?.expiry_rank ??
+        Number.MAX_SAFE_INTEGER),
+  );
+  if (!expiryLabels.length) return;
+  const panelLabels = isMultiMode ? ["__multi__"] : expiryLabels.slice(0, 1);
   const panelCount = panelLabels.length;
   const totalGap = panelCount > 1 ? panelGap * (panelCount - 1) : 0;
   const panelWidth = (mainChartRight - margin.left - totalGap) / panelCount;
   if (!(panelWidth > 0)) return;
   const loadingPanelSet = new Set(
-    (props.loadingPanels || []).filter(
-      (index) =>
-        Number.isInteger(index) && index >= 0 && index < panelCount,
-    ),
+    isMultiMode
+      ? []
+      : (props.loadingPanels || []).filter(
+          (index) =>
+            Number.isInteger(index) && index >= 0 && index < panelCount,
+        ),
   );
 
   const yExtent = d3.extent(yValues);
@@ -235,17 +240,13 @@ const render = () => {
     .range([height - margin.bottom, margin.top]);
 
   const panelScaleByLabel = new Map();
-  panelLabels.forEach((label, index) => {
-    const panelPoints = props.data.filter(
-      (point) => point?.expiry_date === label,
-    );
-    const panelXValues = panelPoints.map(xAccessor).filter(Number.isFinite);
-    if (!panelXValues.length) return;
+  const panelConfigs = [];
+  if (isMultiMode) {
+    const panelXValues = props.data.map(xAccessor).filter(Number.isFinite);
     const xExtent = d3.extent(panelXValues);
     if (!Number.isFinite(xExtent[0]) || !Number.isFinite(xExtent[1])) return;
-
-    const left = margin.left + index * (panelWidth + panelGap);
-    const right = left + panelWidth;
+    const left = margin.left;
+    const right = mainChartRight;
     const x = d3.scaleLinear().domain(xExtent).nice().range([left, right]);
     const xAxis = d3
       .axisBottom(x)
@@ -255,8 +256,35 @@ const render = () => {
     if (useStrike) {
       xAxis.tickFormat(d3.format(",.0f"));
     }
-    panelScaleByLabel.set(label, { x, xAxis, left, right });
-  });
+    panelConfigs.push({ label: null, x, xAxis, left, right });
+    expiryLabels.forEach((label) => {
+      panelScaleByLabel.set(label, { x, xAxis, left, right });
+    });
+  } else {
+    panelLabels.forEach((label, index) => {
+      const panelPoints = props.data.filter(
+        (point) => point?.expiry_date === label,
+      );
+      const panelXValues = panelPoints.map(xAccessor).filter(Number.isFinite);
+      if (!panelXValues.length) return;
+      const xExtent = d3.extent(panelXValues);
+      if (!Number.isFinite(xExtent[0]) || !Number.isFinite(xExtent[1])) return;
+
+      const left = margin.left + index * (panelWidth + panelGap);
+      const right = left + panelWidth;
+      const x = d3.scaleLinear().domain(xExtent).nice().range([left, right]);
+      const xAxis = d3
+        .axisBottom(x)
+        .ticks(PANEL_X_TICK_COUNT)
+        .tickSize(0)
+        .tickPadding(20);
+      if (useStrike) {
+        xAxis.tickFormat(d3.format(",.0f"));
+      }
+      panelConfigs.push({ label, x, xAxis, left, right });
+      panelScaleByLabel.set(label, { x, xAxis, left, right });
+    });
+  }
   if (!panelScaleByLabel.size) return;
 
   const mainGroup = svg.append("g");
@@ -269,8 +297,7 @@ const render = () => {
     .call(yAxis)
     .call(axisStyle);
 
-  panelLabels.forEach((label, index) => {
-    const panel = panelScaleByLabel.get(label);
+  panelConfigs.forEach((panel, index) => {
     if (!panel) return;
 
     mainGroup
@@ -289,15 +316,17 @@ const render = () => {
       "axisLabel",
     );
 
-    applyTextStyle(
-      svg
-        .append("text")
-        .attr("x", (panel.left + panel.right) / 2)
-        .attr("y", 58)
-        .attr("text-anchor", "middle")
-        .text(label),
-      "panelTitle",
-    );
+    if (!isMultiMode && panel.label) {
+      applyTextStyle(
+        svg
+          .append("text")
+          .attr("x", (panel.left + panel.right) / 2)
+          .attr("y", 58)
+          .attr("text-anchor", "middle")
+          .text(panel.label),
+        "panelTitle",
+      );
+    }
 
     if (panelCount > 1 && index < panelCount - 1) {
       const separatorX = panel.right + panelGap / 2;
@@ -357,10 +386,24 @@ const render = () => {
     ? colorExtent[1]
     : domainMin + 1;
 
-  const color = d3
+  const expiryIndexByLabel = new Map(
+    expiryLabels.map((label, index) => [label, index]),
+  );
+  const expiryColorScale = d3
+    .scaleSequential()
+    .domain([0, Math.max(1, expiryLabels.length - 1)])
+    .interpolator((t) => d3.interpolateRdBu(t));
+  const greekColorScale = d3
     .scaleSequential()
     .domain([domainMin, domainMax])
     .interpolator((t) => d3.interpolateRdBu(1 - t));
+  const pointColor = (point) => {
+    if (isMultiMode) {
+      const rank = expiryIndexByLabel.get(point?.expiry_date) ?? 0;
+      return expiryColorScale(rank);
+    }
+    return greekColorScale(colorAccessor(point));
+  };
 
   const points = [...props.data].filter(
     (d) =>
@@ -377,8 +420,10 @@ const render = () => {
     ctx.clearRect(0, 0, width, height);
 
     // Adjust opacity based on resolution
-    const baseOpacity = props.resolution === "1d" ? 0.2 : 0.05;
-    const highlightOpacity = props.resolution === "1d" ? 0.9 : 0.8;
+    const baseOpacity = 0.2;
+    const highlightOpacity = 0.96;
+    const normalPointSize = 90;
+    const highlightPointSize = 120;
 
     // Draw non-highlighted points first
     points.forEach((d) => {
@@ -388,11 +433,11 @@ const render = () => {
 
       const cx = panel.x(xAccessor(d));
       const cy = y(yAccessor(d));
-      const size = 100;
+      const size = normalPointSize;
       const radius = Math.sqrt(size / Math.PI);
 
       ctx.globalAlpha = baseOpacity;
-      ctx.fillStyle = color(colorAccessor(d));
+      ctx.fillStyle = pointColor(d);
       ctx.strokeStyle = "#111";
       ctx.lineWidth = 0.8;
 
@@ -413,11 +458,11 @@ const render = () => {
       if (!panel) return;
       const cx = panel.x(xAccessor(d));
       const cy = y(yAccessor(d));
-      const size = 170;
+      const size = highlightPointSize;
       const radius = Math.sqrt(size / Math.PI);
 
       ctx.globalAlpha = highlightOpacity;
-      ctx.fillStyle = color(colorAccessor(d));
+      ctx.fillStyle = pointColor(d);
       ctx.strokeStyle = "#000000";
       ctx.lineWidth = 0.2;
 
@@ -433,7 +478,7 @@ const render = () => {
   // Initial draw
   drawPoints();
 
-  const legendWidth = 140;
+  const legendWidth = 160;
   const legendHeight = 10;
   const legendX = mainChartRight - legendWidth - 10;
   const legendY = 40;
@@ -447,25 +492,44 @@ const render = () => {
     .attr("y1", "0%")
     .attr("y2", "0%");
 
-  gradient
-    .append("stop")
-    .attr("offset", "0%")
-    .attr("stop-color", d3.interpolateRdBu(1));
-  gradient
-    .append("stop")
-    .attr("offset", "50%")
-    .attr("stop-color", d3.interpolateRdBu(0.5));
-  gradient
-    .append("stop")
-    .attr("offset", "100%")
-    .attr("stop-color", d3.interpolateRdBu(0));
+  if (isMultiMode) {
+    gradient
+      .append("stop")
+      .attr("offset", "0%")
+      .attr("stop-color", d3.interpolateRdBu(0));
+    gradient
+      .append("stop")
+      .attr("offset", "50%")
+      .attr("stop-color", d3.interpolateRdBu(0.5));
+    gradient
+      .append("stop")
+      .attr("offset", "100%")
+      .attr("stop-color", d3.interpolateRdBu(1));
+  } else {
+    gradient
+      .append("stop")
+      .attr("offset", "0%")
+      .attr("stop-color", d3.interpolateRdBu(1));
+    gradient
+      .append("stop")
+      .attr("offset", "50%")
+      .attr("stop-color", d3.interpolateRdBu(0.5));
+    gradient
+      .append("stop")
+      .attr("offset", "100%")
+      .attr("stop-color", d3.interpolateRdBu(0));
+  }
 
   const legend = svg
     .append("g")
     .attr("transform", `translate(${legendX},${legendY})`);
 
   applyTextStyle(
-    legend.append("text").attr("x", 0).attr("y", 0).text(colorLabel),
+    legend
+      .append("text")
+      .attr("x", 0)
+      .attr("y", 0)
+      .text(isMultiMode ? "Expiry" : colorLabel),
     "legendTitle",
   );
 
@@ -479,7 +543,11 @@ const render = () => {
     .attr("stroke", "#2e3040");
 
   applyTextStyle(
-    legend.append("text").attr("x", 0).attr("y", 32).text(domainMin.toFixed(2)),
+    legend
+      .append("text")
+      .attr("x", 0)
+      .attr("y", 32)
+      .text(isMultiMode ? expiryLabels[0] || "short" : domainMin.toFixed(2)),
     "legendLabel",
   );
 
@@ -489,7 +557,11 @@ const render = () => {
       .attr("x", legendWidth)
       .attr("y", 32)
       .attr("text-anchor", "end")
-      .text(domainMax.toFixed(2)),
+      .text(
+        isMultiMode
+          ? expiryLabels[expiryLabels.length - 1] || "long"
+          : domainMax.toFixed(2),
+      ),
     "legendLabel",
   );
 
@@ -527,6 +599,7 @@ const render = () => {
       `Gamma: ${formatGreek(d.gamma, 6)}`,
       `Theta: ${formatGreek(d.theta)}`,
       `Vega: ${formatGreek(normalizeGreekValue("vega", d.vega), 2)}`,
+      `Vanna: ${formatGreek(d.vanna, 6)}`,
     ];
 
     tooltipText.selectAll("tspan").remove();
@@ -616,6 +689,7 @@ watch(
     props.subtitle,
     props.loading,
     props.loadingPanels,
+    props.mode,
     props.xMode,
     props.greek,
     props.resolution,
