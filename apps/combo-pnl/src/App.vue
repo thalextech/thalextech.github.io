@@ -24,7 +24,7 @@ const RESOLUTION_OPTIONS = Object.entries(RESOLUTION_CONFIG).map(
     label: cfg.label,
   }),
 );
-const MAIN_POINT_LIMIT = 360;
+const MAX_POINTS_PER_FETCH = 360;
 const DEFAULT_VOL = 0.4;
 const DEFAULT_T = 30 / 365.25;
 const MARK_CONCURRENCY = 10;
@@ -215,10 +215,13 @@ const getTimestampRange = () => {
   const resolution = resolutionConfig?.resolution;
   const seconds =
     resolutionConfig?.interval_seconds ?? Number(ui.resolutionKey) ?? 0;
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 900;
+  // Align to the candle grid so each resolution fetches a consistent count.
+  const to = now - (now % safeSeconds);
   return {
     resolution,
-    from: now - seconds * MAIN_POINT_LIMIT,
-    to: now,
+    from: to - safeSeconds * (MAX_POINTS_PER_FETCH - 1),
+    to,
   };
 };
 
@@ -415,8 +418,8 @@ const loadSeries = async () => {
       });
     }
 
-    indexSeries.value = top.slice(-MAIN_POINT_LIMIT);
-    comboSeries.value = bottom.slice(-MAIN_POINT_LIMIT);
+    indexSeries.value = top;
+    comboSeries.value = bottom;
 
     if (!indexSeries.value.length || !comboSeries.value.length) {
       ui.error = "No overlapping index/mark history for selected legs.";

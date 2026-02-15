@@ -45,25 +45,40 @@ const DETAIL_SERIES_ORDER = [
   {
     key: "gammaTheta",
     label: "Gamma + Theta",
+    color: "#e91e63",
     strokeWidth: 0.9,
-    areaOpacity: 0.08,
+    areaOpacity: 0,
   },
-  { key: "vega", label: "Vega", strokeWidth: 0.9, areaOpacity: 0.08 },
-  { key: "total", label: "Total", strokeWidth: 0.9, areaOpacity: 0.08 },
-  { key: "residual", label: "Residual", strokeWidth: 0.9, areaOpacity: 0.08 },
-  { key: "delta", label: "Delta", strokeWidth: 0.9, areaOpacity: 0.08 },
+  {
+    key: "vega",
+    label: "Vega",
+    color: "#d88b5d",
+    strokeWidth: 0.9,
+    areaOpacity: 0,
+  },
+  {
+    key: "total",
+    label: "Total",
+    color: "#d4d5db",
+    strokeWidth: 0.9,
+    areaOpacity: 0,
+  },
+  {
+    key: "residual",
+    label: "Residual",
+    color: "#8ed6f6",
+    strokeWidth: 0.9,
+    areaOpacity: 0,
+  },
+  {
+    key: "delta",
+    label: "Delta",
+    color: "#0b7de3",
+    strokeWidth: 0.9,
+    areaOpacity: 0.28,
+  },
 ];
-const DETAIL_SERIES_COLOR_STEP = 1 / DETAIL_SERIES_ORDER.length;
-const DETAIL_SERIES_COLOR_INDEX_OFFSET = 0.5;
-const DETAIL_SERIES_CONFIG = DETAIL_SERIES_ORDER.map((series, index) => ({
-  ...series,
-  color: d3.interpolateRdBu(
-    Math.min(
-      1,
-      (index + DETAIL_SERIES_COLOR_INDEX_OFFSET) * DETAIL_SERIES_COLOR_STEP,
-    ),
-  ),
-}));
+const DETAIL_SERIES_CONFIG = DETAIL_SERIES_ORDER.map((series) => ({ ...series }));
 
 const normalizeComboPoints = (rows) =>
   (rows || [])
@@ -853,32 +868,17 @@ const render = () => {
       ...series,
       values: seriesByKey[series.key] || [],
     }));
+    const visibleSeries = seriesList.filter((series) => !isHiddenSeries(series.key));
+    const seriesPoints = visibleSeries.flatMap((series) =>
+      (series.values || []).filter(
+        (point) =>
+          point?.date instanceof Date &&
+          !Number.isNaN(point.date.getTime()) &&
+          Number.isFinite(point.value),
+      ),
+    );
 
-    const componentSeries = DETAIL_SERIES_CONFIG.filter(
-      (series) => series.key !== "total",
-    );
-    const componentSeriesByKey = new Map(
-      componentSeries.map((series) => [series.key, series]),
-    );
-    const totalSeries = seriesList.find((series) => series.key === "total");
-    const totalLinePoints = (totalSeries?.values || []).filter(
-      (point) =>
-        point?.date instanceof Date &&
-        !Number.isNaN(point.date.getTime()) &&
-        Number.isFinite(point.value),
-    );
-    const stackRows = totalLinePoints.map((totalPoint, index) => {
-      const row = { date: totalPoint.date };
-      for (const series of componentSeries) {
-        row[series.key] = Number(seriesByKey[series.key]?.[index]?.value) || 0;
-      }
-      return row;
-    });
-    const visibleComponentKeys = componentSeries
-      .map((series) => series.key)
-      .filter((key) => !isHiddenSeries(key));
-
-    if (!stackRows.length) {
+    if (!seriesPoints.length) {
       plotGroup
         .append("text")
         .attr("x", innerWidth / 2)
@@ -892,25 +892,10 @@ const render = () => {
 
     const xBottom = d3
       .scaleUtc()
-      .domain(d3.extent(stackRows, (row) => row.date))
+      .domain(d3.extent(comboFiltered, (point) => point.date))
       .range([0, innerWidth]);
-
-    const stackedSeries = d3
-      .stack()
-      .keys(visibleComponentKeys)
-      .offset(d3.stackOffsetDiverging)(stackRows);
-    let yMin = 0;
-    let yMax = 0;
-    for (const layer of stackedSeries) {
-      for (const point of layer) {
-        yMin = Math.min(yMin, point[0], point[1]);
-        yMax = Math.max(yMax, point[0], point[1]);
-      }
-    }
-    for (const point of totalLinePoints) {
-      yMin = Math.min(yMin, point.value);
-      yMax = Math.max(yMax, point.value);
-    }
+    let yMin = Math.min(0, ...seriesPoints.map((point) => point.value));
+    let yMax = Math.max(0, ...seriesPoints.map((point) => point.value));
     if (yMin === yMax) {
       const pad = yMin === 0 ? 0.0001 : Math.abs(yMin) * 0.1;
       yMin -= pad;
@@ -962,42 +947,82 @@ const render = () => {
 
     const line = d3
       .line()
-      .x((d) => xBottom(d.date))
-      .y((d) => yBottom(d.value))
+      .x((point) => xBottom(point.date))
+      .y((point) => yBottom(point.value))
       .curve(d3.curveMonotoneX);
 
-    const stackedArea = d3
+    const deltaSeries = seriesList.find((series) => series.key === "delta");
+    const deltaPoints = (deltaSeries?.values || []).filter(
+      (point) =>
+        point?.date instanceof Date &&
+        !Number.isNaN(point.date.getTime()) &&
+        Number.isFinite(point.value),
+    );
+    const deltaGradientId = `delta-area-${Math.random().toString(36).slice(2, 9)}`;
+    const deltaDefs = bottomPanelGroup.append("defs");
+    const deltaGradient = deltaDefs
+      .append("linearGradient")
+      .attr("id", deltaGradientId)
+      .attr("x1", "0%")
+      .attr("x2", "0%")
+      .attr("y1", "0%")
+      .attr("y2", "100%");
+    const deltaColor = deltaSeries?.color || "#0b7de3";
+    deltaGradient
+      .append("stop")
+      .attr("offset", "0%")
+      .attr("stop-color", deltaColor)
+      .attr("stop-opacity", 0.38);
+    deltaGradient
+      .append("stop")
+      .attr("offset", "55%")
+      .attr("stop-color", deltaColor)
+      .attr("stop-opacity", 0.2);
+    deltaGradient
+      .append("stop")
+      .attr("offset", "100%")
+      .attr("stop-color", deltaColor)
+      .attr("stop-opacity", 0.06);
+
+    const deltaArea = d3
       .area()
-      .x((d) => xBottom(d.data.date))
-      .y0((d) => yBottom(d[0]))
-      .y1((d) => yBottom(d[1]))
+      .x((point) => xBottom(point.date))
+      .y0(yBottom(0))
+      .y1((point) => yBottom(point.value))
       .curve(d3.curveMonotoneX);
+    if (!isHiddenSeries("delta") && deltaPoints.length > 1) {
+      plotGroup
+        .append("path")
+        .datum(deltaPoints)
+        .attr("fill", `url(#${deltaGradientId})`)
+        .attr("stroke", "none")
+        .attr("d", deltaArea);
+    }
+
+    const lineSeries = seriesList.map((series) => ({
+      ...series,
+      points: (series.values || []).filter(
+        (point) =>
+          point?.date instanceof Date &&
+          !Number.isNaN(point.date.getTime()) &&
+          Number.isFinite(point.value),
+      ),
+    }));
 
     plotGroup
       .append("g")
-      .selectAll("path.stacked-area")
-      .data(stackedSeries)
+      .selectAll("path.greeks-line")
+      .data(lineSeries)
       .join("path")
-      .attr("class", "stacked-area")
-      .attr(
-        "fill",
-        (layer) => componentSeriesByKey.get(layer.key)?.color ?? "#94b3fd",
-      )
-      .attr("fill-opacity", 0.54)
-      .attr("stroke", "none")
-      .attr("d", (layer) => stackedArea(layer));
-
-    plotGroup
-      .append("path")
-      .datum(totalLinePoints)
+      .attr("class", "greeks-line")
       .attr("fill", "none")
-      .attr("stroke", "#1e3a8a")
-      .attr("stroke-width", totalSeries?.strokeWidth || 1.1)
+      .attr("stroke", (series) => series.color)
+      .attr("stroke-width", (series) => series.strokeWidth || 1)
       .attr("stroke-linecap", "round")
       .attr("stroke-linejoin", "round")
-      .attr("stroke-opacity", 0.92)
-      .attr("display", !isHiddenSeries("total") ? null : "none")
-      .attr("d", line);
+      .attr("stroke-opacity", 0.95)
+      .attr("display", (series) => (!isHiddenSeries(series.key) ? null : "none"))
+      .attr("d", (series) => line(series.points));
 
     bottomPanelGroup
       .append("text")
