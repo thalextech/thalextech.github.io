@@ -19,11 +19,11 @@ const GREEK_OPTIONS = [
   { value: "theta", symbol: "\u0398" },
   { value: "vega", symbol: "\u03bd" },
 ];
-const RANGE_DAYS = 21;
+const RANGE_DAYS = 30;
 const ONE_HOUR_SECONDS = 60 * 60;
 const MAX_1H_POINTS_PER_INSTRUMENT = 72;
 const MAX_MARK_REQUEST_CONCURRENCY = 30;
-const MARK_REQUEST_PACING_MS = 180;
+const MARK_REQUEST_PACING_MS = 120;
 const MARK_REQUEST_MAX_RETRIES = 3;
 
 const ui = reactive({
