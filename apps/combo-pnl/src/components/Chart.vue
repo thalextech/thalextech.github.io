@@ -195,6 +195,7 @@ const buildMarkTrendSegments = (points, baselineMark) => {
 const formatDate = d3.utcFormat("%d %b %y %H:%M");
 const formatPnl = d3.format("$,.0f");
 const formatMarkAxis = d3.format(",.0f");
+const formatMarkDelta = d3.format("+,.0f");
 const formatVol = d3.format(".1%");
 
 const axisStyle = (axisG) => {
@@ -843,6 +844,35 @@ const render = () => {
         .attr("stroke-linecap", "round")
         .attr("stroke-linejoin", "round")
         .attr("d", (segment) => line(segment.points));
+
+      const lastMarkPoint = markPoints[markPoints.length - 1];
+      if (
+        lastMarkPoint?.date instanceof Date &&
+        Number.isFinite(lastMarkPoint.mark_price_close)
+      ) {
+        const pointX = xBottom(lastMarkPoint.date);
+        const placeLeft = pointX > innerWidth * 0.82;
+        const labelX = placeLeft ? pointX - 8 : pointX + 8;
+        const markDelta = lastMarkPoint.mark_price_close - baselineMark;
+        const deltaLabelY = Math.max(
+          BOTTOM_TOP_INSET + 10,
+          Math.min(bottomInnerHeight - 6, yBottom(baselineMark) - 6),
+        );
+        const deltaColor = markDelta >= 0 ? "#22c55e" : "#ef4444";
+
+        plotGroup
+          .append("text")
+          .attr("x", labelX)
+          .attr("y", deltaLabelY)
+          .attr("text-anchor", placeLeft ? "end" : "start")
+          .attr("fill", deltaColor)
+          .style("font-size", "11px")
+          .style("font-weight", 400)
+          .attr("paint-order", "stroke")
+          .attr("stroke", "#000")
+          .attr("stroke-width", 3)
+          .text(`Δ ${formatMarkDelta(markDelta)}`);
+      }
 
       return;
     }

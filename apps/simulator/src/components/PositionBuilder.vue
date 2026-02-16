@@ -433,12 +433,19 @@ const formatMarkPrice = (
 const formatIvPercent = (value: number | null): string =>
   Number.isFinite(value) ? `${(Number(value) * 100).toFixed(2)}%` : "--";
 
-const formatTime = (timestampMs: number): string =>
-  new Date(timestampMs).toLocaleTimeString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+const indexDateTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "short",
+  year: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+  timeZone: "UTC",
+});
+
+const formatDateTime = (timestampMs: number): string =>
+  `${indexDateTimeFormatter.format(new Date(timestampMs))} UTC`;
 
 const strikeOptionsFor = (
   optionType: OptionType | undefined,
@@ -541,7 +548,7 @@ const totalMarkPrice = computed<number | null>(() => {
         {{ indexPrice != null ? formatNumber(indexPrice) : "loading" }}
       </span>
       <span v-if="indexFetchedAt != null" class="index-time">
-        fetched {{ formatTime(indexFetchedAt) }}
+        {{ formatDateTime(indexFetchedAt) }}
       </span>
       <span v-else class="index-time">fetching…</span>
     </div>
