@@ -85,6 +85,29 @@ const getMiddleStrikeValue = (strikes) => {
   return strikes[midIndex]?.value ?? "";
 };
 
+const getClosestStrikeValue = (strikes, indexPrice) => {
+  if (!strikes?.length) return "";
+  if (!Number.isFinite(indexPrice)) return getMiddleStrikeValue(strikes);
+
+  let bestValue = "";
+  let bestDistance = Infinity;
+  let bestNumeric = Infinity;
+  for (const strikeOption of strikes) {
+    const numeric = Number(strikeOption?.value);
+    if (!Number.isFinite(numeric)) continue;
+    const distance = Math.abs(numeric - indexPrice);
+    if (
+      distance < bestDistance ||
+      (distance === bestDistance && numeric < bestNumeric)
+    ) {
+      bestDistance = distance;
+      bestNumeric = numeric;
+      bestValue = strikeOption.value;
+    }
+  }
+  return bestValue || getMiddleStrikeValue(strikes);
+};
+
 const getLatestIndexClose = (rows) => {
   if (!rows?.length) return null;
   for (let i = rows.length - 1; i >= 0; i -= 1) {
@@ -247,13 +270,17 @@ const breakEvenSubtitle = computed(() => {
   return `Expiry: ${maturityFormatter.format(new Date(expiryTs * 1000))} UTC Strike: ${strikeFormatter.format(strike)}`;
 });
 
-const latestMarkClose = (rows) => {
+const latestMarkValue = (rows, fields) => {
   for (let i = (rows?.length || 0) - 1; i >= 0; i -= 1) {
-    const value = rows[i]?.mark_price_close;
-    if (Number.isFinite(value)) return value;
+    for (const field of fields) {
+      const value = rows[i]?.[field];
+      if (Number.isFinite(value)) return value;
+    }
   }
   return null;
 };
+
+const latestMarkClose = (rows) => latestMarkValue(rows, ["mark_price_close"]);
 
 const breakEvenMetrics = computed(() => {
   const strike = selectedStrike.value;
@@ -300,9 +327,9 @@ const breakEvenCurrentIndex = computed(() => {
 });
 
 const canSavePng = computed(() =>
-  ui.mode === "breakeven"
-    ? breakEvenActualData.value.length > 0
-    : mainSeries.value.length > 0,
+  ui.mode === "straddle"
+    ? mainSeries.value.length > 0
+    : breakEvenActualData.value.length > 0,
 );
 
 const mainSeries = computed(() => {
@@ -514,15 +541,16 @@ async function load({ callInstrument, putInstrument }) {
 function handleSavePng() {
   const base = optionInstrumentName.value || "straddle";
   const filenameBase = ui.resolutionKey ? `${base}-${ui.resolutionKey}` : base;
-  if (ui.mode === "breakeven") {
-    if (!breakEvenChartRef.value) return;
-    breakEvenChartRef.value.exportPng({
-      filename: `${filenameBase}-break-even.png`,
-    });
+  if (ui.mode === "straddle") {
+    if (!chartRef.value) return;
+    chartRef.value.exportPng({ filename: `${filenameBase}.png` });
     return;
   }
-  if (!chartRef.value) return;
-  chartRef.value.exportPng({ filename: `${filenameBase}.png` });
+
+  if (!breakEvenChartRef.value) return;
+  breakEvenChartRef.value.exportPng({
+    filename: `${filenameBase}-break-even.png`,
+  });
 }
 
 onMounted(async () => {
@@ -600,6 +628,20 @@ watch(
 );
 
 watch(
+  () => ui.optionMaturity,
+  () => {
+    if (isInitializing.value) return;
+    const strikes = optionStrikes.value;
+    if (!strikes.length) {
+      ui.optionStrike = "";
+      return;
+    }
+    const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey] || []);
+    ui.optionStrike = getClosestStrikeValue(strikes, latestIndexClose);
+  },
+);
+
+watch(
   optionStrikes,
   (strikes) => {
     if (isInitializing.value) return;
@@ -608,7 +650,8 @@ watch(
       return;
     }
     if (strikes.some((strike) => strike.value === ui.optionStrike)) return;
-    ui.optionStrike = getMiddleStrikeValue(strikes);
+    const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey] || []);
+    ui.optionStrike = getClosestStrikeValue(strikes, latestIndexClose);
   },
   { immediate: true },
 );
