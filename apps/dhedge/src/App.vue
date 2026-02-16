@@ -18,11 +18,44 @@ const RESOLUTION_CONFIG = {
 const MAIN_POINT_LIMIT = 360;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 
+const THRESHOLD_OPTIONS = [
+  { value: 0, label: "0" },
+  { value: 0.01, label: "0.01" },
+  { value: 0.02, label: "0.02" },
+  { value: 0.05, label: "0.05" },
+  { value: 0.1, label: "0.10" },
+  { value: 0.2, label: "0.20" },
+];
+
+const FREQUENCY_OPTIONS = [
+  { value: 0, label: "Continuous" },
+  { value: 15, label: "15 min" },
+  { value: 60, label: "1 hour" },
+  { value: 240, label: "4 hours" },
+  { value: 1440, label: "1 day" },
+  { value: 10080, label: "1 week" },
+];
+
+const resolutionIntervalMinutes = computed(() => {
+  const config = RESOLUTION_CONFIG[ui.resolutionKey];
+  const sec = config?.interval_seconds ?? Number(ui.resolutionKey) ?? 0;
+  return sec > 0 ? sec / 60 : 0;
+});
+
+const frequencyOptionsFiltered = computed(() => {
+  const minMinutes = resolutionIntervalMinutes.value;
+  return FREQUENCY_OPTIONS.filter(
+    (opt) => opt.value === 0 || opt.value >= minMinutes,
+  );
+});
+
 const ui = reactive({
   resolutionKey: "900",
   optionMaturity: "",
   optionStrike: "",
   optionType: "call",
+  deltaThreshold: 0.05,
+  frequencyMinutes: 0,
   loading: false,
   error: "",
 });
@@ -290,8 +323,12 @@ const replicationSeries = computed(() => {
   const series = mainSeries.value;
   if (!series.length) return [];
 
+  const threshold = Number(ui.deltaThreshold) || 0;
+  const frequencySec = (Number(ui.frequencyMinutes) || 0) * 60;
+
   let initialMark = null;
-  let prevDelta = 0;
+  let currentHedgePos = 0;
+  let lastRehedgeTs = -Infinity;
   let qBuyCum = 0;
   let vBuyCum = 0;
   let qSellCum = 0;
@@ -310,10 +347,22 @@ const replicationSeries = computed(() => {
       }
     }
 
-    const safePrevDelta = Number.isFinite(prevDelta) ? prevDelta : 0;
-    const nextDelta = Number.isFinite(point.delta) ? point.delta : safePrevDelta;
-    const deltaChange = nextDelta - safePrevDelta;
-    const q = -deltaChange;
+    const currentDelta = Number.isFinite(point.delta) ? point.delta : 0;
+    const targetHedge = -currentDelta;
+    
+    // Check triggers
+    const deviation = Math.abs(currentHedgePos - targetHedge);
+    const timeTrigger = frequencySec > 0 && (point.ts - lastRehedgeTs >= frequencySec);
+    const thresholdTrigger = deviation > threshold;
+    const isFirst = lastRehedgeTs === -Infinity;
+    
+    const shouldRehedge = isFirst || timeTrigger || thresholdTrigger;
+    
+    let q = 0;
+    if (shouldRehedge) {
+      q = targetHedge - currentHedgePos;
+    }
+    
     const qBuy = q > 0 ? q : 0;
     const qSell = q < 0 ? -q : 0;
     const price = point.index_price_close;
@@ -330,7 +379,14 @@ const replicationSeries = computed(() => {
     const effectiveBuyPrice = Number.isFinite(avgBuyPrice)
       ? avgBuyPrice
       : price;
-    const hedgePosition = -safePrevDelta;
+      
+    const hedgePosition = currentHedgePos; 
+    
+    if (shouldRehedge) {
+      currentHedgePos = targetHedge;
+      lastRehedgeTs = point.ts;
+    }
+
     const realized = vSellCum - qSellCum * effectiveBuyPrice;
     const unrealized = hedgePosition * (price - effectiveBuyPrice);
     const hedgePnlCumul = realized + unrealized;
@@ -339,8 +395,6 @@ const replicationSeries = computed(() => {
       initialMark != null ? point.option_mark_close - initialMark : null;
     const shortOptionPnl =
       initialMark != null ? initialMark - point.option_mark_close : null;
-    // `hedgePnlCumul` is built from the replication-cost convention.
-    // For short-option delta-hedged P&L, use the opposite hedge sign.
     const hedgePnl = -hedgePnlCumul;
     const totalPnl = Number.isFinite(shortOptionPnl)
       ? shortOptionPnl + hedgePnl
@@ -354,8 +408,6 @@ const replicationSeries = computed(() => {
       hedge_pnl: hedgePnl,
       total_pnl: totalPnl,
     });
-
-    prevDelta = nextDelta;
   }
 
   return result;
@@ -535,6 +587,15 @@ watch(
   },
   { immediate: false },
 );
+
+watch(ui.resolutionKey, () => {
+  const valid = frequencyOptionsFiltered.value.some(
+    (opt) => opt.value === ui.frequencyMinutes,
+  );
+  if (!valid) {
+    ui.frequencyMinutes = 0;
+  }
+});
 </script>
 
 <template>
@@ -635,6 +696,34 @@ watch(
         </button>
       </div>
 
+      <div class="controls hedge-row">
+        <div class="field">
+          <label for="delta-threshold">Threshold</label>
+          <select id="delta-threshold" v-model.number="ui.deltaThreshold">
+            <option
+              v-for="opt in THRESHOLD_OPTIONS"
+              :key="opt.value"
+              :value="opt.value"
+            >
+              {{ opt.label }}
+            </option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="freq-min">Freq</label>
+          <select id="freq-min" v-model.number="ui.frequencyMinutes">
+            <option
+              v-for="opt in frequencyOptionsFiltered"
+              :key="opt.value"
+              :value="opt.value"
+            >
+              {{ opt.label }}
+            </option>
+          </select>
+        </div>
+      </div>
+
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
@@ -648,3 +737,9 @@ watch(
     />
   </div>
 </template>
+
+<style scoped>
+.hedge-row {
+  margin-top: 10px;
+}
+</style>
