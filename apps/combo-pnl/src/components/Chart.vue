@@ -1203,6 +1203,7 @@ const render = () => {
 
   const brushGroup = topGroup.append("g").attr("class", "brush");
   brushGroup.call(brush);
+  brushGroup.selectAll(".selection").attr("fill-opacity", 0.2);
 
   if (Array.isArray(brushedDomain) && brushedDomain.length === 2) {
     brushGroup.call(brush.move, [

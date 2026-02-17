@@ -1,5 +1,13 @@
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  reactive,
+  ref,
+  watch,
+} from "vue";
 import PositionBuilder from "../../simulator/src/components/PositionBuilder.vue";
 import IndexMarkComboChart from "./components/Chart.vue";
 import {
@@ -22,7 +30,9 @@ const RESOLUTION_OPTIONS = Object.entries(RESOLUTION_CONFIG).map(
     label: cfg.label,
   }),
 );
-const MAX_POINTS_PER_FETCH = 360;
+const DEFAULT_MAX_POINTS_PER_FETCH = 360;
+const MIN_POINTS_PER_FETCH = 100;
+const MAX_POINTS_PER_FETCH = 10000;
 const DEFAULT_VOL = 0.4;
 const DEFAULT_T = 30 / 365.25;
 const MARK_CONCURRENCY = 10;
@@ -30,6 +40,7 @@ const LOAD_DEBOUNCE_MS = 140;
 
 const ui = reactive({
   resolutionKey: "900",
+  maxPoints: DEFAULT_MAX_POINTS_PER_FETCH,
   loading: false,
   error: "",
 });
@@ -65,6 +76,10 @@ const comboSeries = ref([]);
 const indexHistoryRows = ref([]);
 const markHistoryByInstrument = ref({});
 const chartAnchorTs = ref(null);
+const chartBlockRef = ref(null);
+const settingsMenuRef = ref(null);
+const settingsOpen = ref(false);
+const settingsLeftPx = ref(null);
 
 let loadRequestId = 0;
 let loadTimer = null;
@@ -208,6 +223,12 @@ const spot = computed(() => {
   return Number.isFinite(live) && live > 0 ? live : 95_000;
 });
 
+const maxPointsPerFetch = computed(() => {
+  const points = Math.floor(Number(ui.maxPoints));
+  if (!Number.isFinite(points)) return DEFAULT_MAX_POINTS_PER_FETCH;
+  return Math.max(MIN_POINTS_PER_FETCH, Math.min(MAX_POINTS_PER_FETCH, points));
+});
+
 const getTimestampRange = () => {
   const now = Math.floor(Date.now() / 1000);
   const resolutionConfig = RESOLUTION_CONFIG[ui.resolutionKey];
@@ -219,9 +240,43 @@ const getTimestampRange = () => {
   const to = now - (now % safeSeconds);
   return {
     resolution,
-    from: to - safeSeconds * (MAX_POINTS_PER_FETCH - 1),
+    from: to - safeSeconds * (maxPointsPerFetch.value - 1),
     to,
   };
+};
+
+const toggleSettings = () => {
+  settingsOpen.value = !settingsOpen.value;
+};
+
+const alignSettingsToBuilderMinusX = () => {
+  const chartBlockEl = chartBlockRef.value;
+  if (!chartBlockEl) return;
+  const chartRect = chartBlockEl.getBoundingClientRect();
+  const removeBtn = document.querySelector(".builderMain .remove-btn");
+  if (!(removeBtn instanceof HTMLElement)) return;
+  const removeRect = removeBtn.getBoundingClientRect();
+  const centeredLeft =
+    removeRect.left - chartRect.left + (removeRect.width - 22) / 2;
+  if (!Number.isFinite(centeredLeft)) return;
+  settingsLeftPx.value = Math.round(centeredLeft);
+};
+
+const settingsWrapStyle = computed(() => {
+  if (!Number.isFinite(settingsLeftPx.value)) return {};
+  return {
+    left: `${settingsLeftPx.value}px`,
+    right: "auto",
+  };
+});
+
+const handleDocumentPointerDown = (event) => {
+  if (!settingsOpen.value) return;
+  const target = event?.target;
+  if (!(target instanceof Node)) return;
+  if (!settingsMenuRef.value?.contains(target)) {
+    settingsOpen.value = false;
+  }
 };
 
 const runWithConcurrency = async (items, limit, worker) => {
@@ -268,7 +323,9 @@ const getAnchorRow = (rows, anchorTs) => {
 const resolveEffectiveAnchorTs = () => {
   const explicitAnchor = normalizeTimestampSeconds(chartAnchorTs.value);
   if (Number.isFinite(explicitAnchor)) return explicitAnchor;
-  const firstIndexTs = normalizeTimestampSeconds(indexHistoryRows.value?.[0]?.ts);
+  const firstIndexTs = normalizeTimestampSeconds(
+    indexHistoryRows.value?.[0]?.ts,
+  );
   return Number.isFinite(firstIndexTs) ? firstIndexTs : null;
 };
 
@@ -551,7 +608,7 @@ const scheduleLoad = () => {
 };
 
 watch(
-  () => [ui.resolutionKey, positionLegs.value],
+  () => [ui.resolutionKey, maxPointsPerFetch.value, positionLegs.value],
   () => {
     scheduleLoad();
   },
@@ -573,6 +630,8 @@ watch(
 );
 
 onMounted(async () => {
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
+  window.addEventListener("resize", alignSettingsToBuilderMinusX);
   const allInstruments = await fetchInstruments();
   instruments.value = (allInstruments || []).filter(
     (instrument) =>
@@ -580,11 +639,24 @@ onMounted(async () => {
   );
 
   await loadSeries();
+  await nextTick();
+  alignSettingsToBuilderMinusX();
 });
 
 onUnmounted(() => {
   if (loadTimer) clearTimeout(loadTimer);
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
+  window.removeEventListener("resize", alignSettingsToBuilderMinusX);
 });
+
+watch(
+  () => positionLegs.value,
+  async () => {
+    await nextTick();
+    alignSettingsToBuilderMinusX();
+  },
+  { deep: true },
+);
 </script>
 
 <template>
@@ -611,7 +683,40 @@ onUnmounted(() => {
       <span v-else class="error">{{ ui.error }}</span>
     </div>
 
-    <div class="chartBlock">
+    <div class="chartBlock" ref="chartBlockRef">
+      <div
+        class="settingsWrap settingsWrap--chart"
+        ref="settingsMenuRef"
+        :style="settingsWrapStyle"
+      >
+        <button
+          class="settingsButton settingsButton--icon"
+          type="button"
+          title="Settings"
+          aria-label="Settings"
+          aria-haspopup="true"
+          :aria-expanded="settingsOpen ? 'true' : 'false'"
+          @click="toggleSettings"
+        ></button>
+        <div v-if="settingsOpen" class="settingsDropdown">
+          <div class="settingsHint">
+            Choose the number of data points to load: {{ maxPointsPerFetch }}
+          </div>
+          <input
+            v-model.number="ui.maxPoints"
+            class="settingsSlider"
+            type="range"
+            :min="MIN_POINTS_PER_FETCH"
+            :max="MAX_POINTS_PER_FETCH"
+            step="10"
+          />
+          <div class="settingsRange">
+            <span>{{ MIN_POINTS_PER_FETCH }}</span>
+            <span>{{ MAX_POINTS_PER_FETCH }}</span>
+          </div>
+        </div>
+      </div>
+
       <IndexMarkComboChart
         :index-data="indexSeries"
         :combo-data="comboSeries"
@@ -637,6 +742,134 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 0;
+}
+
+.settingsWrap {
+  position: relative;
+}
+
+.settingsButton {
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.7);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.settingsButton:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.settingsButton--icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.settingsButton--icon::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #e8ebf2;
+}
+
+.settingsDropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 240px;
+  border: 1px solid whitesmoke;
+  background: #11141a;
+  border-radius: 6px;
+  padding: 10px 12px 12px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+}
+
+.settingsWrap--chart {
+  position: absolute;
+  top: 5px;
+  right: 40px;
+  z-index: 25;
+}
+
+.settingsTitle {
+  font-size: 10px;
+  color: #a9abb6;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.settingsHint {
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  margin-bottom: 6px;
+}
+
+.settingsSlider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settingsSlider:focus {
+  outline: none;
+}
+
+.settingsSlider::-webkit-slider-runnable-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  margin-top: -3px;
+  border-radius: 50%;
+  border: 1px solid rgba(245, 245, 245, 0.85);
+  background: #11141a;
+}
+
+.settingsSlider::-moz-range-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid rgba(245, 245, 245, 0.85);
+  background: #11141a;
+}
+
+.settingsRange {
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .builderRow {
@@ -712,6 +945,10 @@ onUnmounted(() => {
 @media (max-width: 900px) {
   .appRoot {
     padding: 18px 14px 20px;
+  }
+
+  .settingsWrap--chart {
+    right: 12px;
   }
 
   .builderRow {
