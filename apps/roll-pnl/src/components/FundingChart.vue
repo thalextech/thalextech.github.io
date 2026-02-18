@@ -97,6 +97,8 @@ const TAP_SELECT_HITBOX_PX = 22;
 const TOOLTIP_HITBOX_PX = 18;
 const TOOLTIP_FADE_DELAY_MS = 1000;
 const LAYOUT_TRANSITION_MS = 160;
+const MAIN_X_TICKS_DEFAULT = 10;
+const MAIN_X_TICKS_WITH_DETAIL = 6;
 const DETAIL_COLORS = {
   carry: { funding: "#c9c9cf", secondary: "#7aa2ff" },
   roll: { funding: "#f0c58a", secondary: "#ffffff" },
@@ -1233,7 +1235,10 @@ function render() {
 
   const axisTitlePadding = 10;
 
-  const xAxis = d3.axisBottom(x).ticks(10).tickSize(0).tickPadding(10);
+  const mainXTicks = isDetailActive
+    ? MAIN_X_TICKS_WITH_DETAIL
+    : MAIN_X_TICKS_DEFAULT;
+  const xAxis = d3.axisBottom(x).ticks(mainXTicks).tickSize(0).tickPadding(10);
   const yAxis = d3.axisLeft(y).ticks(6).tickSize(0).tickPadding(10);
 
   const xAxisSelection = withLayoutTransition(chartState.xAxisGroup)

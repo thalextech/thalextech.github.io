@@ -36,6 +36,7 @@ const TEXT_STYLES = {
   legendLabel: { fill: "#a9abb6", size: "11px" },
   noData: { fill: "#c9c9cf", size: "14px" },
   detailMessage: { fill: "#c9c9cf", size: "13px" },
+  tooltipText: { fill: "#f3f4fb", size: "12px", weight: 500 },
 };
 
 const chartState = {
@@ -65,6 +66,9 @@ const chartState = {
   detailYAxisLabel: null,
   brushGroup: null,
   noDataText: null,
+  tooltipGroup: null,
+  tooltipBg: null,
+  tooltipText: null,
   currentXScale: null,
 };
 
@@ -243,6 +247,21 @@ const ensureChartElements = () => {
       chartState.detailLayer,
       "Annualized Basis",
     );
+  }
+
+  if (!chartState.tooltipGroup) {
+    chartState.tooltipGroup = svg
+      .append("g")
+      .attr("visibility", "hidden")
+      .attr("pointer-events", "none");
+    chartState.tooltipBg = chartState.tooltipGroup
+      .append("rect")
+      .attr("fill", "rgba(4, 6, 10, 0.92)")
+      .attr("stroke", "#3b3f50")
+      .attr("rx", 6)
+      .attr("ry", 6);
+    chartState.tooltipText = chartState.tooltipGroup.append("text");
+    applyTextStyle(chartState.tooltipText, "tooltipText");
   }
 
   return svg;
@@ -561,6 +580,7 @@ function render() {
       .join("circle");
     chartState.legendGroup.attr("display", "none");
     chartState.detailContainer.attr("display", "none");
+    chartState.tooltipGroup.attr("visibility", "hidden");
     clearScatterCanvas();
     detailRenderContext = null;
     return;
@@ -568,6 +588,7 @@ function render() {
 
   chartState.noDataText.attr("visibility", "hidden");
   chartState.legendGroup.attr("display", null);
+  chartState.tooltipGroup.attr("visibility", "hidden");
 
   chartState.mainGroup.attr(
     "transform",
@@ -610,6 +631,9 @@ function render() {
   };
   const formatBasisPct = (value) =>
     Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "n/a";
+  const formatUsd = d3.format("$,.2f");
+  const formatSignedUsd = d3.format("+$,.1f");
+  const formatSignedPct = d3.format("+.1%");
 
   const axisTitlePadding = 10;
 
@@ -648,6 +672,48 @@ function render() {
     .attr("cx", (d) => x(d.date))
     .attr("cy", (d) => y(d.mark_price_close))
     .attr("fill", (d) => colorForBasis(d.basis_pct));
+
+  const hideTooltip = () => {
+    chartState.tooltipGroup.attr("visibility", "hidden");
+  };
+
+  const showTooltip = (point, pointX, pointY) => {
+    const lines = [
+      `Index: ${Number.isFinite(point.index_price_close) ? formatUsd(point.index_price_close) : "n/a"}`,
+      `Absolute Basis: ${Number.isFinite(point.basis_close) ? formatSignedUsd(point.basis_close) : "n/a"}`,
+      `Annualized Basis: ${Number.isFinite(point.basis_pct) ? formatSignedPct(point.basis_pct) : "n/a"}`,
+    ];
+    const tooltipText = chartState.tooltipText;
+    tooltipText.selectAll("tspan").remove();
+    lines.forEach((line, idx) => {
+      tooltipText
+        .append("tspan")
+        .attr("x", 12)
+        .attr("dy", idx === 0 ? 18 : 16)
+        .text(line);
+    });
+
+    const bbox = tooltipText.node()?.getBBox();
+    if (!bbox) return;
+    const tooltipWidth = bbox.width + 24;
+    const tooltipHeight = bbox.height + 16;
+    chartState.tooltipBg
+      .attr("x", 0)
+      .attr("y", 0)
+      .attr("width", tooltipWidth)
+      .attr("height", tooltipHeight);
+
+    let tx = pointX + 14;
+    let ty = pointY - tooltipHeight / 2;
+    if (tx + tooltipWidth > width - 8) tx = pointX - tooltipWidth - 14;
+    if (tx < 8) tx = 8;
+    if (ty < 8) ty = 8;
+    if (ty + tooltipHeight > height - 8) ty = height - tooltipHeight - 8;
+
+    chartState.tooltipGroup
+      .attr("transform", `translate(${tx},${ty})`)
+      .attr("visibility", "visible");
+  };
 
   const gradientStops = hasValidExtent
     ? [
@@ -729,6 +795,56 @@ function render() {
   ]);
   chartState.brushGroup.call(brush);
   bindBrushHandlers();
+
+  const hoverPoints = data
+    .map((point) => {
+      if (!(point.date instanceof Date)) return null;
+      if (!Number.isFinite(point.mark_price_close)) return null;
+      return {
+        point,
+        cx: x(point.date),
+        cy: y(point.mark_price_close),
+      };
+    })
+    .filter((point) => point !== null);
+
+  const overlay = chartState.brushGroup.select(".overlay");
+  overlay.on("mousemove.tooltip", (event) => {
+    if (event?.buttons) {
+      hideTooltip();
+      return;
+    }
+    if (!hoverPoints.length) {
+      hideTooltip();
+      return;
+    }
+
+    const [mx, my] = d3.pointer(event, chartState.mainGroup.node());
+    let nearest = null;
+    let nearestDist = Infinity;
+
+    for (const candidate of hoverPoints) {
+      const dx = mx - candidate.cx;
+      const dy = my - candidate.cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearest = candidate;
+      }
+    }
+
+    if (!nearest || nearestDist > 28) {
+      hideTooltip();
+      return;
+    }
+
+    showTooltip(
+      nearest.point,
+      margin.left + nearest.cx,
+      margin.top + nearest.cy,
+    );
+  });
+  overlay.on("mouseleave.tooltip", hideTooltip);
 
   if (
     internalDetailRange.value?.from != null &&

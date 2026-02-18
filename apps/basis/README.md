@@ -1,11 +1,11 @@
-# Mark Future Basis (Vue + D3)
+# Basis (Vue + D3)
 
 Vue 3 + D3 app that mirrors `mark_future_basis.py`: it fetches Thalex index + mark historical data, computes basis metrics, and renders a scatterplot of `mark_price_close` colored by annualized basis.
 
 ## Run
 
 ```bash
-cd apps/mark-future-basis-vue
+cd apps/basis
 npm install
 npm run dev
 ```
