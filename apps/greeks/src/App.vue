@@ -26,9 +26,10 @@ const RESOLUTION_SECONDS = {
   "1h": ONE_HOUR_SECONDS,
   "1d": ONE_DAY_SECONDS,
 };
-const MAX_POINTS_PER_INSTRUMENT = 48;
-const MARK_FETCH_PARALLEL = 10;
-const MARK_REQUEST_LAUNCH_JITTER_MS = 2000;
+const MAX_POINTS_PER_INSTRUMENT = 92;
+const MARK_FETCH_CONCURRENCY = 100;
+const MARK_RATE_LIMIT_PER_SECOND = 10;
+const MARK_RATE_LIMIT_BURST = 100;
 const REQUEST_TIMEOUT_MS = 45_000;
 const REQUEST_MAX_RETRIES = 3;
 const REQUEST_RETRY_DELAY_MS = 2000;
@@ -276,6 +277,42 @@ const sleep = (ms) =>
     setTimeout(resolve, ms);
   });
 
+function createRequestRateLimiter({ requestsPerSecond, burst }) {
+  const safeRate =
+    Number.isFinite(requestsPerSecond) && requestsPerSecond > 0
+      ? requestsPerSecond
+      : 1;
+  const capacity =
+    Number.isFinite(burst) && burst > 0 ? Math.floor(burst) : Math.floor(safeRate);
+  const refillPerMs = safeRate / 1000;
+  let tokens = capacity;
+  let lastRefillAt = Date.now();
+
+  const refill = () => {
+    const now = Date.now();
+    const elapsed = now - lastRefillAt;
+    if (elapsed <= 0) return;
+    tokens = Math.min(capacity, tokens + elapsed * refillPerMs);
+    lastRefillAt = now;
+  };
+
+  const waitForToken = async ({ isCanceled = null } = {}) => {
+    while (true) {
+      if (isCanceled?.()) return false;
+      refill();
+      if (tokens >= 1) {
+        tokens -= 1;
+        return true;
+      }
+      const missingTokens = 1 - tokens;
+      const waitMs = Math.max(1, Math.ceil(missingTokens / refillPerMs));
+      await sleep(waitMs);
+    }
+  };
+
+  return { waitForToken };
+}
+
 function getRetryDelayMs() {
   return REQUEST_RETRY_DELAY_MS;
 }
@@ -420,11 +457,14 @@ async function fetchMarkRows(
 ) {
   const rows = [];
   let rateLimitedCount = 0;
-  const parallel = Math.max(1, Math.floor(Number(MARK_FETCH_PARALLEL) || 1));
-  const launchJitterMaxMs = Math.max(
-    0,
-    Math.floor(Number(MARK_REQUEST_LAUNCH_JITTER_MS) || 0),
+  const concurrency = Math.max(
+    1,
+    Math.floor(Number(MARK_FETCH_CONCURRENCY) || 1),
   );
+  const rateLimiter = createRequestRateLimiter({
+    requestsPerSecond: MARK_RATE_LIMIT_PER_SECOND,
+    burst: MARK_RATE_LIMIT_BURST,
+  });
 
   const fetchInstrumentRows = async (instrument, index) => {
     try {
@@ -449,60 +489,51 @@ async function fetchMarkRows(
   };
 
   let nextIndex = 0;
-  const inFlight = new Map();
-
-  const launchOne = () => {
-    if (isCanceled?.()) return false;
-    if (nextIndex >= instruments.length) return false;
-
+  const nextInstrument = () => {
+    if (nextIndex >= instruments.length) return null;
     const index = nextIndex;
     nextIndex += 1;
-    const instrument = instruments[index];
-
-    const tracked = (async () => {
-      if (launchJitterMaxMs > 0) {
-        const jitterMs = Math.floor(Math.random() * (launchJitterMaxMs + 1));
-        if (jitterMs > 0) await sleep(jitterMs);
-      }
-      const result = await fetchInstrumentRows(instrument, index);
-      return { key: index, result };
-    })();
-
-    inFlight.set(index, tracked);
-    return true;
+    return {
+      index,
+      instrument: instruments[index],
+    };
   };
 
-  while (inFlight.size < parallel && nextIndex < instruments.length) {
-    launchOne();
-  }
+  const worker = async () => {
+    while (true) {
+      if (isCanceled?.()) return;
+      const next = nextInstrument();
+      if (!next) return;
 
-  while (inFlight.size) {
-    if (isCanceled?.()) break;
-    const { key, result } = await Promise.race(inFlight.values());
-    inFlight.delete(key);
+      const hasToken = await rateLimiter.waitForToken({ isCanceled });
+      if (!hasToken || isCanceled?.()) return;
 
-    if (!Array.isArray(result.fetchedRows)) {
-      if (result.lastError?.status === 429) {
-        rateLimitedCount += 1;
+      const result = await fetchInstrumentRows(next.instrument, next.index);
+
+      if (!Array.isArray(result.fetchedRows)) {
+        if (result.lastError?.status === 429) {
+          rateLimitedCount += 1;
+        }
+      } else {
+        const instrumentName = result.instrument?.instrument_name;
+        const nextRows = result.fetchedRows.map((row) => ({
+          ...row,
+          instrument_name: instrumentName,
+        }));
+        rows.push(...nextRows);
+        onInstrumentRows?.(nextRows, {
+          instrumentName,
+          index: result.index,
+          total: instruments.length,
+        });
       }
-    } else {
-      const instrumentName = result.instrument?.instrument_name;
-      const nextRows = result.fetchedRows.map((row) => ({
-        ...row,
-        instrument_name: instrumentName,
-      }));
-      rows.push(...nextRows);
-      onInstrumentRows?.(nextRows, {
-        instrumentName,
-        index: result.index,
-        total: instruments.length,
-      });
     }
+  };
 
-    while (inFlight.size < parallel && nextIndex < instruments.length) {
-      launchOne();
-    }
-  }
+  const workerCount = Math.min(instruments.length, concurrency);
+  await Promise.all(
+    Array.from({ length: workerCount }, () => worker()),
+  );
 
   return { rows, rateLimitedCount };
 }
@@ -614,7 +645,9 @@ async function loadExpiry(expiry, { rebuild = true, panelKey = null } = {}) {
           `Rate limited by Thalex (429) while loading ${markResult.rateLimitedCount} instrument request(s). Please wait a bit and retry.`,
         );
       }
-      throw new Error(`No datapoints returned for expiry ${expiry}.`);
+      data.markRowsByExpiry[expiry] = [];
+      if (rebuild) rebuildMarkRows();
+      return;
     }
 
     if (
@@ -825,25 +858,26 @@ watch(
         </button>
       </div>
 
-      <div v-if="ui.loading" class="progressiveFetchLabel">
-        Fetching progressively{{ ".".repeat(progressiveDots) }}
-      </div>
-
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
-    <Greeks
-      ref="chartRef"
-      :data="chartRows"
-      :title="chartTitle"
-      subtitle=""
-      :loading="chartLoading"
-      :loading-panels="loadingPanelIndexes"
-      :mode="ui.mode"
-      x-mode="m"
-      :greek="ui.greek"
-      :resolution="ui.resolution"
-    />
+    <div class="chartShell">
+      <div v-if="ui.loading" class="chartLoadingOverlay">
+        Loading{{ ".".repeat(progressiveDots) }}
+      </div>
+      <Greeks
+        ref="chartRef"
+        :data="chartRows"
+        :title="chartTitle"
+        subtitle=""
+        :loading="chartLoading"
+        :loading-panels="loadingPanelIndexes"
+        :mode="ui.mode"
+        x-mode="m"
+        :greek="ui.greek"
+        :resolution="ui.resolution"
+      />
+    </div>
   </div>
 </template>
 
@@ -878,10 +912,21 @@ watch(
   font-weight: 600;
 }
 
-.progressiveFetchLabel {
-  margin-top: 8px;
+.chartShell {
+  position: relative;
+}
+
+.chartLoadingOverlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  pointer-events: none;
+  padding: 6px 10px;
+  border-radius: 8px;
   font-size: 12px;
   letter-spacing: 0.03em;
+  background: color-mix(in oklab, var(--bg), #0f1320 35%);
   color: color-mix(in oklab, var(--muted), #d8deee 16%);
 }
 </style>

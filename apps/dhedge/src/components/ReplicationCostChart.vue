@@ -856,7 +856,7 @@ function render() {
     .tickPadding(10);
   const yAxis = d3
     .axisLeft(y)
-    .ticks(6)
+    .ticks(5)
     .tickSize(0)
     .tickPadding(10)
     .tickFormat(formatIndexAxis);

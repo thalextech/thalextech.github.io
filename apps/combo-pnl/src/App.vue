@@ -785,8 +785,8 @@ watch(
   top: calc(100% + 8px);
   right: 0;
   width: 240px;
-  border: 1px solid whitesmoke;
-  background: #11141a;
+  border: 0.5px solid rgba(255, 255, 255, 0.9);
+  background: #080a0f;
   border-radius: 6px;
   padding: 10px 12px 12px;
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
@@ -845,8 +845,8 @@ watch(
   height: 8px;
   margin-top: -3px;
   border-radius: 50%;
-  border: 1px solid rgba(245, 245, 245, 0.85);
-  background: #11141a;
+  border: none;
+  background: #f5f5f7;
 }
 
 .settingsSlider::-moz-range-track {
@@ -859,8 +859,8 @@ watch(
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  border: 1px solid rgba(245, 245, 245, 0.85);
-  background: #11141a;
+  border: none;
+  background: #f5f5f7;
 }
 
 .settingsRange {
