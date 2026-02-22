@@ -19,6 +19,7 @@ const GREEK_OPTIONS = [
   { value: "theta", symbol: "\u0398" },
   { value: "vega", symbol: "\u03c3" },
   { value: "vanna", symbol: "v" },
+  { value: "gamma_theta", symbol: "\u0393/\u0398" },
 ];
 const ONE_HOUR_SECONDS = 60 * 60;
 const ONE_DAY_SECONDS = 24 * ONE_HOUR_SECONDS;
@@ -211,6 +212,12 @@ const activeGreekSymbol = computed(
   () =>
     GREEK_OPTIONS.find((option) => option.value === ui.greek)?.symbol ||
     GREEK_OPTIONS[0].symbol,
+);
+const isGammaThetaMode = computed(() => ui.greek === "gamma_theta");
+const headerTitle = computed(() =>
+  isGammaThetaMode.value
+    ? "Gamma/Theta Ratio vs moneyness"
+    : `Options ${activeGreekSymbol.value} vs moneyness`,
 );
 
 const chartTitle = computed(() => "");
@@ -776,7 +783,7 @@ watch(
   <div class="app">
     <header class="header">
       <div class="titleRow">
-        <h1>Options {{ activeGreekSymbol }} vs moneyness</h1>
+        <h1>{{ headerTitle }}</h1>
         <div v-if="chartSubtitle || metaSummary" class="titleMetaGroup">
           <div v-if="chartSubtitle" class="meta">{{ chartSubtitle }}</div>
           <div v-if="metaSummary" class="meta">{{ metaSummary }}</div>
@@ -841,7 +848,10 @@ watch(
             :key="option.value"
             type="button"
             class="greekSymbolButton"
-            :class="{ active: ui.greek === option.value }"
+            :class="{
+              active: ui.greek === option.value,
+              compact: option.value === 'gamma_theta',
+            }"
             @click="ui.greek = option.value"
           >
             {{ option.symbol }}
@@ -910,6 +920,11 @@ watch(
 .greekSymbolButton.active {
   color: var(--text);
   font-weight: 600;
+}
+
+.greekSymbolButton.compact {
+  font-size: 12px;
+  letter-spacing: -0.01em;
 }
 
 .chartShell {

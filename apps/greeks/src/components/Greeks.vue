@@ -169,17 +169,23 @@ const render = () => {
     }
   }
 
-  const useStrike = props.xMode === "strike";
+  const isGammaThetaMode = props.greek === "gamma_theta";
+  const useStrike = !isGammaThetaMode && props.xMode === "strike";
 
   const greekKey = ["delta", "gamma", "theta", "vega", "vanna"].includes(
     props.greek,
   )
     ? props.greek
     : "delta";
-  const xLabel = useStrike ? "strike" : "S/K";
+  const xLabel = isGammaThetaMode ? "S/K" : useStrike ? "strike" : "S/K";
   const gammaScaleFactor = 1e4;
+  const ratioLabel = "|gamma/theta|";
   const isGamma = greekKey === "gamma";
-  const yLabel = isGamma ? `${greekKey} [x10^4]` : greekKey;
+  const yLabel = isGammaThetaMode
+    ? ratioLabel
+    : isGamma
+      ? `${greekKey} [x10^4]`
+      : greekKey;
   const normalizeGreekValue = (key, value) =>
     key === "vega" && Number.isFinite(value)
       ? value / 100
@@ -188,11 +194,22 @@ const render = () => {
         : value;
 
   const xAccessor = (d) => {
+    if (isGammaThetaMode) return d.m;
     if (useStrike) return d.strike;
     return d.m;
   };
 
-  const yAccessor = (d) => normalizeGreekValue(greekKey, d[greekKey]);
+  const yAccessor = (d) => {
+    if (isGammaThetaMode) {
+      const gamma = Number(d?.gamma);
+      const theta = Number(d?.theta);
+      if (!Number.isFinite(gamma) || !Number.isFinite(theta) || theta === 0) {
+        return NaN;
+      }
+      return Math.abs(gamma / theta);
+    }
+    return normalizeGreekValue(greekKey, d[greekKey]);
+  };
   const yValues = props.data.map(yAccessor).filter(Number.isFinite);
   if (!yValues.length) return;
 
@@ -255,6 +272,8 @@ const render = () => {
       .tickPadding(20);
     if (useStrike) {
       xAxis.tickFormat(d3.format(",.0f"));
+    } else if (isGammaThetaMode) {
+      xAxis.tickFormat(d3.format(".3f"));
     }
     panelConfigs.push({ label: null, x, xAxis, left, right });
     expiryLabels.forEach((label) => {
@@ -280,6 +299,8 @@ const render = () => {
         .tickPadding(20);
       if (useStrike) {
         xAxis.tickFormat(d3.format(",.0f"));
+      } else if (isGammaThetaMode) {
+        xAxis.tickFormat(d3.format(".3f"));
       }
       panelConfigs.push({ label, x, xAxis, left, right });
       panelScaleByLabel.set(label, { x, xAxis, left, right });
@@ -375,10 +396,14 @@ const render = () => {
   );
 
   const colorAccessor = (d) => {
-    const value = normalizeGreekValue(greekKey, d[greekKey]);
+    const value = yAccessor(d);
     return Number.isFinite(value) ? Math.abs(value) : NaN;
   };
-  const colorLabel = isGamma ? `|${greekKey}| [x10^4]` : `|${greekKey}|`;
+  const colorLabel = isGammaThetaMode
+    ? `|${ratioLabel}|`
+    : isGamma
+      ? `|${greekKey}| [x10^4]`
+      : `|${greekKey}|`;
 
   const colorExtent = d3.extent(props.data, colorAccessor);
   const domainMin = Number.isFinite(colorExtent[0]) ? colorExtent[0] : 0;
