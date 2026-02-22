@@ -5,6 +5,7 @@ import { onMounted, ref, watch } from "vue";
 const props = defineProps({
   indexData: { type: Array, default: () => [] },
   comboData: { type: Array, default: () => [] },
+  deltaHedgeEnabled: { type: Boolean, default: false },
   optionInstrumentName: { type: String, default: "" },
   subtitle: { type: String, default: "" },
   loading: { type: Boolean, default: false },
@@ -40,6 +41,7 @@ const LOWER_MODE_TOGGLE_X = 12;
 const BOTTOM_MODE_OPTIONS = [
   { key: "mark", label: "Mark" },
   { key: "greeks", label: "Greeks P&L" },
+  { key: "hedge", label: "Hedge P&L" },
 ];
 
 const DETAIL_SERIES_ORDER = [
@@ -103,6 +105,10 @@ const normalizeComboPoints = (rows) =>
         gamma_theta_PL: Number(row?.gamma_theta_PL),
         vega_PL: Number(row?.vega_PL),
         residual_PL: Number(row?.residual_PL),
+        hedge_PL: Number(row?.hedge_PL),
+        hedge_cumulative_PL: Number(row?.hedge_cumulative_PL),
+        hedge_realized_cumulative: Number(row?.hedge_realized_cumulative),
+        hedge_unrealized: Number(row?.hedge_unrealized),
       };
     })
     .filter(Boolean)
@@ -367,7 +373,7 @@ const drawLowerModeToggle = (group) => {
   let xOffset = 0;
   for (const option of BOTTOM_MODE_OPTIONS) {
     const isActive = bottomMode === option.key;
-    const width = option.key === "mark" ? 56 : 106;
+    const width = Math.max(56, Math.round(18 + String(option.label).length * 6.1));
     const height = 24;
     const item = toggleGroup
       .append("g")
@@ -611,6 +617,13 @@ const render = () => {
       );
 
     if (!comboFiltered.length) {
+      const emptyMessageByMode = {
+        mark: "No mark data in selected range",
+        greeks: "No Greeks P&L data in selected range",
+        hedge: props.deltaHedgeEnabled
+          ? "No hedge P&L data in selected range"
+          : "Delta hedge is off. Enable it to view hedge P&L.",
+      };
       plotGroup
         .append("text")
         .attr("x", innerWidth / 2)
@@ -618,11 +631,7 @@ const render = () => {
         .attr("text-anchor", "middle")
         .attr("fill", "#c9c9cf")
         .style("font-size", "10px")
-        .text(
-          bottomMode === "mark"
-            ? "No mark data in selected range"
-            : "No Greeks P&L data in selected range",
-        );
+        .text(emptyMessageByMode[bottomMode] || "No data in selected range");
       return;
     }
 
@@ -873,6 +882,220 @@ const render = () => {
           .attr("stroke-width", 3)
           .text(`Δ ${formatMarkDelta(markDelta)}`);
       }
+
+      return;
+    }
+
+    if (bottomMode === "hedge") {
+      const hedgePoints = comboFiltered.map((point) => {
+        const realized = Number.isFinite(point.hedge_realized_cumulative)
+          ? point.hedge_realized_cumulative
+          : 0;
+        const unrealized = Number.isFinite(point.hedge_unrealized)
+          ? point.hedge_unrealized
+          : 0;
+        const total = Number.isFinite(point.hedge_cumulative_PL)
+          ? point.hedge_cumulative_PL
+          : realized + unrealized;
+        return {
+          date: point.date,
+          realized,
+          unrealized,
+          total,
+        };
+      });
+      const baselinePoint = hedgePoints[0] || {
+        realized: 0,
+        unrealized: 0,
+        total: 0,
+      };
+      const baselineRealized = Number.isFinite(baselinePoint.realized)
+        ? baselinePoint.realized
+        : 0;
+      const baselineUnrealized = Number.isFinite(baselinePoint.unrealized)
+        ? baselinePoint.unrealized
+        : 0;
+      const baselineTotal = Number.isFinite(baselinePoint.total)
+        ? baselinePoint.total
+        : baselineRealized + baselineUnrealized;
+      const rebasedHedgePoints = hedgePoints.map((point) => ({
+        date: point.date,
+        realized: point.realized - baselineRealized,
+        unrealized: point.unrealized - baselineUnrealized,
+        total: point.total - baselineTotal,
+      }));
+
+      bottomPanelGroup
+        .append("text")
+        .attr("x", layout.width / 2)
+        .attr("y", 24)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#fff")
+        .style("font-size", "14px")
+        .style("font-weight", 600)
+        .text("Delta Hedge P&L");
+
+      bottomPanelGroup
+        .append("text")
+        .attr("x", layout.width / 2)
+        .attr("y", 44)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#a9abb6")
+        .style("font-size", "12px")
+        .text(subtitle);
+
+      const xBottom = d3
+        .scaleUtc()
+        .domain(d3.extent(rebasedHedgePoints, (point) => point.date))
+        .range([0, innerWidth]);
+      const yValues = rebasedHedgePoints.flatMap((point) => [
+        point.realized,
+        point.unrealized,
+        point.total,
+      ]);
+      let yMin = Math.min(0, ...yValues);
+      let yMax = Math.max(0, ...yValues);
+      if (yMin === yMax) {
+        const pad = yMin === 0 ? 0.0001 : Math.abs(yMin) * 0.1;
+        yMin -= pad;
+        yMax += pad;
+      }
+      const yBottom = d3
+        .scaleLinear()
+        .domain([yMin, yMax])
+        .nice()
+        .range([bottomInnerHeight, BOTTOM_TOP_INSET]);
+
+      const xAxis = d3.axisBottom(xBottom).ticks(6).tickSize(0).tickPadding(10);
+      const yAxis = d3
+        .axisLeft(yBottom)
+        .ticks(5)
+        .tickSize(0)
+        .tickPadding(10)
+        .tickFormat(formatPnl);
+
+      plotGroup
+        .append("g")
+        .attr("transform", `translate(0,${bottomInnerHeight})`)
+        .call(xAxis)
+        .call(axisStyle);
+      plotGroup.append("g").call(yAxis).call(axisStyle);
+
+      plotGroup
+        .append("text")
+        .attr("x", innerWidth / 2)
+        .attr("y", bottomInnerHeight + 42)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#d6d7de")
+        .style("font-size", "10px")
+        .style("font-weight", 700)
+        .text("Date (UTC)");
+
+      plotGroup
+        .append("text")
+        .attr("transform", "rotate(-90)")
+        .attr("x", -bottomInnerHeight / 2)
+        .attr("y", -62)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#d6d7de")
+        .style("font-size", "10px")
+        .style("font-weight", 700)
+        .text("Cumulative Hedge P&L ($)");
+
+      const line = d3
+        .line()
+        .x((point) => xBottom(point.date))
+        .y((point) => yBottom(point.value))
+        .curve(d3.curveMonotoneX);
+
+      const hedgeSeries = [
+        {
+          key: "realized",
+          label: "Realized",
+          color: "#34d399",
+          strokeDasharray: null,
+          values: rebasedHedgePoints.map((point) => ({
+            date: point.date,
+            value: point.realized,
+          })),
+        },
+        {
+          key: "unrealized",
+          label: "Unrealized",
+          color: "#f59e0b",
+          strokeDasharray: null,
+          values: rebasedHedgePoints.map((point) => ({
+            date: point.date,
+            value: point.unrealized,
+          })),
+        },
+        {
+          key: "total",
+          label: "Total",
+          color: "#d4d5db",
+          strokeDasharray: "4 3",
+          values: rebasedHedgePoints.map((point) => ({
+            date: point.date,
+            value: point.total,
+          })),
+        },
+      ];
+
+      plotGroup
+        .append("g")
+        .selectAll("path.hedge-line")
+        .data(hedgeSeries)
+        .join("path")
+        .attr("class", "hedge-line")
+        .attr("fill", "none")
+        .attr("stroke", (series) => series.color)
+        .attr("stroke-width", 1.1)
+        .attr("stroke-linecap", "round")
+        .attr("stroke-linejoin", "round")
+        .attr("stroke-dasharray", (series) => series.strokeDasharray)
+        .attr("d", (series) => line(series.values));
+
+      const legendLineLength = 18;
+      const legendLabelOffset = 6;
+      const legendColGap = 120;
+      const legendTextMaxWidth = 84;
+      const legendItemWidth =
+        legendLineLength + legendLabelOffset + legendTextMaxWidth;
+      const legendTotalWidth = 2 * legendColGap + legendItemWidth;
+      const legendX = layout.width - layout.margin.right - legendTotalWidth;
+      const legendY = 24;
+
+      const legendGroup = bottomPanelGroup
+        .append("g")
+        .attr("transform", `translate(${legendX},${legendY})`);
+
+      const legendItems = legendGroup
+        .selectAll("g.hedge-legend-item")
+        .data(hedgeSeries)
+        .join("g")
+        .attr("class", "hedge-legend-item")
+        .attr("transform", (_d, i) => `translate(${i * legendColGap},0)`);
+
+      legendItems
+        .append("line")
+        .attr("x1", 0)
+        .attr("y1", 0)
+        .attr("x2", legendLineLength)
+        .attr("y2", 0)
+        .attr("stroke", (d) => d.color)
+        .attr("stroke-width", 1.1)
+        .attr("stroke-dasharray", (d) => d.strokeDasharray)
+        .attr("stroke-linecap", "round");
+
+      legendItems
+        .append("text")
+        .attr("x", legendLineLength + legendLabelOffset)
+        .attr("y", 3)
+        .attr("fill", "#a9abb6")
+        .style("font-size", "11px")
+        .style("font-family", SVG_FONT_FAMILY)
+        .style("font-weight", 500)
+        .text((d) => d.label);
 
       return;
     }
@@ -1221,6 +1444,7 @@ watch(
   () => [
     props.indexData,
     props.comboData,
+    props.deltaHedgeEnabled,
     props.optionInstrumentName,
     props.subtitle,
     props.loading,

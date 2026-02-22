@@ -709,14 +709,17 @@ const totalMarkPrice = computed<number | null>(() => {
       <div class="legs-divider" aria-hidden="true"></div>
 
       <div class="legs-footer">
-        <button
-          v-if="legsModel.length < MAX_LEGS"
-          type="button"
-          class="add-leg-btn"
-          @click="addOptionLeg"
-        >
-          + Add leg
-        </button>
+        <div class="footer-actions">
+          <button
+            v-if="legsModel.length < MAX_LEGS"
+            type="button"
+            class="add-leg-btn"
+            @click="addOptionLeg"
+          >
+            + Add leg
+          </button>
+          <slot name="footer-actions" :legs-count="legsModel.length" :max-legs="MAX_LEGS" />
+        </div>
         <div class="total-greeks">
           <span class="strike-spacer"></span>
           <div class="leg-greeks">
@@ -1100,6 +1103,14 @@ const totalMarkPrice = computed<number | null>(() => {
   align-items: center;
   gap: var(--layout-gap);
   padding: 1px var(--row-pad-x) 0;
+}
+
+.footer-actions {
+  grid-column: 1 / 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
 }
 
 .total-greeks {

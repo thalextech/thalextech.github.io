@@ -41,6 +41,7 @@ const LOAD_DEBOUNCE_MS = 140;
 const ui = reactive({
   resolutionKey: "900",
   maxPoints: DEFAULT_MAX_POINTS_PER_FETCH,
+  deltaHedgeEnabled: false,
   loading: false,
   error: "",
 });
@@ -72,6 +73,7 @@ const instruments = ref([]);
 const tickerByInstrument = ref({});
 const indexByName = ref({});
 const indexSeries = ref([]);
+const comboBaseSeries = ref([]);
 const comboSeries = ref([]);
 const indexHistoryRows = ref([]);
 const markHistoryByInstrument = ref({});
@@ -229,6 +231,25 @@ const maxPointsPerFetch = computed(() => {
   return Math.max(MIN_POINTS_PER_FETCH, Math.min(MAX_POINTS_PER_FETCH, points));
 });
 
+const activeResolutionConfig = computed(
+  () => RESOLUTION_CONFIG[ui.resolutionKey] || null,
+);
+
+const activeResolutionSeconds = computed(() => {
+  const fromConfig = Number(activeResolutionConfig.value?.interval_seconds);
+  if (Number.isFinite(fromConfig) && fromConfig > 0) return fromConfig;
+  const fromKey = Number(ui.resolutionKey);
+  if (Number.isFinite(fromKey) && fromKey > 0) return fromKey;
+  return 900;
+});
+
+const activeResolutionLabel = computed(() => {
+  const label = activeResolutionConfig.value?.label;
+  if (label) return label;
+  const seconds = activeResolutionSeconds.value;
+  return Number.isFinite(seconds) && seconds > 0 ? `${seconds}s` : "n/a";
+});
+
 const getTimestampRange = () => {
   const now = Math.floor(Date.now() / 1000);
   const resolutionConfig = RESOLUTION_CONFIG[ui.resolutionKey];
@@ -381,12 +402,136 @@ const rebuildBuilderSnapshots = () => {
   }
 };
 
+const applyTimeBasedDeltaHedge = (rows, intervalSeconds) => {
+  const points = Array.isArray(rows) ? rows : [];
+  const safeInterval = Number(intervalSeconds);
+  const nextRows = points.map((row) => ({
+    ...row,
+    hedge_PL: 0,
+    hedge_cumulative_PL: 0,
+    hedge_realized_cumulative: 0,
+    hedge_unrealized: 0,
+    hedge_ratio: null,
+    hedge_rehedge: false,
+  }));
+
+  let hedgePosition = 0;
+  let avgEntryPrice = null;
+  let lastRehedgeTs = null;
+  let realizedHedgePnl = 0;
+  let prevTotalHedgePnl = 0;
+
+  for (let i = 0; i < nextRows.length; i += 1) {
+    const row = nextRows[i];
+    const indexClose = Number(row?.index_price_close);
+    const combinedDelta = Number(row?.combined_delta);
+    const shouldRehedge =
+      Number.isFinite(indexClose) &&
+      Number.isFinite(combinedDelta) &&
+      (i === 0 ||
+        !Number.isFinite(lastRehedgeTs) ||
+        !Number.isFinite(safeInterval) ||
+        safeInterval <= 0 ||
+        row.ts - lastRehedgeTs >= safeInterval);
+
+    if (shouldRehedge) {
+      const targetPosition = -combinedDelta;
+      const tradeQty = targetPosition - hedgePosition;
+      const hasTrade = Math.abs(tradeQty) > 1e-12;
+
+      if (hasTrade) {
+        const hasOpenPosition = Math.abs(hedgePosition) > 1e-12;
+        const sameDirection = hasOpenPosition && hedgePosition * tradeQty > 0;
+
+        if (!hasOpenPosition || sameDirection) {
+          const entryPrice = Number.isFinite(avgEntryPrice)
+            ? avgEntryPrice
+            : indexClose;
+          const prevNotional = hasOpenPosition
+            ? Math.abs(hedgePosition) * entryPrice
+            : 0;
+          const nextQtyAbs = Math.abs(hedgePosition + tradeQty);
+          const nextNotional = prevNotional + Math.abs(tradeQty) * indexClose;
+          avgEntryPrice = nextQtyAbs > 0 ? nextNotional / nextQtyAbs : null;
+          hedgePosition += tradeQty;
+        } else {
+          const closingQty = Math.min(Math.abs(hedgePosition), Math.abs(tradeQty));
+          const entryPrice = Number.isFinite(avgEntryPrice)
+            ? avgEntryPrice
+            : indexClose;
+
+          if (hedgePosition > 0) {
+            realizedHedgePnl += closingQty * (indexClose - entryPrice);
+          } else {
+            realizedHedgePnl += closingQty * (entryPrice - indexClose);
+          }
+
+          const remainingQtyAbs = Math.abs(tradeQty) - closingQty;
+          if (remainingQtyAbs <= 1e-12) {
+            hedgePosition += tradeQty;
+            if (Math.abs(hedgePosition) <= 1e-12) {
+              hedgePosition = 0;
+              avgEntryPrice = null;
+            }
+          } else {
+            hedgePosition = Math.sign(tradeQty) * remainingQtyAbs;
+            avgEntryPrice = indexClose;
+          }
+        }
+      }
+
+      lastRehedgeTs = row.ts;
+      row.hedge_ratio = hedgePosition;
+      row.hedge_rehedge = true;
+    }
+
+    const unrealizedHedgePnl =
+      Number.isFinite(indexClose) &&
+      Math.abs(hedgePosition) > 1e-12 &&
+      Number.isFinite(avgEntryPrice)
+        ? hedgePosition * (indexClose - avgEntryPrice)
+        : 0;
+    const totalHedgePnl = realizedHedgePnl + unrealizedHedgePnl;
+    const periodHedgePnl = i === 0 ? 0 : totalHedgePnl - prevTotalHedgePnl;
+    prevTotalHedgePnl = totalHedgePnl;
+
+    row.hedge_PL = periodHedgePnl;
+    row.hedge_unrealized = unrealizedHedgePnl;
+    row.hedge_realized_cumulative = realizedHedgePnl;
+    row.hedge_cumulative_PL = totalHedgePnl;
+
+    const optionMark = Number(row?.mark_price_close);
+    row.mark_price_close = Number.isFinite(optionMark)
+      ? optionMark + totalHedgePnl
+      : totalHedgePnl;
+
+    const optionPL = Number(row?.PL);
+    row.PL = Number.isFinite(optionPL) ? optionPL + periodHedgePnl : periodHedgePnl;
+    const optionDeltaPL = Number(row?.delta_PL);
+    row.delta_PL = Number.isFinite(optionDeltaPL)
+      ? optionDeltaPL + periodHedgePnl
+      : periodHedgePnl;
+  }
+
+  return nextRows;
+};
+
+const rebuildDisplayedComboSeries = () => {
+  comboSeries.value = ui.deltaHedgeEnabled
+    ? applyTimeBasedDeltaHedge(
+        comboBaseSeries.value,
+        activeResolutionSeconds.value,
+      )
+    : [...comboBaseSeries.value];
+};
+
 const loadSeries = async () => {
   const requestId = ++loadRequestId;
 
   if (hasUnsupportedLegs.value) {
     ui.error = "Only option legs are supported in Option Strike.";
     indexSeries.value = [];
+    comboBaseSeries.value = [];
     comboSeries.value = [];
     indexHistoryRows.value = [];
     markHistoryByInstrument.value = {};
@@ -399,6 +544,7 @@ const loadSeries = async () => {
   if (!selected.length) {
     ui.error = "";
     indexSeries.value = [];
+    comboBaseSeries.value = [];
     comboSeries.value = [];
     indexHistoryRows.value = [];
     markHistoryByInstrument.value = {};
@@ -493,6 +639,7 @@ const loadSeries = async () => {
 
     if (legSeries.length !== selected.length) {
       indexSeries.value = [];
+      comboBaseSeries.value = [];
       comboSeries.value = [];
       ui.error = "Missing mark history for one or more selected legs.";
       rebuildBuilderSnapshots();
@@ -517,11 +664,13 @@ const loadSeries = async () => {
       let totalGammaThetaPL = 0;
       let totalVegaPL = 0;
       let totalResidualPL = 0;
+      let totalCombinedDelta = 0;
       let hasPL = false;
       let hasDeltaPL = false;
       let hasGammaThetaPL = false;
       let hasVegaPL = false;
       let hasResidualPL = false;
+      let hasCombinedDelta = false;
       for (const entry of legSeries) {
         const point = entry.byTs.get(ts);
         totalMark += entry.signedQty * Number(point.markClose);
@@ -552,6 +701,10 @@ const loadSeries = async () => {
           totalResidualPL += signedQty * Number(legPnlPoint.residual_PL);
           hasResidualPL = true;
         }
+        if (Number.isFinite(legPnlPoint?.delta)) {
+          totalCombinedDelta += signedQty * Number(legPnlPoint.delta);
+          hasCombinedDelta = true;
+        }
       }
 
       const date = new Date(ts * 1000);
@@ -573,11 +726,13 @@ const loadSeries = async () => {
         gamma_theta_PL: hasGammaThetaPL ? totalGammaThetaPL : null,
         vega_PL: hasVegaPL ? totalVegaPL : null,
         residual_PL: hasResidualPL ? totalResidualPL : null,
+        combined_delta: hasCombinedDelta ? totalCombinedDelta : null,
       });
     }
 
     indexSeries.value = top;
-    comboSeries.value = bottom;
+    comboBaseSeries.value = bottom;
+    rebuildDisplayedComboSeries();
 
     if (!indexSeries.value.length || !comboSeries.value.length) {
       ui.error = "No overlapping index/mark history for selected legs.";
@@ -587,6 +742,7 @@ const loadSeries = async () => {
     if (requestId !== loadRequestId) return;
     ui.error = error instanceof Error ? error.message : String(error);
     indexSeries.value = [];
+    comboBaseSeries.value = [];
     comboSeries.value = [];
     indexHistoryRows.value = [];
     markHistoryByInstrument.value = {};
@@ -613,6 +769,13 @@ watch(
     scheduleLoad();
   },
   { deep: true },
+);
+
+watch(
+  () => [ui.deltaHedgeEnabled, activeResolutionSeconds.value],
+  () => {
+    rebuildDisplayedComboSeries();
+  },
 );
 
 watch(
@@ -674,7 +837,19 @@ watch(
           :index-price="indexDisplay?.price ?? null"
           :index-fetched-at="indexDisplay?.fetchedAt ?? null"
           @update:legs="positionLegs = $event"
-        />
+        >
+          <template #footer-actions>
+            <button
+              type="button"
+              class="deltaHedgeButton"
+              :class="{ deltaHedgeButtonActive: ui.deltaHedgeEnabled }"
+              :title="`Rebalance every ${activeResolutionLabel}`"
+              @click="ui.deltaHedgeEnabled = !ui.deltaHedgeEnabled"
+            >
+              {{ ui.deltaHedgeEnabled ? "− Delta hedge" : "+ Delta hedge" }}
+            </button>
+          </template>
+        </PositionBuilder>
       </div>
     </div>
 
@@ -720,6 +895,7 @@ watch(
       <IndexMarkComboChart
         :index-data="indexSeries"
         :combo-data="comboSeries"
+        :delta-hedge-enabled="ui.deltaHedgeEnabled"
         :option-instrument-name="activeIndexName"
         :subtitle="chartSubtitle"
         :loading="ui.loading"
@@ -881,6 +1057,26 @@ watch(
 .builderMain {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.deltaHedgeButton {
+  align-self: flex-start;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: rgba(226, 232, 240, 0.7);
+  font-size: 10px;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.deltaHedgeButton:hover {
+  color: #fff;
+}
+
+.deltaHedgeButtonActive {
+  color: #8ad5a1;
 }
 
 .builderMain :deep(.legs-section) {
