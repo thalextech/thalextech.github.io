@@ -39,12 +39,10 @@ const BOTTOM_TOP_INSET = 36;
 const RESOLUTION_TOGGLE_X = 8;
 const RESOLUTION_TOGGLE_Y = 6;
 const LOWER_MODE_TOGGLE_X = 12;
-const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 const BOTTOM_MODE_OPTIONS = [
   { key: "mark", label: "Mark" },
   { key: "greeks", label: "Greeks P&L" },
   { key: "hedge", label: "Hedge P&L" },
-  { key: "rviv", label: "RV-IV" },
 ];
 
 const DETAIL_SERIES_ORDER = [
@@ -155,7 +153,6 @@ const normalizeComboPoints = (rows, useHedgedMark = false) =>
         hedge_cumulative_PL: Number(row?.hedge_cumulative_PL),
         hedge_realized_cumulative: Number(row?.hedge_realized_cumulative),
         hedge_unrealized: Number(row?.hedge_unrealized),
-        rv_iv_pnl: Number.isFinite(row?.rv_iv_pnl) ? Number(row.rv_iv_pnl) : NaN,
       };
     })
     .filter(Boolean)
@@ -670,7 +667,6 @@ const render = () => {
         hedge: props.deltaHedgeEnabled
           ? "No hedge P&L data in selected range"
           : "Delta hedge is off. Enable it to view hedge P&L.",
-        rviv: "No RV-IV data in selected range",
       };
       plotGroup
         .append("text")

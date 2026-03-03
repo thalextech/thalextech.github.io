@@ -37,7 +37,6 @@ const DEFAULT_VOL = 0.4;
 const DEFAULT_T = 30 / 365.25;
 const MARK_CONCURRENCY = 10;
 const LOAD_DEBOUNCE_MS = 140;
-const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 
 const ui = reactive({
   resolutionKey: "900",
@@ -523,65 +522,6 @@ const applyTimeBasedDeltaHedge = (rows, intervalSeconds) => {
   return nextRows;
 };
 
-const attachRvIvSeries = (rows) => {
-  const points = Array.isArray(rows)
-    ? rows.map((row) => ({
-        ...row,
-        iv_eff_close: Number.isFinite(row?.iv_eff_close)
-          ? Number(row.iv_eff_close)
-          : Number.isFinite(row?.iv_close)
-            ? Number(row.iv_close)
-            : null,
-        rv_iv_pnl: 0,
-      }))
-    : [];
-
-  for (let i = 1; i < points.length; i += 1) {
-    const point = points[i];
-    const prevPoint = points[i - 1];
-
-    const dtSeconds =
-      Number.isFinite(point?.ts) && Number.isFinite(prevPoint?.ts)
-        ? point.ts - prevPoint.ts
-        : null;
-    const dtYears =
-      Number.isFinite(dtSeconds) && dtSeconds > 0
-        ? dtSeconds / SECONDS_PER_YEAR
-        : null;
-    const spot =
-      Number.isFinite(prevPoint?.index_price_close) &&
-      prevPoint.index_price_close > 0
-        ? prevPoint.index_price_close
-        : null;
-    const indexClose = Number.isFinite(point?.index_price_close)
-      ? point.index_price_close
-      : null;
-    const gamma = Number.isFinite(prevPoint?.combined_gamma)
-      ? prevPoint.combined_gamma
-      : null;
-    const ivEff = Number.isFinite(prevPoint?.iv_eff_close)
-      ? prevPoint.iv_eff_close
-      : null;
-    const dS =
-      Number.isFinite(indexClose) && Number.isFinite(spot) ? indexClose - spot : null;
-
-    if (
-      Number.isFinite(dS) &&
-      Number.isFinite(spot) &&
-      Number.isFinite(dtYears) &&
-      Number.isFinite(gamma) &&
-      Number.isFinite(ivEff)
-    ) {
-      const rv2 = Math.pow(dS / spot, 2) / dtYears;
-      const ivEff2 = ivEff * ivEff;
-      const cashGamma = gamma * spot * spot;
-      point.rv_iv_pnl = 0.5 * cashGamma * (rv2 - ivEff2) * dtYears;
-    }
-  }
-
-  return points;
-};
-
 const rebuildDisplayedComboSeries = () => {
   comboSeries.value = ui.deltaHedgeEnabled
     ? applyTimeBasedDeltaHedge(
@@ -826,7 +766,7 @@ const loadSeries = async () => {
     }
 
     indexSeries.value = top;
-    comboBaseSeries.value = attachRvIvSeries(bottom);
+    comboBaseSeries.value = bottom;
     rebuildDisplayedComboSeries();
 
     if (!indexSeries.value.length || !comboSeries.value.length) {
