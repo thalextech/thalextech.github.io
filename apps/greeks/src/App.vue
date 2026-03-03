@@ -19,7 +19,6 @@ const GREEK_OPTIONS = [
   { value: "theta", symbol: "\u0398" },
   { value: "vega", symbol: "\u03c3" },
   { value: "vanna", symbol: "v" },
-  { value: "gamma_theta", symbol: "\u0393/\u0398" },
 ];
 const ONE_HOUR_SECONDS = 60 * 60;
 const ONE_DAY_SECONDS = 24 * ONE_HOUR_SECONDS;
@@ -42,6 +41,7 @@ const ui = reactive({
   mode: "single",
   resolution: "1d",
   greek: "delta",
+  xMode: "m",
   loading: false,
   error: "",
 });
@@ -213,11 +213,11 @@ const activeGreekSymbol = computed(
     GREEK_OPTIONS.find((option) => option.value === ui.greek)?.symbol ||
     GREEK_OPTIONS[0].symbol,
 );
-const isGammaThetaMode = computed(() => ui.greek === "gamma_theta");
-const headerTitle = computed(() =>
-  isGammaThetaMode.value
-    ? "Gamma/Theta Ratio vs moneyness"
-    : `Options ${activeGreekSymbol.value} vs moneyness`,
+const headerTitle = computed(
+  () =>
+    `Options ${activeGreekSymbol.value} vs ${
+      ui.xMode === "strike" ? "strike" : "moneyness"
+    }`,
 );
 
 const chartTitle = computed(() => "");
@@ -842,16 +842,35 @@ watch(
           </select>
         </div>
 
+        <div class="xAxisControl">
+          <span class="xAxisLabel">X-axis</span>
+          <div class="modeToggle" role="group" aria-label="X-axis mode">
+            <button
+              class="modeToggleButton"
+              type="button"
+              :class="{ active: ui.xMode === 'm' }"
+              @click="ui.xMode = 'm'"
+            >
+              S/K
+            </button>
+            <button
+              class="modeToggleButton"
+              type="button"
+              :class="{ active: ui.xMode === 'strike' }"
+              @click="ui.xMode = 'strike'"
+            >
+              Strike
+            </button>
+          </div>
+        </div>
+
         <div class="greekSymbolGrid" role="group" aria-label="Greek">
           <button
             v-for="option in GREEK_OPTIONS"
             :key="option.value"
             type="button"
             class="greekSymbolButton"
-            :class="{
-              active: ui.greek === option.value,
-              compact: option.value === 'gamma_theta',
-            }"
+            :class="{ active: ui.greek === option.value }"
             @click="ui.greek = option.value"
           >
             {{ option.symbol }}
@@ -883,7 +902,7 @@ watch(
         :loading="chartLoading"
         :loading-panels="loadingPanelIndexes"
         :mode="ui.mode"
-        x-mode="m"
+        :x-mode="ui.xMode"
         :greek="ui.greek"
         :resolution="ui.resolution"
       />
@@ -905,6 +924,23 @@ watch(
   gap: 8px;
 }
 
+.xAxisControl {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+}
+
+.xAxisLabel {
+  display: inline-flex;
+  align-items: center;
+  height: 40px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .greekSymbolButton {
   border: 1px solid var(--border);
   background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
@@ -920,11 +956,6 @@ watch(
 .greekSymbolButton.active {
   color: var(--text);
   font-weight: 600;
-}
-
-.greekSymbolButton.compact {
-  font-size: 12px;
-  letter-spacing: -0.01em;
 }
 
 .chartShell {

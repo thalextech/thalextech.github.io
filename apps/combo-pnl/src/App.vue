@@ -12,7 +12,7 @@ import PositionBuilder from "../../simulator/src/components/PositionBuilder.vue"
 import IndexMarkComboChart from "./components/Chart.vue";
 import {
   computeGreeksPnlSeries,
-  fetchInstruments,
+  fetchAllInstruments,
   fetchIndexHistory,
   fetchMarkHistory,
 } from "../../../lib/thalex.js";
@@ -37,11 +37,13 @@ const DEFAULT_VOL = 0.4;
 const DEFAULT_T = 30 / 365.25;
 const MARK_CONCURRENCY = 10;
 const LOAD_DEBOUNCE_MS = 140;
+const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 
 const ui = reactive({
   resolutionKey: "900",
   maxPoints: DEFAULT_MAX_POINTS_PER_FETCH,
   deltaHedgeEnabled: false,
+  showHigherOrderGreeks: false,
   loading: false,
   error: "",
 });
@@ -79,8 +81,9 @@ const indexHistoryRows = ref([]);
 const markHistoryByInstrument = ref({});
 const chartAnchorTs = ref(null);
 const chartBlockRef = ref(null);
-const settingsMenuRef = ref(null);
-const settingsOpen = ref(false);
+const topSettingsMenuRef = ref(null);
+const bottomSettingsMenuRef = ref(null);
+const settingsOpenTarget = ref(null);
 const settingsLeftPx = ref(null);
 
 let loadRequestId = 0;
@@ -164,9 +167,11 @@ const selectedLegInstruments = computed(() => {
     if (!instrument?.instrument_name) continue;
     const qty = clampQty(leg.qty);
     if (!qty) continue;
-    const sideSign = leg.side === "sell" ? -1 : 1;
+    const side = String(leg.side || "buy").toLowerCase();
+    const isSell = side === "sell";
+    const sideSign = isSell ? -1 : 1;
     result.push({
-      label: `${leg.side === "sell" ? "Sell" : "Buy"} ${qty} ${instrument.instrument_name}`,
+      label: `${isSell ? "Sell" : "Buy"} ${qty} ${instrument.instrument_name}`,
       instrumentName: instrument.instrument_name,
       signedQty: sideSign * qty,
       optionType: instrument.option_type_normalized,
@@ -266,8 +271,9 @@ const getTimestampRange = () => {
   };
 };
 
-const toggleSettings = () => {
-  settingsOpen.value = !settingsOpen.value;
+const toggleSettings = (target) => {
+  settingsOpenTarget.value =
+    settingsOpenTarget.value === target ? null : target;
 };
 
 const alignSettingsToBuilderMinusX = () => {
@@ -292,11 +298,15 @@ const settingsWrapStyle = computed(() => {
 });
 
 const handleDocumentPointerDown = (event) => {
-  if (!settingsOpen.value) return;
+  if (!settingsOpenTarget.value) return;
   const target = event?.target;
   if (!(target instanceof Node)) return;
-  if (!settingsMenuRef.value?.contains(target)) {
-    settingsOpen.value = false;
+  const activeMenuRef =
+    settingsOpenTarget.value === "bottom"
+      ? bottomSettingsMenuRef.value
+      : topSettingsMenuRef.value;
+  if (!activeMenuRef?.contains(target)) {
+    settingsOpenTarget.value = null;
   }
 };
 
@@ -411,6 +421,7 @@ const applyTimeBasedDeltaHedge = (rows, intervalSeconds) => {
     hedge_cumulative_PL: 0,
     hedge_realized_cumulative: 0,
     hedge_unrealized: 0,
+    hedged_mark_price_close: Number(row?.mark_price_close),
     hedge_ratio: null,
     hedge_rehedge: false,
   }));
@@ -501,19 +512,74 @@ const applyTimeBasedDeltaHedge = (rows, intervalSeconds) => {
     row.hedge_cumulative_PL = totalHedgePnl;
 
     const optionMark = Number(row?.mark_price_close);
-    row.mark_price_close = Number.isFinite(optionMark)
+    row.hedged_mark_price_close = Number.isFinite(optionMark)
       ? optionMark + totalHedgePnl
       : totalHedgePnl;
 
     const optionPL = Number(row?.PL);
     row.PL = Number.isFinite(optionPL) ? optionPL + periodHedgePnl : periodHedgePnl;
-    const optionDeltaPL = Number(row?.delta_PL);
-    row.delta_PL = Number.isFinite(optionDeltaPL)
-      ? optionDeltaPL + periodHedgePnl
-      : periodHedgePnl;
   }
 
   return nextRows;
+};
+
+const attachRvIvSeries = (rows) => {
+  const points = Array.isArray(rows)
+    ? rows.map((row) => ({
+        ...row,
+        iv_eff_close: Number.isFinite(row?.iv_eff_close)
+          ? Number(row.iv_eff_close)
+          : Number.isFinite(row?.iv_close)
+            ? Number(row.iv_close)
+            : null,
+        rv_iv_pnl: 0,
+      }))
+    : [];
+
+  for (let i = 1; i < points.length; i += 1) {
+    const point = points[i];
+    const prevPoint = points[i - 1];
+
+    const dtSeconds =
+      Number.isFinite(point?.ts) && Number.isFinite(prevPoint?.ts)
+        ? point.ts - prevPoint.ts
+        : null;
+    const dtYears =
+      Number.isFinite(dtSeconds) && dtSeconds > 0
+        ? dtSeconds / SECONDS_PER_YEAR
+        : null;
+    const spot =
+      Number.isFinite(prevPoint?.index_price_close) &&
+      prevPoint.index_price_close > 0
+        ? prevPoint.index_price_close
+        : null;
+    const indexClose = Number.isFinite(point?.index_price_close)
+      ? point.index_price_close
+      : null;
+    const gamma = Number.isFinite(prevPoint?.combined_gamma)
+      ? prevPoint.combined_gamma
+      : null;
+    const ivEff = Number.isFinite(prevPoint?.iv_eff_close)
+      ? prevPoint.iv_eff_close
+      : null;
+    const dS =
+      Number.isFinite(indexClose) && Number.isFinite(spot) ? indexClose - spot : null;
+
+    if (
+      Number.isFinite(dS) &&
+      Number.isFinite(spot) &&
+      Number.isFinite(dtYears) &&
+      Number.isFinite(gamma) &&
+      Number.isFinite(ivEff)
+    ) {
+      const rv2 = Math.pow(dS / spot, 2) / dtYears;
+      const ivEff2 = ivEff * ivEff;
+      const cashGamma = gamma * spot * spot;
+      point.rv_iv_pnl = 0.5 * cashGamma * (rv2 - ivEff2) * dtYears;
+    }
+  }
+
+  return points;
 };
 
 const rebuildDisplayedComboSeries = () => {
@@ -663,14 +729,22 @@ const loadSeries = async () => {
       let totalDeltaPL = 0;
       let totalGammaThetaPL = 0;
       let totalVegaPL = 0;
+      let totalVannaPL = 0;
+      let totalCharmPL = 0;
+      let totalVommaPL = 0;
       let totalResidualPL = 0;
       let totalCombinedDelta = 0;
+      let totalCombinedGamma = 0;
       let hasPL = false;
       let hasDeltaPL = false;
       let hasGammaThetaPL = false;
       let hasVegaPL = false;
+      let hasVannaPL = false;
+      let hasCharmPL = false;
+      let hasVommaPL = false;
       let hasResidualPL = false;
       let hasCombinedDelta = false;
+      let hasCombinedGamma = false;
       for (const entry of legSeries) {
         const point = entry.byTs.get(ts);
         totalMark += entry.signedQty * Number(point.markClose);
@@ -697,6 +771,18 @@ const loadSeries = async () => {
           totalVegaPL += signedQty * Number(legPnlPoint.vega_PL);
           hasVegaPL = true;
         }
+        if (Number.isFinite(legPnlPoint?.vanna_PL)) {
+          totalVannaPL += signedQty * Number(legPnlPoint.vanna_PL);
+          hasVannaPL = true;
+        }
+        if (Number.isFinite(legPnlPoint?.charm_PL)) {
+          totalCharmPL += signedQty * Number(legPnlPoint.charm_PL);
+          hasCharmPL = true;
+        }
+        if (Number.isFinite(legPnlPoint?.vomma_PL)) {
+          totalVommaPL += signedQty * Number(legPnlPoint.vomma_PL);
+          hasVommaPL = true;
+        }
         if (Number.isFinite(legPnlPoint?.residual_PL)) {
           totalResidualPL += signedQty * Number(legPnlPoint.residual_PL);
           hasResidualPL = true;
@@ -704,6 +790,10 @@ const loadSeries = async () => {
         if (Number.isFinite(legPnlPoint?.delta)) {
           totalCombinedDelta += signedQty * Number(legPnlPoint.delta);
           hasCombinedDelta = true;
+        }
+        if (Number.isFinite(legPnlPoint?.gamma)) {
+          totalCombinedGamma += signedQty * Number(legPnlPoint.gamma);
+          hasCombinedGamma = true;
         }
       }
 
@@ -721,17 +811,22 @@ const loadSeries = async () => {
         date,
         index_price_close: indexClose,
         mark_price_close: totalMark,
+        iv_close: ivClose,
         PL: hasPL ? totalPL : null,
         delta_PL: hasDeltaPL ? totalDeltaPL : null,
         gamma_theta_PL: hasGammaThetaPL ? totalGammaThetaPL : null,
         vega_PL: hasVegaPL ? totalVegaPL : null,
+        vanna_PL: hasVannaPL ? totalVannaPL : null,
+        charm_PL: hasCharmPL ? totalCharmPL : null,
+        vomma_PL: hasVommaPL ? totalVommaPL : null,
         residual_PL: hasResidualPL ? totalResidualPL : null,
         combined_delta: hasCombinedDelta ? totalCombinedDelta : null,
+        combined_gamma: hasCombinedGamma ? totalCombinedGamma : null,
       });
     }
 
     indexSeries.value = top;
-    comboBaseSeries.value = bottom;
+    comboBaseSeries.value = attachRvIvSeries(bottom);
     rebuildDisplayedComboSeries();
 
     if (!indexSeries.value.length || !comboSeries.value.length) {
@@ -795,7 +890,7 @@ watch(
 onMounted(async () => {
   document.addEventListener("pointerdown", handleDocumentPointerDown);
   window.addEventListener("resize", alignSettingsToBuilderMinusX);
-  const allInstruments = await fetchInstruments();
+  const allInstruments = await fetchAllInstruments();
   instruments.value = (allInstruments || []).filter(
     (instrument) =>
       instrument?.type === "option" && instrument?.underlying === "BTCUSD",
@@ -861,7 +956,7 @@ watch(
     <div class="chartBlock" ref="chartBlockRef">
       <div
         class="settingsWrap settingsWrap--chart"
-        ref="settingsMenuRef"
+        ref="topSettingsMenuRef"
         :style="settingsWrapStyle"
       >
         <button
@@ -870,10 +965,10 @@ watch(
           title="Settings"
           aria-label="Settings"
           aria-haspopup="true"
-          :aria-expanded="settingsOpen ? 'true' : 'false'"
-          @click="toggleSettings"
+          :aria-expanded="settingsOpenTarget === 'top' ? 'true' : 'false'"
+          @click="toggleSettings('top')"
         ></button>
-        <div v-if="settingsOpen" class="settingsDropdown">
+        <div v-if="settingsOpenTarget === 'top'" class="settingsDropdown">
           <div class="settingsHint">
             Choose the number of data points to load: {{ maxPointsPerFetch }}
           </div>
@@ -891,6 +986,34 @@ watch(
           </div>
         </div>
       </div>
+      <div
+        class="settingsWrap settingsWrap--chart-lower"
+        ref="bottomSettingsMenuRef"
+        :style="settingsWrapStyle"
+      >
+        <button
+          class="settingsButton settingsButton--icon"
+          type="button"
+          title="Settings"
+          aria-label="Settings"
+          aria-haspopup="true"
+          :aria-expanded="settingsOpenTarget === 'bottom' ? 'true' : 'false'"
+          @click="toggleSettings('bottom')"
+        ></button>
+        <div v-if="settingsOpenTarget === 'bottom'" class="settingsDropdown">
+          <div class="settingsToggleRow">
+            <span class="settingsToggleLabel">Show higher-order greeks</span>
+            <button
+              type="button"
+              class="settingsToggleButton"
+              :class="{ settingsToggleButtonActive: ui.showHigherOrderGreeks }"
+              @click="ui.showHigherOrderGreeks = !ui.showHigherOrderGreeks"
+            >
+              {{ ui.showHigherOrderGreeks ? "On" : "Off" }}
+            </button>
+          </div>
+        </div>
+      </div>
 
       <IndexMarkComboChart
         :index-data="indexSeries"
@@ -901,6 +1024,7 @@ watch(
         :loading="ui.loading"
         :resolution-key="ui.resolutionKey"
         :resolution-options="RESOLUTION_OPTIONS"
+        :show-higher-order-greeks="ui.showHigherOrderGreeks"
         @update:resolution-key="ui.resolutionKey = $event"
         @update:time-anchor-ts="chartAnchorTs = $event"
       />
@@ -980,6 +1104,13 @@ watch(
   z-index: 25;
 }
 
+.settingsWrap--chart-lower {
+  position: absolute;
+  top: calc(47% + 8px);
+  right: 40px;
+  z-index: 25;
+}
+
 .settingsTitle {
   font-size: 10px;
   color: #a9abb6;
@@ -1046,6 +1177,37 @@ watch(
   color: #a9abb6;
   font-size: 10px;
   font-weight: 600;
+}
+
+.settingsToggleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settingsToggleLabel {
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.settingsToggleButton {
+  min-width: 44px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid #2a2f3b;
+  background: #12161e;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settingsToggleButtonActive {
+  border-color: #2f855a;
+  background: #163125;
+  color: #8ad5a1;
 }
 
 .builderRow {
@@ -1144,6 +1306,10 @@ watch(
   }
 
   .settingsWrap--chart {
+    right: 12px;
+  }
+
+  .settingsWrap--chart-lower {
     right: 12px;
   }
 

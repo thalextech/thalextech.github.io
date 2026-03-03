@@ -6,6 +6,7 @@ const props = defineProps({
   indexData: { type: Array, default: () => [] },
   comboData: { type: Array, default: () => [] },
   deltaHedgeEnabled: { type: Boolean, default: false },
+  showHigherOrderGreeks: { type: Boolean, default: false },
   optionInstrumentName: { type: String, default: "" },
   subtitle: { type: String, default: "" },
   loading: { type: Boolean, default: false },
@@ -38,10 +39,12 @@ const BOTTOM_TOP_INSET = 36;
 const RESOLUTION_TOGGLE_X = 8;
 const RESOLUTION_TOGGLE_Y = 6;
 const LOWER_MODE_TOGGLE_X = 12;
+const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 const BOTTOM_MODE_OPTIONS = [
   { key: "mark", label: "Mark" },
   { key: "greeks", label: "Greeks P&L" },
   { key: "hedge", label: "Hedge P&L" },
+  { key: "rviv", label: "RV-IV" },
 ];
 
 const DETAIL_SERIES_ORDER = [
@@ -60,10 +63,32 @@ const DETAIL_SERIES_ORDER = [
     areaOpacity: 0,
   },
   {
+    key: "vanna",
+    label: "Vanna",
+    color: "#14b8a6",
+    strokeWidth: 0.9,
+    areaOpacity: 0,
+  },
+  {
+    key: "charm",
+    label: "Charm",
+    color: "#65a30d",
+    strokeWidth: 0.9,
+    areaOpacity: 0,
+  },
+  {
+    key: "vomma",
+    label: "Volga",
+    color: "#f97316",
+    strokeWidth: 0.9,
+    areaOpacity: 0,
+  },
+  {
     key: "total",
     label: "Total",
     color: "#d4d5db",
     strokeWidth: 0.9,
+    strokeDasharray: null,
     areaOpacity: 0,
   },
   {
@@ -75,15 +100,16 @@ const DETAIL_SERIES_ORDER = [
   },
   {
     key: "delta",
-    label: "Delta",
+    label: "Delta (Net)",
     color: "#0b7de3",
     strokeWidth: 0.9,
     areaOpacity: 0.28,
   },
 ];
 const DETAIL_SERIES_CONFIG = DETAIL_SERIES_ORDER.map((series) => ({ ...series }));
+const HIGHER_ORDER_GREEK_KEYS = new Set(["vanna", "charm", "vomma"]);
 
-const normalizeComboPoints = (rows) =>
+const normalizeComboPoints = (rows, useHedgedMark = false) =>
   (rows || [])
     .map((row) => {
       const ts = Number(row?.ts);
@@ -96,19 +122,40 @@ const normalizeComboPoints = (rows) =>
       ) {
         return null;
       }
+      const optionMarkClose = Number(row?.mark_price_close);
+      const hedgedMarkClose = Number(row?.hedged_mark_price_close);
       return {
         ts,
         date,
-        mark_price_close: Number(row?.mark_price_close),
+        mark_price_close:
+          useHedgedMark && Number.isFinite(hedgedMarkClose)
+            ? hedgedMarkClose
+            : optionMarkClose,
+        option_mark_price_close: optionMarkClose,
+        hedged_mark_price_close: hedgedMarkClose,
+        index_price_close: Number(row?.index_price_close),
+        iv_close: Number.isFinite(row?.iv_close) ? Number(row.iv_close) : NaN,
+        iv_eff_close: Number.isFinite(row?.iv_eff_close)
+          ? Number(row.iv_eff_close)
+          : Number.isFinite(row?.iv_close)
+            ? Number(row.iv_close)
+            : NaN,
+        combined_gamma: Number.isFinite(row?.combined_gamma)
+          ? Number(row.combined_gamma)
+          : NaN,
         PL: Number(row?.PL),
         delta_PL: Number(row?.delta_PL),
         gamma_theta_PL: Number(row?.gamma_theta_PL),
         vega_PL: Number(row?.vega_PL),
+        vanna_PL: Number(row?.vanna_PL),
+        charm_PL: Number(row?.charm_PL),
+        vomma_PL: Number(row?.vomma_PL),
         residual_PL: Number(row?.residual_PL),
         hedge_PL: Number(row?.hedge_PL),
         hedge_cumulative_PL: Number(row?.hedge_cumulative_PL),
         hedge_realized_cumulative: Number(row?.hedge_realized_cumulative),
         hedge_unrealized: Number(row?.hedge_unrealized),
+        rv_iv_pnl: Number.isFinite(row?.rv_iv_pnl) ? Number(row.rv_iv_pnl) : NaN,
       };
     })
     .filter(Boolean)
@@ -451,7 +498,7 @@ const render = () => {
   lastResolutionKey = currentResolutionKey;
 
   const index = normalizeSeriesPoints(props.indexData, "index_price_close");
-  const combo = normalizeComboPoints(props.comboData);
+  const combo = normalizeComboPoints(props.comboData, props.deltaHedgeEnabled);
 
   const innerWidth = layout.width - layout.margin.left - layout.margin.right;
   const topInnerHeight =
@@ -623,6 +670,7 @@ const render = () => {
         hedge: props.deltaHedgeEnabled
           ? "No hedge P&L data in selected range"
           : "Delta hedge is off. Enable it to view hedge P&L.",
+        rviv: "No RV-IV data in selected range",
       };
       plotGroup
         .append("text")
@@ -1033,7 +1081,7 @@ const render = () => {
           key: "total",
           label: "Total",
           color: "#d4d5db",
-          strokeDasharray: "4 3",
+          strokeDasharray: null,
           values: rebasedHedgePoints.map((point) => ({
             date: point.date,
             value: point.total,
@@ -1100,11 +1148,271 @@ const render = () => {
       return;
     }
 
+    if (bottomMode === "rviv") {
+      const rvivPoints = [];
+      let cumulativeWedge = 0;
+
+      comboFiltered.forEach((point, indexPoint) => {
+        const date = point.date;
+        if (indexPoint === 0) {
+          rvivPoints.push({
+            date,
+            wedge: 0,
+          });
+          return;
+        }
+
+        const prevPoint = comboFiltered[indexPoint - 1];
+        let rvIvContribution = Number.isFinite(point.rv_iv_pnl)
+          ? point.rv_iv_pnl
+          : NaN;
+        if (!Number.isFinite(rvIvContribution)) {
+          const dtSeconds =
+            Number.isFinite(point.ts) && Number.isFinite(prevPoint?.ts)
+              ? point.ts - prevPoint.ts
+              : null;
+          const dtYears =
+            Number.isFinite(dtSeconds) && dtSeconds > 0
+              ? dtSeconds / SECONDS_PER_YEAR
+              : null;
+          const spot =
+            Number.isFinite(prevPoint?.index_price_close) &&
+            prevPoint.index_price_close > 0
+              ? prevPoint.index_price_close
+              : null;
+          const indexClose = Number.isFinite(point?.index_price_close)
+            ? point.index_price_close
+            : null;
+          const dS =
+            Number.isFinite(indexClose) && Number.isFinite(spot)
+              ? indexClose - spot
+              : null;
+          const iv = Number.isFinite(prevPoint?.iv_eff_close)
+            ? prevPoint.iv_eff_close
+            : Number.isFinite(prevPoint?.iv_close)
+              ? prevPoint.iv_close
+              : null;
+          const gamma = Number.isFinite(prevPoint?.combined_gamma)
+            ? prevPoint.combined_gamma
+            : null;
+          if (
+            Number.isFinite(dS) &&
+            Number.isFinite(spot) &&
+            Number.isFinite(dtYears) &&
+            Number.isFinite(iv) &&
+            Number.isFinite(gamma)
+          ) {
+            const rv2 = Math.pow(dS / spot, 2) / dtYears;
+            const iv2 = iv * iv;
+            const cashGamma = gamma * spot * spot;
+            rvIvContribution = 0.5 * cashGamma * (rv2 - iv2) * dtYears;
+          } else {
+            rvIvContribution = 0;
+          }
+        }
+        cumulativeWedge += rvIvContribution;
+
+        rvivPoints.push({
+          date,
+          wedge: cumulativeWedge,
+        });
+      });
+
+      bottomPanelGroup
+        .append("text")
+        .attr("x", layout.width / 2)
+        .attr("y", 24)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#fff")
+        .style("font-size", "14px")
+        .style("font-weight", 600)
+        .text("RV-IV Wedge");
+
+      bottomPanelGroup
+        .append("text")
+        .attr("x", layout.width / 2)
+        .attr("y", 44)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#a9abb6")
+        .style("font-size", "12px")
+        .text(subtitle);
+
+      const xBottom = d3
+        .scaleUtc()
+        .domain(d3.extent(rvivPoints, (point) => point.date))
+        .range([0, innerWidth]);
+      const yValues = rvivPoints.map((point) => point.wedge);
+      let yMin = Math.min(0, ...yValues);
+      let yMax = Math.max(0, ...yValues);
+      if (yMin === yMax) {
+        const pad = yMin === 0 ? 0.0001 : Math.abs(yMin) * 0.1;
+        yMin -= pad;
+        yMax += pad;
+      }
+      const yBottom = d3
+        .scaleLinear()
+        .domain([yMin, yMax])
+        .nice()
+        .range([bottomInnerHeight, BOTTOM_TOP_INSET]);
+
+      const xAxis = d3.axisBottom(xBottom).ticks(6).tickSize(0).tickPadding(10);
+      const yAxis = d3
+        .axisLeft(yBottom)
+        .ticks(5)
+        .tickSize(0)
+        .tickPadding(10)
+        .tickFormat(formatPnl);
+
+      plotGroup
+        .append("g")
+        .attr("transform", `translate(0,${bottomInnerHeight})`)
+        .call(xAxis)
+        .call(axisStyle);
+      plotGroup.append("g").call(yAxis).call(axisStyle);
+
+      plotGroup
+        .append("text")
+        .attr("x", innerWidth / 2)
+        .attr("y", bottomInnerHeight + 42)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#d6d7de")
+        .style("font-size", "10px")
+        .style("font-weight", 700)
+        .text("Date (UTC)");
+
+      plotGroup
+        .append("text")
+        .attr("transform", "rotate(-90)")
+        .attr("x", -bottomInnerHeight / 2)
+        .attr("y", -62)
+        .attr("text-anchor", "middle")
+        .attr("fill", "#d6d7de")
+        .style("font-size", "10px")
+        .style("font-weight", 700)
+        .text("Cumulative P&L ($)");
+
+      const line = d3
+        .line()
+        .x((point) => xBottom(point.date))
+        .y((point) => yBottom(point.value))
+        .curve(d3.curveMonotoneX);
+      const area = d3
+        .area()
+        .x((point) => xBottom(point.date))
+        .y0(bottomInnerHeight)
+        .y1((point) => yBottom(point.value))
+        .curve(d3.curveMonotoneX);
+      const rvivSeries = [
+        {
+          key: "wedge",
+          label: "RV-IV Wedge",
+          color: "#e91e63",
+          strokeDasharray: null,
+          values: rvivPoints.map((point) => ({
+            date: point.date,
+            value: point.wedge,
+          })),
+        },
+      ];
+
+      const wedgeSeries = rvivSeries[0];
+      const wedgeValues = wedgeSeries.values;
+      const areaGradientId = "rviv-wedge-gradient";
+
+      if (wedgeValues.length) {
+        const defs = bottomPanelGroup.append("defs");
+        const gradient = defs
+          .append("linearGradient")
+          .attr("id", areaGradientId)
+          .attr("x1", "0%")
+          .attr("y1", "0%")
+          .attr("x2", "0%")
+          .attr("y2", "100%");
+        gradient
+          .append("stop")
+          .attr("offset", "0%")
+          .attr("stop-color", wedgeSeries.color)
+          .attr("stop-opacity", 0.34);
+        gradient
+          .append("stop")
+          .attr("offset", "100%")
+          .attr("stop-color", wedgeSeries.color)
+          .attr("stop-opacity", 0);
+
+        plotGroup
+          .append("path")
+          .datum(wedgeValues)
+          .attr("class", "rviv-area")
+          .attr("fill", `url(#${areaGradientId})`)
+          .attr("d", area);
+      }
+
+      plotGroup
+        .append("path")
+        .datum(wedgeValues)
+        .attr("class", "rviv-line")
+        .attr("fill", "none")
+        .attr("stroke", wedgeSeries.color)
+        .attr("stroke-width", 1.1)
+        .attr("stroke-linecap", "round")
+        .attr("stroke-linejoin", "round")
+        .attr("stroke-dasharray", wedgeSeries.strokeDasharray)
+        .attr("d", line(wedgeValues));
+
+      const legendLineLength = 18;
+      const legendLabelOffset = 6;
+      const legendColGap = 150;
+      const legendTextMaxWidth = 130;
+      const legendItemWidth =
+        legendLineLength + legendLabelOffset + legendTextMaxWidth;
+      const legendTotalWidth =
+        (rvivSeries.length - 1) * legendColGap + legendItemWidth;
+      const legendX = layout.width - layout.margin.right - legendTotalWidth;
+      const legendY = 24;
+
+      const legendGroup = bottomPanelGroup
+        .append("g")
+        .attr("transform", `translate(${legendX},${legendY})`);
+
+      const legendItems = legendGroup
+        .selectAll("g.rviv-legend-item")
+        .data(rvivSeries)
+        .join("g")
+        .attr("class", "rviv-legend-item")
+        .attr("transform", (_d, i) => `translate(${i * legendColGap},0)`);
+
+      legendItems
+        .append("line")
+        .attr("x1", 0)
+        .attr("y1", 0)
+        .attr("x2", legendLineLength)
+        .attr("y2", 0)
+        .attr("stroke", (d) => d.color)
+        .attr("stroke-width", 1.1)
+        .attr("stroke-dasharray", (d) => d.strokeDasharray)
+        .attr("stroke-linecap", "round");
+
+      legendItems
+        .append("text")
+        .attr("x", legendLineLength + legendLabelOffset)
+        .attr("y", 3)
+        .attr("fill", "#a9abb6")
+        .style("font-size", "11px")
+        .style("font-family", SVG_FONT_FAMILY)
+        .style("font-weight", 500)
+        .text((d) => d.label);
+
+      return;
+    }
+
     const cumulative = {
       total: 0,
       delta: 0,
       gammaTheta: 0,
       vega: 0,
+      vanna: 0,
+      charm: 0,
+      vomma: 0,
       residual: 0,
     };
     const seriesByKey = {
@@ -1112,6 +1420,9 @@ const render = () => {
       delta: [],
       gammaTheta: [],
       vega: [],
+      vanna: [],
+      charm: [],
+      vomma: [],
       residual: [],
     };
 
@@ -1122,25 +1433,43 @@ const render = () => {
         seriesByKey.delta.push({ date, value: 0 });
         seriesByKey.gammaTheta.push({ date, value: 0 });
         seriesByKey.vega.push({ date, value: 0 });
+        seriesByKey.vanna.push({ date, value: 0 });
+        seriesByKey.charm.push({ date, value: 0 });
+        seriesByKey.vomma.push({ date, value: 0 });
         seriesByKey.residual.push({ date, value: 0 });
         return;
       }
 
-      const deltaPL = Number.isFinite(point.delta_PL) ? point.delta_PL : 0;
-      const gammaThetaPL = Number.isFinite(point.gamma_theta_PL)
+      const optionDeltaPL = Number.isFinite(point.delta_PL) ? point.delta_PL : 0;
+      const optionGammaThetaPL = Number.isFinite(point.gamma_theta_PL)
         ? point.gamma_theta_PL
         : 0;
+      const hedgePL = Number.isFinite(point.hedge_PL) ? point.hedge_PL : 0;
+      const deltaPL = optionDeltaPL + hedgePL;
+      const gammaThetaPL = optionGammaThetaPL;
       const vegaPL = Number.isFinite(point.vega_PL) ? point.vega_PL : 0;
+      const vannaPL = Number.isFinite(point.vanna_PL) ? point.vanna_PL : 0;
+      const charmPL = Number.isFinite(point.charm_PL) ? point.charm_PL : 0;
+      const vommaPL = Number.isFinite(point.vomma_PL) ? point.vomma_PL : 0;
       const residualPL = Number.isFinite(point.residual_PL)
         ? point.residual_PL
         : 0;
       const totalPL = Number.isFinite(point.PL)
         ? point.PL
-        : deltaPL + gammaThetaPL + vegaPL + residualPL;
+        : deltaPL +
+          gammaThetaPL +
+          vegaPL +
+          vannaPL +
+          charmPL +
+          vommaPL +
+          residualPL;
 
       cumulative.delta += deltaPL;
       cumulative.gammaTheta += gammaThetaPL;
       cumulative.vega += vegaPL;
+      cumulative.vanna += vannaPL;
+      cumulative.charm += charmPL;
+      cumulative.vomma += vommaPL;
       cumulative.residual += residualPL;
       cumulative.total += totalPL;
 
@@ -1148,10 +1477,18 @@ const render = () => {
       seriesByKey.delta.push({ date, value: cumulative.delta });
       seriesByKey.gammaTheta.push({ date, value: cumulative.gammaTheta });
       seriesByKey.vega.push({ date, value: cumulative.vega });
+      seriesByKey.vanna.push({ date, value: cumulative.vanna });
+      seriesByKey.charm.push({ date, value: cumulative.charm });
+      seriesByKey.vomma.push({ date, value: cumulative.vomma });
       seriesByKey.residual.push({ date, value: cumulative.residual });
     });
 
-    const seriesList = DETAIL_SERIES_CONFIG.map((series) => ({
+    const detailSeriesConfig = props.showHigherOrderGreeks
+      ? DETAIL_SERIES_CONFIG
+      : DETAIL_SERIES_CONFIG.filter(
+          (series) => !HIGHER_ORDER_GREEK_KEYS.has(series.key),
+        );
+    const seriesList = detailSeriesConfig.map((series) => ({
       ...series,
       values: seriesByKey[series.key] || [],
     }));
@@ -1307,6 +1644,7 @@ const render = () => {
       .attr("stroke-width", (series) => series.strokeWidth || 1)
       .attr("stroke-linecap", "round")
       .attr("stroke-linejoin", "round")
+      .attr("stroke-dasharray", (series) => series.strokeDasharray)
       .attr("stroke-opacity", 0.95)
       .attr("display", (series) => (!isHiddenSeries(series.key) ? null : "none"))
       .attr("d", (series) => line(series.points));
@@ -1370,6 +1708,7 @@ const render = () => {
       .attr("y2", 0)
       .attr("stroke", (d) => d.color)
       .attr("stroke-width", (d) => d.strokeWidth || 1.1)
+      .attr("stroke-dasharray", (d) => d.strokeDasharray)
       .attr("stroke-opacity", (d) => (isHiddenSeries(d.key) ? 0.28 : 1));
 
     legendItems
@@ -1450,6 +1789,7 @@ watch(
     props.loading,
     props.resolutionKey,
     props.resolutionOptions,
+    props.showHigherOrderGreeks,
   ],
   () => {
     render();

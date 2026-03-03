@@ -169,23 +169,17 @@ const render = () => {
     }
   }
 
-  const isGammaThetaMode = props.greek === "gamma_theta";
-  const useStrike = !isGammaThetaMode && props.xMode === "strike";
+  const useStrike = props.xMode === "strike";
 
   const greekKey = ["delta", "gamma", "theta", "vega", "vanna"].includes(
     props.greek,
   )
     ? props.greek
     : "delta";
-  const xLabel = isGammaThetaMode ? "S/K" : useStrike ? "strike" : "S/K";
+  const xLabel = useStrike ? "strike" : "S/K";
   const gammaScaleFactor = 1e4;
-  const ratioLabel = "|gamma/theta|";
   const isGamma = greekKey === "gamma";
-  const yLabel = isGammaThetaMode
-    ? ratioLabel
-    : isGamma
-      ? `${greekKey} [x10^4]`
-      : greekKey;
+  const yLabel = isGamma ? `${greekKey} [x10^4]` : greekKey;
   const normalizeGreekValue = (key, value) =>
     key === "vega" && Number.isFinite(value)
       ? value / 100
@@ -194,22 +188,11 @@ const render = () => {
         : value;
 
   const xAccessor = (d) => {
-    if (isGammaThetaMode) return d.m;
     if (useStrike) return d.strike;
     return d.m;
   };
 
-  const yAccessor = (d) => {
-    if (isGammaThetaMode) {
-      const gamma = Number(d?.gamma);
-      const theta = Number(d?.theta);
-      if (!Number.isFinite(gamma) || !Number.isFinite(theta) || theta === 0) {
-        return NaN;
-      }
-      return Math.abs(gamma / theta);
-    }
-    return normalizeGreekValue(greekKey, d[greekKey]);
-  };
+  const yAccessor = (d) => normalizeGreekValue(greekKey, d[greekKey]);
   const yValues = props.data.map(yAccessor).filter(Number.isFinite);
   if (!yValues.length) return;
 
@@ -272,8 +255,6 @@ const render = () => {
       .tickPadding(20);
     if (useStrike) {
       xAxis.tickFormat(d3.format(",.0f"));
-    } else if (isGammaThetaMode) {
-      xAxis.tickFormat(d3.format(".3f"));
     }
     panelConfigs.push({ label: null, x, xAxis, left, right });
     expiryLabels.forEach((label) => {
@@ -299,8 +280,6 @@ const render = () => {
         .tickPadding(20);
       if (useStrike) {
         xAxis.tickFormat(d3.format(",.0f"));
-      } else if (isGammaThetaMode) {
-        xAxis.tickFormat(d3.format(".3f"));
       }
       panelConfigs.push({ label, x, xAxis, left, right });
       panelScaleByLabel.set(label, { x, xAxis, left, right });
@@ -396,11 +375,15 @@ const render = () => {
   );
 
   const colorAccessor = (d) => {
+    if (useStrike) {
+      const timestamp = Number(d?.ts);
+      return Number.isFinite(timestamp) ? timestamp : NaN;
+    }
     const value = yAccessor(d);
     return Number.isFinite(value) ? Math.abs(value) : NaN;
   };
-  const colorLabel = isGammaThetaMode
-    ? `|${ratioLabel}|`
+  const colorLabel = useStrike
+    ? "Time"
     : isGamma
       ? `|${greekKey}| [x10^4]`
       : `|${greekKey}|`;
@@ -426,7 +409,14 @@ const render = () => {
     .scaleSequential()
     .domain([domainMin, domainMax])
     .interpolator((t) => d3.interpolateRdBu(1 - t));
+  const strikeTimeColorScale = d3
+    .scaleSequential()
+    .domain([domainMin, domainMax])
+    .interpolator((t) => d3.interpolateRdBu(1 - t));
   const pointColor = (point) => {
+    if (useStrike) {
+      return strikeTimeColorScale(colorAccessor(point));
+    }
     if (isMultiMode) {
       const rank = expiryIndexByLabel.get(point?.expiry_date) ?? 0;
       return expiryColorScale(rank);
@@ -453,6 +443,10 @@ const render = () => {
     const highlightOpacity = 0.96;
     const normalPointSize = 90;
     const highlightPointSize = 120;
+    const getPointOpacity = (point) => {
+      if (!useStrike) return baseOpacity;
+      return point?.ts === highlightedTs ? highlightOpacity : 0.08;
+    };
 
     // Draw non-highlighted points first
     points.forEach((d) => {
@@ -465,7 +459,7 @@ const render = () => {
       const size = normalPointSize;
       const radius = Math.sqrt(size / Math.PI);
 
-      ctx.globalAlpha = baseOpacity;
+      ctx.globalAlpha = getPointOpacity(d);
       ctx.fillStyle = pointColor(d);
       ctx.strokeStyle = "#111";
       ctx.lineWidth = 0.8;
@@ -490,7 +484,7 @@ const render = () => {
       const size = highlightPointSize;
       const radius = Math.sqrt(size / Math.PI);
 
-      ctx.globalAlpha = highlightOpacity;
+      ctx.globalAlpha = useStrike ? highlightOpacity : highlightOpacity;
       ctx.fillStyle = pointColor(d);
       ctx.strokeStyle = "#000000";
       ctx.lineWidth = 0.2;
@@ -507,6 +501,13 @@ const render = () => {
   // Initial draw
   drawPoints();
 
+  const formatLegendTime = (value) =>
+    Number.isFinite(value)
+      ? d3.utcFormat("%d %b %H:%M")(new Date(value * 1000))
+      : "N/A";
+  const formatIndexPrice = (val) =>
+    Number.isFinite(val) ? d3.format("$,.2f")(val) : "N/A";
+
   const legendWidth = 160;
   const legendHeight = 10;
   const legendX = mainChartRight - legendWidth - 10;
@@ -521,7 +522,20 @@ const render = () => {
     .attr("y1", "0%")
     .attr("y2", "0%");
 
-  if (isMultiMode) {
+  if (useStrike) {
+    gradient
+      .append("stop")
+      .attr("offset", "0%")
+      .attr("stop-color", d3.interpolateRdBu(1));
+    gradient
+      .append("stop")
+      .attr("offset", "50%")
+      .attr("stop-color", d3.interpolateRdBu(0.5));
+    gradient
+      .append("stop")
+      .attr("offset", "100%")
+      .attr("stop-color", d3.interpolateRdBu(0));
+  } else if (isMultiMode) {
     gradient
       .append("stop")
       .attr("offset", "0%")
@@ -558,7 +572,7 @@ const render = () => {
       .append("text")
       .attr("x", 0)
       .attr("y", 0)
-      .text(isMultiMode ? "Expiry" : colorLabel),
+      .text(useStrike ? colorLabel : isMultiMode ? "Expiry" : colorLabel),
     "legendTitle",
   );
 
@@ -576,7 +590,13 @@ const render = () => {
       .append("text")
       .attr("x", 0)
       .attr("y", 32)
-      .text(isMultiMode ? expiryLabels[0] || "short" : domainMin.toFixed(2)),
+      .text(
+        useStrike
+          ? formatLegendTime(domainMin)
+          : isMultiMode
+            ? expiryLabels[0] || "short"
+            : domainMin.toFixed(2),
+      ),
     "legendLabel",
   );
 
@@ -587,9 +607,11 @@ const render = () => {
       .attr("y", 32)
       .attr("text-anchor", "end")
       .text(
-        isMultiMode
-          ? expiryLabels[expiryLabels.length - 1] || "long"
-          : domainMax.toFixed(2),
+        useStrike
+          ? formatLegendTime(domainMax)
+          : isMultiMode
+            ? expiryLabels[expiryLabels.length - 1] || "long"
+            : domainMax.toFixed(2),
       ),
     "legendLabel",
   );
@@ -616,8 +638,6 @@ const render = () => {
 
   const formatGreek = (val, decimals = 4) =>
     Number.isFinite(val) ? val.toFixed(decimals) : "N/A";
-  const formatIndexPrice = (val) =>
-    Number.isFinite(val) ? d3.format("$,.2f")(val) : "N/A";
 
   function showTooltip(d, px, py) {
     const lines = [
