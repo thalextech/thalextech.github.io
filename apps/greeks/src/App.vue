@@ -41,7 +41,6 @@ const ui = reactive({
   mode: "single",
   resolution: "1d",
   greek: "delta",
-  xMode: "m",
   loading: false,
   error: "",
 });
@@ -214,10 +213,7 @@ const activeGreekSymbol = computed(
     GREEK_OPTIONS[0].symbol,
 );
 const headerTitle = computed(
-  () =>
-    `Options ${activeGreekSymbol.value} vs ${
-      ui.xMode === "strike" ? "strike" : "moneyness"
-    }`,
+  () => `Options ${activeGreekSymbol.value} vs moneyness`,
 );
 
 const chartTitle = computed(() => "");
@@ -842,28 +838,6 @@ watch(
           </select>
         </div>
 
-        <div class="xAxisControl">
-          <span class="xAxisLabel">X-axis</span>
-          <div class="modeToggle" role="group" aria-label="X-axis mode">
-            <button
-              class="modeToggleButton"
-              type="button"
-              :class="{ active: ui.xMode === 'm' }"
-              @click="ui.xMode = 'm'"
-            >
-              S/K
-            </button>
-            <button
-              class="modeToggleButton"
-              type="button"
-              :class="{ active: ui.xMode === 'strike' }"
-              @click="ui.xMode = 'strike'"
-            >
-              Strike
-            </button>
-          </div>
-        </div>
-
         <div class="greekSymbolGrid" role="group" aria-label="Greek">
           <button
             v-for="option in GREEK_OPTIONS"
@@ -902,7 +876,6 @@ watch(
         :loading="chartLoading"
         :loading-panels="loadingPanelIndexes"
         :mode="ui.mode"
-        :x-mode="ui.xMode"
         :greek="ui.greek"
         :resolution="ui.resolution"
       />
@@ -922,23 +895,6 @@ watch(
   display: inline-grid;
   grid-auto-flow: column;
   gap: 8px;
-}
-
-.xAxisControl {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  height: 40px;
-}
-
-.xAxisLabel {
-  display: inline-flex;
-  align-items: center;
-  height: 40px;
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1;
-  white-space: nowrap;
 }
 
 .greekSymbolButton {

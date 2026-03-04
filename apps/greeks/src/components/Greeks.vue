@@ -10,14 +10,12 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   loadingPanels: { type: Array, default: () => [] },
   mode: { type: String, default: "single" },
-  xMode: { type: String, default: "strike" },
   greek: { type: String, default: "delta" },
   resolution: { type: String, default: "1h" },
 });
 
 const svgRef = ref(null);
 const canvasRef = ref(null);
-const selectedTimestamp = ref(null);
 const gradientId = `iv-gradient-${Math.random().toString(16).slice(2)}`;
 
 const SVG_FONT_FAMILY =
@@ -143,40 +141,12 @@ const render = () => {
     return;
   }
 
-  // Group data by timestamp to get unique timestamps with index prices
-  const dataByTimestamp = new Map();
-  props.data.forEach((d) => {
-    if (!dataByTimestamp.has(d.ts)) {
-      dataByTimestamp.set(d.ts, {
-        ts: d.ts,
-        date_time: d.date_time,
-        index_price_close: d.index_price_close,
-      });
-    }
-  });
-  const timeSeriesData = Array.from(dataByTimestamp.values()).sort(
-    (a, b) => a.ts - b.ts,
-  );
-
-  // Initialize selected timestamp to the latest if not set
-  if (timeSeriesData.length > 0) {
-    const latestTs = timeSeriesData[timeSeriesData.length - 1].ts;
-    const hasCurrent = timeSeriesData.some(
-      (d) => d.ts === selectedTimestamp.value,
-    );
-    if (selectedTimestamp.value === null || !hasCurrent) {
-      selectedTimestamp.value = latestTs;
-    }
-  }
-
-  const useStrike = props.xMode === "strike";
-
   const greekKey = ["delta", "gamma", "theta", "vega", "vanna"].includes(
     props.greek,
   )
     ? props.greek
     : "delta";
-  const xLabel = useStrike ? "strike" : "S/K";
+  const xLabel = "S/K";
   const gammaScaleFactor = 1e4;
   const isGamma = greekKey === "gamma";
   const yLabel = isGamma ? `${greekKey} [x10^4]` : greekKey;
@@ -187,10 +157,7 @@ const render = () => {
         ? value * gammaScaleFactor
         : value;
 
-  const xAccessor = (d) => {
-    if (useStrike) return d.strike;
-    return d.m;
-  };
+  const xAccessor = (d) => d.m;
 
   const yAccessor = (d) => normalizeGreekValue(greekKey, d[greekKey]);
   const yValues = props.data.map(yAccessor).filter(Number.isFinite);
@@ -253,9 +220,6 @@ const render = () => {
       .ticks(PANEL_X_TICK_COUNT)
       .tickSize(0)
       .tickPadding(20);
-    if (useStrike) {
-      xAxis.tickFormat(d3.format(",.0f"));
-    }
     panelConfigs.push({ label: null, x, xAxis, left, right });
     expiryLabels.forEach((label) => {
       panelScaleByLabel.set(label, { x, xAxis, left, right });
@@ -278,9 +242,6 @@ const render = () => {
         .ticks(PANEL_X_TICK_COUNT)
         .tickSize(0)
         .tickPadding(20);
-      if (useStrike) {
-        xAxis.tickFormat(d3.format(",.0f"));
-      }
       panelConfigs.push({ label, x, xAxis, left, right });
       panelScaleByLabel.set(label, { x, xAxis, left, right });
     });
@@ -374,54 +335,40 @@ const render = () => {
     "axisLabel",
   );
 
+  const expiryIndexByLabel = new Map(
+    expiryLabels.map((label, index) => [label, index]),
+  );
+  const colorLabel = isGamma ? `|${greekKey}| [x10^4]` : `|${greekKey}|`;
   const colorAccessor = (d) => {
-    if (useStrike) {
-      const timestamp = Number(d?.ts);
-      return Number.isFinite(timestamp) ? timestamp : NaN;
-    }
     const value = yAccessor(d);
     return Number.isFinite(value) ? Math.abs(value) : NaN;
   };
-  const colorLabel = useStrike
-    ? "Time"
-    : isGamma
-      ? `|${greekKey}| [x10^4]`
-      : `|${greekKey}|`;
-
   const colorExtent = d3.extent(props.data, colorAccessor);
   const domainMin = Number.isFinite(colorExtent[0]) ? colorExtent[0] : 0;
   const domainMax = Number.isFinite(colorExtent[1])
     ? colorExtent[1]
     : domainMin + 1;
-
-  const expiryIndexByLabel = new Map(
-    expiryLabels.map((label, index) => [label, index]),
-  );
   const expiryColorMinT = 0.08;
   const expiryColorMaxT = 0.92;
   const expiryColorScale = d3
     .scaleSequential()
     .domain([0, Math.max(1, expiryLabels.length - 1)])
     .interpolator(
-      (t) => d3.interpolateRdBu(expiryColorMinT + (expiryColorMaxT - expiryColorMinT) * t),
+      (t) =>
+        d3.interpolateRdBu(
+          expiryColorMinT + (expiryColorMaxT - expiryColorMinT) * t,
+        ),
     );
-  const greekColorScale = d3
-    .scaleSequential()
-    .domain([domainMin, domainMax])
-    .interpolator((t) => d3.interpolateRdBu(1 - t));
-  const strikeTimeColorScale = d3
+  const continuousColorScale = d3
     .scaleSequential()
     .domain([domainMin, domainMax])
     .interpolator((t) => d3.interpolateRdBu(1 - t));
   const pointColor = (point) => {
-    if (useStrike) {
-      return strikeTimeColorScale(colorAccessor(point));
-    }
     if (isMultiMode) {
       const rank = expiryIndexByLabel.get(point?.expiry_date) ?? 0;
       return expiryColorScale(rank);
     }
-    return greekColorScale(colorAccessor(point));
+    return continuousColorScale(colorAccessor(point));
   };
 
   const points = [...props.data].filter(
@@ -435,59 +382,22 @@ const render = () => {
   if (!canvas || !ctx) return;
 
   // Function to draw all points on canvas
-  function drawPoints(highlightedTs = selectedTimestamp.value) {
+  function drawPoints() {
     ctx.clearRect(0, 0, width, height);
 
-    // Adjust opacity based on resolution
-    const baseOpacity = 0.2;
-    const highlightOpacity = 0.96;
-    const normalPointSize = 90;
-    const highlightPointSize = 120;
-    const getPointOpacity = (point) => {
-      if (!useStrike) return baseOpacity;
-      return point?.ts === highlightedTs ? highlightOpacity : 0.08;
-    };
-
-    // Draw non-highlighted points first
     points.forEach((d) => {
-      if (d.ts === highlightedTs) return;
       const panel = panelScaleByLabel.get(d.expiry_date);
       if (!panel) return;
 
       const cx = panel.x(xAccessor(d));
       const cy = y(yAccessor(d));
-      const size = normalPointSize;
+      const size = 95;
       const radius = Math.sqrt(size / Math.PI);
 
-      ctx.globalAlpha = getPointOpacity(d);
+      ctx.globalAlpha = 0.22;
       ctx.fillStyle = pointColor(d);
       ctx.strokeStyle = "#111";
       ctx.lineWidth = 0.8;
-
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
-      ctx.fill();
-      ctx.stroke();
-    });
-
-    // Get highlighted points and sort by x value for curve
-    const highlightedPoints = points
-      .filter((d) => d.ts === highlightedTs)
-      .sort((a, b) => xAccessor(a) - xAccessor(b));
-
-    // Draw highlighted points on top
-    highlightedPoints.forEach((d) => {
-      const panel = panelScaleByLabel.get(d.expiry_date);
-      if (!panel) return;
-      const cx = panel.x(xAccessor(d));
-      const cy = y(yAccessor(d));
-      const size = highlightPointSize;
-      const radius = Math.sqrt(size / Math.PI);
-
-      ctx.globalAlpha = useStrike ? highlightOpacity : highlightOpacity;
-      ctx.fillStyle = pointColor(d);
-      ctx.strokeStyle = "#000000";
-      ctx.lineWidth = 0.2;
 
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
@@ -501,13 +411,8 @@ const render = () => {
   // Initial draw
   drawPoints();
 
-  const formatLegendTime = (value) =>
-    Number.isFinite(value)
-      ? d3.utcFormat("%d %b %H:%M")(new Date(value * 1000))
-      : "N/A";
   const formatIndexPrice = (val) =>
     Number.isFinite(val) ? d3.format("$,.2f")(val) : "N/A";
-
   const legendWidth = 160;
   const legendHeight = 10;
   const legendX = mainChartRight - legendWidth - 10;
@@ -522,20 +427,7 @@ const render = () => {
     .attr("y1", "0%")
     .attr("y2", "0%");
 
-  if (useStrike) {
-    gradient
-      .append("stop")
-      .attr("offset", "0%")
-      .attr("stop-color", d3.interpolateRdBu(1));
-    gradient
-      .append("stop")
-      .attr("offset", "50%")
-      .attr("stop-color", d3.interpolateRdBu(0.5));
-    gradient
-      .append("stop")
-      .attr("offset", "100%")
-      .attr("stop-color", d3.interpolateRdBu(0));
-  } else if (isMultiMode) {
+  if (isMultiMode) {
     gradient
       .append("stop")
       .attr("offset", "0%")
@@ -572,7 +464,7 @@ const render = () => {
       .append("text")
       .attr("x", 0)
       .attr("y", 0)
-      .text(useStrike ? colorLabel : isMultiMode ? "Expiry" : colorLabel),
+      .text(isMultiMode ? "Expiry" : colorLabel),
     "legendTitle",
   );
 
@@ -590,13 +482,7 @@ const render = () => {
       .append("text")
       .attr("x", 0)
       .attr("y", 32)
-      .text(
-        useStrike
-          ? formatLegendTime(domainMin)
-          : isMultiMode
-            ? expiryLabels[0] || "short"
-            : domainMin.toFixed(2),
-      ),
+      .text(isMultiMode ? expiryLabels[0] || "short" : domainMin.toFixed(2)),
     "legendLabel",
   );
 
@@ -607,11 +493,9 @@ const render = () => {
       .attr("y", 32)
       .attr("text-anchor", "end")
       .text(
-        useStrike
-          ? formatLegendTime(domainMax)
-          : isMultiMode
-            ? expiryLabels[expiryLabels.length - 1] || "long"
-            : domainMax.toFixed(2),
+        isMultiMode
+          ? expiryLabels[expiryLabels.length - 1] || "long"
+          : domainMax.toFixed(2),
       ),
     "legendLabel",
   );
@@ -739,7 +623,6 @@ watch(
     props.loading,
     props.loadingPanels,
     props.mode,
-    props.xMode,
     props.greek,
     props.resolution,
   ],

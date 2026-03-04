@@ -20,12 +20,12 @@ const layout = {
   mainWidth: 860,
   detailWidth: 420,
   panelGap: 36,
-  height: 560,
-  margin: { top: 74, right: 38, bottom: 54, left: 74 },
+  height: 620,
+  margin: { top: 86, right: 38, bottom: 54, left: 74 },
 };
 const MAIN_TOP_INSET = 28;
 const DETAIL_TOP_INSET = 28;
-const LEGEND_TOP_OFFSET = -5;
+const LEGEND_TOP_OFFSET = 14;
 
 const TEXT_STYLES = {
   axisText: { fill: "#d6d7de" },
@@ -581,7 +581,7 @@ const ensureChartElements = () => {
       "legendLabel",
       { anchor: "end" },
     );
-    chartState.legendGroup.attr("opacity", 0);
+    chartState.legendGroup.attr("opacity", 1);
   }
 
   if (!chartState.noDataText) {
@@ -771,18 +771,8 @@ function render() {
   }
 
   chartState.noDataText.attr("visibility", "hidden");
-  chartState.legendGroup.attr("display", null);
-  if (!chartState.legendVisible) {
-    chartState.legendVisible = true;
-    chartState.legendGroup
-      .interrupt()
-      .attr("opacity", 0)
-      .transition()
-      .duration(200)
-      .attr("opacity", 1);
-  } else {
-    chartState.legendGroup.interrupt().attr("opacity", 1);
-  }
+  chartState.legendVisible = true;
+  chartState.legendGroup.interrupt().attr("display", null).attr("opacity", 1);
   chartState.detailGroup.attr("display", null);
 
   chartState.mainGroup.attr(

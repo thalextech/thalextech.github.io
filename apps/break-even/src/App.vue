@@ -1,5 +1,13 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  reactive,
+  ref,
+  watch,
+} from "vue";
 import BreakEvenChart from "./components/BreakEvenChart.vue";
 import {
   calcGreeks,
@@ -12,13 +20,18 @@ const RESOLUTION_CONFIG = {
   900: { label: "15m", resolution: "15m", interval_seconds: 15 * 60 },
   3600: { label: "1h", resolution: "1h", interval_seconds: 60 * 60 },
 };
-const LOOKBACK_POINT_LIMIT = 360;
+const DEFAULT_LOOKBACK_POINT_LIMIT = 360;
+const MIN_LOOKBACK_POINT_LIMIT = 120;
+const MAX_LOOKBACK_POINT_LIMIT = 1440;
 const SECONDS_PER_DAY = 24 * 60 * 60;
-const MARK_FETCH_CONCURRENCY = 4;
-const MARK_REQUEST_LAUNCH_JITTER_MS = 400;
+const MARK_FETCH_CONCURRENCY = 16;
+const MARK_REQUEST_BURST_LIMIT = 100;
+const MARK_REQUEST_SUSTAINED_PER_SECOND = 10;
+const MARK_REQUEST_SCHEDULER_POLL_MS = 50;
 const MARK_REQUEST_MAX_RETRIES = 2;
 const MARK_REQUEST_RETRY_DELAY_MS = 1200;
 const MARK_REQUEST_TIMEOUT_MS = 45_000;
+const MARK_HISTORY_REQUEST_POINT_LIMIT = 360;
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const MAX_ABS_DELTA = 0.55;
 const STRIKE_MIN_INDEX_MULTIPLIER = 0.8;
@@ -27,6 +40,7 @@ const STRIKE_MAX_INDEX_MULTIPLIER = 1.2;
 const ui = reactive({
   resolutionKey: "3600",
   optionMaturity: "",
+  maxPoints: DEFAULT_LOOKBACK_POINT_LIMIT,
   loading: false,
   error: "",
 });
@@ -38,6 +52,9 @@ const data = reactive({
 });
 
 const chartRef = ref(null);
+const settingsMenuRef = ref(null);
+const settingsButtonRef = ref(null);
+const settingsOpen = ref(false);
 const isInitializing = ref(true);
 let prefetchedIndexForInitialLoad = null;
 let loadRequestId = 0;
@@ -82,17 +99,48 @@ const getOldestOptionInstrument = (instruments) => {
   return oldest;
 };
 
+const maxPointsToFetch = computed(() => {
+  const value = Math.floor(Number(ui.maxPoints));
+  if (!Number.isFinite(value)) return DEFAULT_LOOKBACK_POINT_LIMIT;
+  return Math.max(
+    MIN_LOOKBACK_POINT_LIMIT,
+    Math.min(MAX_LOOKBACK_POINT_LIMIT, value),
+  );
+});
+
 const getTimestampRange = () => {
   const now = Math.floor(Date.now() / 1000);
   const resolutionConfig = RESOLUTION_CONFIG[ui.resolutionKey];
   const resolution = resolutionConfig?.resolution;
   const seconds =
     resolutionConfig?.interval_seconds ?? Number(ui.resolutionKey) ?? 0;
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 3600;
+  const to = now - (now % safeSeconds);
   return {
     resolution,
-    from: now - seconds * LOOKBACK_POINT_LIMIT,
-    to: now,
+    from: to - safeSeconds * (maxPointsToFetch.value - 1),
+    to,
   };
+};
+
+const toggleSettings = async () => {
+  settingsOpen.value = !settingsOpen.value;
+  if (settingsOpen.value) {
+    await nextTick();
+    settingsButtonRef.value?.focus?.();
+  }
+};
+
+const closeSettings = () => {
+  settingsOpen.value = false;
+};
+
+const handleDocumentPointerDown = (event) => {
+  if (!settingsOpen.value) return;
+  const target = event?.target;
+  if (!(target instanceof Node)) return;
+  if (settingsMenuRef.value?.contains(target)) return;
+  closeSettings();
 };
 
 const getLatestIndexPoint = (rows) => {
@@ -582,9 +630,60 @@ async function fetchWithRetries(
   throw lastError || new Error("Request failed");
 }
 
+function createMarkRequestScheduler({
+  burstLimit = MARK_REQUEST_BURST_LIMIT,
+  sustainedPerSecond = MARK_REQUEST_SUSTAINED_PER_SECOND,
+  isCanceled = null,
+} = {}) {
+  let startedAtMs = null;
+  let launchedCount = 0;
+  let pendingReservation = Promise.resolve();
+
+  const reserveSlot = async () => {
+    if (!Number.isFinite(startedAtMs)) {
+      startedAtMs = Date.now();
+    }
+
+    while (true) {
+      if (isCanceled?.()) {
+        const canceledError = new Error("Request canceled");
+        canceledError.canceled = true;
+        throw canceledError;
+      }
+
+      if (launchedCount < burstLimit) {
+        launchedCount += 1;
+        return;
+      }
+
+      const sustainedRequestNumber = launchedCount - burstLimit + 1;
+      const earliestLaunchMs =
+        startedAtMs +
+        Math.ceil((sustainedRequestNumber * 1000) / sustainedPerSecond);
+      const delayMs = earliestLaunchMs - Date.now();
+
+      if (delayMs <= 0) {
+        launchedCount += 1;
+        return;
+      }
+
+      await sleep(Math.min(delayMs, MARK_REQUEST_SCHEDULER_POLL_MS));
+    }
+  };
+
+  return {
+    async acquire() {
+      const reservation = pendingReservation.then(() => reserveSlot());
+      pendingReservation = reservation.catch(() => {});
+      return reservation;
+    },
+  };
+}
+
 async function fetchMarkHistoriesByInstrument({
   instruments,
   resolution,
+  intervalSeconds,
   from,
   to,
   requestId,
@@ -601,6 +700,63 @@ async function fetchMarkHistoriesByInstrument({
   const rowsByInstrument = {};
   let rateLimitedCount = 0;
   let cursor = 0;
+  const requestScheduler = createMarkRequestScheduler({
+    isCanceled: () => requestId !== loadRequestId,
+  });
+  const chunkSpanSeconds =
+    Math.max(1, MARK_HISTORY_REQUEST_POINT_LIMIT - 1) *
+    Math.max(1, Math.floor(Number(intervalSeconds) || 1));
+
+  const buildChunkRanges = () => {
+    const ranges = [];
+    let chunkFrom = from;
+    while (chunkFrom <= to) {
+      const chunkTo = Math.min(to, chunkFrom + chunkSpanSeconds);
+      ranges.push([chunkFrom, chunkTo]);
+      if (chunkTo >= to) break;
+      chunkFrom = chunkTo + Math.max(1, Math.floor(Number(intervalSeconds) || 1));
+    }
+    return ranges;
+  };
+
+  const fetchInstrumentRows = async (instrumentName) => {
+    const ranges = buildChunkRanges();
+    const mergedRows = [];
+
+    for (const [chunkFrom, chunkTo] of ranges) {
+      const fetchedRows = await fetchWithRetries(
+        async () => {
+          await requestScheduler.acquire();
+          return fetchMarkHistory({
+            instrument_name: instrumentName,
+            resolution,
+            from: chunkFrom,
+            to: chunkTo,
+            count: MARK_HISTORY_REQUEST_POINT_LIMIT,
+            requestOptions: {
+              timeoutMs: MARK_REQUEST_TIMEOUT_MS,
+              maxRetries: 0,
+            },
+          });
+        },
+        { isCanceled: () => requestId !== loadRequestId },
+      );
+
+      if (requestId !== loadRequestId) return [];
+
+      if (Array.isArray(fetchedRows) && fetchedRows.length) {
+        mergedRows.push(...fetchedRows);
+      }
+    }
+
+    return mergedRows
+      .filter((row) => Number.isFinite(row?.ts))
+      .sort((a, b) => a.ts - b.ts)
+      .filter((row, index, rows) => {
+        if (index === 0) return true;
+        return row.ts !== rows[index - 1].ts;
+      });
+  };
 
   const worker = async () => {
     while (cursor < queue.length) {
@@ -609,29 +765,10 @@ async function fetchMarkHistoriesByInstrument({
       cursor += 1;
       const instrument = queue[currentIndex];
       const instrumentName = instrument.instrument_name;
-      const jitterMs = Math.floor(
-        Math.random() * (MARK_REQUEST_LAUNCH_JITTER_MS + 1),
-      );
-      if (jitterMs > 0) {
-        await sleep(jitterMs);
-      }
 
       let rows = [];
       try {
-        const fetchedRows = await fetchWithRetries(
-          () =>
-            fetchMarkHistory({
-              instrument_name: instrumentName,
-              resolution,
-              from,
-              to,
-              requestOptions: {
-                timeoutMs: MARK_REQUEST_TIMEOUT_MS,
-                maxRetries: 0,
-              },
-            }),
-          { isCanceled: () => requestId !== loadRequestId },
-        );
+        const fetchedRows = await fetchInstrumentRows(instrumentName);
         rows = Array.isArray(fetchedRows) ? fetchedRows : [];
         if (requestId !== loadRequestId) return;
       } catch (error) {
@@ -684,6 +821,7 @@ async function load() {
           resolution,
           from,
           to,
+          count: maxPointsToFetch.value,
         });
 
     const indexRows = await indexPromise;
@@ -699,11 +837,15 @@ async function load() {
 
     const { rowsByInstrument, rateLimitedCount } =
       await fetchMarkHistoriesByInstrument({
-      instruments: boundedMaturityInstruments,
-      resolution,
-      from,
-      to,
-      requestId,
+        instruments: boundedMaturityInstruments,
+        resolution,
+        intervalSeconds:
+          RESOLUTION_CONFIG[ui.resolutionKey]?.interval_seconds ??
+          Number(ui.resolutionKey) ??
+          0,
+        from,
+        to,
+        requestId,
       onInstrumentRows: (rows, { instrumentName }) => {
         if (requestId !== loadRequestId) return;
         data.markByInstrument[instrumentName] = rows;
@@ -740,6 +882,7 @@ function handleSavePng() {
 }
 
 onMounted(async () => {
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
     const { resolution, from, to } = getTimestampRange();
     const [allInstruments, prefetchedIndex] = await Promise.all([
@@ -749,6 +892,7 @@ onMounted(async () => {
         resolution,
         from,
         to,
+        count: maxPointsToFetch.value,
       }),
     ]);
 
@@ -795,6 +939,10 @@ onMounted(async () => {
   }
 });
 
+onUnmounted(() => {
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
+});
+
 watch(
   optionMaturities,
   (maturities) => {
@@ -816,7 +964,7 @@ watch(
 );
 
 watch(
-  () => [ui.resolutionKey, ui.optionMaturity],
+  () => [ui.resolutionKey, ui.optionMaturity, maxPointsToFetch.value],
   async () => {
     if (isInitializing.value) return;
     if (!ui.optionMaturity) return;
@@ -876,17 +1024,194 @@ watch(
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
-    <BreakEvenChart
-      ref="chartRef"
-      :tracks="breakEvenTracks"
-      :index-data="chartIndexData"
-      :index-projected-data="chartIndexProjectedData"
-      :spot-price="latestSpot"
-      :spot-ts="latestSpotTs"
-      :expiry-ts="selectedMaturityTs"
-      :title="breakEvenTitle"
-      :subtitle="breakEvenSubtitle"
-      :loading="ui.loading"
-    />
+    <div class="chartWrap">
+      <div class="chartTopBar">
+        <div class="settingsWrap" ref="settingsMenuRef">
+          <button
+            ref="settingsButtonRef"
+            class="settingsButton settingsButton--icon"
+            type="button"
+            title="Chart settings"
+            aria-label="Chart settings"
+            aria-haspopup="true"
+            :aria-expanded="settingsOpen ? 'true' : 'false'"
+            @click="toggleSettings"
+          ></button>
+          <div v-if="settingsOpen" class="settingsDropdown">
+            <div class="settingsTitle">Chart settings</div>
+            <div class="settingsHint">
+              Historic data points: {{ maxPointsToFetch }}
+            </div>
+            <input
+              v-model.number="ui.maxPoints"
+              class="settingsSlider"
+              type="range"
+              :min="MIN_LOOKBACK_POINT_LIMIT"
+              :max="MAX_LOOKBACK_POINT_LIMIT"
+              step="30"
+            />
+            <div class="settingsRange">
+              <span>{{ MIN_LOOKBACK_POINT_LIMIT }}</span>
+              <span>{{ MAX_LOOKBACK_POINT_LIMIT }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <BreakEvenChart
+        ref="chartRef"
+        :tracks="breakEvenTracks"
+        :index-data="chartIndexData"
+        :index-projected-data="chartIndexProjectedData"
+        :spot-price="latestSpot"
+        :spot-ts="latestSpotTs"
+        :expiry-ts="selectedMaturityTs"
+        :title="breakEvenTitle"
+        :subtitle="breakEvenSubtitle"
+        :loading="ui.loading"
+      />
+    </div>
   </div>
 </template>
+
+<style scoped>
+.chartWrap {
+  position: relative;
+}
+
+.chartTopBar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 30px;
+  margin-bottom: 10px;
+  padding-right: 6px;
+}
+
+.settingsWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.settingsButton {
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.7);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.settingsButton:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.settingsButton:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.7);
+  outline-offset: 2px;
+}
+
+.settingsButton--icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.settingsButton--icon::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e8ebf2;
+}
+
+.settingsDropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 240px;
+  border: 0.5px solid rgba(255, 255, 255, 0.9);
+  background: #080a0f;
+  border-radius: 6px;
+  padding: 10px 12px 12px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.settingsTitle {
+  font-size: 10px;
+  color: #a9abb6;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.settingsHint {
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.settingsSlider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settingsSlider:focus {
+  outline: none;
+}
+
+.settingsSlider::-webkit-slider-runnable-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  margin-top: -3px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
+}
+
+.settingsSlider::-moz-range-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
+}
+
+.settingsRange {
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+}
+</style>
