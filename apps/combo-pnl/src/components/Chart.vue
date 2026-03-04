@@ -689,9 +689,33 @@ const render = () => {
     }
 
     if (bottomMode === "mark") {
-      const markPoints = comboFiltered.filter((point) =>
-        Number.isFinite(point.mark_price_close),
-      );
+      const firstVisibleHedgeBaseline = props.deltaHedgeEnabled
+        ? (() => {
+            const baselinePoint = comboFiltered.find(
+              (point) =>
+                Number.isFinite(point.option_mark_price_close) &&
+                Number.isFinite(point.hedge_cumulative_PL),
+            );
+            return Number.isFinite(baselinePoint?.hedge_cumulative_PL)
+              ? Number(baselinePoint.hedge_cumulative_PL)
+              : 0;
+          })()
+        : 0;
+      const markPoints = comboFiltered
+        .map((point) => {
+          if (!props.deltaHedgeEnabled) return point;
+          const optionMark = Number(point.option_mark_price_close);
+          const hedgeCumulative = Number(point.hedge_cumulative_PL);
+          if (!Number.isFinite(optionMark)) return point;
+          const rebasedHedgePnl = Number.isFinite(hedgeCumulative)
+            ? hedgeCumulative - firstVisibleHedgeBaseline
+            : 0;
+          return {
+            ...point,
+            mark_price_close: optionMark + rebasedHedgePnl,
+          };
+        })
+        .filter((point) => Number.isFinite(point.mark_price_close));
 
       bottomPanelGroup
         .append("text")
