@@ -1,0 +1,1467 @@
+<script setup>
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import * as d3 from "d3";
+import PositionBuilder from "../../simulator/src/components/PositionBuilder.vue";
+import Greeks from "./components/Greeks.vue";
+import {
+  calcGreeks,
+  fetchAllInstruments,
+  fetchIndexHistory,
+  fetchMarkHistory,
+} from "../../../lib/thalex.js";
+
+const RESOLUTION_CONFIG = {
+  60: { label: "1m", resolution: "1m", interval_seconds: 60 },
+  300: { label: "5m", resolution: "5m", interval_seconds: 5 * 60 },
+  900: { label: "15m", resolution: "15m", interval_seconds: 15 * 60 },
+  3600: { label: "1h", resolution: "1h", interval_seconds: 60 * 60 },
+  86400: { label: "1d", resolution: "1d", interval_seconds: 24 * 60 * 60 },
+};
+const RESOLUTION_OPTIONS = Object.entries(RESOLUTION_CONFIG).map(
+  ([key, cfg]) => ({
+    key,
+    label: cfg.label,
+  }),
+);
+
+const GREEK_OPTIONS = [
+  { value: "delta", symbol: "\u03b4" },
+  { value: "gamma", symbol: "\u0393" },
+  { value: "theta", symbol: "\u0398" },
+  { value: "vega", symbol: "\u03c3" },
+  { value: "vanna", symbol: "v" },
+];
+
+const LEG_COLOR_PALETTE = [
+  "#22d3ee",
+  "#f43f5e",
+  "#60a5fa",
+  "#f59e0b",
+  "#34d399",
+  "#e879f9",
+  "#fb7185",
+  "#a3e635",
+];
+
+const DEFAULT_VOL = 0.4;
+const DEFAULT_T = 30 / 365.25;
+const DEFAULT_MAX_POINTS_PER_FETCH = 360;
+const MIN_POINTS_PER_FETCH = 120;
+const MAX_POINTS_PER_FETCH = 1000;
+const MARK_CONCURRENCY = 10;
+const LOAD_DEBOUNCE_MS = 140;
+const SCENARIO_POINT_COUNT = 91;
+const SCENARIO_M_MIN = 0.5;
+const SCENARIO_M_MAX = 1.5;
+
+const ui = reactive({
+  resolutionKey: "900",
+  greek: "delta",
+  maxPoints: DEFAULT_MAX_POINTS_PER_FETCH,
+  loading: false,
+  error: "",
+});
+
+const positionLegs = ref([]);
+const instruments = ref([]);
+const tickerByInstrument = ref({});
+const indexByName = ref({});
+const indexHistoryRows = ref([]);
+const markHistoryByInstrument = ref({});
+const simulationRows = ref([]);
+const simulationAnchorTs = ref(null);
+const simulationAnchorSpot = ref(null);
+const chartRef = ref(null);
+const resolutionMenuRef = ref(null);
+const settingsMenuRef = ref(null);
+const resolutionMenuOpen = ref(false);
+const settingsOpen = ref(false);
+
+const isBootstrapping = ref(true);
+let loadRequestId = 0;
+let loadTimer = null;
+const knownLegIds = new Set();
+
+const newLegId = () => {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid ?? `leg_${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const normalizeTimestampSeconds = (value) => {
+  const ts = Number(value);
+  if (!Number.isFinite(ts)) return null;
+  return ts > 1e12 ? Math.floor(ts / 1000) : Math.floor(ts);
+};
+
+const clampQty = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.abs(n);
+};
+
+const parseExpiryToSeconds = (expiry) => {
+  if (!expiry || typeof expiry !== "string") return null;
+  const parts = expiry.split(" ");
+  if (parts.length < 3) return null;
+  const [dayStr, monthStr, yearStr] = parts;
+  const day = Number(dayStr);
+  const year = Number(yearStr);
+  if (!Number.isFinite(day) || !Number.isFinite(year)) return null;
+  const monthIdx = new Date(`${monthStr} 1, 2000`).getMonth();
+  if (!Number.isFinite(monthIdx)) return null;
+  const fullYear = year < 100 ? 2000 + year : year;
+  return Math.floor(Date.UTC(fullYear, monthIdx, day, 8, 0, 0) / 1000);
+};
+
+const pickNearestStrike = (strikes, reference) => {
+  if (!strikes.length) return Math.round(reference / 1000) * 1000;
+  const sorted = strikes.slice().sort((a, b) => a - b);
+  let best = sorted[0];
+  let bestDistance = Math.abs(best - reference);
+  for (let i = 1; i < sorted.length; i += 1) {
+    const strike = sorted[i];
+    const distance = Math.abs(strike - reference);
+    if (
+      distance < bestDistance ||
+      (distance === bestDistance && strike < best)
+    ) {
+      best = strike;
+      bestDistance = distance;
+    }
+  }
+  return best;
+};
+
+const formatExpiryFromTs = (ts) => {
+  const date = new Date(Number(ts) * 1000);
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const month = date.toLocaleString("en-US", {
+    month: "short",
+    timeZone: "UTC",
+  });
+  const year = String(date.getUTCFullYear()).slice(-2);
+  return `${day} ${month} ${year}`;
+};
+
+const normalizeIv = (value) => {
+  const iv = Number(value);
+  if (!Number.isFinite(iv) || iv <= 0) return null;
+  return iv > 3 ? iv / 100 : iv;
+};
+
+const extractMarkIv = (row) =>
+  normalizeIv(
+    row?.iv_close ?? row?.iv ?? row?.mark_iv ?? row?.implied_volatility,
+  );
+
+const extractMarkTs = (row) => normalizeTimestampSeconds(row?.ts);
+
+const extractIndexClose = (row) => {
+  const close = Number(
+    row?.index_price_close ?? row?.close ?? row?.price ?? row?.index,
+  );
+  return Number.isFinite(close) ? close : null;
+};
+
+const extractIndexTs = (row) => normalizeTimestampSeconds(row?.ts);
+
+const sortRowsByTs = (rows) =>
+  (rows || [])
+    .filter((row) => Number.isFinite(normalizeTimestampSeconds(row?.ts)))
+    .slice()
+    .sort(
+      (a, b) =>
+        normalizeTimestampSeconds(a?.ts) - normalizeTimestampSeconds(b?.ts),
+    );
+
+const findLastRow = (rows) => (Array.isArray(rows) && rows.length ? rows[rows.length - 1] : null);
+
+const findLastAtOrBefore = (rows, anchorTs) => {
+  const normalizedAnchor = normalizeTimestampSeconds(anchorTs);
+  if (!Number.isFinite(normalizedAnchor)) return findLastRow(rows);
+  if (!Array.isArray(rows) || !rows.length) return null;
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const ts = normalizeTimestampSeconds(rows[i]?.ts);
+    if (Number.isFinite(ts) && ts <= normalizedAnchor) return rows[i];
+  }
+  return rows[0] ?? null;
+};
+
+const runWithConcurrency = async (items, limit, worker) => {
+  const safeLimit = Math.max(1, Math.floor(limit));
+  const queue = [...items];
+  const workers = Array.from(
+    { length: Math.min(safeLimit, queue.length) },
+    async () => {
+      while (queue.length) {
+        const next = queue.shift();
+        await worker(next);
+      }
+    },
+  );
+  await Promise.all(workers);
+};
+
+const normalizeOptionInstrument = (instrument) => {
+  if (!instrument || typeof instrument !== "object") return null;
+  const strike = Number(instrument.strike_price);
+  const expiration = normalizeTimestampSeconds(instrument.expiration_timestamp);
+  const optionType = (instrument.option_type || "").toLowerCase();
+  const type = (instrument.type || instrument.kind || "").toLowerCase();
+  if (!instrument.instrument_name) return null;
+  const isOption = type === "option" || type === "options" || optionType;
+  if (!isOption) return null;
+  if (!Number.isFinite(strike) || !Number.isFinite(expiration)) return null;
+  return {
+    ...instrument,
+    strike,
+    expiration_ts: expiration,
+    option_type_normalized:
+      optionType === "put" || optionType === "p" ? "put" : "call",
+  };
+};
+
+const parsedOptionInstruments = computed(() =>
+  (instruments.value || [])
+    .map((instrument) => normalizeOptionInstrument(instrument))
+    .filter(Boolean)
+    .sort((a, b) => a.expiration_ts - b.expiration_ts || a.strike - b.strike),
+);
+
+const selectedOptionLegs = computed(() =>
+  (positionLegs.value || []).filter((leg) => leg?.kind === "option"),
+);
+
+const hasUnsupportedLegs = computed(() =>
+  (positionLegs.value || []).some((leg) => leg?.kind !== "option"),
+);
+
+const resolveInstrumentForLeg = (leg) => {
+  const expiryTs = parseExpiryToSeconds(leg.expiry);
+  const strike = Number(leg.strike);
+  const optionType = (leg.optionType || "").toLowerCase();
+  if (!Number.isFinite(expiryTs) || !Number.isFinite(strike)) return null;
+  if (optionType !== "call" && optionType !== "put") return null;
+
+  return (
+    parsedOptionInstruments.value.find(
+      (instrument) =>
+        instrument.option_type_normalized === optionType &&
+        instrument.strike === strike &&
+        Math.abs(instrument.expiration_ts - expiryTs) <= 12 * 60 * 60,
+    ) || null
+  );
+};
+
+const selectedLegInstruments = computed(() => {
+  const result = [];
+  let paletteIndex = 0;
+  for (const leg of selectedOptionLegs.value) {
+    const instrument = resolveInstrumentForLeg(leg);
+    if (!instrument?.instrument_name) continue;
+    const qty = clampQty(leg.qty);
+    if (!qty) continue;
+    const side = String(leg.side || "buy").toLowerCase();
+    const isSell = side === "sell";
+    const sideSign = isSell ? -1 : 1;
+    result.push({
+      legId: leg.id,
+      legLabel: `${isSell ? "Sell" : "Buy"} ${qty} ${instrument.instrument_name}`,
+      color: LEG_COLOR_PALETTE[paletteIndex % LEG_COLOR_PALETTE.length],
+      instrumentName: instrument.instrument_name,
+      signedQty: sideSign * qty,
+      optionType: instrument.option_type_normalized,
+      strike: Number(instrument.strike),
+      expirationTs: Number(instrument.expiration_ts),
+      expiryLabel: formatExpiryFromTs(instrument.expiration_ts),
+      underlying: instrument.underlying,
+    });
+    paletteIndex += 1;
+  }
+  return result;
+});
+
+const strikeOptionsForLeg = (leg) => {
+  const expiryTs = parseExpiryToSeconds(leg?.expiry);
+  const optionType = String(leg?.optionType || "").toLowerCase();
+  if (!Number.isFinite(expiryTs)) return [];
+  if (optionType !== "call" && optionType !== "put") return [];
+  return Array.from(
+    new Set(
+      parsedOptionInstruments.value
+        .filter(
+          (instrument) =>
+            instrument.option_type_normalized === optionType &&
+            Math.abs(instrument.expiration_ts - expiryTs) <= 12 * 60 * 60,
+        )
+        .map((instrument) => Number(instrument.strike))
+        .filter(Number.isFinite),
+    ),
+  ).sort((a, b) => a - b);
+};
+
+const selectedInstrumentNames = computed(() =>
+  Array.from(
+    new Set(selectedLegInstruments.value.map((entry) => entry.instrumentName)),
+  ),
+);
+
+const activeIndexName = computed(() => {
+  const firstUnderlying = selectedLegInstruments.value.find(
+    (entry) => entry.underlying,
+  )?.underlying;
+  return firstUnderlying || "BTCUSD";
+});
+
+const indexDisplay = computed(() => {
+  const snapshot = indexByName.value[activeIndexName.value];
+  if (!snapshot) return null;
+  const price = extractIndexClose(snapshot.data);
+  if (!Number.isFinite(price)) return null;
+  return {
+    price,
+    fetchedAt: snapshot.fetchedAt,
+  };
+});
+
+const spot = computed(() => {
+  const live = Number(indexDisplay.value?.price);
+  return Number.isFinite(live) && live > 0 ? live : 95_000;
+});
+
+const getFetchedReferenceSpot = () => {
+  const fromIndex = Number(indexDisplay.value?.price);
+  if (Number.isFinite(fromIndex) && fromIndex > 0) return fromIndex;
+  const fromAnchor = Number(simulationAnchorSpot.value);
+  if (Number.isFinite(fromAnchor) && fromAnchor > 0) return fromAnchor;
+  return null;
+};
+
+const maxPointsPerFetch = computed(() => {
+  const points = Math.floor(Number(ui.maxPoints));
+  if (!Number.isFinite(points)) return DEFAULT_MAX_POINTS_PER_FETCH;
+  return Math.max(MIN_POINTS_PER_FETCH, Math.min(MAX_POINTS_PER_FETCH, points));
+});
+
+const activeResolutionConfig = computed(
+  () => RESOLUTION_CONFIG[ui.resolutionKey] || null,
+);
+
+const activeResolutionLabel = computed(() => {
+  const label = activeResolutionConfig.value?.label;
+  if (label) return label;
+  const seconds = Number(ui.resolutionKey);
+  return Number.isFinite(seconds) && seconds > 0 ? `${seconds}s` : "n/a";
+});
+
+const getTimestampRange = () => {
+  const now = Math.floor(Date.now() / 1000);
+  const resolutionConfig = RESOLUTION_CONFIG[ui.resolutionKey];
+  const resolution = resolutionConfig?.resolution;
+  const seconds =
+    resolutionConfig?.interval_seconds ?? Number(ui.resolutionKey) ?? 0;
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 900;
+  const to = now - (now % safeSeconds);
+  return {
+    resolution,
+    from: to - safeSeconds * (maxPointsPerFetch.value - 1),
+    to,
+  };
+};
+
+const loadInitialIndexSnapshot = async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const rows = await fetchIndexHistory({
+    index_name: "BTCUSD",
+    resolution: "1m",
+    from: now - 2 * 60 * 60,
+    to: now,
+  });
+  const sorted = sortRowsByTs(rows);
+  const latest = findLastRow(sorted);
+  const price = extractIndexClose(latest);
+  const ts = extractIndexTs(latest);
+  if (!latest || !Number.isFinite(price)) return;
+  indexByName.value = {
+    BTCUSD: {
+      data: {
+        ...latest,
+        index_price_close: price,
+        ts: Number.isFinite(ts) ? ts : latest.ts,
+      },
+      fetchedAt: Number.isFinite(ts) ? ts * 1000 : Date.now(),
+    },
+  };
+};
+
+const seedDefaultLegs = () => {
+  if (selectedOptionLegs.value.length) return;
+  const options = parsedOptionInstruments.value;
+  if (!options.length) return;
+
+  const now = Math.floor(Date.now() / 1000);
+  const target = now + 30 * 24 * 60 * 60;
+  const upcoming = options.filter((instrument) => instrument.expiration_ts > now);
+  const source = upcoming.length ? upcoming : options;
+  const expiries = Array.from(
+    new Set(source.map((instrument) => instrument.expiration_ts)),
+  ).sort((a, b) => a - b);
+  if (!expiries.length) return;
+
+  let chosenExpiry = expiries[0];
+  let bestDiff = Math.abs(chosenExpiry - target);
+  for (const expiryTs of expiries) {
+    const diff = Math.abs(expiryTs - target);
+    if (diff < bestDiff) {
+      chosenExpiry = expiryTs;
+      bestDiff = diff;
+    }
+  }
+
+  const forExpiry = source.filter(
+    (instrument) => instrument.expiration_ts === chosenExpiry,
+  );
+  const callStrikes = Array.from(
+    new Set(
+      forExpiry
+        .filter((instrument) => instrument.option_type_normalized === "call")
+        .map((instrument) => instrument.strike),
+    ),
+  ).sort((a, b) => a - b);
+  const putStrikes = Array.from(
+    new Set(
+      forExpiry
+        .filter((instrument) => instrument.option_type_normalized === "put")
+        .map((instrument) => instrument.strike),
+    ),
+  ).sort((a, b) => a - b);
+  const fallbackStrikes = Array.from(
+    new Set(forExpiry.map((instrument) => instrument.strike)),
+  ).sort((a, b) => a - b);
+
+  const referenceSpot = getFetchedReferenceSpot() ?? spot.value;
+  const callStrike = pickNearestStrike(
+    callStrikes.length ? callStrikes : fallbackStrikes,
+    referenceSpot,
+  );
+  const putStrike = pickNearestStrike(
+    putStrikes.length ? putStrikes : fallbackStrikes,
+    referenceSpot,
+  );
+  const expiryLabel = formatExpiryFromTs(chosenExpiry);
+
+  positionLegs.value = [
+    {
+      id: newLegId(),
+      kind: "option",
+      side: "buy",
+      qty: 1,
+      optionType: "call",
+      strike: callStrike,
+      premium: 0,
+      expiry: expiryLabel,
+    },
+    {
+      id: newLegId(),
+      kind: "option",
+      side: "buy",
+      qty: 1,
+      optionType: "put",
+      strike: putStrike,
+      premium: 0,
+      expiry: expiryLabel,
+    },
+  ];
+};
+
+const rebuildBuilderSnapshots = (anchorTs = null) => {
+  const nextTickerByInstrument = {};
+  for (const instrumentName of selectedInstrumentNames.value) {
+    const rows = markHistoryByInstrument.value[instrumentName] || [];
+    const row = findLastAtOrBefore(rows, anchorTs) || findLastRow(rows);
+    if (!row) continue;
+    const ts = extractMarkTs(row);
+    nextTickerByInstrument[instrumentName] = {
+      data: {
+        ...row,
+        ts: Number.isFinite(ts) ? ts : row.ts,
+      },
+      fetchedAt: Number.isFinite(ts) ? ts * 1000 : Date.now(),
+    };
+  }
+  tickerByInstrument.value = nextTickerByInstrument;
+
+  const indexName = activeIndexName.value;
+  if (!indexName) {
+    indexByName.value = {};
+    return;
+  }
+  const indexRow =
+    findLastAtOrBefore(indexHistoryRows.value, anchorTs) ||
+    findLastRow(indexHistoryRows.value);
+  const indexClose = extractIndexClose(indexRow);
+  const indexTs = extractIndexTs(indexRow);
+  if (indexRow && Number.isFinite(indexClose)) {
+    indexByName.value = {
+      [indexName]: {
+        data: {
+          ...indexRow,
+          index_price_close: indexClose,
+          ts: Number.isFinite(indexTs) ? indexTs : indexRow?.ts,
+        },
+        fetchedAt: Number.isFinite(indexTs) ? indexTs * 1000 : Date.now(),
+      },
+    };
+  } else {
+    indexByName.value = {};
+  }
+};
+
+const buildScenarioMGrid = () => {
+  const points = [];
+  for (let i = 0; i < SCENARIO_POINT_COUNT; i += 1) {
+    const t =
+      SCENARIO_POINT_COUNT === 1 ? 0.5 : i / (SCENARIO_POINT_COUNT - 1);
+    const scenarioM = SCENARIO_M_MIN + (SCENARIO_M_MAX - SCENARIO_M_MIN) * t;
+    if (!Number.isFinite(scenarioM) || scenarioM <= 0) continue;
+    points.push({
+      scenarioIndex: i,
+      scenarioM,
+    });
+  }
+  return points;
+};
+
+const buildSimulationRows = (selected, indexRows, markByInstrument) => {
+  if (!selected.length || !indexRows.length) {
+    return {
+      rows: [],
+      anchorTs: null,
+      anchorSpot: null,
+    };
+  }
+
+  const sortedIndexRows = sortRowsByTs(indexRows);
+  const latestIndexRow = findLastRow(sortedIndexRows);
+  const latestIndexTs = extractIndexTs(latestIndexRow);
+  const latestSpot = extractIndexClose(latestIndexRow);
+  if (!Number.isFinite(latestIndexTs) || !Number.isFinite(latestSpot)) {
+    return {
+      rows: [],
+      anchorTs: null,
+      anchorSpot: null,
+    };
+  }
+
+  let anchorTs = latestIndexTs;
+  for (const leg of selected) {
+    const markRows = sortRowsByTs(markByInstrument[leg.instrumentName] || []);
+    const latestMarkRow = findLastRow(markRows);
+    const latestMarkTs = extractMarkTs(latestMarkRow);
+    if (!Number.isFinite(latestMarkTs)) {
+      throw new Error(`Missing mark history for ${leg.instrumentName}.`);
+    }
+    anchorTs = Math.min(anchorTs, latestMarkTs);
+  }
+
+  const anchorIndexRow = findLastAtOrBefore(sortedIndexRows, anchorTs) || latestIndexRow;
+  const anchorSpotRaw = extractIndexClose(anchorIndexRow);
+  const anchorSpot =
+    Number.isFinite(anchorSpotRaw) && anchorSpotRaw > 0 ? anchorSpotRaw : latestSpot;
+  const scenarios = buildScenarioMGrid().map((scenario) => ({
+    ...scenario,
+    scenarioSpot: scenario.scenarioM * anchorSpot,
+    scenarioShiftPct: Number.isFinite(anchorSpot) && anchorSpot > 0
+      ? (scenario.scenarioM - 1) * 100
+      : null,
+  }));
+
+  const absQtySum = selected.reduce(
+    (sum, leg) => sum + Math.abs(Number(leg.signedQty) || 0),
+    0,
+  );
+  const weightedStrikeSum = selected.reduce(
+    (sum, leg) => sum + Math.abs(Number(leg.signedQty) || 0) * Number(leg.strike),
+    0,
+  );
+  const comboReferenceStrike =
+    absQtySum > 0 && Number.isFinite(weightedStrikeSum)
+      ? weightedStrikeSum / absQtySum
+      : anchorSpot;
+
+  const totals = scenarios.map((scenario) => ({
+    ...scenario,
+    delta: 0,
+    gamma: 0,
+    theta: 0,
+    vega: 0,
+    vanna: 0,
+  }));
+
+  const rows = [];
+  for (const leg of selected) {
+    const markRows = sortRowsByTs(markByInstrument[leg.instrumentName] || []);
+    const anchorMarkRow =
+      findLastAtOrBefore(markRows, anchorTs) || findLastRow(markRows);
+    if (!anchorMarkRow) {
+      throw new Error(`No mark snapshot for ${leg.instrumentName} at anchor time.`);
+    }
+
+    let iv = extractMarkIv(anchorMarkRow);
+    if (!Number.isFinite(iv)) {
+      let ivSum = 0;
+      let ivCount = 0;
+      for (const row of markRows) {
+        const nextIv = extractMarkIv(row);
+        if (!Number.isFinite(nextIv)) continue;
+        ivSum += nextIv;
+        ivCount += 1;
+      }
+      iv = ivCount ? ivSum / ivCount : DEFAULT_VOL;
+    }
+
+    const markTs = extractMarkTs(anchorMarkRow);
+    const referenceTs = Number.isFinite(markTs) ? markTs : anchorTs;
+    const tteSeconds = Math.max(60, Number(leg.expirationTs) - referenceTs);
+
+    for (let i = 0; i < scenarios.length; i += 1) {
+      const scenario = scenarios[i];
+      const scenarioSpot = Number(scenario.scenarioSpot);
+      if (!Number.isFinite(scenarioSpot) || scenarioSpot <= 0) continue;
+      const scenarioShiftPct =
+        Number.isFinite(anchorSpot) && anchorSpot > 0
+          ? (scenarioSpot / anchorSpot - 1) * 100
+          : null;
+      const greeks = calcGreeks(
+        scenarioSpot,
+        leg.strike,
+        tteSeconds,
+        iv,
+        leg.optionType,
+      );
+      if (!Number.isFinite(greeks?.delta)) continue;
+
+      const signedDelta = Number(leg.signedQty) * Number(greeks.delta);
+      const signedGamma = Number(leg.signedQty) * Number(greeks.gamma);
+      const signedTheta = Number(leg.signedQty) * Number(greeks.theta);
+      const signedVega = Number(leg.signedQty) * Number(greeks.vega);
+      const signedVanna = Number(leg.signedQty) * Number(greeks.vanna);
+
+      rows.push({
+        leg_id: leg.legId,
+        leg_label: leg.legLabel,
+        leg_color: leg.color,
+        is_total: false,
+        instrument_name: leg.instrumentName,
+        option_type: leg.optionType,
+        signed_qty: leg.signedQty,
+        strike: leg.strike,
+        expiry_date: leg.expiryLabel,
+        tte: tteSeconds,
+        iv_close: iv,
+        ts: referenceTs,
+        anchor_ts: anchorTs,
+        anchor_spot: anchorSpot,
+        index_price_close: scenarioSpot,
+        scenario_shift_pct: scenarioShiftPct,
+        m: scenario.scenarioM,
+        delta: signedDelta,
+        gamma: signedGamma,
+        theta: signedTheta,
+        vega: signedVega,
+        vanna: signedVanna,
+      });
+
+      totals[i].delta += Number.isFinite(signedDelta) ? signedDelta : 0;
+      totals[i].gamma += Number.isFinite(signedGamma) ? signedGamma : 0;
+      totals[i].theta += Number.isFinite(signedTheta) ? signedTheta : 0;
+      totals[i].vega += Number.isFinite(signedVega) ? signedVega : 0;
+      totals[i].vanna += Number.isFinite(signedVanna) ? signedVanna : 0;
+    }
+  }
+
+  for (const total of totals) {
+    rows.push({
+      leg_id: "combo-total",
+      leg_label: "Net combo",
+      leg_color: "#f8fafc",
+      is_total: true,
+      instrument_name: "COMBO",
+      option_type: "mix",
+      signed_qty: 1,
+      strike: comboReferenceStrike,
+      expiry_date: "Mixed",
+      tte: null,
+      iv_close: null,
+      ts: anchorTs,
+      anchor_ts: anchorTs,
+      anchor_spot: anchorSpot,
+      index_price_close: total.scenarioSpot,
+      scenario_shift_pct: total.scenarioShiftPct,
+      m: total.scenarioM,
+      delta: total.delta,
+      gamma: total.gamma,
+      theta: total.theta,
+      vega: total.vega,
+      vanna: total.vanna,
+    });
+  }
+
+  return {
+    rows,
+    anchorTs,
+    anchorSpot,
+  };
+};
+
+const resetSeriesState = () => {
+  simulationRows.value = [];
+  indexHistoryRows.value = [];
+  markHistoryByInstrument.value = {};
+  simulationAnchorTs.value = null;
+  simulationAnchorSpot.value = null;
+  tickerByInstrument.value = {};
+  indexByName.value = {};
+};
+
+const loadSeries = async () => {
+  const requestId = ++loadRequestId;
+
+  if (hasUnsupportedLegs.value) {
+    ui.error = "Only option legs are supported.";
+    ui.loading = false;
+    resetSeriesState();
+    return;
+  }
+
+  const selected = selectedLegInstruments.value;
+  if (!selected.length) {
+    ui.error = "";
+    ui.loading = false;
+    resetSeriesState();
+    return;
+  }
+
+  const { resolution, from, to } = getTimestampRange();
+  ui.loading = true;
+  ui.error = "";
+
+  try {
+    const indexRows = await fetchIndexHistory({
+      index_name: activeIndexName.value,
+      resolution,
+      from,
+      to,
+    });
+
+    const markByInstrument = {};
+    await runWithConcurrency(
+      selectedInstrumentNames.value,
+      MARK_CONCURRENCY,
+      async (instrumentName) => {
+        markByInstrument[instrumentName] =
+          (await fetchMarkHistory({
+            instrument_name: instrumentName,
+            resolution,
+            from,
+            to,
+          })) || [];
+      },
+    );
+
+    if (requestId !== loadRequestId) return;
+
+    const sortedIndexRows = sortRowsByTs(indexRows);
+    const sortedMarkByInstrument = {};
+    for (const [instrumentName, rows] of Object.entries(markByInstrument)) {
+      sortedMarkByInstrument[instrumentName] = sortRowsByTs(rows);
+    }
+
+    indexHistoryRows.value = sortedIndexRows;
+    markHistoryByInstrument.value = sortedMarkByInstrument;
+
+    const { rows, anchorTs, anchorSpot } = buildSimulationRows(
+      selected,
+      sortedIndexRows,
+      sortedMarkByInstrument,
+    );
+
+    simulationRows.value = rows;
+    simulationAnchorTs.value = anchorTs;
+    simulationAnchorSpot.value = anchorSpot;
+
+    rebuildBuilderSnapshots(anchorTs);
+
+    if (!rows.length) {
+      ui.error = "No simulation data available for the selected legs.";
+    }
+  } catch (error) {
+    if (requestId !== loadRequestId) return;
+    ui.error = error instanceof Error ? error.message : String(error);
+    resetSeriesState();
+  } finally {
+    if (requestId === loadRequestId) {
+      ui.loading = false;
+    }
+  }
+};
+
+const scheduleLoad = () => {
+  if (loadTimer) clearTimeout(loadTimer);
+  loadTimer = setTimeout(() => {
+    loadTimer = null;
+    loadSeries();
+  }, LOAD_DEBOUNCE_MS);
+};
+
+const activeGreekSymbol = computed(
+  () =>
+    GREEK_OPTIONS.find((option) => option.value === ui.greek)?.symbol ||
+    GREEK_OPTIONS[0].symbol,
+);
+
+const headerTitle = computed(
+  () => `Combo options ${activeGreekSymbol.value} vs moneyness`,
+);
+
+const chartSubtitle = computed(() => {
+  const anchorTs = Number(simulationAnchorTs.value);
+  const anchorSpot = Number(simulationAnchorSpot.value);
+  if (!Number.isFinite(anchorTs) || !Number.isFinite(anchorSpot)) return "";
+  const formatDate = d3.utcFormat("%d %b %y %H:%M");
+  const formatSpot = d3.format(",.0f");
+  return `Anchor ${formatDate(new Date(anchorTs * 1000))} UTC | Spot ${formatSpot(anchorSpot)} | m range ${SCENARIO_M_MIN.toFixed(2)}-${SCENARIO_M_MAX.toFixed(2)}`;
+});
+
+const metaSummary = computed(() => {
+  const legCount = selectedLegInstruments.value.length;
+  if (!legCount) return "";
+  return `${legCount} legs | ${SCENARIO_POINT_COUNT} points/leg | ${activeResolutionLabel.value} snapshots`;
+});
+
+const chartLoading = computed(
+  () => ui.loading && simulationRows.value.length === 0,
+);
+
+const handleSavePng = () => {
+  if (!chartRef.value) return;
+  chartRef.value.exportPng({ filename: `combo-greeks-${ui.greek}.png` });
+};
+
+const toggleResolutionMenu = () => {
+  resolutionMenuOpen.value = !resolutionMenuOpen.value;
+  if (resolutionMenuOpen.value) settingsOpen.value = false;
+};
+
+const setResolution = (key) => {
+  ui.resolutionKey = String(key);
+  resolutionMenuOpen.value = false;
+};
+
+const toggleSettings = () => {
+  settingsOpen.value = !settingsOpen.value;
+  if (settingsOpen.value) resolutionMenuOpen.value = false;
+};
+
+const handleDocumentPointerDown = (event) => {
+  const target = event?.target;
+  if (!(target instanceof Node)) return;
+
+  if (
+    resolutionMenuOpen.value &&
+    !resolutionMenuRef.value?.contains(target)
+  ) {
+    resolutionMenuOpen.value = false;
+  }
+
+  if (settingsOpen.value && !settingsMenuRef.value?.contains(target)) {
+    settingsOpen.value = false;
+  }
+};
+
+watch(
+  () => [ui.resolutionKey, maxPointsPerFetch.value, positionLegs.value],
+  () => {
+    if (isBootstrapping.value) return;
+    scheduleLoad();
+  },
+  { deep: true },
+);
+
+watch(
+  () => positionLegs.value,
+  (legs) => {
+    if (!Array.isArray(legs)) return;
+    const activeIds = new Set(
+      legs.map((leg) => leg?.id).filter((id) => typeof id === "string"),
+    );
+    for (const id of Array.from(knownLegIds)) {
+      if (!activeIds.has(id)) knownLegIds.delete(id);
+    }
+
+    let mutated = false;
+    const nextLegs = legs.map((leg) => {
+      const legId = leg?.id;
+      if (typeof legId !== "string" || knownLegIds.has(legId)) return leg;
+
+      if (leg?.kind !== "option") return leg;
+      const strikes = strikeOptionsForLeg(leg);
+      if (!strikes.length) return leg;
+      const reference = getFetchedReferenceSpot();
+      if (!Number.isFinite(reference) || reference <= 0) return leg;
+      const currentStrike = Number(leg.strike);
+      const preferredStrike = pickNearestStrike(strikes, reference);
+      if (!Number.isFinite(preferredStrike)) return leg;
+      knownLegIds.add(legId);
+
+      if (preferredStrike !== currentStrike) {
+        mutated = true;
+        return { ...leg, strike: preferredStrike };
+      }
+
+      return leg;
+    });
+
+    if (mutated) {
+      positionLegs.value = nextLegs;
+    }
+  },
+  { deep: true },
+);
+
+watch(
+  () => [
+    selectedInstrumentNames.value,
+    activeIndexName.value,
+    indexHistoryRows.value,
+    markHistoryByInstrument.value,
+    simulationAnchorTs.value,
+  ],
+  () => {
+    rebuildBuilderSnapshots(simulationAnchorTs.value);
+  },
+  { deep: true },
+);
+
+onMounted(async () => {
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
+  try {
+    const allInstruments = await fetchAllInstruments();
+    instruments.value = (allInstruments || []).filter(
+      (instrument) =>
+        instrument?.type === "option" && instrument?.underlying === "BTCUSD",
+    );
+
+    await loadInitialIndexSnapshot();
+    seedDefaultLegs();
+    await loadSeries();
+  } catch (error) {
+    ui.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    isBootstrapping.value = false;
+  }
+});
+
+onUnmounted(() => {
+  if (loadTimer) clearTimeout(loadTimer);
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
+});
+</script>
+
+<template>
+  <div class="appRoot">
+    <header class="header">
+      <div class="titleRow">
+        <h1>{{ headerTitle }}</h1>
+        <div v-if="chartSubtitle || metaSummary" class="titleMetaGroup">
+          <div v-if="chartSubtitle" class="meta">{{ chartSubtitle }}</div>
+          <div v-if="metaSummary" class="meta">{{ metaSummary }}</div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="resolutionControl" ref="resolutionMenuRef">
+          <button
+            class="resolutionButton"
+            type="button"
+            aria-haspopup="true"
+            :aria-expanded="resolutionMenuOpen ? 'true' : 'false'"
+            @click="toggleResolutionMenu"
+          >
+            <span class="resolutionButtonLabel">Resolution</span>
+            <span class="resolutionButtonValue">{{ activeResolutionLabel }}</span>
+          </button>
+          <div v-if="resolutionMenuOpen" class="resolutionDropdown">
+            <button
+              v-for="option in RESOLUTION_OPTIONS"
+              :key="option.key"
+              type="button"
+              class="resolutionOption"
+              :class="{
+                resolutionOptionActive: String(ui.resolutionKey) === String(option.key),
+              }"
+              @click="setResolution(option.key)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="greekSymbolGrid" role="group" aria-label="Greek">
+          <button
+            v-for="option in GREEK_OPTIONS"
+            :key="option.value"
+            type="button"
+            class="greekSymbolButton"
+            :class="{ active: ui.greek === option.value }"
+            @click="ui.greek = option.value"
+          >
+            {{ option.symbol }}
+          </button>
+        </div>
+
+        <button
+          class="saveButton"
+          type="button"
+          @click="handleSavePng"
+          :disabled="ui.loading || !simulationRows.length"
+        >
+          Save PNG
+        </button>
+      </div>
+
+      <div v-if="ui.error" class="error">{{ ui.error }}</div>
+    </header>
+
+    <div class="builderRow">
+      <div class="builderMain">
+        <PositionBuilder
+          :legs="positionLegs"
+          :spot="spot"
+          :vol="DEFAULT_VOL"
+          :T="DEFAULT_T"
+          :instruments="instruments"
+          :ticker-by-instrument="tickerByInstrument"
+          :index-name="activeIndexName"
+          :index-price="indexDisplay?.price ?? null"
+          :index-fetched-at="indexDisplay?.fetchedAt ?? null"
+          @update:legs="positionLegs = $event"
+        />
+      </div>
+    </div>
+
+    <div class="chartShell">
+      <div
+        class="settingsWrap settingsWrap--chart"
+        ref="settingsMenuRef"
+      >
+        <button
+          class="settingsButton settingsButton--icon"
+          type="button"
+          title="Settings"
+          aria-label="Settings"
+          aria-haspopup="true"
+          :aria-expanded="settingsOpen ? 'true' : 'false'"
+          @click="toggleSettings"
+        ></button>
+        <div v-if="settingsOpen" class="settingsDropdown">
+          <div class="settingsHint">
+            Choose the number of data points to load: {{ maxPointsPerFetch }}
+          </div>
+          <input
+            v-model.number="ui.maxPoints"
+            class="settingsSlider"
+            type="range"
+            :min="MIN_POINTS_PER_FETCH"
+            :max="MAX_POINTS_PER_FETCH"
+            step="10"
+          />
+          <div class="settingsRange">
+            <span>{{ MIN_POINTS_PER_FETCH }}</span>
+            <span>{{ MAX_POINTS_PER_FETCH }}</span>
+          </div>
+        </div>
+      </div>
+      <Greeks
+        ref="chartRef"
+        :data="simulationRows"
+        title=""
+        subtitle=""
+        :loading="chartLoading"
+        :greek="ui.greek"
+      />
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.appRoot {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 28px 40px 40px;
+  color: #e8e8ea;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.titleRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.titleMetaGroup {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.meta {
+  color: #a5adbe;
+  font-size: 12px;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.resolutionControl {
+  position: relative;
+}
+
+.resolutionButton {
+  min-width: 136px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
+  box-shadow: none;
+  color: #e4e8f4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 22px;
+  cursor: pointer;
+}
+
+.resolutionButton:hover {
+  background: color-mix(in oklab, var(--panel), #232b42 30%);
+}
+
+.resolutionButtonLabel {
+  font-size: 20px;
+  line-height: 1;
+  color: var(--muted);
+  letter-spacing: 0.01em;
+}
+
+.resolutionButtonValue {
+  font-size: 20px;
+  line-height: 1;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+
+.resolutionDropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  min-width: 100%;
+  border: 0.5px solid rgba(255, 255, 255, 0.9);
+  background: #080a0f;
+  border-radius: 10px;
+  padding: 8px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.resolutionOption {
+  border: 1px solid #202a3d;
+  background: #0f131b;
+  color: #a9abb6;
+  height: 34px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.resolutionOption:hover {
+  background: #1a212d;
+  color: #f2f4ff;
+}
+
+.resolutionOptionActive {
+  border-color: #374e79;
+  color: #f2f4ff;
+  background: #1a263a;
+}
+
+.greekSymbolGrid {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 8px;
+}
+
+.greekSymbolButton {
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  width: 44px;
+  height: 40px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.greekSymbolButton.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.saveButton {
+  height: 40px;
+}
+
+.builderRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.builderMain {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.builderMain :deep(.legs-section) {
+  --layout-gap: 8px;
+  --leg-row-gap-total: 32px;
+  --leg-greeks-gap-total: 44px;
+  --strike-greeks-gap: 10px;
+}
+
+.builderMain :deep(.index-summary) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.index-label) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.index-value) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.index-time) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.leg-greek-header) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.leg-greek-value) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.leg-greeks) {
+  font-size: 10px;
+}
+
+.builderMain :deep(.total-greeks) {
+  font-size: 10px;
+}
+
+.chartShell {
+  position: relative;
+  margin-top: 6px;
+}
+
+.settingsWrap {
+  position: relative;
+}
+
+.settingsButton {
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.7);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.settingsButton:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.settingsButton--icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.settingsButton--icon::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #e8ebf2;
+}
+
+.settingsDropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 240px;
+  border: 0.5px solid rgba(255, 255, 255, 0.9);
+  background: #080a0f;
+  border-radius: 6px;
+  padding: 10px 12px 12px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+  z-index: 30;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+}
+
+.settingsWrap--chart {
+  position: absolute;
+  top: 5px;
+  right: 40px;
+  z-index: 35;
+}
+
+.settingsHint {
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  margin-bottom: 6px;
+}
+
+.settingsSlider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settingsSlider:focus {
+  outline: none;
+}
+
+.settingsSlider::-webkit-slider-runnable-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  margin-top: -3px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
+}
+
+.settingsSlider::-moz-range-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
+}
+
+.settingsRange {
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.error {
+  color: #ff8282;
+  font-size: 14px;
+}
+
+@media (max-width: 900px) {
+  .appRoot {
+    padding: 18px 14px 20px;
+    gap: 14px;
+  }
+
+  .titleRow {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .titleMetaGroup {
+    align-items: flex-start;
+  }
+
+  .builderRow {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .settingsWrap--chart {
+    right: 12px;
+  }
+
+  .resolutionButton {
+    min-width: 132px;
+    height: 40px;
+    padding: 0 16px;
+  }
+
+  .resolutionButtonLabel,
+  .resolutionButtonValue {
+    font-size: 20px;
+  }
+}
+</style>
