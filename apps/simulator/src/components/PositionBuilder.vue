@@ -9,6 +9,7 @@ const props = defineProps<{
   spot: number;
   vol: number;
   T: number;
+  showTte?: boolean;
   instruments?: ThalexInstrument[];
   tickerByInstrument?: Record<string, { data: unknown; fetchedAt: number }>;
   indexName?: string | null;
@@ -329,6 +330,36 @@ const extractTickerTs = (ticker: Record<string, unknown> | null): number | null 
   return num > 1e12 ? Math.floor(num / 1000) : num;
 };
 
+const getLegTteSeconds = (leg: OptionLeg): number | null => {
+  const instrument = resolveInstrumentForLeg(leg);
+  const expiryTs =
+    Number(instrument?.expiration_timestamp) || parseExpiryToSeconds(leg.expiry) || null;
+  if (!Number.isFinite(expiryTs)) return null;
+
+  const tickerTs = extractTickerTs(getTickerForLeg(leg));
+  const indexTsRaw = Number(props.indexFetchedAt);
+  const indexTs = Number.isFinite(indexTsRaw)
+    ? (indexTsRaw > 1e12 ? Math.floor(indexTsRaw / 1000) : Math.floor(indexTsRaw))
+    : null;
+  const referenceTs = tickerTs ?? indexTs ?? Math.floor(Date.now() / 1000);
+
+  return Math.max(0, Number(expiryTs) - referenceTs);
+};
+
+const formatTteForLeg = (leg: OptionLeg): string => {
+  const seconds = getLegTteSeconds(leg);
+  if (!Number.isFinite(seconds)) return "--";
+  if (seconds <= 0) return "0m";
+
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${Math.max(1, minutes)}m`;
+};
+
 const getLegGreeks = (leg: OptionLeg) => {
   const ticker = getTickerForLeg(leg);
   const instrument = resolveInstrumentForLeg(leg);
@@ -541,7 +572,7 @@ const totalMarkPrice = computed<number | null>(() => {
 </script>
 
 <template>
-  <div class="payoff-builder">
+  <div class="payoff-builder" :class="{ 'payoff-builder--tte': Boolean(props.showTte) }">
     <div v-if="indexName" class="index-summary">
       <span class="index-label">{{ indexName }}</span>
       <span class="index-value">
@@ -557,9 +588,12 @@ const totalMarkPrice = computed<number | null>(() => {
         <span></span>
         <span></span>
         <span></span>
-        <span></span>
+        <span v-if="props.showTte" class="field-header maturity-header">Maturity</span>
+        <span v-else></span>
         <div class="strike-greeks-header">
-          <span class="strike-spacer"></span>
+          <span v-if="props.showTte" class="field-header strike-header">Strike</span>
+          <span v-else class="strike-spacer"></span>
+          <span v-if="props.showTte" class="field-header tte-header">TTE</span>
           <div class="leg-greeks leg-greeks--header">
             <span class="leg-greek-header leg-greek-header--text">IV</span>
             <span class="leg-greek-header leg-greek-header--text">Mark</span>
@@ -672,6 +706,8 @@ const totalMarkPrice = computed<number | null>(() => {
             </option>
           </select>
 
+          <span v-if="props.showTte" class="tte-cell">{{ formatTteForLeg(leg) }}</span>
+
           <div class="leg-greeks">
             <span class="leg-greek">
               <span class="leg-greek-value">{{ formatIvPercent(legDisplay(leg).iv) }}</span>
@@ -722,6 +758,7 @@ const totalMarkPrice = computed<number | null>(() => {
         </div>
         <div class="total-greeks">
           <span class="strike-spacer"></span>
+          <span class="tte-spacer"></span>
           <div class="leg-greeks">
             <span class="leg-greek leg-greek--spacer"></span>
             <span class="leg-greek">
@@ -755,6 +792,7 @@ const totalMarkPrice = computed<number | null>(() => {
   padding: 0;
   background: transparent;
   font-size: 11px;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
 }
 
 .index-summary {
@@ -793,8 +831,10 @@ const totalMarkPrice = computed<number | null>(() => {
   --col-qty: 60px;
   --col-type: 68px;
   --col-expiry: 108px;
+  --col-tte: 0px;
   --strike-width: 84px;
   --strike-greeks-gap: 8px;
+  --strike-greeks-gap-extra: 0px;
   --greek-iv: 74px;
   --greek-mark: 106px;
   --greek-delta: 56px;
@@ -806,6 +846,11 @@ const totalMarkPrice = computed<number | null>(() => {
   --leg-greeks-gap-total: 36px;
   --greeks-shift-x: 0px;
   --control-height: 27px;
+}
+
+.payoff-builder--tte .legs-section {
+  --col-tte: 72px;
+  --strike-greeks-gap-extra: var(--strike-greeks-gap);
 }
 
 .leg-row {
@@ -826,12 +871,39 @@ const totalMarkPrice = computed<number | null>(() => {
   padding: 0 var(--row-pad-x) 1px;
 }
 
+.field-header {
+  width: 100%;
+  text-align: center;
+  font-size: 9px;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.6);
+}
+
+.maturity-header {
+  text-align: center;
+}
+
+.tte-cell {
+  width: 100%;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1;
+  color: #f8fafc;
+  font-variant-numeric: tabular-nums;
+}
+
 .strike-greeks-header {
   display: grid;
   grid-template-columns: var(--strike-width) 1fr;
   align-items: center;
   gap: var(--strike-greeks-gap);
   min-width: 0;
+}
+
+.payoff-builder--tte .strike-greeks-header {
+  grid-template-columns: var(--strike-width) var(--col-tte) 1fr;
 }
 
 .side-pill {
@@ -971,6 +1043,10 @@ const totalMarkPrice = computed<number | null>(() => {
   min-width: 0;
 }
 
+.payoff-builder--tte .strike-greeks {
+  grid-template-columns: var(--strike-width) var(--col-tte) 1fr;
+}
+
 .strike-greeks .leg-select {
   width: var(--strike-width);
 }
@@ -1029,7 +1105,7 @@ const totalMarkPrice = computed<number | null>(() => {
   text-align: right;
   font-size: 10px;
   line-height: 1;
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
   color: #f8fafc;
@@ -1082,6 +1158,7 @@ const totalMarkPrice = computed<number | null>(() => {
     var(--col-qty) +
     var(--col-type) +
     var(--col-expiry) +
+    var(--col-tte) +
     var(--strike-width) +
     var(--greek-iv) +
     var(--greek-mark) +
@@ -1092,6 +1169,7 @@ const totalMarkPrice = computed<number | null>(() => {
     var(--greek-remove) +
     var(--leg-row-gap-total) +
     var(--strike-greeks-gap) +
+    var(--strike-greeks-gap-extra) +
     var(--leg-greeks-gap-total)
   );
   max-width: calc(100% - var(--row-pad-x));
@@ -1115,7 +1193,7 @@ const totalMarkPrice = computed<number | null>(() => {
 
 .total-greeks {
   display: grid;
-  grid-template-columns: var(--strike-width) 1fr;
+  grid-template-columns: var(--strike-width) var(--col-tte) 1fr;
   align-items: center;
   gap: var(--strike-greeks-gap);
   padding: var(--row-pad-y) 0;
@@ -1126,6 +1204,10 @@ const totalMarkPrice = computed<number | null>(() => {
 
 .strike-spacer {
   width: var(--strike-width);
+}
+
+.tte-spacer {
+  width: var(--col-tte);
 }
 
 @media (max-width: 900px) {

@@ -128,7 +128,7 @@ const render = () => {
     );
   }
 
-  const greekKey = ["delta", "gamma", "theta", "vega", "vanna"].includes(
+  const greekKey = ["delta", "gamma", "theta", "vega", "vanna", "charm", "volga"].includes(
     props.greek,
   )
     ? props.greek
@@ -156,7 +156,7 @@ const render = () => {
   const xAccessor = (d) => Number(d.m);
   const yAccessor = (d) => normalizeGreekValue(greekKey, d[greekKey]);
 
-  const X_DOMAIN = [0.5, 1.5];
+  const X_DOMAIN = [0.6, 1.8];
   const pointsInDomain = points.filter((point) => {
     const m = xAccessor(point);
     return Number.isFinite(m) && m >= X_DOMAIN[0] && m <= X_DOMAIN[1];
@@ -195,22 +195,8 @@ const render = () => {
   mainGroup
     .append("g")
     .attr("transform", `translate(${margin.left},0)`)
-    .call(d3.axisLeft(y).ticks(6).tickSize(0).tickPadding(16))
+    .call(d3.axisLeft(y).ticks(4).tickSize(0).tickPadding(16))
     .call(axisStyle);
-
-  const yTicks = y.ticks(6);
-  mainGroup
-    .append("g")
-    .selectAll("line")
-    .data(yTicks)
-    .join("line")
-    .attr("x1", margin.left)
-    .attr("x2", chartRight)
-    .attr("y1", (tick) => y(tick))
-    .attr("y2", (tick) => y(tick))
-    .attr("stroke", "#1f2533")
-    .attr("stroke-width", 1)
-    .attr("opacity", 0.7);
 
   const xLabel = "S / K";
   const yLabel = greekKey === "gamma" ? `${greekKey} [x10^4]` : greekKey;
@@ -244,6 +230,14 @@ const render = () => {
         key,
         label: sample.leg_label || sample.instrument_name || key,
         color: sample.leg_color || "#9ca3af",
+        dash: sample.line_dash || null,
+        opacity: Number.isFinite(Number(sample.line_opacity))
+          ? Number(sample.line_opacity)
+          : null,
+        lineWidth: Number.isFinite(Number(sample.line_width))
+          ? Number(sample.line_width)
+          : null,
+        legendHidden: Boolean(sample.legend_hidden),
         isTotal: Boolean(sample.is_total),
         rows: rows.slice().sort((a, b) => xAccessor(a) - xAccessor(b)),
       };
@@ -255,7 +249,7 @@ const render = () => {
     .defined((point) => Number.isFinite(xAccessor(point)) && Number.isFinite(yAccessor(point)))
     .x((point) => x(xAccessor(point)))
     .y((point) => y(yAccessor(point)))
-    .curve(d3.curveMonotoneX);
+    .curve(d3.curveCatmullRom.alpha(0.35));
 
   for (const series of seriesList) {
     mainGroup
@@ -263,10 +257,11 @@ const render = () => {
       .datum(series.rows)
       .attr("fill", "none")
       .attr("stroke", series.color)
-      .attr("stroke-width", series.isTotal ? 3 : 1.6)
+      .attr("stroke-width", series.lineWidth ?? (series.isTotal ? 3 : 1.6))
       .attr("stroke-linecap", "round")
       .attr("stroke-linejoin", "round")
-      .attr("opacity", series.isTotal ? 1 : 0.9)
+      .attr("opacity", series.opacity ?? (series.isTotal ? 1 : 0.9))
+      .attr("stroke-dasharray", series.dash || null)
       .attr("d", line);
   }
 
@@ -289,37 +284,46 @@ const render = () => {
     }
   }
 
-  const legendX = chartRight + 20;
-  const legendY = margin.top;
+  const legendX = chartRight - 150;
+  const legendY = margin.top + 8;
   const legend = svg
     .append("g")
     .attr("transform", `translate(${legendX},${legendY})`);
 
-  applyTextStyle(legend.append("text").attr("x", 0).attr("y", 0).text("Series"), "legendTitle");
+  applyTextStyle(
+    legend
+      .append("text")
+      .attr("x", 0)
+      .attr("y", 0)
+      .text("Series"),
+    "legendTitle",
+  );
 
   const truncate = (text, max) =>
     typeof text === "string" && text.length > max
       ? `${text.slice(0, Math.max(0, max - 1))}\u2026`
       : text;
 
-  seriesList.forEach((series, index) => {
+  seriesList.filter((series) => !series.legendHidden).forEach((series, index) => {
     const yOffset = 18 + index * 18;
 
     legend
       .append("line")
-      .attr("x1", 0)
-      .attr("x2", 16)
+      .attr("x1", -16)
+      .attr("x2", 0)
       .attr("y1", yOffset)
       .attr("y2", yOffset)
       .attr("stroke", series.color)
       .attr("stroke-width", series.isTotal ? 3 : 2)
+      .attr("stroke-dasharray", series.dash || null)
       .attr("stroke-linecap", "round");
 
     applyTextStyle(
       legend
         .append("text")
-        .attr("x", 20)
+        .attr("x", 4)
         .attr("y", yOffset + 4)
+        .attr("text-anchor", "start")
         .text(truncate(series.label, 32)),
       "legendLabel",
     );

@@ -1,6 +1,5 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
-import * as d3 from "d3";
 import PositionBuilder from "../../simulator/src/components/PositionBuilder.vue";
 import Greeks from "./components/Greeks.vue";
 import {
@@ -17,19 +16,14 @@ const RESOLUTION_CONFIG = {
   3600: { label: "1h", resolution: "1h", interval_seconds: 60 * 60 },
   86400: { label: "1d", resolution: "1d", interval_seconds: 24 * 60 * 60 },
 };
-const RESOLUTION_OPTIONS = Object.entries(RESOLUTION_CONFIG).map(
-  ([key, cfg]) => ({
-    key,
-    label: cfg.label,
-  }),
-);
-
 const GREEK_OPTIONS = [
   { value: "delta", symbol: "\u03b4" },
   { value: "gamma", symbol: "\u0393" },
   { value: "theta", symbol: "\u0398" },
   { value: "vega", symbol: "\u03c3" },
-  { value: "vanna", symbol: "v" },
+  { value: "vanna", symbol: "va" },
+  { value: "charm", symbol: "ch" },
+  { value: "volga", symbol: "vo" },
 ];
 
 const LEG_COLOR_PALETTE = [
@@ -51,13 +45,18 @@ const MAX_POINTS_PER_FETCH = 1000;
 const MARK_CONCURRENCY = 10;
 const LOAD_DEBOUNCE_MS = 140;
 const SCENARIO_POINT_COUNT = 91;
-const SCENARIO_M_MIN = 0.5;
-const SCENARIO_M_MAX = 1.5;
+const SCENARIO_M_MIN = 0.6;
+const SCENARIO_M_MAX = 1.8;
+const CHARM_FD_STEP_SECONDS = 24 * 60 * 60;
+const LEG_VOL_MULTIPLIERS = [0.6, 0.7, 0.8, 0.9, 1.1, 1.2, 1.3, 1.4];
+const LEG_VOL_LINE_OPACITY = 0.28;
+const TOTAL_VOL_LINE_OPACITY = 0.28;
 
 const ui = reactive({
   resolutionKey: "900",
   greek: "delta",
   maxPoints: DEFAULT_MAX_POINTS_PER_FETCH,
+  timeProgress: 0,
   loading: false,
   error: "",
 });
@@ -72,10 +71,6 @@ const simulationRows = ref([]);
 const simulationAnchorTs = ref(null);
 const simulationAnchorSpot = ref(null);
 const chartRef = ref(null);
-const resolutionMenuRef = ref(null);
-const settingsMenuRef = ref(null);
-const resolutionMenuOpen = ref(false);
-const settingsOpen = ref(false);
 
 const isBootstrapping = ref(true);
 let loadRequestId = 0;
@@ -150,6 +145,38 @@ const normalizeIv = (value) => {
   return iv > 3 ? iv / 100 : iv;
 };
 
+const computeScenarioGreeks = (spot, strike, tteSeconds, iv, optionType) => {
+  const base = calcGreeks(spot, strike, tteSeconds, iv, optionType);
+  const volga = Number.isFinite(base?.vomma) ? Number(base.vomma) : null;
+
+  let charm = null;
+  const tauSeconds = Number(tteSeconds);
+  if (
+    Number.isFinite(base?.delta) &&
+    Number.isFinite(tauSeconds) &&
+    tauSeconds > 0
+  ) {
+    const shiftedTte = Math.max(60, tauSeconds - CHARM_FD_STEP_SECONDS);
+    if (shiftedTte < tauSeconds) {
+      const shifted = calcGreeks(spot, strike, shiftedTte, iv, optionType);
+      if (Number.isFinite(shifted?.delta)) {
+        const daysElapsed = (tauSeconds - shiftedTte) / (24 * 60 * 60);
+        if (daysElapsed > 0) {
+          charm = (Number(shifted.delta) - Number(base.delta)) / daysElapsed;
+        }
+      }
+    } else {
+      charm = 0;
+    }
+  }
+
+  return {
+    ...base,
+    charm,
+    volga,
+  };
+};
+
 const extractMarkIv = (row) =>
   normalizeIv(
     row?.iv_close ?? row?.iv ?? row?.mark_iv ?? row?.implied_volatility,
@@ -175,7 +202,8 @@ const sortRowsByTs = (rows) =>
         normalizeTimestampSeconds(a?.ts) - normalizeTimestampSeconds(b?.ts),
     );
 
-const findLastRow = (rows) => (Array.isArray(rows) && rows.length ? rows[rows.length - 1] : null);
+const findLastRow = (rows) =>
+  Array.isArray(rows) && rows.length ? rows[rows.length - 1] : null;
 
 const findLastAtOrBefore = (rows, anchorTs) => {
   const normalizedAnchor = normalizeTimestampSeconds(anchorTs);
@@ -344,17 +372,6 @@ const maxPointsPerFetch = computed(() => {
   return Math.max(MIN_POINTS_PER_FETCH, Math.min(MAX_POINTS_PER_FETCH, points));
 });
 
-const activeResolutionConfig = computed(
-  () => RESOLUTION_CONFIG[ui.resolutionKey] || null,
-);
-
-const activeResolutionLabel = computed(() => {
-  const label = activeResolutionConfig.value?.label;
-  if (label) return label;
-  const seconds = Number(ui.resolutionKey);
-  return Number.isFinite(seconds) && seconds > 0 ? `${seconds}s` : "n/a";
-});
-
 const getTimestampRange = () => {
   const now = Math.floor(Date.now() / 1000);
   const resolutionConfig = RESOLUTION_CONFIG[ui.resolutionKey];
@@ -402,7 +419,9 @@ const seedDefaultLegs = () => {
 
   const now = Math.floor(Date.now() / 1000);
   const target = now + 30 * 24 * 60 * 60;
-  const upcoming = options.filter((instrument) => instrument.expiration_ts > now);
+  const upcoming = options.filter(
+    (instrument) => instrument.expiration_ts > now,
+  );
   const source = upcoming.length ? upcoming : options;
   const expiries = Array.from(
     new Set(source.map((instrument) => instrument.expiration_ts)),
@@ -521,8 +540,7 @@ const rebuildBuilderSnapshots = (anchorTs = null) => {
 const buildScenarioMGrid = () => {
   const points = [];
   for (let i = 0; i < SCENARIO_POINT_COUNT; i += 1) {
-    const t =
-      SCENARIO_POINT_COUNT === 1 ? 0.5 : i / (SCENARIO_POINT_COUNT - 1);
+    const t = SCENARIO_POINT_COUNT === 1 ? 0.5 : i / (SCENARIO_POINT_COUNT - 1);
     const scenarioM = SCENARIO_M_MIN + (SCENARIO_M_MAX - SCENARIO_M_MIN) * t;
     if (!Number.isFinite(scenarioM) || scenarioM <= 0) continue;
     points.push({
@@ -565,16 +583,20 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
     anchorTs = Math.min(anchorTs, latestMarkTs);
   }
 
-  const anchorIndexRow = findLastAtOrBefore(sortedIndexRows, anchorTs) || latestIndexRow;
+  const anchorIndexRow =
+    findLastAtOrBefore(sortedIndexRows, anchorTs) || latestIndexRow;
   const anchorSpotRaw = extractIndexClose(anchorIndexRow);
   const anchorSpot =
-    Number.isFinite(anchorSpotRaw) && anchorSpotRaw > 0 ? anchorSpotRaw : latestSpot;
+    Number.isFinite(anchorSpotRaw) && anchorSpotRaw > 0
+      ? anchorSpotRaw
+      : latestSpot;
   const scenarios = buildScenarioMGrid().map((scenario) => ({
     ...scenario,
     scenarioSpot: scenario.scenarioM * anchorSpot,
-    scenarioShiftPct: Number.isFinite(anchorSpot) && anchorSpot > 0
-      ? (scenario.scenarioM - 1) * 100
-      : null,
+    scenarioShiftPct:
+      Number.isFinite(anchorSpot) && anchorSpot > 0
+        ? (scenario.scenarioM - 1) * 100
+        : null,
   }));
 
   const absQtySum = selected.reduce(
@@ -582,7 +604,8 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
     0,
   );
   const weightedStrikeSum = selected.reduce(
-    (sum, leg) => sum + Math.abs(Number(leg.signedQty) || 0) * Number(leg.strike),
+    (sum, leg) =>
+      sum + Math.abs(Number(leg.signedQty) || 0) * Number(leg.strike),
     0,
   );
   const comboReferenceStrike =
@@ -597,7 +620,24 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
     theta: 0,
     vega: 0,
     vanna: 0,
+    charm: 0,
+    volga: 0,
   }));
+  const totalVolOverlaysByMultiplier = new Map(
+    LEG_VOL_MULTIPLIERS.map((multiplier) => [
+      multiplier,
+      scenarios.map((scenario) => ({
+        ...scenario,
+        delta: 0,
+        gamma: 0,
+        theta: 0,
+        vega: 0,
+        vanna: 0,
+        charm: 0,
+        volga: 0,
+      })),
+    ]),
+  );
 
   const rows = [];
   for (const leg of selected) {
@@ -605,7 +645,9 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
     const anchorMarkRow =
       findLastAtOrBefore(markRows, anchorTs) || findLastRow(markRows);
     if (!anchorMarkRow) {
-      throw new Error(`No mark snapshot for ${leg.instrumentName} at anchor time.`);
+      throw new Error(
+        `No mark snapshot for ${leg.instrumentName} at anchor time.`,
+      );
     }
 
     let iv = extractMarkIv(anchorMarkRow);
@@ -623,7 +665,12 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
 
     const markTs = extractMarkTs(anchorMarkRow);
     const referenceTs = Number.isFinite(markTs) ? markTs : anchorTs;
-    const tteSeconds = Math.max(60, Number(leg.expirationTs) - referenceTs);
+    const fullTteSeconds = Math.max(60, Number(leg.expirationTs) - referenceTs);
+    const fastForwardRatio = Math.max(
+      0,
+      Math.min(1, Number(ui.timeProgress) / 100),
+    );
+    const tteSeconds = Math.max(60, fullTteSeconds * (1 - fastForwardRatio));
 
     for (let i = 0; i < scenarios.length; i += 1) {
       const scenario = scenarios[i];
@@ -633,7 +680,7 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
         Number.isFinite(anchorSpot) && anchorSpot > 0
           ? (scenarioSpot / anchorSpot - 1) * 100
           : null;
-      const greeks = calcGreeks(
+      const greeks = computeScenarioGreeks(
         scenarioSpot,
         leg.strike,
         tteSeconds,
@@ -647,11 +694,14 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
       const signedTheta = Number(leg.signedQty) * Number(greeks.theta);
       const signedVega = Number(leg.signedQty) * Number(greeks.vega);
       const signedVanna = Number(leg.signedQty) * Number(greeks.vanna);
+      const signedCharm = Number(leg.signedQty) * Number(greeks.charm);
+      const signedVolga = Number(leg.signedQty) * Number(greeks.volga);
 
       rows.push({
         leg_id: leg.legId,
         leg_label: leg.legLabel,
         leg_color: leg.color,
+        line_opacity: 0.9,
         is_total: false,
         instrument_name: leg.instrumentName,
         option_type: leg.optionType,
@@ -671,20 +721,83 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
         theta: signedTheta,
         vega: signedVega,
         vanna: signedVanna,
+        charm: signedCharm,
+        volga: signedVolga,
       });
-
       totals[i].delta += Number.isFinite(signedDelta) ? signedDelta : 0;
       totals[i].gamma += Number.isFinite(signedGamma) ? signedGamma : 0;
       totals[i].theta += Number.isFinite(signedTheta) ? signedTheta : 0;
       totals[i].vega += Number.isFinite(signedVega) ? signedVega : 0;
       totals[i].vanna += Number.isFinite(signedVanna) ? signedVanna : 0;
+      totals[i].charm += Number.isFinite(signedCharm) ? signedCharm : 0;
+      totals[i].volga += Number.isFinite(signedVolga) ? signedVolga : 0;
+
+      for (const ivMultiplier of LEG_VOL_MULTIPLIERS) {
+        const ivScenario = Math.max(1e-6, Number(iv) * ivMultiplier);
+        const greeksAtScenarioIv = computeScenarioGreeks(
+          scenarioSpot,
+          leg.strike,
+          tteSeconds,
+          ivScenario,
+          leg.optionType,
+        );
+        if (!Number.isFinite(greeksAtScenarioIv?.delta)) continue;
+
+        rows.push({
+          leg_id: `${leg.legId}-iv-${ivMultiplier.toFixed(2)}`,
+          leg_label: leg.legLabel,
+          leg_color: leg.color,
+          line_opacity: LEG_VOL_LINE_OPACITY,
+          line_width: 1.2,
+          legend_hidden: true,
+          is_total: false,
+          instrument_name: leg.instrumentName,
+          option_type: leg.optionType,
+          signed_qty: leg.signedQty,
+          strike: leg.strike,
+          expiry_date: leg.expiryLabel,
+          tte: tteSeconds,
+          iv_close: ivScenario,
+          ts: referenceTs,
+          anchor_ts: anchorTs,
+          anchor_spot: anchorSpot,
+          index_price_close: scenarioSpot,
+          scenario_shift_pct: scenarioShiftPct,
+          m: scenario.scenarioM,
+          delta: Number(leg.signedQty) * Number(greeksAtScenarioIv.delta),
+          gamma: Number(leg.signedQty) * Number(greeksAtScenarioIv.gamma),
+          theta: Number(leg.signedQty) * Number(greeksAtScenarioIv.theta),
+          vega: Number(leg.signedQty) * Number(greeksAtScenarioIv.vega),
+          vanna: Number(leg.signedQty) * Number(greeksAtScenarioIv.vanna),
+          charm: Number(leg.signedQty) * Number(greeksAtScenarioIv.charm),
+          volga: Number(leg.signedQty) * Number(greeksAtScenarioIv.volga),
+        });
+
+        const totalOverlay = totalVolOverlaysByMultiplier.get(ivMultiplier);
+        if (totalOverlay) {
+          totalOverlay[i].delta +=
+            Number(leg.signedQty) * Number(greeksAtScenarioIv.delta);
+          totalOverlay[i].gamma +=
+            Number(leg.signedQty) * Number(greeksAtScenarioIv.gamma);
+          totalOverlay[i].theta +=
+            Number(leg.signedQty) * Number(greeksAtScenarioIv.theta);
+          totalOverlay[i].vega +=
+            Number(leg.signedQty) * Number(greeksAtScenarioIv.vega);
+          totalOverlay[i].vanna +=
+            Number(leg.signedQty) * Number(greeksAtScenarioIv.vanna);
+          totalOverlay[i].charm +=
+            Number(leg.signedQty) * Number(greeksAtScenarioIv.charm);
+          totalOverlay[i].volga +=
+            Number(leg.signedQty) * Number(greeksAtScenarioIv.volga);
+        }
+      }
     }
   }
 
   for (const total of totals) {
     rows.push({
       leg_id: "combo-total",
-      leg_label: "Net combo",
+      leg_label: "Combo",
       leg_color: "#f8fafc",
       is_total: true,
       instrument_name: "COMBO",
@@ -705,7 +818,43 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
       theta: total.theta,
       vega: total.vega,
       vanna: total.vanna,
+      charm: total.charm,
+      volga: total.volga,
     });
+  }
+  for (const ivMultiplier of LEG_VOL_MULTIPLIERS) {
+    const totalOverlay = totalVolOverlaysByMultiplier.get(ivMultiplier) || [];
+    for (const total of totalOverlay) {
+      rows.push({
+        leg_id: `combo-total-iv-${ivMultiplier.toFixed(2)}`,
+        leg_label: "Combo",
+        leg_color: "#f8fafc",
+        line_opacity: TOTAL_VOL_LINE_OPACITY,
+        line_width: 1.2,
+        legend_hidden: true,
+        is_total: true,
+        instrument_name: "COMBO",
+        option_type: "mix",
+        signed_qty: 1,
+        strike: comboReferenceStrike,
+        expiry_date: "Mixed",
+        tte: null,
+        iv_close: null,
+        ts: anchorTs,
+        anchor_ts: anchorTs,
+        anchor_spot: anchorSpot,
+        index_price_close: total.scenarioSpot,
+        scenario_shift_pct: total.scenarioShiftPct,
+        m: total.scenarioM,
+        delta: total.delta,
+        gamma: total.gamma,
+        theta: total.theta,
+        vega: total.vega,
+        vanna: total.vanna,
+        charm: total.charm,
+        volga: total.volga,
+      });
+    }
   }
 
   return {
@@ -723,6 +872,35 @@ const resetSeriesState = () => {
   simulationAnchorSpot.value = null;
   tickerByInstrument.value = {};
   indexByName.value = {};
+};
+
+const recomputeSimulationFromCache = () => {
+  const selected = selectedLegInstruments.value;
+  if (!selected.length || !indexHistoryRows.value.length) {
+    simulationRows.value = [];
+    simulationAnchorTs.value = null;
+    simulationAnchorSpot.value = null;
+    return;
+  }
+  try {
+    const { rows, anchorTs, anchorSpot } = buildSimulationRows(
+      selected,
+      indexHistoryRows.value,
+      markHistoryByInstrument.value,
+    );
+    simulationRows.value = rows;
+    simulationAnchorTs.value = anchorTs;
+    simulationAnchorSpot.value = anchorSpot;
+    rebuildBuilderSnapshots(anchorTs);
+    if (!rows.length) {
+      ui.error = "No simulation data available for the selected legs.";
+    }
+  } catch (error) {
+    ui.error = error instanceof Error ? error.message : String(error);
+    simulationRows.value = [];
+    simulationAnchorTs.value = null;
+    simulationAnchorSpot.value = null;
+  }
 };
 
 const loadSeries = async () => {
@@ -780,22 +958,7 @@ const loadSeries = async () => {
 
     indexHistoryRows.value = sortedIndexRows;
     markHistoryByInstrument.value = sortedMarkByInstrument;
-
-    const { rows, anchorTs, anchorSpot } = buildSimulationRows(
-      selected,
-      sortedIndexRows,
-      sortedMarkByInstrument,
-    );
-
-    simulationRows.value = rows;
-    simulationAnchorTs.value = anchorTs;
-    simulationAnchorSpot.value = anchorSpot;
-
-    rebuildBuilderSnapshots(anchorTs);
-
-    if (!rows.length) {
-      ui.error = "No simulation data available for the selected legs.";
-    }
+    recomputeSimulationFromCache();
   } catch (error) {
     if (requestId !== loadRequestId) return;
     ui.error = error instanceof Error ? error.message : String(error);
@@ -815,29 +978,15 @@ const scheduleLoad = () => {
   }, LOAD_DEBOUNCE_MS);
 };
 
-const activeGreekSymbol = computed(
-  () =>
-    GREEK_OPTIONS.find((option) => option.value === ui.greek)?.symbol ||
-    GREEK_OPTIONS[0].symbol,
-);
-
-const headerTitle = computed(
-  () => `Combo options ${activeGreekSymbol.value} vs moneyness`,
-);
-
-const chartSubtitle = computed(() => {
-  const anchorTs = Number(simulationAnchorTs.value);
-  const anchorSpot = Number(simulationAnchorSpot.value);
-  if (!Number.isFinite(anchorTs) || !Number.isFinite(anchorSpot)) return "";
-  const formatDate = d3.utcFormat("%d %b %y %H:%M");
-  const formatSpot = d3.format(",.0f");
-  return `Anchor ${formatDate(new Date(anchorTs * 1000))} UTC | Spot ${formatSpot(anchorSpot)} | m range ${SCENARIO_M_MIN.toFixed(2)}-${SCENARIO_M_MAX.toFixed(2)}`;
-});
-
-const metaSummary = computed(() => {
-  const legCount = selectedLegInstruments.value.length;
-  if (!legCount) return "";
-  return `${legCount} legs | ${SCENARIO_POINT_COUNT} points/leg | ${activeResolutionLabel.value} snapshots`;
+const headerTitle = "Strategy Builder Greeks";
+const timeSliderStyle = computed(() => {
+  const progress = Math.max(0, Math.min(1, Number(ui.timeProgress) / 100));
+  const tone = Math.round(244 - progress * 184);
+  const borderAlpha = Math.max(0.18, 0.68 - progress * 0.5).toFixed(3);
+  return {
+    "--thumb-rgb": `${tone}, ${tone}, ${Math.min(255, tone + 6)}`,
+    "--thumb-border-alpha": borderAlpha,
+  };
 });
 
 const chartLoading = computed(
@@ -849,37 +998,6 @@ const handleSavePng = () => {
   chartRef.value.exportPng({ filename: `combo-greeks-${ui.greek}.png` });
 };
 
-const toggleResolutionMenu = () => {
-  resolutionMenuOpen.value = !resolutionMenuOpen.value;
-  if (resolutionMenuOpen.value) settingsOpen.value = false;
-};
-
-const setResolution = (key) => {
-  ui.resolutionKey = String(key);
-  resolutionMenuOpen.value = false;
-};
-
-const toggleSettings = () => {
-  settingsOpen.value = !settingsOpen.value;
-  if (settingsOpen.value) resolutionMenuOpen.value = false;
-};
-
-const handleDocumentPointerDown = (event) => {
-  const target = event?.target;
-  if (!(target instanceof Node)) return;
-
-  if (
-    resolutionMenuOpen.value &&
-    !resolutionMenuRef.value?.contains(target)
-  ) {
-    resolutionMenuOpen.value = false;
-  }
-
-  if (settingsOpen.value && !settingsMenuRef.value?.contains(target)) {
-    settingsOpen.value = false;
-  }
-};
-
 watch(
   () => [ui.resolutionKey, maxPointsPerFetch.value, positionLegs.value],
   () => {
@@ -887,6 +1005,15 @@ watch(
     scheduleLoad();
   },
   { deep: true },
+);
+
+watch(
+  () => ui.timeProgress,
+  () => {
+    if (isBootstrapping.value) return;
+    if (ui.loading) return;
+    recomputeSimulationFromCache();
+  },
 );
 
 watch(
@@ -945,7 +1072,6 @@ watch(
 );
 
 onMounted(async () => {
-  document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
     const allInstruments = await fetchAllInstruments();
     instruments.value = (allInstruments || []).filter(
@@ -965,7 +1091,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (loadTimer) clearTimeout(loadTimer);
-  document.removeEventListener("pointerdown", handleDocumentPointerDown);
 });
 </script>
 
@@ -974,124 +1099,79 @@ onUnmounted(() => {
     <header class="header">
       <div class="titleRow">
         <h1>{{ headerTitle }}</h1>
-        <div v-if="chartSubtitle || metaSummary" class="titleMetaGroup">
-          <div v-if="chartSubtitle" class="meta">{{ chartSubtitle }}</div>
-          <div v-if="metaSummary" class="meta">{{ metaSummary }}</div>
-        </div>
-      </div>
-
-      <div class="controls">
-        <div class="resolutionControl" ref="resolutionMenuRef">
-          <button
-            class="resolutionButton"
-            type="button"
-            aria-haspopup="true"
-            :aria-expanded="resolutionMenuOpen ? 'true' : 'false'"
-            @click="toggleResolutionMenu"
-          >
-            <span class="resolutionButtonLabel">Resolution</span>
-            <span class="resolutionButtonValue">{{ activeResolutionLabel }}</span>
-          </button>
-          <div v-if="resolutionMenuOpen" class="resolutionDropdown">
-            <button
-              v-for="option in RESOLUTION_OPTIONS"
-              :key="option.key"
-              type="button"
-              class="resolutionOption"
-              :class="{
-                resolutionOptionActive: String(ui.resolutionKey) === String(option.key),
-              }"
-              @click="setResolution(option.key)"
-            >
-              {{ option.label }}
-            </button>
-          </div>
-        </div>
-
-        <div class="greekSymbolGrid" role="group" aria-label="Greek">
-          <button
-            v-for="option in GREEK_OPTIONS"
-            :key="option.value"
-            type="button"
-            class="greekSymbolButton"
-            :class="{ active: ui.greek === option.value }"
-            @click="ui.greek = option.value"
-          >
-            {{ option.symbol }}
-          </button>
-        </div>
-
-        <button
-          class="saveButton"
-          type="button"
-          @click="handleSavePng"
-          :disabled="ui.loading || !simulationRows.length"
-        >
-          Save PNG
-        </button>
       </div>
 
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
-    <div class="builderRow">
-      <div class="builderMain">
-        <PositionBuilder
-          :legs="positionLegs"
-          :spot="spot"
-          :vol="DEFAULT_VOL"
-          :T="DEFAULT_T"
-          :instruments="instruments"
-          :ticker-by-instrument="tickerByInstrument"
-          :index-name="activeIndexName"
-          :index-price="indexDisplay?.price ?? null"
-          :index-fetched-at="indexDisplay?.fetchedAt ?? null"
-          @update:legs="positionLegs = $event"
-        />
-      </div>
-    </div>
-
-    <div class="chartShell">
-      <div
-        class="settingsWrap settingsWrap--chart"
-        ref="settingsMenuRef"
-      >
-        <button
-          class="settingsButton settingsButton--icon"
-          type="button"
-          title="Settings"
-          aria-label="Settings"
-          aria-haspopup="true"
-          :aria-expanded="settingsOpen ? 'true' : 'false'"
-          @click="toggleSettings"
-        ></button>
-        <div v-if="settingsOpen" class="settingsDropdown">
-          <div class="settingsHint">
-            Choose the number of data points to load: {{ maxPointsPerFetch }}
-          </div>
-          <input
-            v-model.number="ui.maxPoints"
-            class="settingsSlider"
-            type="range"
-            :min="MIN_POINTS_PER_FETCH"
-            :max="MAX_POINTS_PER_FETCH"
-            step="10"
+    <main class="workspaceShell">
+      <div class="builderRow">
+        <div class="builderMain">
+          <PositionBuilder
+            :legs="positionLegs"
+            :spot="spot"
+            :vol="DEFAULT_VOL"
+            :T="DEFAULT_T"
+            :show-tte="true"
+            :instruments="instruments"
+            :ticker-by-instrument="tickerByInstrument"
+            :index-name="activeIndexName"
+            :index-price="indexDisplay?.price ?? null"
+            :index-fetched-at="indexDisplay?.fetchedAt ?? null"
+            @update:legs="positionLegs = $event"
           />
-          <div class="settingsRange">
-            <span>{{ MIN_POINTS_PER_FETCH }}</span>
-            <span>{{ MAX_POINTS_PER_FETCH }}</span>
-          </div>
         </div>
       </div>
-      <Greeks
-        ref="chartRef"
-        :data="simulationRows"
-        title=""
-        subtitle=""
-        :loading="chartLoading"
-        :greek="ui.greek"
-      />
-    </div>
+      <div class="chartShell">
+        <div class="chartControlRow">
+          <div class="greekBarRow">
+            <div class="greekSymbolGrid" role="group" aria-label="Greek">
+              <button
+                v-for="option in GREEK_OPTIONS"
+                :key="option.value"
+                type="button"
+                class="greekSymbolButton"
+                :class="{ active: ui.greek === option.value }"
+                @click="ui.greek = option.value"
+              >
+                {{ option.symbol }}
+              </button>
+            </div>
+          </div>
+          <div class="timeSliderBar">
+            <span class="timeSliderLabel">T</span>
+            <input
+              v-model.number="ui.timeProgress"
+              class="timeSliderInput"
+              :style="timeSliderStyle"
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              aria-label="Fast forward time to expiry"
+            />
+          </div>
+          <div class="savePngRow">
+            <button
+              class="saveButton"
+              type="button"
+              @click="handleSavePng"
+              :disabled="ui.loading || !simulationRows.length"
+            >
+              Save PNG
+            </button>
+          </div>
+        </div>
+        <Greeks
+          ref="chartRef"
+          :data="simulationRows"
+          title=""
+          subtitle=""
+          :loading="chartLoading"
+          :greek="ui.greek"
+        />
+      </div>
+    </main>
   </div>
 </template>
 
@@ -1113,6 +1193,17 @@ onUnmounted(() => {
   gap: 12px;
 }
 
+.workspaceShell {
+  --chart-left-inset: 1%;
+  --chart-right-inset: 11%;
+  width: 100%;
+  max-width: 1160px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .titleRow {
   display: flex;
   justify-content: space-between;
@@ -1122,103 +1213,10 @@ onUnmounted(() => {
 
 h1 {
   margin: 0;
-  font-size: 24px;
-  font-weight: 600;
-}
-
-.titleMetaGroup {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-}
-
-.meta {
-  color: #a5adbe;
-  font-size: 12px;
-}
-
-.controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: flex-end;
-}
-
-.resolutionControl {
-  position: relative;
-}
-
-.resolutionButton {
-  min-width: 136px;
-  height: 40px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
-  box-shadow: none;
-  color: #e4e8f4;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 0 22px;
-  cursor: pointer;
-}
-
-.resolutionButton:hover {
-  background: color-mix(in oklab, var(--panel), #232b42 30%);
-}
-
-.resolutionButtonLabel {
+  width: 100%;
+  text-align: center;
   font-size: 20px;
-  line-height: 1;
-  color: var(--muted);
-  letter-spacing: 0.01em;
-}
-
-.resolutionButtonValue {
-  font-size: 20px;
-  line-height: 1;
-  color: var(--text);
-  letter-spacing: 0.01em;
-}
-
-.resolutionDropdown {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  min-width: 100%;
-  border: 0.5px solid rgba(255, 255, 255, 0.9);
-  background: #080a0f;
-  border-radius: 10px;
-  padding: 8px;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
-  z-index: 40;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.resolutionOption {
-  border: 1px solid #202a3d;
-  background: #0f131b;
-  color: #a9abb6;
-  height: 34px;
-  border-radius: 8px;
-  font-size: 13px;
   font-weight: 600;
-  cursor: pointer;
-}
-
-.resolutionOption:hover {
-  background: #1a212d;
-  color: #f2f4ff;
-}
-
-.resolutionOptionActive {
-  border-color: #374e79;
-  color: #f2f4ff;
-  background: #1a263a;
 }
 
 .greekSymbolGrid {
@@ -1228,35 +1226,51 @@ h1 {
 }
 
 .greekSymbolButton {
-  border: 1px solid var(--border);
-  background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
-  color: var(--muted);
-  font-size: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0f1318;
+  color: #f8fafc;
+  font-size: 10px;
   line-height: 1;
   width: 44px;
   height: 40px;
-  border-radius: 10px;
+  border-radius: 12px;
   cursor: pointer;
 }
 
 .greekSymbolButton.active {
-  color: var(--text);
+  color: #f8fafc;
   font-weight: 600;
 }
 
 .saveButton {
   height: 40px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0f1318;
+  color: #f8fafc;
+  font-size: 10px;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.saveButton:hover {
+  background: #141b24;
 }
 
 .builderRow {
   display: flex;
   align-items: flex-start;
   gap: 16px;
+  width: 100%;
+  padding-left: var(--chart-left-inset);
+  padding-right: var(--chart-right-inset);
+  box-sizing: border-box;
 }
 
 .builderMain {
   flex: 1 1 auto;
   min-width: 0;
+  width: 100%;
 }
 
 .builderMain :deep(.legs-section) {
@@ -1298,130 +1312,108 @@ h1 {
   font-size: 10px;
 }
 
+.builderMain :deep(.side-pill--buy) {
+  color: #22d3ee;
+}
+
 .chartShell {
-  position: relative;
   margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
 }
 
-.settingsWrap {
-  position: relative;
-}
-
-.settingsButton {
-  border: none;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(226, 232, 240, 0.7);
-  cursor: pointer;
-  box-shadow: none;
-}
-
-.settingsButton:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: #fff;
-}
-
-.settingsButton--icon {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  display: inline-flex;
+.chartControlRow {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: center;
-  font-size: 14px;
+  column-gap: 16px;
+  width: 100%;
+  padding-left: var(--chart-left-inset);
+  padding-right: var(--chart-right-inset);
+  box-sizing: border-box;
+}
+
+.timeSliderBar {
+  grid-column: 2;
+  width: 100%;
+  max-width: 520px;
+  justify-self: center;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0f1318;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.timeSliderLabel {
+  color: #d4d7e2;
+  font-size: 11px;
+  font-weight: 600;
   line-height: 1;
+  flex: 0 0 auto;
 }
 
-.settingsButton--icon::before {
-  content: "";
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #e8ebf2;
-}
-
-.settingsDropdown {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  width: 240px;
-  border: 0.5px solid rgba(255, 255, 255, 0.9);
-  background: #080a0f;
-  border-radius: 6px;
-  padding: 10px 12px 12px;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
-  z-index: 30;
-  color: #a9abb6;
-  font-size: 10px;
-  font-weight: 600;
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-}
-
-.settingsWrap--chart {
-  position: absolute;
-  top: 5px;
-  right: 40px;
-  z-index: 35;
-}
-
-.settingsHint {
-  color: #a9abb6;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0;
-  margin-bottom: 6px;
-}
-
-.settingsSlider {
+.timeSliderInput {
   -webkit-appearance: none;
   appearance: none;
-  width: 100%;
-  height: 14px;
+  flex: 1 1 auto;
+  width: auto;
+  height: 20px;
+  margin: 0;
   background: transparent;
   cursor: pointer;
 }
 
-.settingsSlider:focus {
+.timeSliderInput:focus {
   outline: none;
 }
 
-.settingsSlider::-webkit-slider-runnable-track {
-  height: 2px;
-  background: rgba(245, 245, 245, 0.45);
+.timeSliderInput::-webkit-slider-runnable-track {
+  height: 8px;
   border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
 }
 
-.settingsSlider::-webkit-slider-thumb {
+.timeSliderInput::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 8px;
   height: 8px;
-  margin-top: -3px;
+  margin-top: 0;
   border-radius: 50%;
-  border: none;
-  background: #f5f5f7;
+  border: 1px solid rgba(210, 220, 238, var(--thumb-border-alpha, 0.68));
+  background: rgb(var(--thumb-rgb, 248, 248, 252));
+  box-shadow: none;
 }
 
-.settingsSlider::-moz-range-track {
-  height: 2px;
-  background: rgba(245, 245, 245, 0.45);
+.timeSliderInput::-moz-range-track {
+  height: 8px;
   border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
 }
 
-.settingsSlider::-moz-range-thumb {
+.timeSliderInput::-moz-range-thumb {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  border: none;
-  background: #f5f5f7;
+  border: 1px solid rgba(210, 220, 238, var(--thumb-border-alpha, 0.68));
+  background: rgb(var(--thumb-rgb, 248, 248, 252));
+  box-shadow: none;
 }
 
-.settingsRange {
-  margin-top: 4px;
-  display: flex;
-  justify-content: space-between;
-  color: #a9abb6;
-  font-size: 10px;
-  font-weight: 600;
+.greekBarRow {
+  grid-column: 1;
+  justify-self: start;
+}
+
+.savePngRow {
+  grid-column: 3;
+  justify-self: end;
 }
 
 .error {
@@ -1440,28 +1432,27 @@ h1 {
     align-items: flex-start;
   }
 
-  .titleMetaGroup {
-    align-items: flex-start;
-  }
-
   .builderRow {
     flex-direction: column;
     gap: 10px;
   }
 
-  .settingsWrap--chart {
-    right: 12px;
+  .greekBarRow {
+    justify-self: start;
   }
 
-  .resolutionButton {
-    min-width: 132px;
+  .savePngRow {
+    justify-self: end;
+  }
+
+  .chartControlRow {
+    column-gap: 10px;
+  }
+
+  .timeSliderBar {
+    max-width: 300px;
     height: 40px;
-    padding: 0 16px;
-  }
-
-  .resolutionButtonLabel,
-  .resolutionButtonValue {
-    font-size: 20px;
+    padding: 0 10px;
   }
 }
 </style>
