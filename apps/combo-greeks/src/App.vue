@@ -45,8 +45,8 @@ const MAX_POINTS_PER_FETCH = 1000;
 const MARK_CONCURRENCY = 10;
 const LOAD_DEBOUNCE_MS = 140;
 const SCENARIO_POINT_COUNT = 91;
-const SCENARIO_M_MIN = 0.6;
-const SCENARIO_M_MAX = 1.8;
+const SCENARIO_SPOT_MIN = 30_000;
+const SCENARIO_SPOT_MAX = 120_000;
 const CHARM_FD_STEP_SECONDS = 24 * 60 * 60;
 const LEG_VOL_MULTIPLIERS = [0.6, 0.7, 0.8, 0.9, 1.1, 1.2, 1.3, 1.4];
 const LEG_VOL_LINE_OPACITY = 0.28;
@@ -537,15 +537,16 @@ const rebuildBuilderSnapshots = (anchorTs = null) => {
   }
 };
 
-const buildScenarioMGrid = () => {
+const buildScenarioSpotGrid = () => {
   const points = [];
   for (let i = 0; i < SCENARIO_POINT_COUNT; i += 1) {
     const t = SCENARIO_POINT_COUNT === 1 ? 0.5 : i / (SCENARIO_POINT_COUNT - 1);
-    const scenarioM = SCENARIO_M_MIN + (SCENARIO_M_MAX - SCENARIO_M_MIN) * t;
-    if (!Number.isFinite(scenarioM) || scenarioM <= 0) continue;
+    const scenarioSpot =
+      SCENARIO_SPOT_MIN + (SCENARIO_SPOT_MAX - SCENARIO_SPOT_MIN) * t;
+    if (!Number.isFinite(scenarioSpot) || scenarioSpot <= 0) continue;
     points.push({
       scenarioIndex: i,
-      scenarioM,
+      scenarioSpot,
     });
   }
   return points;
@@ -590,14 +591,22 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
     Number.isFinite(anchorSpotRaw) && anchorSpotRaw > 0
       ? anchorSpotRaw
       : latestSpot;
-  const scenarios = buildScenarioMGrid().map((scenario) => ({
-    ...scenario,
-    scenarioSpot: scenario.scenarioM * anchorSpot,
-    scenarioShiftPct:
+  const scenarios = buildScenarioSpotGrid().map((scenario) => {
+    const scenarioSpot = Number(scenario.scenarioSpot);
+    const scenarioM =
       Number.isFinite(anchorSpot) && anchorSpot > 0
-        ? (scenario.scenarioM - 1) * 100
-        : null,
-  }));
+        ? scenarioSpot / anchorSpot
+        : null;
+    return {
+      ...scenario,
+      scenarioSpot,
+      scenarioM,
+      scenarioShiftPct:
+        Number.isFinite(anchorSpot) && anchorSpot > 0
+          ? (scenarioSpot / anchorSpot - 1) * 100
+          : null,
+    };
+  });
 
   const absQtySum = selected.reduce(
     (sum, leg) => sum + Math.abs(Number(leg.signedQty) || 0),

@@ -22,6 +22,8 @@ const layout = {
   height: 900,
   margin: { top: 90, right: 220, bottom: 80, left: 90 },
 };
+const BTC_SPOT_MIN = 30_000;
+const BTC_SPOT_MAX = 120_000;
 
 const TEXT_STYLES = {
   axisText: { fill: "#d4d7e2", size: "12px" },
@@ -135,9 +137,9 @@ const render = () => {
     : "delta";
 
   const points = (props.data || []).filter((row) => {
-    const m = Number(row?.m);
+    const spot = Number(row?.index_price_close);
     const y = normalizeGreekValue(greekKey, row?.[greekKey]);
-    return Number.isFinite(m) && Number.isFinite(y);
+    return Number.isFinite(spot) && Number.isFinite(y);
   });
 
   if (!points.length) {
@@ -153,29 +155,21 @@ const render = () => {
     return;
   }
 
-  const xAccessor = (d) => Number(d.m);
+  const xAccessor = (d) => Number(d.index_price_close);
   const yAccessor = (d) => normalizeGreekValue(greekKey, d[greekKey]);
-
-  const X_DOMAIN = [0.6, 1.8];
-  const pointsInDomain = points.filter((point) => {
-    const m = xAccessor(point);
-    return Number.isFinite(m) && m >= X_DOMAIN[0] && m <= X_DOMAIN[1];
-  });
-  const pointsForYDomain = pointsInDomain.length ? pointsInDomain : points;
-  const yExtent = d3.extent(pointsForYDomain, yAccessor);
-  if (
-    !Number.isFinite(yExtent[0]) ||
-    !Number.isFinite(yExtent[1])
-  ) {
+  const yExtent = d3.extent(points, yAccessor);
+  if (!Number.isFinite(yExtent[0]) || !Number.isFinite(yExtent[1])) {
     return;
   }
 
   const ySpan = yExtent[1] - yExtent[0];
   const yPad = ySpan > 0 ? ySpan * 0.12 : Math.max(0.2, Math.abs(yExtent[0]) * 0.2);
 
+  const formatSpot = d3.format(",.0f");
+
   const x = d3
     .scaleLinear()
-    .domain(X_DOMAIN)
+    .domain([BTC_SPOT_MIN, BTC_SPOT_MAX])
     .range([margin.left, chartRight]);
 
   const y = d3
@@ -189,7 +183,7 @@ const render = () => {
   mainGroup
     .append("g")
     .attr("transform", `translate(0,${chartBottom})`)
-    .call(d3.axisBottom(x).ticks(8).tickSize(0).tickPadding(16))
+    .call(d3.axisBottom(x).ticks(8).tickSize(0).tickPadding(16).tickFormat(formatSpot))
     .call(axisStyle);
 
   mainGroup
@@ -198,7 +192,7 @@ const render = () => {
     .call(d3.axisLeft(y).ticks(4).tickSize(0).tickPadding(16))
     .call(axisStyle);
 
-  const xLabel = "S / K";
+  const xLabel = "BTC Price";
   const yLabel = greekKey === "gamma" ? `${greekKey} [x10^4]` : greekKey;
 
   applyTextStyle(
@@ -348,8 +342,6 @@ const render = () => {
     .attr("font-size", "12px")
     .attr("font-family", SVG_FONT_FAMILY);
 
-  const formatSpot = d3.format(",.0f");
-  const formatM = d3.format(".3f");
   const formatPct = d3.format("+.1f");
   const formatGreek = d3.format("+.6f");
 
@@ -359,7 +351,6 @@ const render = () => {
     const lines = [
       series.label,
       String(point?.instrument_name || ""),
-      `m: ${formatM(xAccessor(point))}`,
       `Spot: ${formatSpot(Number(point?.index_price_close))}`,
       `Shift: ${formatPct(Number(point?.scenario_shift_pct))}%`,
       `${greekKey}: ${formatGreek(displayGreek)}`,
