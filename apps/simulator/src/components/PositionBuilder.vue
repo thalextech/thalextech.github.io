@@ -1193,7 +1193,7 @@ const totalMarkPrice = computed<number | null>(() => {
 
 .total-greeks {
   display: grid;
-  grid-template-columns: var(--strike-width) var(--col-tte) 1fr;
+  grid-template-columns: var(--strike-width) 1fr;
   align-items: center;
   gap: var(--strike-greeks-gap);
   padding: var(--row-pad-y) 0;
@@ -1207,7 +1207,16 @@ const totalMarkPrice = computed<number | null>(() => {
 }
 
 .tte-spacer {
+  display: none;
   width: var(--col-tte);
+}
+
+.payoff-builder--tte .total-greeks {
+  grid-template-columns: var(--strike-width) var(--col-tte) 1fr;
+}
+
+.payoff-builder--tte .tte-spacer {
+  display: block;
 }
 
 @media (max-width: 900px) {
