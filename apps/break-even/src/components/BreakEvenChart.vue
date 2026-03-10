@@ -26,7 +26,7 @@ const layout = {
 const formatPrice = d3.format(",.0f");
 const formatProb = d3.format(".1%");
 const RULER_LABEL_MIN_GAP = 12;
-const RULER_LABEL_VERTICAL_OFFSET = 6;
+const RULER_LABEL_VERTICAL_OFFSET = 8;
 const SECONDS_PER_BS_YEAR = 365.25 * 24 * 60 * 60;
 const Y_AXIS_LABEL_PADDING = 72;
 
@@ -468,7 +468,7 @@ function render() {
       labels.push({
         id: `${track.optionType}:${track.strike}`,
         text: `${track.optionType === "call" ? "C" : "P"} ${formatPrice(track.strike)} ${nd2Label}=${nd2Text}`,
-        color: track.color,
+        color: "#ffffff",
         rawY: labelY - RULER_LABEL_VERTICAL_OFFSET,
       });
     }
@@ -495,8 +495,8 @@ function render() {
             .append("text")
             .attr("class", "rulerLabel")
             .attr("fill", (label) => label.color)
-            .style("font-size", "11px")
-            .style("font-weight", 600)
+            .style("font-size", "13px")
+            .style("font-weight", 400)
             .style("font-family", "ui-sans-serif, system-ui")
             .attr("paint-order", "stroke")
             .attr("stroke", "#000")
