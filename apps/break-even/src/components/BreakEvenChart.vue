@@ -467,7 +467,7 @@ function render() {
       if (!Number.isFinite(labelY)) continue;
       labels.push({
         id: `${track.optionType}:${track.strike}`,
-        text: `${track.optionType === "call" ? "C" : "P"} ${formatPrice(track.strike)} ${nd2Label}=${nd2Text}`,
+        text: `${track.optionType === "call" ? "C" : "P"} ${formatPrice(track.strike)} ${nd2Label}=${nd2Text} BE=${formatPrice(nearest.breakEven)}`,
         color: "#ffffff",
         rawY: labelY - RULER_LABEL_VERTICAL_OFFSET,
       });
