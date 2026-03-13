@@ -1,5 +1,13 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  reactive,
+  ref,
+  watch,
+} from "vue";
 import OptionPnlChart from "./components/OptionPnlChart.vue";
 import StraddleBreakEvenChart from "./components/StraddleBreakEvenChart.vue";
 import {
@@ -16,7 +24,12 @@ const RESOLUTION_CONFIG = {
   3600: { label: "1h", resolution: "1h", interval_seconds: 60 * 60 },
   86400: { label: "1d", resolution: "1d", interval_seconds: 24 * 60 * 60 },
 };
-const MAIN_POINT_LIMIT = 360;
+const DEFAULT_HISTORY_POINT_LIMIT = 300;
+const MIN_HISTORY_POINT_LIMIT = 100;
+const MAX_HISTORY_POINT_LIMIT = 10000;
+const DEFAULT_CIRCLE_SIZE = 4;
+const MIN_CIRCLE_SIZE = 2;
+const MAX_CIRCLE_SIZE = 12;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 
 const ui = reactive({
@@ -24,6 +37,8 @@ const ui = reactive({
   optionMaturity: "",
   optionStrike: "",
   mode: "breakeven",
+  maxPoints: DEFAULT_HISTORY_POINT_LIMIT,
+  circleSize: DEFAULT_CIRCLE_SIZE,
   loading: false,
   error: "",
 });
@@ -35,6 +50,9 @@ const data = reactive({
 });
 const chartRef = ref(null);
 const breakEvenChartRef = ref(null);
+const settingsMenuRef = ref(null);
+const settingsButtonRef = ref(null);
+const settingsOpen = ref(false);
 const isInitializing = ref(true);
 let prefetchedIndexForInitialLoad = null;
 let loadRequestId = 0;
@@ -48,6 +66,41 @@ const maturityFormatter = new Intl.DateTimeFormat("en-US", {
 const strikeFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
+
+const maxPointsToFetch = computed(() => {
+  const value = Math.floor(Number(ui.maxPoints));
+  if (!Number.isFinite(value)) return DEFAULT_HISTORY_POINT_LIMIT;
+  return Math.max(
+    MIN_HISTORY_POINT_LIMIT,
+    Math.min(MAX_HISTORY_POINT_LIMIT, value),
+  );
+});
+
+const chartCircleSize = computed(() => {
+  const value = Number(ui.circleSize);
+  if (!Number.isFinite(value)) return DEFAULT_CIRCLE_SIZE;
+  return Math.max(MIN_CIRCLE_SIZE, Math.min(MAX_CIRCLE_SIZE, value));
+});
+
+const toggleSettings = async () => {
+  settingsOpen.value = !settingsOpen.value;
+  if (settingsOpen.value) {
+    await nextTick();
+    settingsButtonRef.value?.focus?.();
+  }
+};
+
+const closeSettings = () => {
+  settingsOpen.value = false;
+};
+
+const handleDocumentPointerDown = (event) => {
+  if (!settingsOpen.value) return;
+  const target = event?.target;
+  if (!(target instanceof Node)) return;
+  if (settingsMenuRef.value?.contains(target)) return;
+  closeSettings();
+};
 
 const normalizeCreateTimeSeconds = (value) => {
   const ts = Number(value);
@@ -174,10 +227,12 @@ const getTimestampRange = () => {
   const resolution = resolutionConfig?.resolution;
   const seconds =
     resolutionConfig?.interval_seconds ?? Number(ui.resolutionKey) ?? 0;
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 3600;
+  const to = now - (now % safeSeconds);
   return {
     resolution,
-    from: now - seconds * MAIN_POINT_LIMIT,
-    to: now,
+    from: to - safeSeconds * (maxPointsToFetch.value - 1),
+    to,
   };
 };
 
@@ -300,6 +355,7 @@ const breakEvenActualData = computed(() =>
   (data.index[ui.resolutionKey] || [])
     .filter((row) => Number.isFinite(row?.ts) && Number.isFinite(row?.index_price_close))
     .sort((a, b) => a.ts - b.ts)
+    .slice(-maxPointsToFetch.value)
     .map((row) => ({
       date: new Date(row.ts * 1000),
       value: row.index_price_close,
@@ -396,7 +452,7 @@ const mainSeries = computed(() => {
       option_mark_price: straddleMark,
     });
   }
-  return result.slice(-MAIN_POINT_LIMIT);
+  return result.slice(-maxPointsToFetch.value);
 });
 
 const straddlePnlSeries = computed(() => {
@@ -464,7 +520,7 @@ const straddlePnlSeries = computed(() => {
   return merged
     .filter((point) => point.date >= MIN_DATA_DATE)
     .sort((a, b) => a.ts - b.ts)
-    .slice(-MAIN_POINT_LIMIT);
+    .slice(-maxPointsToFetch.value);
 });
 
 async function load({ callInstrument, putInstrument }) {
@@ -477,7 +533,8 @@ async function load({ callInstrument, putInstrument }) {
   const { resolution, from, to } = getTimestampRange();
   const canUsePrefetchedIndex =
     prefetchedIndexForInitialLoad &&
-    prefetchedIndexForInitialLoad.resolutionKey === ui.resolutionKey;
+    prefetchedIndexForInitialLoad.resolutionKey === ui.resolutionKey &&
+    prefetchedIndexForInitialLoad.maxPoints === maxPointsToFetch.value;
   const prefetchedIndex = canUsePrefetchedIndex
     ? prefetchedIndexForInitialLoad.rows
     : null;
@@ -498,6 +555,7 @@ async function load({ callInstrument, putInstrument }) {
           resolution,
           from,
           to,
+          count: maxPointsToFetch.value,
         });
 
     const [mainIndex, callMark, putMark] = await Promise.all([
@@ -508,6 +566,7 @@ async function load({ callInstrument, putInstrument }) {
             resolution,
             from,
             to,
+            count: maxPointsToFetch.value,
           })
         : Promise.resolve([]),
       putName
@@ -516,6 +575,7 @@ async function load({ callInstrument, putInstrument }) {
             resolution,
             from,
             to,
+            count: maxPointsToFetch.value,
           })
         : Promise.resolve([]),
     ]);
@@ -554,6 +614,7 @@ function handleSavePng() {
 }
 
 onMounted(async () => {
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
     const { resolution, from, to } = getTimestampRange();
     const [allInstruments, prefetchedIndex] = await Promise.all([
@@ -563,6 +624,7 @@ onMounted(async () => {
         resolution,
         from,
         to,
+        count: maxPointsToFetch.value,
       }),
     ]);
 
@@ -595,6 +657,7 @@ onMounted(async () => {
     data.index[ui.resolutionKey] = prefetchedIndex || [];
     prefetchedIndexForInitialLoad = {
       resolutionKey: ui.resolutionKey,
+      maxPoints: maxPointsToFetch.value,
       rows: prefetchedIndex || [],
     };
 
@@ -607,6 +670,10 @@ onMounted(async () => {
   } finally {
     isInitializing.value = false;
   }
+});
+
+onUnmounted(() => {
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
 });
 
 watch(
@@ -657,7 +724,12 @@ watch(
 );
 
 watch(
-  () => [ui.resolutionKey, ui.optionMaturity, ui.optionStrike],
+  () => [
+    ui.resolutionKey,
+    ui.optionMaturity,
+    ui.optionStrike,
+    maxPointsToFetch.value,
+  ],
   async () => {
     const callInstrument = selectedCallInstrument.value;
     const putInstrument = selectedPutInstrument.value;
@@ -721,15 +793,6 @@ watch(
           </select>
         </div>
 
-        <button
-          class="saveButton"
-          type="button"
-          @click="handleSavePng"
-          :disabled="ui.loading || !canSavePng"
-        >
-          Save PNG
-        </button>
-
         <div class="modeToggle" role="group" aria-label="Chart mode">
           <button
             type="button"
@@ -748,31 +811,241 @@ watch(
             Straddle P&amp;L
           </button>
         </div>
+
+        <button
+          class="saveButton"
+          type="button"
+          @click="handleSavePng"
+          :disabled="ui.loading || !canSavePng"
+        >
+          Save PNG
+        </button>
       </div>
 
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
-    <OptionPnlChart
-      v-if="ui.mode === 'straddle'"
-      ref="chartRef"
-      :data="mainSeries"
-      :option-pnl-data="straddlePnlSeries"
-      :option-instrument-name="optionInstrumentName"
-      :loading="ui.loading"
-    />
-    <StraddleBreakEvenChart
-      v-else
-      ref="breakEvenChartRef"
-      :actual-data="breakEvenActualData"
-      :projected-data="breakEvenProjectedData"
-      :break-even-low="breakEvenMetrics?.breakEvenLow"
-      :break-even-high="breakEvenMetrics?.breakEvenHigh"
-      :current-index="breakEvenCurrentIndex"
-      :expiry-ts="selectedMaturityTs"
-      :title="breakEvenTitle"
-      :subtitle="breakEvenSubtitle"
-      :loading="ui.loading"
-    />
+    <div class="chartPanel">
+      <div class="settingsWrap settingsWrap--chart" ref="settingsMenuRef">
+        <button
+          ref="settingsButtonRef"
+          class="settingsButton settingsButton--icon"
+          type="button"
+          title="Chart settings"
+          aria-label="Chart settings"
+          aria-haspopup="true"
+          :aria-expanded="settingsOpen ? 'true' : 'false'"
+          @click="toggleSettings"
+        ></button>
+        <div v-if="settingsOpen" class="settingsDropdown">
+          <div class="settingsTitle">Chart settings</div>
+          <div class="settingsHint">
+            Historical data points: {{ maxPointsToFetch }}
+          </div>
+          <input
+            v-model.number="ui.maxPoints"
+            class="settingsSlider"
+            type="range"
+            :min="MIN_HISTORY_POINT_LIMIT"
+            :max="MAX_HISTORY_POINT_LIMIT"
+            step="10"
+          />
+          <div class="settingsRange">
+            <span>{{ MIN_HISTORY_POINT_LIMIT }}</span>
+            <span>{{ MAX_HISTORY_POINT_LIMIT }}</span>
+          </div>
+          <template v-if="ui.mode === 'straddle'">
+            <div class="settingsHint settingsHint--secondary">
+              Circle size: {{ chartCircleSize.toFixed(1) }}
+            </div>
+            <input
+              v-model.number="ui.circleSize"
+              class="settingsSlider"
+              type="range"
+              :min="MIN_CIRCLE_SIZE"
+              :max="MAX_CIRCLE_SIZE"
+              step="0.5"
+            />
+            <div class="settingsRange">
+              <span>{{ MIN_CIRCLE_SIZE }}</span>
+              <span>{{ MAX_CIRCLE_SIZE }}</span>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <OptionPnlChart
+        v-if="ui.mode === 'straddle'"
+        ref="chartRef"
+        :data="mainSeries"
+        :option-pnl-data="straddlePnlSeries"
+        :option-instrument-name="optionInstrumentName"
+        :circle-size="chartCircleSize"
+        :loading="ui.loading"
+      />
+      <StraddleBreakEvenChart
+        v-else
+        ref="breakEvenChartRef"
+        :actual-data="breakEvenActualData"
+        :projected-data="breakEvenProjectedData"
+        :break-even-low="breakEvenMetrics?.breakEvenLow"
+        :break-even-high="breakEvenMetrics?.breakEvenHigh"
+        :current-index="breakEvenCurrentIndex"
+        :expiry-ts="selectedMaturityTs"
+        :title="breakEvenTitle"
+        :subtitle="breakEvenSubtitle"
+        :loading="ui.loading"
+      />
+    </div>
   </div>
 </template>
+
+<style scoped>
+.chartPanel {
+  position: relative;
+}
+
+.settingsWrap {
+  position: relative;
+}
+
+.settingsWrap--chart {
+  position: absolute;
+  top: 10px;
+  right: 40px;
+  z-index: 24;
+}
+
+.settingsButton {
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.7);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.settingsButton:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.settingsButton:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.7);
+  outline-offset: 2px;
+}
+
+.settingsButton--icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.settingsButton--icon::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #e8ebf2;
+}
+
+.settingsDropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(240px, calc(100vw - 40px));
+  border: 0.4px solid rgba(255, 255, 255, 0.9);
+  background: #080a0f;
+  border-radius: 6px;
+  padding: 10px 12px 12px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    Helvetica,
+    Arial,
+    sans-serif;
+}
+
+.settingsTitle {
+  font-size: 10px;
+  color: #a9abb6;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.settingsHint {
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.settingsHint--secondary {
+  margin-top: 10px;
+}
+
+.settingsSlider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settingsSlider:focus {
+  outline: none;
+}
+
+.settingsSlider::-webkit-slider-runnable-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  margin-top: -3px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
+}
+
+.settingsSlider::-moz-range-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
+}
+
+.settingsRange {
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+}
+</style>
