@@ -13,6 +13,7 @@ const props = defineProps({
 
 const svgRef = ref(null);
 const tooltipRef = ref(null);
+const colorMode = ref("price");
 const gradientId = `delta-skew-gradient-${Math.random().toString(16).slice(2)}`;
 
 const SVG_FONT_FAMILY =
@@ -28,6 +29,10 @@ const layout = {
 const DELTA_MIN = 0.05;
 const DELTA_MAX = 0.55;
 const DOT_AREA_RANGE = [20, 40];
+
+const toggleColorMode = () => {
+  colorMode.value = colorMode.value === "price" ? "time" : "price";
+};
 
 function exportPng({ filename = "call-put-delta-skew.png", scale = 4, padding = 24 } = {}) {
   exportChartToPng({
@@ -183,18 +188,6 @@ const render = () => {
     .nice()
     .range([panelBottom, panelTop]);
 
-  const colorExtent = d3.extent(rows, (row) => row.index_price_close);
-  const colorMin = Number.isFinite(colorExtent[0]) ? colorExtent[0] : 0;
-  const colorMax = Number.isFinite(colorExtent[1]) ? colorExtent[1] : 1;
-  const colorSpan = colorMax - colorMin;
-  const colorForIndex = (value) => {
-    if (!Number.isFinite(value)) return "#7c7f8f";
-    if (!(colorSpan > 0)) return d3.interpolateRdBu(0.5);
-    const t = (value - colorMin) / colorSpan;
-    const clamped = Math.max(0, Math.min(1, t));
-    return d3.interpolateRdBu(clamped);
-  };
-
   const sizeExtent = d3.extent(rows, (row) => row.mark_price_close);
   const sizeMin = Number.isFinite(sizeExtent[0]) ? sizeExtent[0] : 0;
   const sizeMax = Number.isFinite(sizeExtent[1]) ? sizeExtent[1] : sizeMin + 1;
@@ -223,6 +216,24 @@ const render = () => {
   const tsMin = Number.isFinite(tsExtent[0]) ? tsExtent[0] : 0;
   const tsMax = Number.isFinite(tsExtent[1]) ? tsExtent[1] : tsMin;
   const tsSpan = tsMax - tsMin;
+  const isColorByPrice = colorMode.value === "price";
+  const colorLabel = isColorByPrice ? "Index Price" : "Time";
+  const colorAccessor = isColorByPrice
+    ? (row) => row.index_price_close
+    : (row) => Number(row.ts);
+  const colorExtent = d3.extent(rows, colorAccessor);
+  const colorMin = Number.isFinite(colorExtent[0]) ? colorExtent[0] : 0;
+  const colorMax = Number.isFinite(colorExtent[1]) ? colorExtent[1] : 1;
+  const colorSpan = colorMax - colorMin;
+  const colorInterpolator = isColorByPrice ? d3.interpolateRdBu : d3.interpolateViridis;
+  const colorForRow = (row) => {
+    const value = colorAccessor(row);
+    if (!Number.isFinite(value)) return "#7c7f8f";
+    if (!(colorSpan > 0)) return colorInterpolator(0.5);
+    const t = (value - colorMin) / colorSpan;
+    const clamped = Math.max(0, Math.min(1, t));
+    return colorInterpolator(clamped);
+  };
   const recencyNorm = (row) => {
     const ts = Number(row?.ts);
     if (!Number.isFinite(ts)) return 0;
@@ -249,25 +260,42 @@ const render = () => {
   gradient
     .append("stop")
     .attr("offset", "0%")
-    .attr("stop-color", d3.interpolateRdBu(0));
+    .attr("stop-color", colorInterpolator(0));
   gradient
     .append("stop")
     .attr("offset", "50%")
-    .attr("stop-color", d3.interpolateRdBu(0.5));
+    .attr("stop-color", colorInterpolator(0.5));
   gradient
     .append("stop")
     .attr("offset", "100%")
-    .attr("stop-color", d3.interpolateRdBu(1));
+    .attr("stop-color", colorInterpolator(1));
 
   const legendWidth = 220;
   const legendHeight = 10;
   const legendX = width - margin.right - legendWidth;
   const legendY = 52;
   const formatIndex = d3.format(",.0f");
+  const formatTime = d3.utcFormat("%d %b %H:%M");
+  const formatLegendValue = (value) => {
+    if (!Number.isFinite(value)) return "-";
+    if (isColorByPrice) return formatIndex(value);
+    return formatTime(new Date(value * 1000));
+  };
 
   const legend = svg
     .append("g")
-    .attr("transform", `translate(${legendX},${legendY})`);
+    .attr("transform", `translate(${legendX},${legendY})`)
+    .attr("cursor", "pointer")
+    .attr("tabindex", 0)
+    .on("click", () => {
+      toggleColorMode();
+    })
+    .on("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggleColorMode();
+      }
+    });
   legend
     .append("text")
     .attr("x", 0)
@@ -275,7 +303,7 @@ const render = () => {
     .attr("fill", "#d6d7de")
     .style("font-family", SVG_FONT_FAMILY)
     .style("font-size", "12px")
-    .text("Index Price");
+    .text(`${colorLabel} (click to toggle)`);
   legend
     .append("rect")
     .attr("x", 0)
@@ -291,7 +319,7 @@ const render = () => {
     .attr("fill", "#a9abb6")
     .style("font-family", SVG_FONT_FAMILY)
     .style("font-size", "11px")
-    .text(formatIndex(colorMin));
+    .text(formatLegendValue(colorMin));
   legend
     .append("text")
     .attr("x", legendWidth)
@@ -300,7 +328,7 @@ const render = () => {
     .attr("fill", "#a9abb6")
     .style("font-family", SVG_FONT_FAMILY)
     .style("font-size", "11px")
-    .text(formatIndex(colorMax));
+    .text(formatLegendValue(colorMax));
 
   panels.forEach((panel, index) => {
     const left = margin.left + index * (panelWidth + panelGap);
@@ -402,7 +430,7 @@ const render = () => {
       .attr("cx", (row) => x(row.delta_abs))
       .attr("cy", (row) => sharedY(row.iv_close))
       .attr("r", (row) => radiusForRow(row))
-      .attr("fill", (row) => colorForIndex(row.index_price_close))
+      .attr("fill", (row) => colorForRow(row))
       .attr("opacity", (row) => opacityForRow(row))
       .attr("stroke", "#ffffff")
       .attr("stroke-width", 0.2)
@@ -436,6 +464,8 @@ watch(
   () => render(),
   { deep: false },
 );
+
+watch(colorMode, () => render());
 
 onMounted(() => render());
 </script>

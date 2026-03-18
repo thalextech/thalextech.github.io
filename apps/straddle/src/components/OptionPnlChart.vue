@@ -7,6 +7,7 @@ const props = defineProps({
   data: { type: Array, default: () => [] },
   optionPnlData: { type: Array, default: () => [] },
   optionInstrumentName: { type: String, default: "" },
+  circleSize: { type: Number, default: 4 },
   loading: { type: Boolean, default: false },
 });
 
@@ -93,9 +94,15 @@ const chartState = {
   noDataText: null,
 };
 
-const POINT_RADIUS = 4;
-const POINT_RADIUS_DIMMED = 2.8;
-const POINT_RADIUS_HOVER = 10;
+const getPointRadius = () => {
+  const radius = Number(props.circleSize);
+  if (!Number.isFinite(radius)) return 4;
+  return Math.max(2, Math.min(12, radius));
+};
+
+const getDimmedPointRadius = () => Math.max(1.4, getPointRadius() * 0.7);
+
+const getHoverPointRadius = () => Math.max(getPointRadius() + 4, getPointRadius() * 2);
 const HOVER_RELEASE_HITBOX_PX = 14;
 const TAP_SELECT_HITBOX_PX = 22;
 const TOOLTIP_HITBOX_PX = 18;
@@ -310,9 +317,9 @@ const applySelectionStyles = () => {
     )
     .attr("stroke-width", (d) => (selectedDatums.includes(d) ? 2.6 : 0))
     .attr("r", (d) => {
-      if (selectedDatums.includes(d)) return POINT_RADIUS_HOVER;
-      if (selectedDatums.length === 2) return POINT_RADIUS_DIMMED;
-      return POINT_RADIUS;
+      if (selectedDatums.includes(d)) return getHoverPointRadius();
+      if (selectedDatums.length === 2) return getDimmedPointRadius();
+      return getPointRadius();
     })
     .attr("opacity", (d) =>
       selectedDatums.length > 0 && !selectedDatums.includes(d) ? 0.4 : 0.8,
@@ -376,7 +383,7 @@ const resetHoverStyles = () => {
   chartState.pointsGroup
     .selectAll("circle.main-point")
     .attr("opacity", 0.8)
-    .attr("r", POINT_RADIUS);
+    .attr("r", getPointRadius());
   applySelectionStyles();
 };
 
@@ -1307,7 +1314,7 @@ function render() {
       const circles = enter
         .append("circle")
         .attr("class", "main-point")
-        .attr("r", POINT_RADIUS)
+        .attr("r", getPointRadius())
         .attr("stroke", "transparent")
         .attr("stroke-width", 0)
         .attr("opacity", 0.8);
@@ -1319,7 +1326,7 @@ function render() {
       updateSelectionLine();
       applySelectionStyles();
       d3.select(event.currentTarget)
-        .attr("r", POINT_RADIUS_HOVER)
+        .attr("r", getHoverPointRadius())
         .attr("stroke", "#000")
         .attr("stroke-width", 1.1)
         .attr("opacity", 1)
@@ -1351,7 +1358,7 @@ function render() {
     chartState.pointsGroup
       .selectAll("circle.main-point")
       .filter((d) => d === hoveredDatum)
-      .attr("r", POINT_RADIUS_HOVER)
+      .attr("r", getHoverPointRadius())
       .attr("stroke", "#000")
       .attr("stroke-width", 1.1)
       .attr("opacity", 1)
@@ -1409,7 +1416,12 @@ function render() {
 }
 
 watch(
-  () => [props.data, props.optionPnlData, props.optionInstrumentName],
+  () => [
+    props.data,
+    props.optionPnlData,
+    props.optionInstrumentName,
+    props.circleSize,
+  ],
   () => render(),
   { deep: false },
 );
