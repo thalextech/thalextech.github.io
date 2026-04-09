@@ -233,24 +233,46 @@ const strikeOptionsFallback = computed(() => {
   return strikes.filter((s) => s > 0);
 });
 
-const expiryByOldestCreateTime = computed<string | undefined>(() => {
-  if (!optionInstrumentsForContext.value.length) return undefined;
-  let oldestCreate = Number.POSITIVE_INFINITY;
-  let expiryTs: number | undefined;
-  for (const instrument of optionInstrumentsForContext.value) {
-    const create = Number(instrument.create_time);
-    const exp = Number(instrument.expiration_timestamp);
-    if (!Number.isFinite(create) || !Number.isFinite(exp)) continue;
-    if (create < oldestCreate) {
-      oldestCreate = create;
-      expiryTs = exp;
+const targetExpiryDays = computed(() => {
+  const years = Number(props.T);
+  if (!Number.isFinite(years) || years <= 0) return 30;
+  return Math.max(1, Math.round(years * 365.25));
+});
+
+const expiryClosestToTarget = computed<string | undefined>(() => {
+  const options = optionInstrumentsForContext.value;
+  if (!options.length) return undefined;
+
+  const now = Math.floor(Date.now() / 1000);
+  const upcoming = options.filter(
+    (instrument) => Number(instrument.expiration_timestamp) > now,
+  );
+  const source = upcoming.length ? upcoming : options;
+  const expiries = Array.from(
+    new Set(
+      source
+        .map((instrument) => Number(instrument.expiration_timestamp))
+        .filter((ts) => Number.isFinite(ts)),
+    ),
+  ).sort((a, b) => a - b);
+  if (!expiries.length) return undefined;
+
+  const target = now + targetExpiryDays.value * 24 * 60 * 60;
+  let chosenExpiryTs = expiries[0];
+  let bestDiff = Math.abs(chosenExpiryTs - target);
+  for (const expiryTs of expiries) {
+    const diff = Math.abs(expiryTs - target);
+    if (diff < bestDiff) {
+      chosenExpiryTs = expiryTs;
+      bestDiff = diff;
     }
   }
-  return expiryTs != null ? formatExpiry(new Date(expiryTs * 1000)) : undefined;
+
+  return formatExpiry(new Date(chosenExpiryTs * 1000));
 });
 
 const defaultExpiry = (): string | undefined =>
-  expiryByOldestCreateTime.value ?? expiryOptions.value[0];
+  expiryClosestToTarget.value ?? expiryOptions.value[0];
 
 const referenceIndexPrice = computed(() => {
   if (Number.isFinite(props.indexPrice) && Number(props.indexPrice) > 0) return Number(props.indexPrice);

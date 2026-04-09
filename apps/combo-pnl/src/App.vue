@@ -47,28 +47,7 @@ const ui = reactive({
   error: "",
 });
 
-const positionLegs = ref([
-  {
-    id: "leg-1",
-    kind: "option",
-    side: "buy",
-    qty: 1,
-    optionType: "call",
-    strike: 70000,
-    premium: 0,
-    expiry: "27 Mar 26",
-  },
-  {
-    id: "leg-2",
-    kind: "option",
-    side: "buy",
-    qty: 1,
-    optionType: "put",
-    strike: 70000,
-    premium: 0,
-    expiry: "27 Mar 26",
-  },
-]);
+const positionLegs = ref([]);
 
 const instruments = ref([]);
 const tickerByInstrument = ref({});
@@ -106,6 +85,19 @@ const parseExpiryToSeconds = (expiry) => {
   if (!Number.isFinite(monthIdx)) return null;
   const fullYear = year < 100 ? 2000 + year : year;
   return Math.floor(Date.UTC(fullYear, monthIdx, day, 8, 0, 0) / 1000);
+};
+
+const formatExpiryFromTs = (expiryTs) =>
+  new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "2-digit",
+    timeZone: "UTC",
+  }).format(new Date(Number(expiryTs) * 1000));
+
+const newLegId = () => {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid ?? `leg_${Math.random().toString(36).slice(2, 10)}`;
 };
 
 const normalizeOptionInstrument = (instrument) => {
@@ -229,6 +221,102 @@ const spot = computed(() => {
   return Number.isFinite(live) && live > 0 ? live : 95_000;
 });
 
+const pickNearestStrike = (strikes, targetPrice) => {
+  if (!strikes?.length) return null;
+  let chosenStrike = Number(strikes[0]);
+  let bestDistance = Math.abs(chosenStrike - targetPrice);
+  for (let i = 1; i < strikes.length; i += 1) {
+    const strike = Number(strikes[i]);
+    const distance = Math.abs(strike - targetPrice);
+    if (distance < bestDistance || (distance === bestDistance && strike < chosenStrike)) {
+      chosenStrike = strike;
+      bestDistance = distance;
+    }
+  }
+  return chosenStrike;
+};
+
+const seedDefaultLegs = () => {
+  if (selectedOptionLegs.value.length) return;
+  const options = parsedOptionInstruments.value;
+  if (!options.length) return;
+
+  const now = Math.floor(Date.now() / 1000);
+  const target = now + Math.max(1, Math.round(DEFAULT_T * 365.25)) * 24 * 60 * 60;
+  const upcoming = options.filter((instrument) => instrument.expiration_ts > now);
+  const source = upcoming.length ? upcoming : options;
+  const expiries = Array.from(
+    new Set(source.map((instrument) => instrument.expiration_ts)),
+  ).sort((a, b) => a - b);
+  if (!expiries.length) return;
+
+  let chosenExpiry = expiries[0];
+  let bestDiff = Math.abs(chosenExpiry - target);
+  for (const expiryTs of expiries) {
+    const diff = Math.abs(expiryTs - target);
+    if (diff < bestDiff) {
+      chosenExpiry = expiryTs;
+      bestDiff = diff;
+    }
+  }
+
+  const forExpiry = source.filter(
+    (instrument) => instrument.expiration_ts === chosenExpiry,
+  );
+  const callStrikes = Array.from(
+    new Set(
+      forExpiry
+        .filter((instrument) => instrument.option_type_normalized === "call")
+        .map((instrument) => instrument.strike),
+    ),
+  ).sort((a, b) => a - b);
+  const putStrikes = Array.from(
+    new Set(
+      forExpiry
+        .filter((instrument) => instrument.option_type_normalized === "put")
+        .map((instrument) => instrument.strike),
+    ),
+  ).sort((a, b) => a - b);
+  const fallbackStrikes = Array.from(
+    new Set(forExpiry.map((instrument) => instrument.strike)),
+  ).sort((a, b) => a - b);
+
+  const referenceSpot = spot.value;
+  const callStrike = pickNearestStrike(
+    callStrikes.length ? callStrikes : fallbackStrikes,
+    referenceSpot,
+  );
+  const putStrike = pickNearestStrike(
+    putStrikes.length ? putStrikes : fallbackStrikes,
+    referenceSpot,
+  );
+  if (!Number.isFinite(callStrike) || !Number.isFinite(putStrike)) return;
+
+  const expiryLabel = formatExpiryFromTs(chosenExpiry);
+  positionLegs.value = [
+    {
+      id: newLegId(),
+      kind: "option",
+      side: "buy",
+      qty: 1,
+      optionType: "call",
+      strike: callStrike,
+      premium: 0,
+      expiry: expiryLabel,
+    },
+    {
+      id: newLegId(),
+      kind: "option",
+      side: "buy",
+      qty: 1,
+      optionType: "put",
+      strike: putStrike,
+      premium: 0,
+      expiry: expiryLabel,
+    },
+  ];
+};
+
 const maxPointsPerFetch = computed(() => {
   const points = Math.floor(Number(ui.maxPoints));
   if (!Number.isFinite(points)) return DEFAULT_MAX_POINTS_PER_FETCH;
@@ -338,6 +426,39 @@ const sortRowsByTs = (rows) =>
       (a, b) =>
         normalizeTimestampSeconds(a?.ts) - normalizeTimestampSeconds(b?.ts),
     );
+
+const loadInitialAnchoredIndexSnapshot = async () => {
+  try {
+    const { resolution, from, to } = getTimestampRange();
+    const rows = await fetchIndexHistory({
+      index_name: "BTCUSD",
+      resolution,
+      from,
+      to,
+    });
+    const sorted = sortRowsByTs(rows);
+    if (!sorted.length) return;
+    indexHistoryRows.value = sorted;
+    const anchored = sorted[0];
+    const price = Number(
+      anchored?.index_price_close ?? anchored?.close ?? anchored?.price,
+    );
+    if (!Number.isFinite(price)) return;
+    const ts = normalizeTimestampSeconds(anchored?.ts);
+    indexByName.value = {
+      BTCUSD: {
+        data: {
+          ...anchored,
+          index_price_close: price,
+          ts: Number.isFinite(ts) ? ts : anchored.ts,
+        },
+        fetchedAt: Number.isFinite(ts) ? ts * 1000 : Date.now(),
+      },
+    };
+  } catch {
+    // Non-fatal: if snapshot fetch fails, seedDefaultLegs falls back to spot.
+  }
+};
 
 const getAnchorRow = (rows, anchorTs) => {
   if (!rows?.length) return null;
@@ -836,6 +957,12 @@ onMounted(async () => {
       instrument?.type === "option" && instrument?.underlying === "BTCUSD",
   );
 
+  await loadInitialAnchoredIndexSnapshot();
+  seedDefaultLegs();
+  if (loadTimer) {
+    clearTimeout(loadTimer);
+    loadTimer = null;
+  }
   await loadSeries();
   await nextTick();
   alignSettingsToBuilderMinusX();
