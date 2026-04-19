@@ -662,226 +662,289 @@ onUnmounted(() => {
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
-    <section class="topDashboard" :class="{ loading: ui.loading }">
-      <div class="controls controlsTop">
-        <div class="field">
-          <label for="expiry">Expiry</label>
-          <select id="expiry" v-model="ui.expiryTs" @change="onExpiryChange">
-            <option
-              v-for="expiry in expiryList"
-              :key="expiry.timestamp"
-              :value="String(expiry.timestamp)"
-            >
-              {{ expiry.code }}
-            </option>
-          </select>
-        </div>
+    <div class="layoutFrame">
+      <section class="topDashboard" :class="{ loading: ui.loading }">
+        <table class="topAlignTable" aria-label="Inputs and parameters">
+          <tbody>
+            <tr>
+              <td class="topAlignCell topAlignCell--left">
+                <table class="topControlTable">
+                  <tbody>
+                    <tr>
+                      <td>
+                        <div class="field fieldExpiry">
+                          <label for="expiry">Expiry</label>
+                          <select
+                            id="expiry"
+                            v-model="ui.expiryTs"
+                            @change="onExpiryChange"
+                          >
+                            <option
+                              v-for="expiry in expiryList"
+                              :key="expiry.timestamp"
+                              :value="String(expiry.timestamp)"
+                            >
+                              {{ expiry.code }}
+                            </option>
+                          </select>
+                        </div>
+                      </td>
+                      <td v-if="ui.viewMode === 'formula'">
+                        <div class="field fieldStrike">
+                          <label for="option-strike">Strike</label>
+                          <select
+                            id="option-strike"
+                            v-model="ui.optionStrike"
+                            @change="onStrikeChange"
+                          >
+                            <option
+                              v-for="strike in strikeOptions"
+                              :key="strike.value"
+                              :value="strike.value"
+                            >
+                              {{ strike.label }}
+                            </option>
+                            <option
+                              v-if="!strikeOptions.length"
+                              :value="ui.optionStrike"
+                            >
+                              {{ ui.optionStrike }}
+                            </option>
+                          </select>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </td>
 
-        <div class="field" v-if="ui.viewMode === 'formula'">
-          <label for="option-strike">Strike</label>
-          <select
-            id="option-strike"
-            v-model="ui.optionStrike"
-            @change="onStrikeChange"
-          >
-            <option
-              v-for="strike in strikeOptions"
-              :key="strike.value"
-              :value="strike.value"
-            >
-              {{ strike.label }}
-            </option>
-            <option v-if="!strikeOptions.length" :value="ui.optionStrike">
-              {{ ui.optionStrike }}
-            </option>
-          </select>
-        </div>
+              <td class="topAlignCell topAlignCell--middle">
+                <div class="field fEstField" v-if="model">
+                  <label class="fEstLabel" for="adjustedForward"
+                    >F<sub>est</sub> =</label
+                  >
+                  <input
+                    id="adjustedForward"
+                    class="fEstInput"
+                    type="number"
+                    inputmode="decimal"
+                    step="100"
+                    min="0"
+                    :value="ui.adjustedForward"
+                    @input="onAdjustedForwardInput"
+                  />
+                </div>
+              </td>
 
-        <div class="field fEstField" v-if="model">
-          <label class="fEstLabel" for="adjustedForward"
-            >F<sub>est</sub> =</label
-          >
-          <input
-            id="adjustedForward"
-            class="fEstInput"
-            type="number"
-            inputmode="decimal"
-            step="100"
-            min="0"
-            :value="ui.adjustedForward"
-            @input="onAdjustedForwardInput"
-          />
-        </div>
+              <td class="topAlignCell topAlignCell--right">
+                <div class="viewToggle" role="group" aria-label="Display mode">
+                  <button
+                    type="button"
+                    class="viewToggleButton"
+                    :class="{ active: ui.viewMode === 'formula' }"
+                    @click="ui.viewMode = 'formula'"
+                  >
+                    Formula
+                  </button>
+                  <button
+                    type="button"
+                    class="viewToggleButton"
+                    :class="{ active: ui.viewMode === 'chart' }"
+                    @click="ui.viewMode = 'chart'"
+                  >
+                    Chart
+                  </button>
+                </div>
+              </td>
+            </tr>
 
-        <div class="viewToggle" role="group" aria-label="Display mode">
-          <button
-            type="button"
-            class="viewToggleButton"
-            :class="{ active: ui.viewMode === 'formula' }"
-            @click="ui.viewMode = 'formula'"
-          >
-            Formula
-          </button>
-          <button
-            type="button"
-            class="viewToggleButton"
-            :class="{ active: ui.viewMode === 'chart' }"
-            @click="ui.viewMode = 'chart'"
-          >
-            Chart
-          </button>
-        </div>
-      </div>
+            <tr v-if="model">
+              <td class="topAlignCell">
+                <table class="topParamTable">
+                  <tbody>
+                    <tr>
+                      <td class="topParamLabelCell">Spot (S)</td>
+                      <td class="topParamValueCell">
+                        {{ formatMoney(model.spot, 1, 1) }}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td class="topParamLabelCell">μ</td>
+                      <td class="topParamValueCell">
+                        {{ formatPercent(model.mu * 100, 1) }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </td>
+              <td class="topAlignCell">
+                <table class="topParamTable">
+                  <tbody>
+                    <tr>
+                      <td class="topParamLabelCell">Forward (F)</td>
+                      <td class="topParamValueCell">
+                        {{ formatMoney(model.forward, 1, 1) }}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td class="topParamLabelCell">σ</td>
+                      <td class="topParamValueCell">
+                        {{ formatPercent(model.iv * 100, 1) }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </td>
+              <td class="topAlignCell">
+                <table class="topParamTable">
+                  <tbody>
+                    <tr>
+                      <td class="topParamLabelCell">r</td>
+                      <td class="topParamValueCell">
+                        {{ formatPercent(model.r * 100, 1) }}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td class="topParamLabelCell">T</td>
+                      <td class="topParamValueCell">
+                        {{ formatNumber(model.T, 4) }}y
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
 
-      <div
-        v-if="model"
-        class="chartParamsRow"
-        :class="{ 'chartParamsRow--formula': ui.viewMode === 'formula' }"
-        aria-label="Input parameters"
+      <section
+        v-if="ui.viewMode === 'formula'"
+        class="formulaMatrix"
+        :class="{ loading: ui.loading }"
       >
-        <div class="chartParam">
-          <span class="chartParamLabel">Spot (S)</span>
-          <span class="chartParamValue">{{
-            formatMoney(model.spot, 1, 1)
-          }}</span>
-        </div>
-        <div class="chartParam">
-          <span class="chartParamLabel">Forward (F)</span>
-          <span class="chartParamValue">{{
-            formatMoney(model.forward, 1, 1)
-          }}</span>
-        </div>
-        <div class="chartParam">
-          <span class="chartParamLabel">r</span>
-          <span class="chartParamValue">{{
-            formatPercent(model.r * 100, 1)
-          }}</span>
-        </div>
-        <div class="chartParam">
-          <span class="chartParamLabel">μ</span>
-          <span class="chartParamValue">{{
-            formatPercent(model.mu * 100, 1)
-          }}</span>
-        </div>
-        <div class="chartParam">
-          <span class="chartParamLabel">T</span>
-          <span class="chartParamValue">{{ formatNumber(model.T, 4) }}y</span>
-        </div>
-        <div class="chartParam">
-          <span class="chartParamLabel">σ</span>
-          <span class="chartParamValue">{{
-            formatPercent(model.iv * 100, 1)
-          }}</span>
-        </div>
-      </div>
-    </section>
-
-    <section
-      v-if="ui.viewMode === 'formula'"
-      class="formulaMatrix"
-      :class="{ loading: ui.loading }"
-    >
-      <div class="formulaCell formulaCell--left">
-        <div
-          class="equationCard equationCard--symbolic equationCard--matrixLeft"
-        >
-          <div class="equationRow">
-            <span class="eqLhs">d₃ =</span>
-            <div class="eqFraction">
-              <div class="eqNum">ln(S/K) + (r + μ + σ²/2)T</div>
-              <div class="eqDivLine"></div>
-              <div class="eqDen">σ√T</div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="formulaCell formulaCell--right">
-        <template v-if="model">
-          <div
-            class="equationCard equationCard--symbolic equationCard--filled"
-            :class="{ flash: muFlash }"
-          >
-            <div class="equationRow">
-              <span class="eqLhs">d₃ =</span>
-              <div class="eqValue">
-                N(d₃) = {{ formatProbability(model.nd3, 2) }}
-                <span class="eqCompare"
-                  >// N(d₁) {{ formatProbability(model.nd1, 2) }}</span
+        <table class="formulaAlignTable">
+          <tbody>
+            <tr>
+              <td class="formulaAlignCell formulaAlignCell--left">
+                <div
+                  class="equationCard equationCard--symbolic equationCard--matrixLeft"
                 >
-              </div>
-            </div>
-          </div>
-        </template>
-      </div>
+                  <div class="equationRow">
+                    <span class="eqLhs">d₃ =</span>
+                    <div class="eqFraction">
+                      <div class="eqNum">ln(S/K) + (r + μ + σ²/2)T</div>
+                      <div class="eqDivLine"></div>
+                      <div class="eqDen">σ√T</div>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td class="formulaAlignCell formulaAlignCell--right">
+                <template v-if="model">
+                  <div
+                    class="equationCard equationCard--symbolic equationCard--filled"
+                    :class="{ flash: muFlash }"
+                  >
+                    <div class="equationRow">
+                      <span class="eqLhs">d₃ =</span>
+                      <div class="eqValue">
+                        N(d₃) = {{ formatProbability(model.nd3, 2) }}
+                        <span class="eqCompare"
+                          >// N(d₁) {{ formatProbability(model.nd1, 2) }}</span
+                        >
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </td>
+            </tr>
 
-      <div class="formulaCell formulaCell--left">
-        <div
-          class="equationCard equationCard--symbolic equationCard--matrixLeft"
-        >
-          <div class="equationRow">
-            <span class="eqLhs">d₄ =</span>
-            <div class="eqFraction">
-              <div class="eqNum">ln(S/K) + (r + μ − σ²/2)T</div>
-              <div class="eqDivLine"></div>
-              <div class="eqDen">σ√T</div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="formulaCell formulaCell--right">
-        <template v-if="model">
-          <div class="equationCard equationCard--symbolic equationCard--filled">
-            <div class="equationRow">
-              <span class="eqLhs">d₄ =</span>
-              <div class="eqValue">
-                N(d₄) = {{ formatProbability(model.nd4, 2) }}
-                <span class="eqCompare"
-                  >// N(d₂) {{ formatProbability(model.nd2, 2) }}</span
+            <tr>
+              <td class="formulaAlignCell formulaAlignCell--left">
+                <div
+                  class="equationCard equationCard--symbolic equationCard--matrixLeft"
                 >
-              </div>
-            </div>
-          </div>
-        </template>
-      </div>
+                  <div class="equationRow">
+                    <span class="eqLhs">d₄ =</span>
+                    <div class="eqFraction">
+                      <div class="eqNum">ln(S/K) + (r + μ − σ²/2)T</div>
+                      <div class="eqDivLine"></div>
+                      <div class="eqDen">σ√T</div>
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td class="formulaAlignCell formulaAlignCell--right">
+                <template v-if="model">
+                  <div
+                    class="equationCard equationCard--symbolic equationCard--filled"
+                  >
+                    <div class="equationRow">
+                      <span class="eqLhs">d₄ =</span>
+                      <div class="eqValue">
+                        N(d₄) = {{ formatProbability(model.nd4, 2) }}
+                        <span class="eqCompare"
+                          >// N(d₂) {{ formatProbability(model.nd2, 2) }}</span
+                        >
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </td>
+            </tr>
 
-      <div class="formulaCell formulaCell--left">
-        <div class="answerCard answerCard--symbolic equationCard--matrixLeft">
-          <div class="answerValue">
-            C =
-            <span class="eqInline"
-              >Se<sup>μT</sup>N(d₃) − Ke<sup>−rT</sup>N(d₄)</span
-            >
-          </div>
-        </div>
-      </div>
-      <div class="formulaCell formulaCell--right">
-        <template v-if="model">
-          <div class="answerCard">
-            <div class="answerValue">
-              C = {{ formatMoney(model.subjectivePrice, 0) }}
-              <span class="marketComment"
-                >// was {{ formatMoney(model.markPrice, 0) }}</span
-              >
-              <span
-                class="answerEdgeInline"
-                :class="{ pos: model.edge > 0, neg: model.edge < 0 }"
-              >
-                Diff: {{ formatMoney(model.edge, 0) }} ({{
-                  formatPercent(model.edgePct, 1)
-                }})
-              </span>
-            </div>
-          </div>
-        </template>
-        <div class="empty" v-else>Waiting for complete market inputs.</div>
-      </div>
+            <tr>
+              <td class="formulaAlignCell formulaAlignCell--left">
+                <div
+                  class="equationCard equationCard--symbolic equationCard--matrixLeft"
+                >
+                  <div class="equationRow">
+                    <span class="eqLhs">C =</span>
+                    <div class="eqValue eqValue--formula">
+                      <span class="eqInline"
+                        >Se<sup>μT</sup>N(d₃) − Ke<sup>−rT</sup>N(d₄)</span
+                      >
+                    </div>
+                  </div>
+                </div>
+              </td>
+              <td class="formulaAlignCell formulaAlignCell--right">
+                <template v-if="model">
+                  <div class="answerStack">
+                    <div class="equationRow equationRow--answer">
+                      <span class="eqLhs">C =</span>
+                      <div class="eqValue eqValue--answer">
+                        {{ formatMoney(model.subjectivePrice, 0) }}
+                      </div>
+                    </div>
+                    <div class="answerMetaRow">
+                      <span class="marketComment"
+                        >// was {{ formatMoney(model.markPrice, 0) }}</span
+                      >
+                      <span
+                        class="answerEdgeInline"
+                        :class="{ pos: model.edge > 0, neg: model.edge < 0 }"
+                      >
+                        Diff: {{ formatMoney(model.edge, 0) }} ({{
+                          formatPercent(model.edgePct, 1)
+                        }})
+                      </span>
+                    </div>
+                  </div>
+                </template>
+                <div class="empty" v-else>Waiting for complete market inputs.</div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
 
-      <div v-if="ui.loading" class="overlay">Loading market inputs...</div>
-    </section>
+        <div v-if="ui.loading" class="overlay">Loading market inputs...</div>
+      </section>
 
-    <section v-else class="chartMatrix" :class="{ loading: ui.loading }">
-      <template v-if="chartBars.length">
-        <div class="distributionCard">
+      <section v-else class="chartMatrix" :class="{ loading: ui.loading }">
+        <template v-if="chartBars.length">
+          <div class="distributionCard">
           <div class="distributionHeader">
             <div class="distributionTitleBlock">
               <div class="distributionTitle">Adjusted prices by strike</div>
@@ -938,15 +1001,16 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
+          </div>
+        </template>
+
+        <div v-else class="empty">
+          No strike valuations available for chart mode.
         </div>
-      </template>
 
-      <div v-else class="empty">
-        No strike valuations available for chart mode.
-      </div>
-
-      <div v-if="ui.loading" class="overlay">Loading market inputs...</div>
-    </section>
+        <div v-if="ui.loading" class="overlay">Loading market inputs...</div>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -956,6 +1020,7 @@ onUnmounted(() => {
   background: #000;
   min-height: 100vh;
   color: #e8e8ea;
+  --content-width: min(1320px, calc(100vw - 48px));
   --formula-font:
     "Cambria Math", "STIX Two Text", "Times New Roman", Times, serif;
 }
@@ -978,33 +1043,37 @@ onUnmounted(() => {
   gap: 12px;
 }
 
+.layoutFrame {
+  width: var(--content-width);
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
 .formulaMatrix {
   position: relative;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-template-rows: repeat(3, minmax(120px, auto));
-  column-gap: 0;
-  row-gap: 72px;
-  width: min(1700px, 100%);
-  margin: 0 auto;
-  padding: 10px 8px 24px;
-  min-height: calc(100vh - 280px);
-  align-items: center;
+  width: 100%;
+  margin: 0;
+  padding: 6px 10px 16px;
+  min-height: 0;
+  box-sizing: border-box;
 }
 
-.formulaCell {
-  min-width: 0;
-  display: flex;
-  align-items: center;
+.formulaAlignTable {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0 clamp(22px, 4.2vh, 48px);
 }
 
-.formulaCell--left {
-  justify-content: center;
+.formulaAlignCell {
+  width: 50%;
+  vertical-align: middle;
+  padding: 0 6px;
 }
 
-.formulaCell--right {
-  justify-content: flex-start;
-  padding-left: 42px;
+.formulaAlignCell--left,
+.formulaAlignCell--right {
+  text-align: center;
 }
 
 .equationCard--matrixLeft,
@@ -1014,32 +1083,56 @@ onUnmounted(() => {
   align-items: center;
 }
 
-.formulaCell .equationCard,
-.formulaCell .answerCard {
+.formulaAlignCell .equationCard,
+.formulaAlignCell .answerCard {
   font-family: var(--formula-font);
 }
 
 .topDashboard {
-  width: min(1300px, 100%);
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 24px;
-  padding: 2px 8px 14px;
-}
-
-.controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  align-items: center;
-}
-
-.controlsTop {
-  margin: 0;
-  justify-content: center;
   width: 100%;
+  margin: 0;
+  padding: 2px 10px 16px;
+  box-sizing: border-box;
+}
+
+.topAlignTable {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0 14px;
+}
+
+.topAlignCell {
+  vertical-align: top;
+  padding: 0 6px;
+}
+
+.topAlignCell--left {
+  width: 34%;
+}
+
+.topAlignCell--middle {
+  width: 40%;
+}
+
+.topAlignCell--right {
+  width: 26%;
+  text-align: right;
+}
+
+.topControlTable {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+}
+
+.topControlTable td {
+  vertical-align: top;
+}
+
+.topControlTable td + td {
+  padding-left: 12px;
 }
 
 .updatedStamp {
@@ -1090,7 +1183,7 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-.controlsTop .field {
+.topAlignTable .field {
   min-height: 56px;
   height: 56px;
   padding: 0 18px;
@@ -1100,7 +1193,15 @@ onUnmounted(() => {
   background: #0f1318;
 }
 
-.controlsTop .field label {
+.fieldExpiry {
+  min-width: 220px;
+}
+
+.fieldStrike {
+  min-width: 180px;
+}
+
+.topAlignTable .field label {
   font-family:
     ui-sans-serif,
     system-ui,
@@ -1115,7 +1216,7 @@ onUnmounted(() => {
   color: rgba(226, 232, 240, 0.72);
 }
 
-.controlsTop .field select {
+.topAlignTable .field select {
   font-family:
     ui-sans-serif,
     system-ui,
@@ -1130,27 +1231,6 @@ onUnmounted(() => {
   font-weight: 600;
   color: #f8fafc;
   padding-right: 0;
-}
-
-.controlsTop .saveButton {
-  min-height: 56px;
-  height: 56px;
-  padding: 0 18px;
-  font-size: 18px;
-  font-weight: 600;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: #0f1318;
-  color: #f8fafc;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
 }
 
 .viewToggle {
@@ -1190,61 +1270,33 @@ onUnmounted(() => {
   background: #131923;
 }
 
-.metaRow {
+.topParamTable {
   width: 100%;
-  margin-top: 4px;
-  display: flex;
-  justify-content: center;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0 8px;
 }
 
-.chartParamsRow {
-  width: min(1700px, 100%);
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 12px;
-  align-items: center;
-  margin-top: 4px;
-  padding: 0 4px;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
+.topParamTable td {
+  vertical-align: baseline;
 }
 
-.chartParam {
-  display: flex;
-  align-items: baseline;
-  justify-content: center;
-  gap: 8px;
-  min-width: 0;
-  white-space: nowrap;
-}
-
-.chartParamLabel {
+.topParamLabelCell {
   color: #9ea7ba;
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 600;
   letter-spacing: 0.01em;
+  white-space: nowrap;
+  padding-right: 10px;
 }
 
-.chartParamValue {
+.topParamValueCell {
   color: #e6ebf4;
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-}
-
-.chartParamsRow--formula .chartParamLabel {
-  font-size: 18px;
-}
-
-.chartParamsRow--formula .chartParamValue {
   font-size: 19px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  text-align: left;
+  white-space: nowrap;
 }
 
 .paramsTable {
@@ -1283,11 +1335,16 @@ onUnmounted(() => {
 }
 
 .fEstField {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
   min-height: 56px;
   height: 56px;
   align-items: center;
   gap: 10px;
   padding: 0 18px;
+  width: 100%;
+  white-space: nowrap;
 }
 
 .fEstLabel {
@@ -1295,6 +1352,8 @@ onUnmounted(() => {
   font-size: 18px;
   line-height: 1;
   font-style: normal;
+  white-space: nowrap;
+  flex: 0 0 auto;
   font-family:
     ui-sans-serif,
     system-ui,
@@ -1309,8 +1368,9 @@ onUnmounted(() => {
 
 .fEstInput {
   appearance: none;
-  min-width: 170px;
-  width: 210px;
+  min-width: 0;
+  width: auto;
+  flex: 1 1 auto;
   height: 100%;
   background: transparent;
   border: 0;
@@ -1452,6 +1512,11 @@ onUnmounted(() => {
   text-align: left;
 }
 
+.eqValue--formula,
+.eqValue--answer {
+  min-width: 0;
+}
+
 .eqCompare {
   margin-left: 14px;
   color: #9096a8;
@@ -1498,11 +1563,34 @@ onUnmounted(() => {
   text-align: center;
 }
 
+.answerStack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.equationRow--answer {
+  justify-content: flex-start;
+}
+
+.answerMetaRow {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 14px;
+  padding-left: calc(2.35ch + 14px);
+  white-space: nowrap;
+}
+
 .answerValue {
   font-size: 38px;
   line-height: 1.15;
   font-style: italic;
   font-family: var(--formula-font);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .eqInline {
@@ -1521,11 +1609,17 @@ onUnmounted(() => {
 }
 
 .answerEdgeInline {
-  margin-left: 14px;
+  margin-left: 2px;
   font-size: 0.56em;
   line-height: 1;
   display: inline-block;
   transform: translateY(-1px);
+}
+
+.answerMetaRow .marketComment,
+.answerMetaRow .answerEdgeInline {
+  margin-left: 0;
+  transform: none;
 }
 
 .empty {
@@ -1556,14 +1650,15 @@ onUnmounted(() => {
 
 .chartMatrix {
   position: relative;
-  width: min(1700px, 100%);
-  margin: 0 auto;
+  width: 100%;
+  margin: 0;
   min-height: calc(100vh - 280px);
   padding: 8px 10px 28px;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 12px;
+  box-sizing: border-box;
 }
 
 .distributionCard {
@@ -1782,16 +1877,8 @@ onUnmounted(() => {
 
 @media (max-width: 1120px) {
   .formulaMatrix {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto;
-    row-gap: 28px;
     min-height: auto;
     padding-bottom: 18px;
-  }
-
-  .formulaCell--right {
-    justify-content: center;
-    padding-left: 0;
   }
 
   .equationCard--matrixLeft,
@@ -1799,13 +1886,31 @@ onUnmounted(() => {
     align-items: center;
   }
 
-  .formulaCell .answerCard,
-  .formulaCell .equationCard {
+  .formulaAlignCell .answerCard,
+  .formulaAlignCell .equationCard {
     text-align: center;
   }
 
-  .formulaCell .equationRow {
+  .formulaAlignCell .equationRow {
     justify-content: center;
+  }
+
+  .formulaAlignTable,
+  .formulaAlignTable tbody,
+  .formulaAlignTable tr,
+  .formulaAlignTable td {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .formulaAlignTable {
+    border-spacing: 0;
+  }
+
+  .formulaAlignCell {
+    padding: 0;
+    margin-bottom: 12px;
   }
 
   .overlay {
@@ -1843,27 +1948,19 @@ onUnmounted(() => {
     height: 46px;
   }
 
-  .controlsTop .field {
+  .topAlignTable .field {
     min-height: 44px;
     height: 44px;
     padding: 8px 12px;
     border-radius: 12px;
   }
 
-  .controlsTop .field label {
+  .topAlignTable .field label {
     font-size: 14px;
   }
 
-  .controlsTop .field select {
+  .topAlignTable .field select {
     font-size: 12px;
-  }
-
-  .controlsTop .saveButton {
-    min-height: 44px;
-    height: 44px;
-    font-size: 14px;
-    padding: 0 14px;
-    border-radius: 12px;
   }
 
   .viewToggle {
@@ -1876,22 +1973,48 @@ onUnmounted(() => {
     padding: 0 14px;
   }
 
-  .chartParamsRow {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px 12px;
+  .topAlignTable,
+  .topAlignTable tbody,
+  .topAlignTable tr,
+  .topAlignTable td {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
   }
 
-  .chartParamLabel,
-  .chartParamValue {
+  .topAlignTable {
+    border-spacing: 0;
+  }
+
+  .topAlignCell {
+    padding: 0;
+    margin-bottom: 8px;
+  }
+
+  .topControlTable,
+  .topControlTable tbody,
+  .topControlTable tr,
+  .topControlTable td {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .topControlTable td + td {
+    padding-left: 0;
+    margin-top: 8px;
+  }
+
+  .topParamTable {
+    border-spacing: 0 6px;
+  }
+
+  .topParamLabelCell {
     font-size: 14px;
   }
 
-  .chartParamsRow--formula .chartParamLabel {
-    font-size: 16px;
-  }
-
-  .chartParamsRow--formula .chartParamValue {
-    font-size: 17px;
+  .topParamValueCell {
+    font-size: 15px;
   }
 
   .fEstLabel {
@@ -1922,6 +2045,12 @@ onUnmounted(() => {
     margin-left: 0;
     margin-top: 2px;
     font-size: 16px;
+  }
+
+  .answerMetaRow .marketComment {
+    display: inline-block;
+    margin-top: 0;
+    font-size: 0.64em;
   }
 
   .chartMatrix {
