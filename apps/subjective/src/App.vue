@@ -645,15 +645,8 @@ onUnmounted(() => {
       <div class="titleRow">
         <h1>Subjective Valuation</h1>
         <div class="titleRight">
-          <div class="updatedStamp">
-            Last modified: {{ formatUpdated(data.lastLoadedAt) }}
-          </div>
-          <button
-            class="headerRefreshButton"
-            type="button"
-            @click="refreshInputs"
-            :disabled="ui.loading"
-          >
+          <div class="updatedStamp">Last modified: {{ formatUpdated(data.lastLoadedAt) }}</div>
+          <button class="headerRefreshButton" type="button" @click="refreshInputs" :disabled="ui.loading">
             <span aria-hidden="true">↻</span>
             <span>Refresh</span>
           </button>
@@ -664,65 +657,35 @@ onUnmounted(() => {
 
     <div class="layoutFrame">
       <section class="topDashboard" :class="{ loading: ui.loading }">
-        <table class="topAlignTable" aria-label="Inputs and parameters">
+        <table class="topTable" aria-label="Inputs and parameters">
           <tbody>
             <tr>
-              <td class="topAlignCell topAlignCell--left">
-                <table class="topControlTable">
-                  <tbody>
-                    <tr>
-                      <td>
-                        <div class="field fieldExpiry">
-                          <label for="expiry">Expiry</label>
-                          <select
-                            id="expiry"
-                            v-model="ui.expiryTs"
-                            @change="onExpiryChange"
-                          >
-                            <option
-                              v-for="expiry in expiryList"
-                              :key="expiry.timestamp"
-                              :value="String(expiry.timestamp)"
-                            >
-                              {{ expiry.code }}
-                            </option>
-                          </select>
-                        </div>
-                      </td>
-                      <td v-if="ui.viewMode === 'formula'">
-                        <div class="field fieldStrike">
-                          <label for="option-strike">Strike</label>
-                          <select
-                            id="option-strike"
-                            v-model="ui.optionStrike"
-                            @change="onStrikeChange"
-                          >
-                            <option
-                              v-for="strike in strikeOptions"
-                              :key="strike.value"
-                              :value="strike.value"
-                            >
-                              {{ strike.label }}
-                            </option>
-                            <option
-                              v-if="!strikeOptions.length"
-                              :value="ui.optionStrike"
-                            >
-                              {{ ui.optionStrike }}
-                            </option>
-                          </select>
-                        </div>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+              <td class="topCell topCellLeft">
+                <div class="controlRow">
+                  <div class="field fieldExpiry">
+                    <label for="expiry">Expiry</label>
+                    <select id="expiry" v-model="ui.expiryTs" @change="onExpiryChange">
+                      <option v-for="expiry in expiryList" :key="expiry.timestamp" :value="String(expiry.timestamp)">
+                        {{ expiry.code }}
+                      </option>
+                    </select>
+                  </div>
+
+                  <div class="field fieldStrike" v-if="ui.viewMode === 'formula'">
+                    <label for="option-strike">Strike</label>
+                    <select id="option-strike" v-model="ui.optionStrike" @change="onStrikeChange">
+                      <option v-for="strike in strikeOptions" :key="strike.value" :value="strike.value">
+                        {{ strike.label }}
+                      </option>
+                      <option v-if="!strikeOptions.length" :value="ui.optionStrike">{{ ui.optionStrike }}</option>
+                    </select>
+                  </div>
+                </div>
               </td>
 
-              <td class="topAlignCell topAlignCell--middle">
+              <td class="topCell topCellMiddle">
                 <div class="field fEstField" v-if="model">
-                  <label class="fEstLabel" for="adjustedForward"
-                    >F<sub>est</sub> =</label
-                  >
+                  <label class="fEstLabel" for="adjustedForward">F<sub>est</sub> =</label>
                   <input
                     id="adjustedForward"
                     class="fEstInput"
@@ -736,22 +699,12 @@ onUnmounted(() => {
                 </div>
               </td>
 
-              <td class="topAlignCell topAlignCell--right">
+              <td class="topCell topCellRight">
                 <div class="viewToggle" role="group" aria-label="Display mode">
-                  <button
-                    type="button"
-                    class="viewToggleButton"
-                    :class="{ active: ui.viewMode === 'formula' }"
-                    @click="ui.viewMode = 'formula'"
-                  >
+                  <button type="button" class="viewToggleButton" :class="{ active: ui.viewMode === 'formula' }" @click="ui.viewMode = 'formula'">
                     Formula
                   </button>
-                  <button
-                    type="button"
-                    class="viewToggleButton"
-                    :class="{ active: ui.viewMode === 'chart' }"
-                    @click="ui.viewMode = 'chart'"
-                  >
+                  <button type="button" class="viewToggleButton" :class="{ active: ui.viewMode === 'chart' }" @click="ui.viewMode = 'chart'">
                     Chart
                   </button>
                 </div>
@@ -759,57 +712,27 @@ onUnmounted(() => {
             </tr>
 
             <tr v-if="model">
-              <td class="topAlignCell">
-                <table class="topParamTable">
+              <td class="topCell">
+                <table class="paramTable">
                   <tbody>
-                    <tr>
-                      <td class="topParamLabelCell">Spot (S)</td>
-                      <td class="topParamValueCell">
-                        {{ formatMoney(model.spot, 1, 1) }}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td class="topParamLabelCell">μ</td>
-                      <td class="topParamValueCell">
-                        {{ formatPercent(model.mu * 100, 1) }}
-                      </td>
-                    </tr>
+                    <tr><th>Spot (S)</th><td>{{ formatMoney(model.spot, 1, 1) }}</td></tr>
+                    <tr><th>μ</th><td>{{ formatPercent(model.mu * 100, 1) }}</td></tr>
                   </tbody>
                 </table>
               </td>
-              <td class="topAlignCell">
-                <table class="topParamTable">
+              <td class="topCell">
+                <table class="paramTable">
                   <tbody>
-                    <tr>
-                      <td class="topParamLabelCell">Forward (F)</td>
-                      <td class="topParamValueCell">
-                        {{ formatMoney(model.forward, 1, 1) }}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td class="topParamLabelCell">σ</td>
-                      <td class="topParamValueCell">
-                        {{ formatPercent(model.iv * 100, 1) }}
-                      </td>
-                    </tr>
+                    <tr><th>Forward (F)</th><td>{{ formatMoney(model.forward, 1, 1) }}</td></tr>
+                    <tr><th>σ</th><td>{{ formatPercent(model.iv * 100, 1) }}</td></tr>
                   </tbody>
                 </table>
               </td>
-              <td class="topAlignCell">
-                <table class="topParamTable">
+              <td class="topCell">
+                <table class="paramTable">
                   <tbody>
-                    <tr>
-                      <td class="topParamLabelCell">r</td>
-                      <td class="topParamValueCell">
-                        {{ formatPercent(model.r * 100, 1) }}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td class="topParamLabelCell">T</td>
-                      <td class="topParamValueCell">
-                        {{ formatNumber(model.T, 4) }}y
-                      </td>
-                    </tr>
+                    <tr><th>r</th><td>{{ formatPercent(model.r * 100, 1) }}</td></tr>
+                    <tr><th>T</th><td>{{ formatNumber(model.T, 4) }}y</td></tr>
                   </tbody>
                 </table>
               </td>
@@ -818,119 +741,73 @@ onUnmounted(() => {
         </table>
       </section>
 
-      <section
-        v-if="ui.viewMode === 'formula'"
-        class="formulaMatrix"
-        :class="{ loading: ui.loading }"
-      >
-        <table class="formulaAlignTable">
+      <section v-if="ui.viewMode === 'formula'" class="formulaSection" :class="{ loading: ui.loading }">
+        <table class="formulaTable">
           <tbody>
             <tr>
-              <td class="formulaAlignCell formulaAlignCell--left">
-                <div
-                  class="equationCard equationCard--symbolic equationCard--matrixLeft"
-                >
-                  <div class="equationRow">
-                    <span class="eqLhs">d₃ =</span>
-                    <div class="eqFraction">
-                      <div class="eqNum">ln(S/K) + (r + μ + σ²/2)T</div>
-                      <div class="eqDivLine"></div>
-                      <div class="eqDen">σ√T</div>
-                    </div>
+              <td class="formulaCell">
+                <div class="equationRow">
+                  <span class="eqLhs eqLhsD">d₃ =</span>
+                  <div class="eqFraction">
+                    <div class="eqNum">ln(S/K) + (r + μ + σ²/2)T</div>
+                    <div class="eqDiv"></div>
+                    <div class="eqDen">σ√T</div>
                   </div>
                 </div>
               </td>
-              <td class="formulaAlignCell formulaAlignCell--right">
-                <template v-if="model">
-                  <div
-                    class="equationCard equationCard--symbolic equationCard--filled"
-                    :class="{ flash: muFlash }"
-                  >
-                    <div class="equationRow">
-                      <span class="eqLhs">d₃ =</span>
-                      <div class="eqValue">
-                        N(d₃) = {{ formatProbability(model.nd3, 2) }}
-                        <span class="eqCompare"
-                          >// N(d₁) {{ formatProbability(model.nd1, 2) }}</span
-                        >
-                      </div>
-                    </div>
+              <td class="formulaCell">
+                <div class="equationRow" v-if="model" :class="{ flash: muFlash }">
+                  <span class="eqLhs eqLhsD">N(d₃) =</span>
+                  <div class="eqValue">
+                    {{ formatProbability(model.nd3, 2) }}
+                    <span class="eqCompare">// N(d₁) {{ formatProbability(model.nd1, 2) }}</span>
                   </div>
-                </template>
+                </div>
               </td>
             </tr>
 
             <tr>
-              <td class="formulaAlignCell formulaAlignCell--left">
-                <div
-                  class="equationCard equationCard--symbolic equationCard--matrixLeft"
-                >
-                  <div class="equationRow">
-                    <span class="eqLhs">d₄ =</span>
-                    <div class="eqFraction">
-                      <div class="eqNum">ln(S/K) + (r + μ − σ²/2)T</div>
-                      <div class="eqDivLine"></div>
-                      <div class="eqDen">σ√T</div>
-                    </div>
+              <td class="formulaCell">
+                <div class="equationRow">
+                  <span class="eqLhs eqLhsD">d₄ =</span>
+                  <div class="eqFraction">
+                    <div class="eqNum">ln(S/K) + (r + μ − σ²/2)T</div>
+                    <div class="eqDiv"></div>
+                    <div class="eqDen">σ√T</div>
                   </div>
                 </div>
               </td>
-              <td class="formulaAlignCell formulaAlignCell--right">
-                <template v-if="model">
-                  <div
-                    class="equationCard equationCard--symbolic equationCard--filled"
-                  >
-                    <div class="equationRow">
-                      <span class="eqLhs">d₄ =</span>
-                      <div class="eqValue">
-                        N(d₄) = {{ formatProbability(model.nd4, 2) }}
-                        <span class="eqCompare"
-                          >// N(d₂) {{ formatProbability(model.nd2, 2) }}</span
-                        >
-                      </div>
-                    </div>
+              <td class="formulaCell">
+                <div class="equationRow" v-if="model">
+                  <span class="eqLhs eqLhsD">N(d₄) =</span>
+                  <div class="eqValue">
+                    {{ formatProbability(model.nd4, 2) }}
+                    <span class="eqCompare">// N(d₂) {{ formatProbability(model.nd2, 2) }}</span>
                   </div>
-                </template>
+                </div>
               </td>
             </tr>
 
             <tr>
-              <td class="formulaAlignCell formulaAlignCell--left">
-                <div
-                  class="equationCard equationCard--symbolic equationCard--matrixLeft"
-                >
-                  <div class="equationRow">
-                    <span class="eqLhs">C =</span>
-                    <div class="eqValue eqValue--formula">
-                      <span class="eqInline"
-                        >Se<sup>μT</sup>N(d₃) − Ke<sup>−rT</sup>N(d₄)</span
-                      >
-                    </div>
+              <td class="formulaCell">
+                <div class="equationRow">
+                  <span class="eqLhs eqLhsC">C =</span>
+                  <div class="eqValue eqValueFormula">
+                    Se<sup>μT</sup>N(d₃) − Ke<sup>−rT</sup>N(d₄)
                   </div>
                 </div>
               </td>
-              <td class="formulaAlignCell formulaAlignCell--right">
+              <td class="formulaCell">
                 <template v-if="model">
-                  <div class="answerStack">
-                    <div class="equationRow equationRow--answer">
-                      <span class="eqLhs">C =</span>
-                      <div class="eqValue eqValue--answer">
-                        {{ formatMoney(model.subjectivePrice, 0) }}
-                      </div>
-                    </div>
-                    <div class="answerMetaRow">
-                      <span class="marketComment"
-                        >// was {{ formatMoney(model.markPrice, 0) }}</span
-                      >
-                      <span
-                        class="answerEdgeInline"
-                        :class="{ pos: model.edge > 0, neg: model.edge < 0 }"
-                      >
-                        Diff: {{ formatMoney(model.edge, 0) }} ({{
-                          formatPercent(model.edgePct, 1)
-                        }})
-                      </span>
-                    </div>
+                  <div class="equationRow">
+                    <span class="eqLhs eqLhsC">C =</span>
+                    <div class="eqValue eqValueAnswer">{{ formatMoney(model.subjectivePrice, 0) }}</div>
+                  </div>
+                  <div class="eqMeta">
+                    <span class="metaWas">// was {{ formatMoney(model.markPrice, 0) }}</span>
+                    <span class="metaDiff" :class="{ pos: model.edge > 0, neg: model.edge < 0 }">
+                      Diff: {{ formatMoney(model.edge, 0) }} ({{ formatPercent(model.edgePct, 1) }})
+                    </span>
                   </div>
                 </template>
                 <div class="empty" v-else>Waiting for complete market inputs.</div>
@@ -942,71 +819,42 @@ onUnmounted(() => {
         <div v-if="ui.loading" class="overlay">Loading market inputs...</div>
       </section>
 
-      <section v-else class="chartMatrix" :class="{ loading: ui.loading }">
+      <section v-else class="chartSection" :class="{ loading: ui.loading }">
         <template v-if="chartBars.length">
-          <div class="distributionCard">
-          <div class="distributionHeader">
-            <div class="distributionTitleBlock">
-              <div class="distributionTitle">Adjusted prices by strike</div>
-            </div>
-            <div class="chartLegend">
-              <div class="legendItem">
-                <span class="legendSwatch legendSwatch--market"></span>
-                <span>Market price</span>
-              </div>
-              <div class="legendItem">
-                <span class="legendSwatch legendSwatch--adjusted"></span>
-                <span>Adjusted valuation</span>
+          <div class="chartCard">
+            <div class="chartHeader">
+              <div class="chartTitle">Adjusted prices by strike</div>
+              <div class="chartLegend">
+                <div class="legendItem"><span class="legendSwatch legendSwatchMarket"></span><span>Market price</span></div>
+                <div class="legendItem"><span class="legendSwatch legendSwatchAdjusted"></span><span>Adjusted valuation</span></div>
               </div>
             </div>
-          </div>
 
-          <div class="strikeChartWrap">
-            <div class="strikeChart">
-              <div
-                v-for="bar in chartBars"
-                :key="bar.strike"
-                class="strikeColumn"
-              >
-                <div class="barDataLabels">
-                  <div class="barDataRow">
-                    <span class="barDataMain">{{ formatMoney(bar.adjusted, 0) }}</span>
+            <div class="strikeChartWrap">
+              <div class="strikeChart">
+                <div v-for="bar in chartBars" :key="bar.strike" class="strikeColumn">
+                  <div class="barDataLabels">
+                    <div class="barDataMain">{{ formatMoney(bar.adjusted, 0) }}</div>
+                    <div class="barDataMuted" :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }">{{ formatPercent(bar.edgePct, 1) }}</div>
                   </div>
-                  <div class="barDataRow">
-                    <span
-                      class="barDataMuted"
-                      :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }"
-                    >
-                      {{ formatPercent(bar.edgePct, 1) }}
-                    </span>
+
+                  <div class="strikeBars">
+                    <div class="bar barMarket" :style="{ height: `${bar.marketPct}%` }"></div>
+                    <div
+                      v-if="bar.adjustedTopPct > 0"
+                      class="bar barAdjusted"
+                      :style="{ height: `${bar.adjustedTopPct}%`, bottom: `${bar.marketPct}%` }"
+                    ></div>
                   </div>
-                </div>
 
-                <div class="strikeBars">
-                  <div
-                    class="bar barMarket"
-                    :style="{ height: `${bar.marketPct}%` }"
-                  ></div>
-                  <div
-                    v-if="bar.adjustedTopPct > 0"
-                    class="bar barAdjusted"
-                    :style="{
-                      height: `${bar.adjustedTopPct}%`,
-                      bottom: `${bar.marketPct}%`,
-                    }"
-                  ></div>
+                  <div class="strikeLabel">{{ bar.strikeLabel }}</div>
                 </div>
-
-                <div class="strikeLabel">{{ bar.strikeLabel }}</div>
               </div>
             </div>
-          </div>
           </div>
         </template>
 
-        <div v-else class="empty">
-          No strike valuations available for chart mode.
-        </div>
+        <div v-else class="empty">No strike valuations available for chart mode.</div>
 
         <div v-if="ui.loading" class="overlay">Loading market inputs...</div>
       </section>
@@ -1016,13 +864,14 @@ onUnmounted(() => {
 
 <style scoped>
 .subjectiveApp {
-  max-width: none;
-  background: #000;
+  --content-width: min(1200px, calc(100vw - 48px));
+  --control-width: 250px;
+  --eq-size: 28px;
+  --formula-font: "Cambria Math", "STIX Two Text", "Times New Roman", Times, serif;
+  --ui-font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
   min-height: 100vh;
+  background: #000;
   color: #e8e8ea;
-  --content-width: min(1320px, calc(100vw - 48px));
-  --formula-font:
-    "Cambria Math", "STIX Two Text", "Times New Roman", Times, serif;
 }
 
 .header {
@@ -1032,7 +881,7 @@ onUnmounted(() => {
 }
 
 .titleRow {
-  width: 100%;
+  display: flex;
   align-items: center;
   justify-content: space-between;
 }
@@ -1043,139 +892,24 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-.layoutFrame {
-  width: var(--content-width);
-  margin: 0 auto;
-  box-sizing: border-box;
-}
-
-.formulaMatrix {
-  position: relative;
-  width: 100%;
-  margin: 0;
-  padding: 6px 10px 16px;
-  min-height: 0;
-  box-sizing: border-box;
-}
-
-.formulaAlignTable {
-  width: 100%;
-  table-layout: fixed;
-  border-collapse: separate;
-  border-spacing: 0 clamp(22px, 4.2vh, 48px);
-}
-
-.formulaAlignCell {
-  width: 50%;
-  vertical-align: middle;
-  padding: 0 6px;
-}
-
-.formulaAlignCell--left,
-.formulaAlignCell--right {
-  text-align: center;
-}
-
-.equationCard--matrixLeft,
-.answerCard.equationCard--matrixLeft {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.formulaAlignCell .equationCard,
-.formulaAlignCell .answerCard {
-  font-family: var(--formula-font);
-}
-
-.topDashboard {
-  width: 100%;
-  margin: 0;
-  padding: 2px 10px 16px;
-  box-sizing: border-box;
-}
-
-.topAlignTable {
-  width: 100%;
-  table-layout: fixed;
-  border-collapse: separate;
-  border-spacing: 0 14px;
-}
-
-.topAlignCell {
-  vertical-align: top;
-  padding: 0 6px;
-}
-
-.topAlignCell--left {
-  width: 34%;
-}
-
-.topAlignCell--middle {
-  width: 40%;
-}
-
-.topAlignCell--right {
-  width: 26%;
-  text-align: right;
-}
-
-.topControlTable {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  table-layout: fixed;
-}
-
-.topControlTable td {
-  vertical-align: top;
-}
-
-.topControlTable td + td {
-  padding-left: 12px;
-}
-
 .updatedStamp {
-  text-align: right;
   color: #a3aab9;
-  font-size: 12px;
-  letter-spacing: 0.01em;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
+  font: 12px var(--ui-font);
   white-space: nowrap;
 }
 
 .headerRefreshButton {
-  min-height: 36px;
   height: 36px;
   padding: 0 12px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: #0f1318;
   color: #f8fafc;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1;
+  font: 600 14px var(--ui-font);
   display: inline-flex;
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
 }
 
 .headerRefreshButton:disabled {
@@ -1183,216 +917,95 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-.topAlignTable .field {
-  min-height: 56px;
-  height: 56px;
-  padding: 0 18px;
-  align-items: center;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: #0f1318;
+.layoutFrame {
+  width: var(--content-width);
+  margin: 0 auto;
 }
 
-.fieldExpiry {
-  min-width: 220px;
+.topDashboard {
+  padding: 2px 10px 14px;
 }
 
-.fieldStrike {
-  min-width: 180px;
-}
-
-.topAlignTable .field label {
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
-  font-size: 18px;
-  font-weight: 600;
-  color: rgba(226, 232, 240, 0.72);
-}
-
-.topAlignTable .field select {
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
-  font-size: 16px;
-  line-height: 1;
-  font-weight: 600;
-  color: #f8fafc;
-  padding-right: 0;
-}
-
-.viewToggle {
-  display: inline-flex;
-  height: 56px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 14px;
-  background: #0f1318;
-  overflow: hidden;
-}
-
-.viewToggleButton {
-  border: 0;
-  background: transparent;
-  color: rgba(226, 232, 240, 0.72);
-  font-size: 18px;
-  font-weight: 600;
-  padding: 0 18px;
-  cursor: pointer;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
-}
-
-.viewToggleButton + .viewToggleButton {
-  border-left: 1px solid rgba(255, 255, 255, 0.12);
-}
-
-.viewToggleButton.active {
-  color: #f8fafc;
-  background: #131923;
-}
-
-.topParamTable {
+.topTable {
   width: 100%;
   table-layout: fixed;
   border-collapse: separate;
-  border-spacing: 0 8px;
+  border-spacing: 0 18px;
 }
 
-.topParamTable td {
-  vertical-align: baseline;
+.topCell {
+  vertical-align: top;
+  padding: 0 6px;
 }
 
-.topParamLabelCell {
-  color: #9ea7ba;
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+.topCellLeft {
+  width: 52%;
+}
+
+.topCellMiddle {
+  width: 24%;
+}
+
+.topCellRight {
+  width: 26%;
+  text-align: right;
+}
+
+.controlRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.field {
+  width: var(--control-width);
+  box-sizing: border-box;
+  height: 56px;
+  padding: 0 18px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0f1318;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fieldExpiry {
+  min-width: 0;
+}
+
+.fieldStrike {
+  min-width: 0;
+}
+
+.field label {
+  color: rgba(226, 232, 240, 0.72);
+  font: 600 18px var(--ui-font);
   white-space: nowrap;
-  padding-right: 10px;
 }
 
-.topParamValueCell {
-  color: #e6ebf4;
-  font-size: 19px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.paramsTable {
-  width: auto;
-  border-collapse: separate;
-  border-spacing: 34px 8px;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
-}
-
-.paramsTable th {
-  text-align: left;
-  color: #a4acbc;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.12;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-}
-
-.paramsTable td {
-  text-align: left;
-  color: #e3e8f1;
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
+.field select,
+.fEstInput {
+  border: 0;
+  background: transparent;
+  color: #f8fafc;
+  font: 600 16px var(--ui-font);
+  outline: none;
 }
 
 .fEstField {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: nowrap;
-  min-height: 56px;
-  height: 56px;
-  align-items: center;
-  gap: 10px;
-  padding: 0 18px;
-  width: 100%;
+  width: var(--control-width);
+  margin: 0 auto;
   white-space: nowrap;
 }
 
 .fEstLabel {
-  color: rgba(226, 232, 240, 0.72);
-  font-size: 18px;
-  line-height: 1;
-  font-style: normal;
-  white-space: nowrap;
-  flex: 0 0 auto;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
-  letter-spacing: 0.01em;
+  font: 600 18px var(--ui-font);
 }
 
 .fEstInput {
-  appearance: none;
+  flex: 1;
   min-width: 0;
-  width: auto;
-  flex: 1 1 auto;
-  height: 100%;
-  background: transparent;
-  border: 0;
-  color: #f8fafc;
-  font-size: 17px;
-  line-height: 1;
-  padding: 0;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
-  font-style: normal;
-  font-weight: 700;
-}
-
-.fEstInput:focus {
-  outline: none;
 }
 
 .fEstInput::-webkit-outer-spin-button,
@@ -1405,41 +1018,159 @@ onUnmounted(() => {
   -moz-appearance: textfield;
 }
 
-.equationCard {
+.viewToggle {
+  height: 56px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  background: #0f1318;
+  display: inline-flex;
+  overflow: hidden;
+}
+
+.viewToggleButton {
   border: 0;
-  border-radius: 0;
-  padding: 0;
+  padding: 0 18px;
+  color: rgba(226, 232, 240, 0.72);
   background: transparent;
+  font: 600 18px var(--ui-font);
+  cursor: pointer;
 }
 
-.equationCard--symbolic {
-  min-height: 0;
-  width: fit-content;
-  max-width: 100%;
+.viewToggleButton + .viewToggleButton {
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-.equationCard--symbolic .equationRow {
-  justify-content: center;
+.viewToggleButton.active {
+  color: #f8fafc;
+  background: #131923;
 }
 
-.equationCard--symbolic .eqFraction {
-  flex: 0 0 auto;
-  min-width: 0;
+.paramTable {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0 8px;
+  table-layout: fixed;
+}
+
+.paramTable th,
+.paramTable td {
+  white-space: nowrap;
+  text-align: left;
+  vertical-align: baseline;
+  padding: 0;
+}
+
+.paramTable th {
+  color: #9ea7ba;
+  font: 600 18px var(--ui-font);
+  padding-right: 10px;
+}
+
+.paramTable td {
+  color: #e6ebf4;
+  font: 650 19px var(--ui-font);
+}
+
+.formulaSection,
+.chartSection {
+  position: relative;
+  width: 100%;
+  padding: 2px 10px 18px;
+  box-sizing: border-box;
+}
+
+.formulaTable {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0 clamp(24px, 4.5vh, 52px);
+}
+
+.formulaCell {
+  width: 50%;
+  text-align: center;
+  vertical-align: middle;
+  padding: 0 6px;
+}
+
+.equationRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.eqLhs {
+  min-width: 2.35ch;
+  text-align: right;
+  color: #f0f2f9;
+  font: italic 700 var(--eq-size) / 1 var(--formula-font);
+}
+
+.eqLhsD {
+  font-size: var(--eq-size);
+}
+
+.eqLhsC {
+  font-size: var(--eq-size);
+}
+
+.eqFraction {
   display: inline-grid;
   justify-items: center;
 }
 
-.equationCard--symbolic .eqNum,
-.equationCard--symbolic .eqDen {
-  width: max-content;
+.eqNum,
+.eqDen {
+  color: #e1e4f1;
+  font: italic 400 var(--eq-size) / 1.25 var(--formula-font);
+  white-space: nowrap;
 }
 
-.equationCard--symbolic .eqDivLine {
+.eqDiv {
   width: 100%;
+  height: 1px;
+  margin: 6px 0 9px;
+  background: #f0f2f9;
 }
 
-.equationCard.flash {
-  animation: muPulse 900ms ease;
+.eqValue {
+  color: #f0f2f9;
+  text-align: left;
+  white-space: nowrap;
+  font: italic 600 var(--eq-size) / 1.2 var(--formula-font);
+}
+
+.eqValueFormula {
+  font: italic 400 var(--eq-size) / 1.25 var(--formula-font);
+}
+
+.eqValueFormula sup {
+  font-size: 1em;
+  line-height: 1;
+}
+
+.eqCompare {
+  margin-left: 14px;
+  color: #9096a8;
+  font-size: 1em;
+}
+
+.eqMeta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 22px;
+  padding-left: calc(2.35ch + 14px);
+  margin-top: 10px;
+  white-space: nowrap;
+}
+
+.metaWas {
+  color: #8a90a1;
+  font: italic 600 20px/1 var(--formula-font);
+}
+
+.metaDiff {
+  font: italic 700 20px/1 var(--formula-font);
 }
 
 @keyframes muPulse {
@@ -1447,179 +1178,15 @@ onUnmounted(() => {
     text-shadow: 0 0 0 rgba(111, 157, 255, 0);
   }
   35% {
-    text-shadow:
-      0 0 8px rgba(111, 157, 255, 0.65),
-      0 0 20px rgba(111, 157, 255, 0.35);
+    text-shadow: 0 0 8px rgba(111, 157, 255, 0.65), 0 0 20px rgba(111, 157, 255, 0.35);
   }
   100% {
     text-shadow: 0 0 0 rgba(111, 157, 255, 0);
   }
 }
 
-.equationRow {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.eqLhs {
-  color: #f0f2f9;
-  font-size: 40px;
-  line-height: 1;
-  font-style: italic;
-  font-family: var(--formula-font);
-  flex: 0 0 auto;
-  min-width: 2.35ch;
-  text-align: right;
-}
-
-.eqFraction {
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.eqNum {
-  color: #e1e4f1;
-  font-size: 28px;
-  line-height: 1.25;
-  font-style: italic;
-  font-family: var(--formula-font);
-  white-space: nowrap;
-}
-
-.eqDivLine {
-  height: 1px;
-  margin: 6px 0 9px;
-  background: #f0f2f9;
-}
-
-.eqDen {
-  color: #e1e4f1;
-  font-size: 28px;
-  line-height: 1.2;
-  font-style: italic;
-  font-family: var(--formula-font);
-}
-
-.eqValue {
-  color: #f0f2f9;
-  font-size: 32px;
-  line-height: 1.2;
-  font-style: italic;
-  font-family: var(--formula-font);
-  white-space: nowrap;
-  min-width: 14.2ch;
-  text-align: left;
-}
-
-.eqValue--formula,
-.eqValue--answer {
-  min-width: 0;
-}
-
-.eqCompare {
-  margin-left: 14px;
-  color: #9096a8;
-  font-size: 0.62em;
-  display: inline-block;
-  transform: translateY(-1px);
-  font-family: var(--formula-font);
-}
-
-.n {
-  color: inherit;
-  font-style: inherit;
-  font-family: inherit;
-  font-size: 1em;
-  font-weight: inherit;
-}
-
-.eqResult {
-  margin-top: 8px;
-  color: #d6dae9;
-  font-size: 28px;
-  line-height: 1.2;
-  font-style: italic;
-}
-
-.equationCard--filled .eqResult {
-  padding-left: 0;
-}
-
-.answerCard {
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-  background: transparent;
-}
-
-.answerCard--symbolic {
-  margin-top: 0;
-  width: fit-content;
-  max-width: 100%;
-}
-
-.answerCard--symbolic .answerValue {
-  text-align: center;
-}
-
-.answerStack {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.equationRow--answer {
-  justify-content: flex-start;
-}
-
-.answerMetaRow {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 14px;
-  padding-left: calc(2.35ch + 14px);
-  white-space: nowrap;
-}
-
-.answerValue {
-  font-size: 38px;
-  line-height: 1.15;
-  font-style: italic;
-  font-family: var(--formula-font);
-  display: inline-flex;
-  align-items: baseline;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.eqInline {
-  color: #f0f2f9;
-  font-size: 0.68em;
-  font-family: var(--formula-font);
-}
-
-.marketComment {
-  margin-left: 14px;
-  color: #8a90a1;
-  font-size: 0.64em;
-  display: inline-block;
-  transform: translateY(-1px);
-  font-family: var(--formula-font);
-}
-
-.answerEdgeInline {
-  margin-left: 2px;
-  font-size: 0.56em;
-  line-height: 1;
-  display: inline-block;
-  transform: translateY(-1px);
-}
-
-.answerMetaRow .marketComment,
-.answerMetaRow .answerEdgeInline {
-  margin-left: 0;
-  transform: none;
+.flash {
+  animation: muPulse 900ms ease;
 }
 
 .empty {
@@ -1643,94 +1210,36 @@ onUnmounted(() => {
   place-items: center;
   color: #fff;
   background: color-mix(in oklab, #000, transparent 38%);
-  border-radius: 0;
   font-size: 14px;
   z-index: 10;
 }
 
-.chartMatrix {
-  position: relative;
+.chartCard {
   width: 100%;
-  margin: 0;
-  min-height: calc(100vh - 280px);
-  padding: 8px 10px 28px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 12px;
+  background: #000;
+  padding: 14px 10px 10px;
   box-sizing: border-box;
 }
 
-.distributionCard {
-  background: #000;
-  border: 0;
-  border-radius: 0;
-  padding: 18px 16px 14px;
-  width: 100%;
-}
-
-.distributionHeader {
+.chartHeader {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
+  gap: 16px;
   margin-bottom: 8px;
 }
 
-.distributionTitleBlock {
-  display: grid;
-  gap: 4px;
-}
-
-.distributionEyebrow {
-  color: #afb6c7;
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
-}
-
-.distributionTitle {
+.chartTitle {
   color: #f6f8fc;
-  font-size: 22px;
-  line-height: 1.15;
-  font-weight: 700;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
+  font: 700 22px/1.2 var(--ui-font);
 }
 
 .chartLegend {
   display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 22px;
-  font-size: 14px;
   color: #d4dae8;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
-  margin-top: 2px;
+  font: 14px var(--ui-font);
 }
 
 .legendItem {
@@ -1742,27 +1251,24 @@ onUnmounted(() => {
 .legendSwatch {
   width: 16px;
   height: 16px;
-  border-radius: 4px;
 }
 
-.legendSwatch--market {
+.legendSwatchMarket {
   background: #eceff5;
 }
 
-.legendSwatch--adjusted {
+.legendSwatchAdjusted {
   background: #050607;
   border: 1.1px solid #eceff5;
 }
 
 .strikeChartWrap {
-  flex: 1 1 auto;
   overflow-x: auto;
   overflow-y: hidden;
   padding: 6px 6px 4px;
 }
 
 .strikeChart {
-  height: 100%;
   min-height: 500px;
   display: grid;
   grid-auto-flow: column;
@@ -1774,11 +1280,11 @@ onUnmounted(() => {
 }
 
 .strikeColumn {
+  min-height: 470px;
   display: grid;
   grid-template-rows: auto 1fr auto;
   gap: 10px;
   align-items: end;
-  min-height: 470px;
 }
 
 .barDataLabels {
@@ -1786,28 +1292,13 @@ onUnmounted(() => {
   justify-items: center;
   gap: 2px;
   white-space: nowrap;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
-}
-
-.barDataRow {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
+  font-family: var(--ui-font);
 }
 
 .barDataMain {
   color: #f2f5fc;
   font-size: 16px;
   font-weight: 700;
-  letter-spacing: 0.01em;
 }
 
 .barDataMuted {
@@ -1820,7 +1311,6 @@ onUnmounted(() => {
   position: relative;
   --bar-width: 46%;
   --bar-max-width: 28px;
-  height: 100%;
   min-height: 320px;
   display: flex;
   align-items: flex-end;
@@ -1830,9 +1320,9 @@ onUnmounted(() => {
 .bar {
   position: absolute;
   bottom: 0;
-  border-radius: 0 !important;
   box-sizing: border-box;
   min-height: 2px;
+  border-radius: 0 !important;
 }
 
 .barMarket {
@@ -1840,7 +1330,6 @@ onUnmounted(() => {
   max-width: var(--bar-max-width);
   background: #eceff5;
   z-index: 1;
-  border-radius: 0 !important;
 }
 
 .barAdjusted {
@@ -1850,234 +1339,104 @@ onUnmounted(() => {
   border: 1.1px solid #eceff5;
   border-bottom-width: 0;
   z-index: 2;
-  border-radius: 0 !important;
 }
 
 .strikeLabel {
   text-align: center;
   color: #d3d9e6;
-  font-size: 13px;
-  letter-spacing: 0.01em;
-  font-family:
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    Segoe UI,
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
+  font: 13px var(--ui-font);
   white-space: nowrap;
-  border: 0 !important;
-  outline: 0;
-  box-shadow: none;
   padding-top: 10px;
-  margin-top: 4px;
 }
 
 @media (max-width: 1120px) {
-  .formulaMatrix {
-    min-height: auto;
-    padding-bottom: 18px;
+  .subjectiveApp {
+    --eq-size: 22px;
   }
 
-  .equationCard--matrixLeft,
-  .answerCard.equationCard--matrixLeft {
-    align-items: center;
+  .layoutFrame {
+    width: calc(100vw - 20px);
   }
 
-  .formulaAlignCell .answerCard,
-  .formulaAlignCell .equationCard {
-    text-align: center;
-  }
-
-  .formulaAlignCell .equationRow {
-    justify-content: center;
-  }
-
-  .formulaAlignTable,
-  .formulaAlignTable tbody,
-  .formulaAlignTable tr,
-  .formulaAlignTable td {
+  .topTable,
+  .topTable tbody,
+  .topTable tr,
+  .topTable td,
+  .formulaTable,
+  .formulaTable tbody,
+  .formulaTable tr,
+  .formulaTable td {
     display: block;
     width: 100%;
     box-sizing: border-box;
   }
 
-  .formulaAlignTable {
-    border-spacing: 0;
+  .topCell,
+  .formulaCell {
+    padding: 0;
+    margin-bottom: 10px;
   }
 
-  .formulaAlignCell {
-    padding: 0;
-    margin-bottom: 12px;
+  .controlRow {
+    flex-wrap: wrap;
+  }
+
+  .topCellRight {
+    text-align: left;
+  }
+
+  .field,
+  .fEstField,
+  .viewToggle {
+    height: 44px;
+  }
+
+  .field,
+  .fEstField {
+    width: 100%;
+  }
+
+  .field label,
+  .fEstLabel,
+  .viewToggleButton {
+    font-size: 14px;
+  }
+
+  .field select,
+  .fEstInput {
+    font-size: 12px;
+  }
+
+  .paramTable th {
+    font-size: 14px;
+  }
+
+  .paramTable td {
+    font-size: 15px;
+  }
+
+  .eqMeta {
+    padding-left: 0;
+    margin-top: 4px;
+    font-size: 14px;
+  }
+
+  .metaWas,
+  .metaDiff {
+    font-size: 16px;
   }
 
   .overlay {
     position: fixed;
-    inset: 0;
   }
 
-  .formulaMatrix {
-    min-height: auto;
-  }
-
-  .eqLhs {
-    font-size: 34px;
-  }
-
-  .eqNum,
-  .eqDen {
-    font-size: 24px;
-  }
-
-  .eqValue {
-    font-size: 27px;
-  }
-
-  .eqResult {
-    font-size: 24px;
-  }
-
-  .answerValue {
-    font-size: 30px;
-  }
-
-  .fEstField {
-    min-height: 46px;
-    height: 46px;
-  }
-
-  .topAlignTable .field {
-    min-height: 44px;
-    height: 44px;
-    padding: 8px 12px;
-    border-radius: 12px;
-  }
-
-  .topAlignTable .field label {
-    font-size: 14px;
-  }
-
-  .topAlignTable .field select {
-    font-size: 12px;
-  }
-
-  .viewToggle {
-    height: 44px;
-    border-radius: 12px;
-  }
-
-  .viewToggleButton {
-    font-size: 14px;
-    padding: 0 14px;
-  }
-
-  .topAlignTable,
-  .topAlignTable tbody,
-  .topAlignTable tr,
-  .topAlignTable td {
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-  }
-
-  .topAlignTable {
-    border-spacing: 0;
-  }
-
-  .topAlignCell {
-    padding: 0;
-    margin-bottom: 8px;
-  }
-
-  .topControlTable,
-  .topControlTable tbody,
-  .topControlTable tr,
-  .topControlTable td {
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-  }
-
-  .topControlTable td + td {
-    padding-left: 0;
-    margin-top: 8px;
-  }
-
-  .topParamTable {
-    border-spacing: 0 6px;
-  }
-
-  .topParamLabelCell {
-    font-size: 14px;
-  }
-
-  .topParamValueCell {
-    font-size: 15px;
-  }
-
-  .fEstLabel {
-    font-size: 14px;
-  }
-
-  .fEstInput {
-    font-size: 13px;
-    min-width: 140px;
-    width: 170px;
-  }
-
-  .titleRight {
-    gap: 8px;
-  }
-
-  .headerRefreshButton {
-    height: 30px;
-    min-height: 30px;
-    padding: 0 10px;
-    font-size: 12px;
-    border-radius: 10px;
-    gap: 6px;
-  }
-
-  .marketComment {
-    display: block;
-    margin-left: 0;
-    margin-top: 2px;
-    font-size: 16px;
-  }
-
-  .answerMetaRow .marketComment {
-    display: inline-block;
-    margin-top: 0;
-    font-size: 0.64em;
-  }
-
-  .chartMatrix {
-    min-height: auto;
-    padding: 6px 2px 18px;
-    justify-content: flex-start;
-  }
-
-  .distributionCard {
-    border-radius: 0;
-    border: 0;
-    background: #000;
-    padding: 12px 10px 10px;
-  }
-
-  .distributionHeader {
+  .chartHeader {
     flex-direction: column;
-    align-items: flex-start;
     gap: 10px;
   }
 
-  .distributionTitle {
+  .chartTitle {
     font-size: 18px;
-  }
-
-  .distributionEyebrow {
-    font-size: 11px;
   }
 
   .chartLegend {
@@ -2110,13 +1469,9 @@ onUnmounted(() => {
     font-size: 12px;
   }
 
-  .barDataMuted {
-    font-size: 10px;
-  }
-
+  .barDataMuted,
   .strikeLabel {
-    font-size: 12px;
-    padding-top: 8px;
+    font-size: 10px;
   }
 }
 </style>
