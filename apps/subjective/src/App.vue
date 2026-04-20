@@ -4,6 +4,7 @@ import { fetchAllInstruments } from "../../../lib/thalex.js";
 
 const API_BASE = "https://thalex.com/api/v2/public";
 const SECONDS_PER_BS_YEAR = 365.25 * 24 * 60 * 60;
+const DEFAULT_FORWARD_MULTIPLIER = 1.05;
 
 const ui = reactive({
   expiryTs: "",
@@ -360,6 +361,11 @@ function formatPercent(value, decimals = 2) {
   return `${sign}${formatNumber(value, decimals)}%`;
 }
 
+function formatMultiplier(value, decimals = 1) {
+  if (!Number.isFinite(value)) return "-";
+  return `${formatNumber(value, decimals)}x`;
+}
+
 function formatProbability(value, decimals = 2) {
   if (!Number.isFinite(value)) return "-";
   return `${formatNumber(value * 100, decimals)}%`;
@@ -443,6 +449,7 @@ const chartBars = computed(() => {
     ...row,
     edge: row.adjusted - row.market,
     edgePct: row.market > 0 ? (row.adjusted / row.market - 1) * 100 : null,
+    ratio: row.market > 0 ? row.adjusted / row.market : null,
     marketPct: (row.market / scale) * 100,
     adjustedPct: (row.adjusted / scale) * 100,
     adjustedTopPct: (Math.max(0, row.adjusted - row.market) / scale) * 100,
@@ -550,9 +557,13 @@ async function loadMarketForSelected({ preserveAdjusted = false } = {}) {
     if (!preserveAdjusted && !adjustedDirty.value) {
       const forward = toFiniteNumber(ticker?.forward);
       if (Number.isFinite(forward) && forward > 0) {
-        ui.adjustedForward = String(Math.round(forward));
+        ui.adjustedForward = String(
+          Math.round(forward * DEFAULT_FORWARD_MULTIPLIER),
+        );
       } else if (Number.isFinite(spot) && spot > 0) {
-        ui.adjustedForward = String(Math.round(spot));
+        ui.adjustedForward = String(
+          Math.round(spot * DEFAULT_FORWARD_MULTIPLIER),
+        );
       }
     }
 
@@ -705,15 +716,15 @@ onUnmounted(() => {
           <div v-if="model" class="paramsGrid">
             <div class="paramCol">
               <div class="paramLine"><span class="paramLabel">Spot (S)</span><span class="paramValue">{{ formatMoney(model.spot, 1, 1) }}</span></div>
-              <div class="paramLine"><span class="paramLabel">μ</span><span class="paramValue">{{ formatPercent(model.mu * 100, 1) }}</span></div>
-            </div>
-            <div class="paramCol">
               <div class="paramLine"><span class="paramLabel">Forward (F)</span><span class="paramValue">{{ formatMoney(model.forward, 1, 1) }}</span></div>
-              <div class="paramLine"><span class="paramLabel">σ</span><span class="paramValue">{{ formatPercent(model.iv * 100, 1) }}</span></div>
             </div>
             <div class="paramCol">
-              <div class="paramLine"><span class="paramLabel">r</span><span class="paramValue">{{ formatPercent(model.r * 100, 1) }}</span></div>
+              <div class="paramLine"><span class="paramLabel">Forward rate (r)</span><span class="paramValue">{{ formatPercent(model.r * 100, 1) }}</span></div>
+              <div class="paramLine"><span class="paramLabel">Drift (μ)</span><span class="paramValue">{{ formatPercent(model.mu * 100, 1) }}</span></div>
+            </div>
+            <div class="paramCol">
               <div class="paramLine"><span class="paramLabel">T</span><span class="paramValue">{{ formatNumber(model.T, 4) }}y</span></div>
+              <div class="paramLine"><span class="paramLabel">Vol (σ)</span><span class="paramValue">{{ formatPercent(model.iv * 100, 1) }}</span></div>
             </div>
           </div>
         </div>
@@ -811,10 +822,10 @@ onUnmounted(() => {
             <div class="strikeChartWrap">
               <div class="strikeChart">
                 <div v-for="bar in chartBars" :key="bar.strike" class="strikeColumn">
-                  <div class="barDataLabels">
-                    <div class="barDataMain">{{ formatMoney(bar.adjusted, 0) }}</div>
-                    <div class="barDataMuted" :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }">{{ formatPercent(bar.edgePct, 1) }}</div>
-                  </div>
+                    <div class="barDataLabels">
+                      <div class="barDataMain">{{ formatMoney(bar.adjusted, 0) }}</div>
+                    <div class="barDataMuted" :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }">{{ formatMultiplier(bar.ratio, 1) }}</div>
+                    </div>
 
                   <div class="strikeBars">
                     <div class="bar barMarket" :style="{ height: `${bar.marketPct}%` }"></div>
@@ -845,6 +856,7 @@ onUnmounted(() => {
   --content-width: min(1200px, calc(100vw - 48px));
   --control-width: 250px;
   --eq-size: 28px;
+  --eq-comment-size: 20px;
   --formula-font: "Cambria Math", "STIX Two Text", "Times New Roman", Times, serif;
   --ui-font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
   min-height: 100vh;
@@ -920,6 +932,7 @@ onUnmounted(() => {
   justify-content: center;
   align-items: center;
   gap: 12px;
+  margin-bottom: 36px;
 }
 
 .paramsGrid {
@@ -927,7 +940,8 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(3, max-content);
   justify-content: center;
-  gap: 56px;
+  gap: clamp(56px, 8vw, 120px);
+  margin-bottom: 36px;
 }
 
 .paramCol {
@@ -1121,7 +1135,8 @@ onUnmounted(() => {
 .eqCompare {
   margin-left: 14px;
   color: #9096a8;
-  font-size: 1em;
+  font-size: var(--eq-comment-size);
+  line-height: 1;
 }
 
 .eqMeta {
@@ -1135,7 +1150,7 @@ onUnmounted(() => {
 
 .metaWas {
   color: #8a90a1;
-  font: italic 600 20px/1 var(--formula-font);
+  font: italic 600 var(--eq-comment-size) / 1 var(--formula-font);
 }
 
 .metaDiff {
