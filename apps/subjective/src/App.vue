@@ -657,88 +657,66 @@ onUnmounted(() => {
 
     <div class="layoutFrame">
       <section class="topDashboard" :class="{ loading: ui.loading }">
-        <table class="topTable" aria-label="Inputs and parameters">
-          <tbody>
-            <tr>
-              <td class="topCell topCellLeft">
-                <div class="controlRow">
-                  <div class="field fieldExpiry">
-                    <label for="expiry">Expiry</label>
-                    <select id="expiry" v-model="ui.expiryTs" @change="onExpiryChange">
-                      <option v-for="expiry in expiryList" :key="expiry.timestamp" :value="String(expiry.timestamp)">
-                        {{ expiry.code }}
-                      </option>
-                    </select>
-                  </div>
+        <div class="topGrid" aria-label="Inputs and parameters">
+          <div class="topControls">
+            <div class="field fieldExpiry">
+              <label for="expiry">Expiry</label>
+              <select id="expiry" v-model="ui.expiryTs" @change="onExpiryChange">
+                <option v-for="expiry in expiryList" :key="expiry.timestamp" :value="String(expiry.timestamp)">
+                  {{ expiry.code }}
+                </option>
+              </select>
+            </div>
 
-                  <div class="field fieldStrike" v-if="ui.viewMode === 'formula'">
-                    <label for="option-strike">Strike</label>
-                    <select id="option-strike" v-model="ui.optionStrike" @change="onStrikeChange">
-                      <option v-for="strike in strikeOptions" :key="strike.value" :value="strike.value">
-                        {{ strike.label }}
-                      </option>
-                      <option v-if="!strikeOptions.length" :value="ui.optionStrike">{{ ui.optionStrike }}</option>
-                    </select>
-                  </div>
-                </div>
-              </td>
+            <div class="field fieldStrike" v-if="ui.viewMode === 'formula'">
+              <label for="option-strike">Strike</label>
+              <select id="option-strike" v-model="ui.optionStrike" @change="onStrikeChange">
+                <option v-for="strike in strikeOptions" :key="strike.value" :value="strike.value">
+                  {{ strike.label }}
+                </option>
+                <option v-if="!strikeOptions.length" :value="ui.optionStrike">{{ ui.optionStrike }}</option>
+              </select>
+            </div>
 
-              <td class="topCell topCellMiddle">
-                <div class="field fEstField" v-if="model">
-                  <label class="fEstLabel" for="adjustedForward">F<sub>est</sub> =</label>
-                  <input
-                    id="adjustedForward"
-                    class="fEstInput"
-                    type="number"
-                    inputmode="decimal"
-                    step="100"
-                    min="0"
-                    :value="ui.adjustedForward"
-                    @input="onAdjustedForwardInput"
-                  />
-                </div>
-              </td>
+            <div class="field fEstField" v-if="model">
+              <label class="fEstLabel" for="adjustedForward">F<sub>est</sub> =</label>
+              <input
+                id="adjustedForward"
+                class="fEstInput"
+                type="number"
+                inputmode="decimal"
+                step="100"
+                min="0"
+                :value="ui.adjustedForward"
+                @input="onAdjustedForwardInput"
+              />
+            </div>
 
-              <td class="topCell topCellRight">
-                <div class="viewToggle" role="group" aria-label="Display mode">
-                  <button type="button" class="viewToggleButton" :class="{ active: ui.viewMode === 'formula' }" @click="ui.viewMode = 'formula'">
-                    Formula
-                  </button>
-                  <button type="button" class="viewToggleButton" :class="{ active: ui.viewMode === 'chart' }" @click="ui.viewMode = 'chart'">
-                    Chart
-                  </button>
-                </div>
-              </td>
-            </tr>
+            <div class="viewToggle" role="group" aria-label="Display mode">
+              <button type="button" class="viewToggleButton" :class="{ active: ui.viewMode === 'formula' }" @click="ui.viewMode = 'formula'">
+                Formula
+              </button>
+              <button type="button" class="viewToggleButton" :class="{ active: ui.viewMode === 'chart' }" @click="ui.viewMode = 'chart'">
+                Chart
+              </button>
+            </div>
+          </div>
 
-            <tr v-if="model">
-              <td class="topCell">
-                <table class="paramTable">
-                  <tbody>
-                    <tr><th>Spot (S)</th><td>{{ formatMoney(model.spot, 1, 1) }}</td></tr>
-                    <tr><th>μ</th><td>{{ formatPercent(model.mu * 100, 1) }}</td></tr>
-                  </tbody>
-                </table>
-              </td>
-              <td class="topCell">
-                <table class="paramTable">
-                  <tbody>
-                    <tr><th>Forward (F)</th><td>{{ formatMoney(model.forward, 1, 1) }}</td></tr>
-                    <tr><th>σ</th><td>{{ formatPercent(model.iv * 100, 1) }}</td></tr>
-                  </tbody>
-                </table>
-              </td>
-              <td class="topCell">
-                <table class="paramTable">
-                  <tbody>
-                    <tr><th>r</th><td>{{ formatPercent(model.r * 100, 1) }}</td></tr>
-                    <tr><th>T</th><td>{{ formatNumber(model.T, 4) }}y</td></tr>
-                  </tbody>
-                </table>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+          <div v-if="model" class="paramsGrid">
+            <div class="paramCol">
+              <div class="paramLine"><span class="paramLabel">Spot (S)</span><span class="paramValue">{{ formatMoney(model.spot, 1, 1) }}</span></div>
+              <div class="paramLine"><span class="paramLabel">μ</span><span class="paramValue">{{ formatPercent(model.mu * 100, 1) }}</span></div>
+            </div>
+            <div class="paramCol">
+              <div class="paramLine"><span class="paramLabel">Forward (F)</span><span class="paramValue">{{ formatMoney(model.forward, 1, 1) }}</span></div>
+              <div class="paramLine"><span class="paramLabel">σ</span><span class="paramValue">{{ formatPercent(model.iv * 100, 1) }}</span></div>
+            </div>
+            <div class="paramCol">
+              <div class="paramLine"><span class="paramLabel">r</span><span class="paramValue">{{ formatPercent(model.r * 100, 1) }}</span></div>
+              <div class="paramLine"><span class="paramLabel">T</span><span class="paramValue">{{ formatNumber(model.T, 4) }}y</span></div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section v-if="ui.viewMode === 'formula'" class="formulaSection" :class="{ loading: ui.loading }">
@@ -924,37 +902,37 @@ onUnmounted(() => {
 
 .topDashboard {
   padding: 2px 10px 14px;
+  display: flex;
+  justify-content: center;
 }
 
-.topTable {
+.topGrid {
+  width: min(1100px, 100%);
+  display: grid;
+  gap: 16px;
+  justify-items: center;
+}
+
+.topControls {
   width: 100%;
-  table-layout: fixed;
-  border-collapse: separate;
-  border-spacing: 0 18px;
-}
-
-.topCell {
-  vertical-align: top;
-  padding: 0 6px;
-}
-
-.topCellLeft {
-  width: 52%;
-}
-
-.topCellMiddle {
-  width: 24%;
-}
-
-.topCellRight {
-  width: 26%;
-  text-align: right;
-}
-
-.controlRow {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: repeat(4, max-content);
+  justify-content: center;
   align-items: center;
   gap: 12px;
+}
+
+.paramsGrid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, max-content);
+  justify-content: center;
+  gap: 56px;
+}
+
+.paramCol {
+  display: grid;
+  gap: 8px;
 }
 
 .field {
@@ -1045,28 +1023,19 @@ onUnmounted(() => {
   background: #131923;
 }
 
-.paramTable {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0 8px;
-  table-layout: fixed;
+.paramLine {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  align-items: baseline;
+  gap: 8px;
 }
 
-.paramTable th,
-.paramTable td {
-  white-space: nowrap;
-  text-align: left;
-  vertical-align: baseline;
-  padding: 0;
-}
-
-.paramTable th {
+.paramLabel {
   color: #9ea7ba;
   font: 600 18px var(--ui-font);
-  padding-right: 10px;
 }
 
-.paramTable td {
+.paramValue {
   color: #e6ebf4;
   font: 650 19px var(--ui-font);
 }
@@ -1358,10 +1327,6 @@ onUnmounted(() => {
     width: calc(100vw - 20px);
   }
 
-  .topTable,
-  .topTable tbody,
-  .topTable tr,
-  .topTable td,
   .formulaTable,
   .formulaTable tbody,
   .formulaTable tr,
@@ -1371,18 +1336,31 @@ onUnmounted(() => {
     box-sizing: border-box;
   }
 
-  .topCell,
   .formulaCell {
     padding: 0;
     margin-bottom: 10px;
   }
 
-  .controlRow {
-    flex-wrap: wrap;
+  .topGrid {
+    width: min(400px, 100%);
+    gap: 12px;
   }
 
-  .topCellRight {
-    text-align: left;
+  .topControls {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 10px;
+  }
+
+  .paramsGrid {
+    grid-template-columns: 1fr;
+    justify-items: start;
+    gap: 8px;
+  }
+
+  .paramCol {
+    width: 100%;
+    gap: 6px;
   }
 
   .field,
@@ -1407,11 +1385,11 @@ onUnmounted(() => {
     font-size: 12px;
   }
 
-  .paramTable th {
+  .paramLabel {
     font-size: 14px;
   }
 
-  .paramTable td {
+  .paramValue {
     font-size: 15px;
   }
 
