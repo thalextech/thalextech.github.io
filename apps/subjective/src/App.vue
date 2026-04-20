@@ -252,7 +252,7 @@ const model = computed(() => {
   }
 
   const r = Math.log(forward / spot) / T;
-  const mu = Math.log(adjustedForward / spot) / T - r;
+  const mu = Math.log(adjustedForward / forward) / T;
   const lnSk = Math.log(spot / strike);
   const sigma2Half = 0.5 * iv * iv;
   const sigmaSqrtT = iv * Math.sqrt(T);
@@ -422,7 +422,7 @@ const chartBars = computed(() => {
     }
 
     const r = Math.log(forward / spot) / T;
-    const mu = Math.log(adjustedForward / spot) / T - r;
+    const mu = Math.log(adjustedForward / forward) / T;
     const d3 = calcD3(spot, strike, T, iv, r, mu);
     const d4 = calcD4(spot, strike, T, iv, r, mu);
     const nd3 = normalCdf(d3);
