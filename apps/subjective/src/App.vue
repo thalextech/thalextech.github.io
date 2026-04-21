@@ -10,6 +10,7 @@ const ui = reactive({
   expiryTs: "",
   optionStrike: "",
   adjustedForward: "",
+  vrpPct: "0",
   viewMode: "formula",
   loading: false,
   error: "",
@@ -212,6 +213,10 @@ const selectedInstrument = computed(() => {
 });
 
 const adjustedForwardValue = computed(() => toFiniteNumber(ui.adjustedForward));
+const vrpPctValue = computed(() => {
+  const value = toFiniteNumber(ui.vrpPct);
+  return Number.isFinite(value) ? value : 0;
+});
 
 const model = computed(() => {
   const instrument = selectedInstrument.value;
@@ -227,6 +232,8 @@ const model = computed(() => {
   const markPrice = toFiniteNumber(ticker.mark_price);
   const forward = toFiniteNumber(ticker.forward);
   const optionType = normalizeOptionType(instrument.option_type);
+  const vrpPct = vrpPctValue.value;
+  const valuationIv = Number.isFinite(iv) ? iv * (1 - vrpPct / 100) : null;
   const nowTs = Date.now() / 1000;
 
   const T = Number.isFinite(expirationTs)
@@ -237,6 +244,7 @@ const model = computed(() => {
     !Number.isFinite(spot) ||
     !Number.isFinite(strike) ||
     !Number.isFinite(iv) ||
+    !Number.isFinite(valuationIv) ||
     !Number.isFinite(markPrice) ||
     !Number.isFinite(forward) ||
     !Number.isFinite(adjustedForward) ||
@@ -244,6 +252,7 @@ const model = computed(() => {
     spot <= 0 ||
     strike <= 0 ||
     iv <= 0 ||
+    valuationIv <= 0 ||
     forward <= 0 ||
     adjustedForward <= 0 ||
     T <= 0
@@ -254,8 +263,8 @@ const model = computed(() => {
   const r = Math.log(forward / spot) / T;
   const mu = Math.log(adjustedForward / forward) / T;
   const lnSk = Math.log(spot / strike);
-  const sigma2Half = 0.5 * iv * iv;
-  const sigmaSqrtT = iv * Math.sqrt(T);
+  const sigma2Half = 0.5 * valuationIv * valuationIv;
+  const sigmaSqrtT = valuationIv * Math.sqrt(T);
   const numD1 = lnSk + (r + sigma2Half) * T;
   const numD2 = lnSk + (r - sigma2Half) * T;
 
@@ -291,6 +300,8 @@ const model = computed(() => {
     strike,
     spot,
     iv,
+    valuationIv,
+    vrpPct,
     forward,
     markPrice,
     adjustedForward,
@@ -387,6 +398,7 @@ function formatUpdated(ts) {
 const chartBars = computed(() => {
   const spot = toFiniteNumber(data.spot);
   const adjustedForward = adjustedForwardValue.value;
+  const vrpPct = vrpPctValue.value;
   const nowTs = Date.now() / 1000;
   const tickers = data.optionTickers || {};
 
@@ -400,6 +412,7 @@ const chartBars = computed(() => {
     const strike = toFiniteNumber(option?.strike_price);
     const expirationTs = toFiniteNumber(option?.expiration_timestamp);
     const iv = toFiniteNumber(ticker?.iv);
+    const valuationIv = Number.isFinite(iv) ? iv * (1 - vrpPct / 100) : null;
     const markPrice = toFiniteNumber(ticker?.mark_price);
     const forward = toFiniteNumber(ticker?.forward);
 
@@ -410,11 +423,13 @@ const chartBars = computed(() => {
     if (
       !Number.isFinite(strike) ||
       !Number.isFinite(iv) ||
+      !Number.isFinite(valuationIv) ||
       !Number.isFinite(markPrice) ||
       !Number.isFinite(forward) ||
       !Number.isFinite(T) ||
       strike <= 0 ||
       iv <= 0 ||
+      valuationIv <= 0 ||
       forward <= 0 ||
       T <= 0
     ) {
@@ -423,8 +438,8 @@ const chartBars = computed(() => {
 
     const r = Math.log(forward / spot) / T;
     const mu = Math.log(adjustedForward / forward) / T;
-    const d3 = calcD3(spot, strike, T, iv, r, mu);
-    const d4 = calcD4(spot, strike, T, iv, r, mu);
+    const d3 = calcD3(spot, strike, T, valuationIv, r, mu);
+    const d4 = calcD4(spot, strike, T, valuationIv, r, mu);
     const nd3 = normalCdf(d3);
     const nd4 = normalCdf(d4);
     const adjusted =
@@ -689,7 +704,7 @@ onUnmounted(() => {
               </select>
             </div>
 
-            <div class="field fEstField" v-if="model">
+            <div class="field fEstField">
               <label class="fEstLabel" for="adjustedForward">F<sub>est</sub> =</label>
               <input
                 id="adjustedForward"
@@ -701,6 +716,22 @@ onUnmounted(() => {
                 :value="ui.adjustedForward"
                 @input="onAdjustedForwardInput"
               />
+            </div>
+
+            <div class="field vrpField">
+              <label class="vrpLabel" for="vrp">VRP =</label>
+              <input
+                id="vrp"
+                class="vrpInput"
+                type="number"
+                inputmode="decimal"
+                step="0.1"
+                min="0"
+                max="100"
+                :value="ui.vrpPct"
+                @input="ui.vrpPct = $event.target.value"
+              />
+              <span>%</span>
             </div>
 
             <div class="viewToggle" role="group" aria-label="Display mode">
@@ -724,7 +755,7 @@ onUnmounted(() => {
             </div>
             <div class="paramCol">
               <div class="paramLine"><span class="paramLabel">T</span><span class="paramValue">{{ formatNumber(model.T, 4) }}y</span></div>
-              <div class="paramLine"><span class="paramLabel">Vol (σ)</span><span class="paramValue">{{ formatPercent(model.iv * 100, 1) }}</span></div>
+              <div class="paramLine"><span class="paramLabel">Vol (σ)</span><span class="paramValue">{{ formatPercent(model.valuationIv * 100, 1) }}</span></div>
             </div>
           </div>
         </div>
@@ -928,7 +959,7 @@ onUnmounted(() => {
 .topControls {
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(4, max-content);
+  grid-template-columns: repeat(5, max-content);
   justify-content: center;
   align-items: center;
   gap: 12px;
@@ -977,7 +1008,8 @@ onUnmounted(() => {
 }
 
 .field select,
-.fEstInput {
+.fEstInput,
+.vrpInput {
   border: 0;
   background: transparent;
   color: #f8fafc;
@@ -1000,13 +1032,31 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.vrpField {
+  width: var(--control-width);
+  margin: 0 auto;
+  white-space: nowrap;
+}
+
+.vrpLabel {
+  font: 600 18px var(--ui-font);
+}
+
+.vrpInput {
+  flex: 1;
+  min-width: 0;
+}
+
 .fEstInput::-webkit-outer-spin-button,
-.fEstInput::-webkit-inner-spin-button {
+.fEstInput::-webkit-inner-spin-button,
+.vrpInput::-webkit-outer-spin-button,
+.vrpInput::-webkit-inner-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
 
-.fEstInput[type="number"] {
+.fEstInput[type="number"],
+.vrpInput[type="number"] {
   -moz-appearance: textfield;
 }
 
@@ -1380,23 +1430,27 @@ onUnmounted(() => {
 
   .field,
   .fEstField,
+  .vrpField,
   .viewToggle {
     height: 44px;
   }
 
   .field,
-  .fEstField {
+  .fEstField,
+  .vrpField {
     width: 100%;
   }
 
   .field label,
   .fEstLabel,
+  .vrpLabel,
   .viewToggleButton {
     font-size: 14px;
   }
 
   .field select,
-  .fEstInput {
+  .fEstInput,
+  .vrpInput {
     font-size: 12px;
   }
 
