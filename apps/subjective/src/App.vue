@@ -1,12 +1,18 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
-import { fetchAllInstruments } from "../../../lib/thalex.js";
 
-const API_BASE = "https://thalex.com/api/v2/public";
+const API_BASE = import.meta.env.DEV
+  ? "/api/v2/public"
+  : "https://thalex.com/api/v2/public";
 const SECONDS_PER_BS_YEAR = 365.25 * 24 * 60 * 60;
 const DEFAULT_FORWARD_MULTIPLIER = 1.05;
+const UNDERLYING_OPTIONS = [
+  { value: "BTCUSD", label: "BTC" },
+  { value: "ETHUSD", label: "ETH" },
+];
 
 const ui = reactive({
+  underlying: "BTCUSD",
   expiryTs: "",
   optionStrike: "",
   adjustedForward: "",
@@ -126,12 +132,25 @@ function calcD4(S, K, T, sigma, r, mu) {
   );
 }
 
-const btcOptions = computed(() => {
+const selectedUnderlying = computed(() => String(ui.underlying || "BTCUSD"));
+const selectedUnderlyingProduct = computed(
+  () => `O${selectedUnderlying.value}`,
+);
+const selectedUnderlyingLabel = computed(() => {
+  return (
+    UNDERLYING_OPTIONS.find((item) => item.value === selectedUnderlying.value)
+      ?.label || selectedUnderlying.value
+  );
+});
+
+const filteredOptions = computed(() => {
   const now = Date.now() / 1000;
   return (data.options || []).filter((option) => {
     if (!option || typeof option !== "object") return false;
-    if (option.product !== "OBTCUSD") return false;
     if (option.type !== "option") return false;
+    const byUnderlying = String(option.underlying || "") === selectedUnderlying.value;
+    const byProduct = String(option.product || "") === selectedUnderlyingProduct.value;
+    if (!byUnderlying && !byProduct) return false;
     if (!Number.isFinite(option.expiration_timestamp)) return false;
     return option.expiration_timestamp > now;
   });
@@ -139,7 +158,7 @@ const btcOptions = computed(() => {
 
 const expiryList = computed(() => {
   const byExpiry = new Map();
-  for (const option of btcOptions.value) {
+  for (const option of filteredOptions.value) {
     const ts = Number(option.expiration_timestamp);
     if (!Number.isFinite(ts)) continue;
     if (!byExpiry.has(ts)) {
@@ -166,7 +185,7 @@ const selectedExpiry = computed(() => {
 const instrumentOptions = computed(() => {
   if (!selectedExpiry.value) return [];
   const ts = selectedExpiry.value.timestamp;
-  return btcOptions.value
+  return filteredOptions.value
     .filter(
       (option) =>
         Number(option.expiration_timestamp) === ts &&
@@ -233,7 +252,7 @@ const model = computed(() => {
   const forward = toFiniteNumber(ticker.forward);
   const optionType = normalizeOptionType(instrument.option_type);
   const vrpPct = vrpPctValue.value;
-  const valuationIv = Number.isFinite(iv) ? iv * (1 - vrpPct / 100) : null;
+  const valuationIv = Number.isFinite(iv) ? iv - vrpPct / 100 : null;
   const nowTs = Date.now() / 1000;
 
   const T = Number.isFinite(expirationTs)
@@ -412,7 +431,7 @@ const chartBars = computed(() => {
     const strike = toFiniteNumber(option?.strike_price);
     const expirationTs = toFiniteNumber(option?.expiration_timestamp);
     const iv = toFiniteNumber(ticker?.iv);
-    const valuationIv = Number.isFinite(iv) ? iv * (1 - vrpPct / 100) : null;
+    const valuationIv = Number.isFinite(iv) ? iv - vrpPct / 100 : null;
     const markPrice = toFiniteNumber(ticker?.mark_price);
     const forward = toFiniteNumber(ticker?.forward);
 
@@ -512,8 +531,9 @@ function chooseDefaultExpiryTs() {
 }
 
 async function loadUniverse() {
-  const instruments = await fetchAllInstruments();
-  data.options = Array.isArray(instruments) ? instruments : [];
+  const url = buildPublicUrl("/all_instruments");
+  const json = await getJson(url);
+  data.options = Array.isArray(json?.result) ? json.result : [];
 }
 
 async function fetchTickersForOptions(options) {
@@ -599,13 +619,13 @@ async function initialize() {
     await loadUniverse();
 
     if (!expiryList.value.length) {
-      ui.error = "No BTC options expirations found.";
+      ui.error = `No ${selectedUnderlyingLabel.value} options expirations found.`;
       return;
     }
 
     ui.expiryTs = chooseDefaultExpiryTs();
 
-    data.underlying = "BTCUSD";
+    data.underlying = selectedUnderlying.value;
     data.spot = await fetchIndexNow(data.underlying);
 
     chooseDefaultStrike();
@@ -625,6 +645,30 @@ async function onExpiryChange() {
 }
 
 async function onStrikeChange() {
+  adjustedDirty.value = false;
+  await loadMarketForSelected();
+}
+
+async function onUnderlyingChange(nextUnderlying) {
+  const underlying = String(nextUnderlying || "BTCUSD");
+  if (underlying === selectedUnderlying.value) return;
+
+  ui.underlying = underlying;
+  ui.error = "";
+
+  if (!expiryList.value.length) {
+    ui.expiryTs = "";
+    ui.optionStrike = "";
+    data.ticker = null;
+    data.optionTickers = {};
+    data.spot = null;
+    ui.error = `No ${selectedUnderlyingLabel.value} options expirations found.`;
+    return;
+  }
+
+  ui.expiryTs = chooseDefaultExpiryTs();
+  data.spot = null;
+  chooseDefaultStrike();
   adjustedDirty.value = false;
   await loadMarketForSelected();
 }
@@ -674,7 +718,6 @@ onUnmounted(() => {
           <div class="updatedStamp">Last modified: {{ formatUpdated(data.lastLoadedAt) }}</div>
           <button class="headerRefreshButton" type="button" @click="refreshInputs" :disabled="ui.loading">
             <span aria-hidden="true">↻</span>
-            <span>Refresh</span>
           </button>
         </div>
       </div>
@@ -685,6 +728,19 @@ onUnmounted(() => {
       <section class="topDashboard" :class="{ loading: ui.loading }">
         <div class="topGrid" aria-label="Inputs and parameters">
           <div class="topControls">
+            <div class="viewToggle underlyingToggle" role="group" aria-label="Underlying">
+              <button
+                v-for="underlying in UNDERLYING_OPTIONS"
+                :key="underlying.value"
+                type="button"
+                class="viewToggleButton"
+                :class="{ active: selectedUnderlying === underlying.value }"
+                @click="onUnderlyingChange(underlying.value)"
+              >
+                {{ underlying.label }}
+              </button>
+            </div>
+
             <div class="field fieldExpiry">
               <label for="expiry">Expiry</label>
               <select id="expiry" v-model="ui.expiryTs" @change="onExpiryChange">
@@ -734,7 +790,7 @@ onUnmounted(() => {
               <span>%</span>
             </div>
 
-            <div class="viewToggle" role="group" aria-label="Display mode">
+            <div class="viewToggle modeToggleWide" role="group" aria-label="Display mode">
               <button type="button" class="viewToggleButton" :class="{ active: ui.viewMode === 'formula' }" @click="ui.viewMode = 'formula'">
                 Formula
               </button>
@@ -754,8 +810,8 @@ onUnmounted(() => {
               <div class="paramLine"><span class="paramLabel">Drift (μ)</span><span class="paramValue">{{ formatPercent(model.mu * 100, 1) }}</span></div>
             </div>
             <div class="paramCol">
-              <div class="paramLine"><span class="paramLabel">T</span><span class="paramValue">{{ formatNumber(model.T, 4) }}y</span></div>
-              <div class="paramLine"><span class="paramLabel">Vol (σ)</span><span class="paramValue">{{ formatPercent(model.valuationIv * 100, 1) }}</span></div>
+              <div class="paramLine"><span class="paramLabel">IV (σ)</span><span class="paramValue">{{ formatPercent(model.iv * 100, 1) }}</span></div>
+              <div class="paramLine"><span class="paramLabel">Vol (est)</span><span class="paramValue">{{ formatPercent(model.valuationIv * 100, 1) }}</span></div>
             </div>
           </div>
         </div>
@@ -855,7 +911,7 @@ onUnmounted(() => {
                 <div v-for="bar in chartBars" :key="bar.strike" class="strikeColumn">
                     <div class="barDataLabels">
                       <div class="barDataMain">{{ formatMoney(bar.adjusted, 0) }}</div>
-                    <div class="barDataMuted" :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }">{{ formatMultiplier(bar.ratio, 1) }}</div>
+                    <div class="barDataMuted" :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }">{{ formatMultiplier(bar.ratio, 2) }}</div>
                     </div>
 
                   <div class="strikeBars">
@@ -885,7 +941,7 @@ onUnmounted(() => {
 <style scoped>
 .subjectiveApp {
   --content-width: min(1200px, calc(100vw - 48px));
-  --control-width: 250px;
+  --control-width: 176px;
   --eq-size: 28px;
   --eq-comment-size: 20px;
   --formula-font: "Cambria Math", "STIX Two Text", "Times New Roman", Times, serif;
@@ -896,9 +952,20 @@ onUnmounted(() => {
 }
 
 .header {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.52);
+  position: relative;
   padding-bottom: 10px;
   margin-bottom: 8px;
+}
+
+.header::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 100vw;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.52);
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .titleRow {
@@ -921,15 +988,16 @@ onUnmounted(() => {
 
 .headerRefreshButton {
   height: 36px;
-  padding: 0 12px;
+  width: 36px;
+  padding: 0;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   background: #0f1318;
   color: #f8fafc;
-  font: 600 14px var(--ui-font);
+  font: 600 18px var(--ui-font);
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
   cursor: pointer;
 }
 
@@ -950,20 +1018,21 @@ onUnmounted(() => {
 }
 
 .topGrid {
-  width: min(1100px, 100%);
+  width: 100%;
   display: grid;
   gap: 16px;
   justify-items: center;
 }
 
 .topControls {
-  width: 100%;
-  display: grid;
-  grid-template-columns: repeat(5, max-content);
+  width: max-content;
+  max-width: 100%;
+  display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   align-items: center;
   gap: 12px;
-  margin-bottom: 36px;
+  margin: 0 auto 36px;
 }
 
 .paramsGrid {
@@ -1019,7 +1088,7 @@ onUnmounted(() => {
 
 .fEstField {
   width: var(--control-width);
-  margin: 0 auto;
+  margin: 0;
   white-space: nowrap;
 }
 
@@ -1034,7 +1103,7 @@ onUnmounted(() => {
 
 .vrpField {
   width: var(--control-width);
-  margin: 0 auto;
+  margin: 0;
   white-space: nowrap;
 }
 
@@ -1061,6 +1130,7 @@ onUnmounted(() => {
 }
 
 .viewToggle {
+  width: var(--control-width);
   height: 56px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 14px;
@@ -1070,12 +1140,26 @@ onUnmounted(() => {
 }
 
 .viewToggleButton {
+  flex: 1;
+  min-width: 0;
   border: 0;
   padding: 0 18px;
   color: rgba(226, 232, 240, 0.72);
   background: transparent;
   font: 600 18px var(--ui-font);
   cursor: pointer;
+}
+
+.underlyingToggle {
+  width: var(--control-width);
+}
+
+.modeToggleWide {
+  width: calc(var(--control-width) + 28px);
+}
+
+.underlyingToggle .viewToggleButton {
+  flex: 1;
 }
 
 .viewToggleButton + .viewToggleButton {
@@ -1412,8 +1496,7 @@ onUnmounted(() => {
   }
 
   .topControls {
-    grid-template-columns: 1fr;
-    justify-items: center;
+    width: 100%;
     gap: 10px;
   }
 
@@ -1431,13 +1514,16 @@ onUnmounted(() => {
   .field,
   .fEstField,
   .vrpField,
-  .viewToggle {
+  .viewToggle,
+  .underlyingToggle {
     height: 44px;
   }
 
   .field,
   .fEstField,
-  .vrpField {
+  .vrpField,
+  .viewToggle,
+  .underlyingToggle {
     width: 100%;
   }
 
