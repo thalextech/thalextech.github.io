@@ -356,6 +356,21 @@ const model = computed(() => {
   };
 });
 
+const summaryStats = computed(() => {
+  if (!model.value) return [];
+  return [
+    { label: "Spot (S)", value: formatMoney(model.value.spot, 1, 1) },
+    { label: "Forward (F)", value: formatMoney(model.value.forward, 1, 1) },
+    { label: "Forward rate (r)", value: formatPercent(model.value.r * 100, 1) },
+    { label: "Drift (μ)", value: formatPercent(model.value.mu * 100, 1) },
+    { label: "IV (σ)", value: formatPercent(model.value.iv * 100, 1) },
+    {
+      label: "Vol (est)",
+      value: formatPercent(model.value.valuationIv * 100, 1),
+    },
+  ];
+});
+
 function formatNumber(value, decimals = 2) {
   if (!Number.isFinite(value)) return "-";
   const threshold = 0.5 * 10 ** -decimals;
@@ -488,6 +503,27 @@ const chartBars = computed(() => {
     adjustedPct: (row.adjusted / scale) * 100,
     adjustedTopPct: (Math.max(0, row.adjusted - row.market) / scale) * 100,
   }));
+});
+
+const chartAxisTicks = computed(() => {
+  const maxValue = chartBars.value.reduce(
+    (max, bar) => Math.max(max, bar.market, bar.adjusted),
+    0,
+  );
+  const axisMax = maxValue > 0 ? maxValue : 1;
+  const steps = 4;
+  const ticks = [];
+
+  for (let i = steps; i >= 0; i -= 1) {
+    const value = (axisMax * i) / steps;
+    ticks.push({
+      value,
+      label: formatCompactNumber(value, 0, 1),
+      pct: (i / steps) * 100,
+    });
+  }
+
+  return ticks;
 });
 
 function chooseDefaultStrike() {
@@ -727,91 +763,89 @@ onUnmounted(() => {
     <div class="layoutFrame">
       <section class="topDashboard" :class="{ loading: ui.loading }">
         <div class="topGrid" aria-label="Inputs and parameters">
-          <div class="topControls">
-            <div class="viewToggle underlyingToggle" role="group" aria-label="Underlying">
-              <button
-                v-for="underlying in UNDERLYING_OPTIONS"
-                :key="underlying.value"
-                type="button"
-                class="viewToggleButton"
-                :class="{ active: selectedUnderlying === underlying.value }"
-                @click="onUnderlyingChange(underlying.value)"
-              >
-                {{ underlying.label }}
-              </button>
+          <div class="topControls" :class="{ chartMode: ui.viewMode === 'chart' }">
+            <div class="controlBlock">
+              <div class="viewToggle underlyingToggle" role="group" aria-label="Underlying">
+                <button
+                  v-for="underlying in UNDERLYING_OPTIONS"
+                  :key="underlying.value"
+                  type="button"
+                  class="viewToggleButton"
+                  :class="{ active: selectedUnderlying === underlying.value }"
+                  @click="onUnderlyingChange(underlying.value)"
+                >
+                  {{ underlying.label }}
+                </button>
+              </div>
             </div>
 
-            <div class="field fieldExpiry">
-              <label for="expiry">Expiry</label>
-              <select id="expiry" v-model="ui.expiryTs" @change="onExpiryChange">
-                <option v-for="expiry in expiryList" :key="expiry.timestamp" :value="String(expiry.timestamp)">
-                  {{ expiry.code }}
-                </option>
-              </select>
+            <div class="controlBlock controlBlockInputs">
+              <div class="field fieldExpiry">
+                <label for="expiry">Expiry</label>
+                <select id="expiry" v-model="ui.expiryTs" @change="onExpiryChange">
+                  <option v-for="expiry in expiryList" :key="expiry.timestamp" :value="String(expiry.timestamp)">
+                    {{ expiry.code }}
+                  </option>
+                </select>
+              </div>
+
+              <div class="field fieldStrike" v-if="ui.viewMode === 'formula'">
+                <label for="option-strike">Strike</label>
+                <select id="option-strike" v-model="ui.optionStrike" @change="onStrikeChange">
+                  <option v-for="strike in strikeOptions" :key="strike.value" :value="strike.value">
+                    {{ strike.label }}
+                  </option>
+                  <option v-if="!strikeOptions.length" :value="ui.optionStrike">{{ ui.optionStrike }}</option>
+                </select>
+              </div>
+
+              <div class="field fEstField">
+                <label class="fEstLabel" for="adjustedForward">F<sub>est</sub> =</label>
+                <input
+                  id="adjustedForward"
+                  class="fEstInput"
+                  type="number"
+                  inputmode="decimal"
+                  step="100"
+                  min="0"
+                  :value="ui.adjustedForward"
+                  @input="onAdjustedForwardInput"
+                />
+              </div>
+
+              <div class="field vrpField">
+                <label class="vrpLabel" for="vrp">VRP =</label>
+                <input
+                  id="vrp"
+                  class="vrpInput"
+                  type="number"
+                  inputmode="decimal"
+                  step="0.1"
+                  min="0"
+                  max="100"
+                  :value="ui.vrpPct"
+                  @input="ui.vrpPct = $event.target.value"
+                />
+                <span>%</span>
+              </div>
             </div>
 
-            <div class="field fieldStrike" v-if="ui.viewMode === 'formula'">
-              <label for="option-strike">Strike</label>
-              <select id="option-strike" v-model="ui.optionStrike" @change="onStrikeChange">
-                <option v-for="strike in strikeOptions" :key="strike.value" :value="strike.value">
-                  {{ strike.label }}
-                </option>
-                <option v-if="!strikeOptions.length" :value="ui.optionStrike">{{ ui.optionStrike }}</option>
-              </select>
-            </div>
-
-            <div class="field fEstField">
-              <label class="fEstLabel" for="adjustedForward">F<sub>est</sub> =</label>
-              <input
-                id="adjustedForward"
-                class="fEstInput"
-                type="number"
-                inputmode="decimal"
-                step="100"
-                min="0"
-                :value="ui.adjustedForward"
-                @input="onAdjustedForwardInput"
-              />
-            </div>
-
-            <div class="field vrpField">
-              <label class="vrpLabel" for="vrp">VRP =</label>
-              <input
-                id="vrp"
-                class="vrpInput"
-                type="number"
-                inputmode="decimal"
-                step="0.1"
-                min="0"
-                max="100"
-                :value="ui.vrpPct"
-                @input="ui.vrpPct = $event.target.value"
-              />
-              <span>%</span>
-            </div>
-
-            <div class="viewToggle modeToggleWide" role="group" aria-label="Display mode">
-              <button type="button" class="viewToggleButton" :class="{ active: ui.viewMode === 'formula' }" @click="ui.viewMode = 'formula'">
-                Formula
-              </button>
-              <button type="button" class="viewToggleButton" :class="{ active: ui.viewMode === 'chart' }" @click="ui.viewMode = 'chart'">
-                Chart
-              </button>
+            <div class="controlBlock">
+              <div class="viewToggle modeToggleWide" role="group" aria-label="Display mode">
+                <button type="button" class="viewToggleButton" :class="{ active: ui.viewMode === 'formula' }" @click="ui.viewMode = 'formula'">
+                  Formula
+                </button>
+                <button type="button" class="viewToggleButton" :class="{ active: ui.viewMode === 'chart' }" @click="ui.viewMode = 'chart'">
+                  Chart
+                </button>
+              </div>
             </div>
           </div>
 
-          <div v-if="model" class="paramsGrid">
-            <div class="paramCol">
-              <div class="paramLine"><span class="paramLabel">Spot (S)</span><span class="paramValue">{{ formatMoney(model.spot, 1, 1) }}</span></div>
-              <div class="paramLine"><span class="paramLabel">Forward (F)</span><span class="paramValue">{{ formatMoney(model.forward, 1, 1) }}</span></div>
-            </div>
-            <div class="paramCol">
-              <div class="paramLine"><span class="paramLabel">Forward rate (r)</span><span class="paramValue">{{ formatPercent(model.r * 100, 1) }}</span></div>
-              <div class="paramLine"><span class="paramLabel">Drift (μ)</span><span class="paramValue">{{ formatPercent(model.mu * 100, 1) }}</span></div>
-            </div>
-            <div class="paramCol">
-              <div class="paramLine"><span class="paramLabel">IV (σ)</span><span class="paramValue">{{ formatPercent(model.iv * 100, 1) }}</span></div>
-              <div class="paramLine"><span class="paramLabel">Vol (est)</span><span class="paramValue">{{ formatPercent(model.valuationIv * 100, 1) }}</span></div>
+          <div v-if="summaryStats.length" class="paramsGrid">
+            <div v-for="stat in summaryStats" :key="stat.label" class="paramStat">
+              <div class="paramLabel">{{ stat.label }}</div>
+              <div class="paramValue">{{ stat.value }}</div>
             </div>
           </div>
         </div>
@@ -907,23 +941,57 @@ onUnmounted(() => {
             </div>
 
             <div class="strikeChartWrap">
-              <div class="strikeChart">
-                <div v-for="bar in chartBars" :key="bar.strike" class="strikeColumn">
-                    <div class="barDataLabels">
-                      <div class="barDataMain">{{ formatMoney(bar.adjusted, 0) }}</div>
-                    <div class="barDataMuted" :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }">{{ formatMultiplier(bar.ratio, 2) }}</div>
-                    </div>
-
-                  <div class="strikeBars">
-                    <div class="bar barMarket" :style="{ height: `${bar.marketPct}%` }"></div>
+              <div class="strikeChartFrame">
+                <div class="strikeAxis">
+                  <div class="strikeAxisSpacer" aria-hidden="true"></div>
+                  <div class="strikeAxisBody">
+                    <div class="strikeAxisTitle paramLabel">Price (USD)</div>
                     <div
-                      v-if="bar.adjustedTopPct > 0"
-                      class="bar barAdjusted"
-                      :style="{ height: `${bar.adjustedTopPct}%`, bottom: `${bar.marketPct}%` }"
-                    ></div>
+                      v-for="tick in chartAxisTicks"
+                      :key="`tick-${tick.value}`"
+                      class="strikeAxisTick barDataMuted"
+                      :style="{ bottom: `${tick.pct}%` }"
+                    >
+                      {{ tick.label }}
+                    </div>
+                  </div>
+                </div>
+
+                <div class="strikePlot">
+                  <div class="strikeHead">
+                    <div v-for="bar in chartBars" :key="`head-${bar.strike}`" class="strikeHeadItem">
+                      <div class="barDataLabels">
+                        <div class="barDataMain">{{ formatMoney(bar.adjusted, 0) }}</div>
+                        <div class="barDataMuted" :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }">{{ formatMultiplier(bar.ratio, 2) }}</div>
+                      </div>
+                    </div>
                   </div>
 
-                  <div class="strikeLabel">{{ bar.strikeLabel }}</div>
+                  <div class="strikeBody">
+                    <div class="strikeGrid">
+                      <div
+                        v-for="tick in chartAxisTicks"
+                        :key="`grid-${tick.value}`"
+                        class="strikeGridLine"
+                        :style="{ bottom: `${tick.pct}%` }"
+                      ></div>
+                    </div>
+
+                    <div class="strikeChart">
+                      <div v-for="bar in chartBars" :key="bar.strike" class="strikeColumn">
+                      <div class="strikeBars">
+                        <div class="bar barMarket" :style="{ height: `${bar.marketPct}%` }"></div>
+                        <div
+                          v-if="bar.adjustedTopPct > 0"
+                          class="bar barAdjusted"
+                          :style="{ height: `${bar.adjustedTopPct}%`, bottom: `${bar.marketPct}%` }"
+                        ></div>
+                      </div>
+
+                      <div class="strikeLabel">{{ bar.strikeLabel }}</div>
+                    </div>
+                  </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1035,18 +1103,66 @@ onUnmounted(() => {
   margin: 0 auto 36px;
 }
 
+.topControls.chartMode {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.topControls.chartMode .controlBlockInputs {
+  flex: 1;
+  justify-content: center;
+}
+
+.controlBlock {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.controlBlockInputs {
+  flex-wrap: wrap;
+}
+
+.controlDivider {
+  height: 56px;
+  border-left: 0.5px solid;
+  opacity: 0.25;
+}
+
 .paramsGrid {
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(3, max-content);
-  justify-content: center;
-  gap: clamp(56px, 8vw, 120px);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  justify-content: stretch;
+  gap: 0;
   margin-bottom: 36px;
 }
 
 .paramCol {
   display: grid;
   gap: 8px;
+}
+
+.paramStat {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 0 24px;
+}
+
+.paramStat + .paramStat {
+  border-left: 0;
+}
+
+.paramStat + .paramStat::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 0.5px solid;
+  opacity: 0.25;
 }
 
 .field {
@@ -1382,12 +1498,94 @@ onUnmounted(() => {
 
 .strikeChartWrap {
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: visible;
   padding: 6px 6px 4px;
 }
 
-.strikeChart {
+.strikeChartFrame {
   min-height: 500px;
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 8px;
+}
+
+.strikeAxis {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  align-items: stretch;
+}
+
+.strikeAxisSpacer {
+  height: 116px;
+}
+
+.strikeAxisBody {
+  position: relative;
+  min-height: 354px;
+  padding-bottom: 34px;
+}
+
+.strikeAxisTitle {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%) rotate(180deg);
+  writing-mode: vertical-rl;
+  white-space: nowrap;
+}
+
+.strikeAxisTick {
+  position: absolute;
+  right: 8px;
+  transform: translateY(50%);
+}
+
+.strikePlot {
+  min-height: 470px;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 18px;
+  align-items: stretch;
+}
+
+.strikeHead {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(64px, 1fr);
+  gap: 8px;
+  width: max-content;
+  min-width: 100%;
+}
+
+.strikeHeadItem {
+  display: grid;
+}
+
+.strikeGrid {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 34px;
+  pointer-events: none;
+}
+
+.strikeBody {
+  position: relative;
+  min-height: 354px;
+}
+
+.strikeGridLine {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid;
+  opacity: 0.2;
+}
+
+.strikeChart {
+  min-height: 354px;
   display: grid;
   grid-auto-flow: column;
   grid-auto-columns: minmax(64px, 1fr);
@@ -1395,12 +1593,14 @@ onUnmounted(() => {
   align-items: end;
   width: max-content;
   min-width: 100%;
+  position: relative;
+  z-index: 1;
 }
 
 .strikeColumn {
-  min-height: 470px;
+  min-height: 354px;
   display: grid;
-  grid-template-rows: auto 1fr auto;
+  grid-template-rows: 1fr auto;
   gap: 10px;
   align-items: end;
 }
@@ -1500,6 +1700,24 @@ onUnmounted(() => {
     gap: 10px;
   }
 
+  .topControls.chartMode {
+    justify-content: center;
+  }
+
+  .topControls.chartMode .controlBlockInputs {
+    flex: initial;
+    justify-content: flex-start;
+  }
+
+  .controlBlock,
+  .controlBlockInputs {
+    width: 100%;
+  }
+
+  .controlDivider {
+    display: none;
+  }
+
   .paramsGrid {
     grid-template-columns: 1fr;
     justify-items: start;
@@ -1509,6 +1727,28 @@ onUnmounted(() => {
   .paramCol {
     width: 100%;
     gap: 6px;
+  }
+
+  .paramStat {
+    width: 100%;
+    padding: 0;
+  }
+
+  .paramStat + .paramStat {
+    border-left: 0;
+    border-top: 0;
+  }
+
+  .paramStat + .paramStat::before {
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: auto;
+    width: auto;
+    height: 0;
+    border-left: 0;
+    border-top: 0.5px solid;
+    opacity: 0.25;
   }
 
   .field,
@@ -1588,8 +1828,45 @@ onUnmounted(() => {
     gap: 6px;
   }
 
-  .strikeColumn {
+  .strikeChartFrame {
     min-height: 360px;
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+
+  .strikeAxisSpacer {
+    height: 90px;
+  }
+
+  .strikeAxis {
+    min-height: 360px;
+  }
+
+  .strikeAxisBody {
+    min-height: 242px;
+    padding-bottom: 28px;
+  }
+
+  .strikePlot {
+    min-height: 360px;
+    gap: 12px;
+  }
+
+  .strikeHead {
+    grid-auto-columns: minmax(48px, 1fr);
+    gap: 6px;
+  }
+
+  .strikeBody {
+    min-height: 242px;
+  }
+
+  .strikeGrid {
+    top: 0;
+    bottom: 28px;
+  }
+
+  .strikeColumn {
+    min-height: 242px;
   }
 
   .strikeBars {
