@@ -1113,37 +1113,59 @@ function render() {
       const lastHedge = seriesByKey.hedge_pnl?.[seriesByKey.hedge_pnl.length - 1];
       const lastShort =
         seriesByKey.short_option_pnl?.[seriesByKey.short_option_pnl.length - 1];
+      const hedgeVal = lastHedge?.value;
+      const shortVal = lastShort?.value;
       const totalLabel = Number.isFinite(lastTotal?.value)
         ? formatPnl(lastTotal.value)
         : "n/a";
-      const hedgeLabel = Number.isFinite(lastHedge?.value)
-        ? formatPnl(lastHedge.value)
+      const hedgeLabel = Number.isFinite(hedgeVal)
+        ? formatPnl(hedgeVal)
         : "n/a";
-      const shortLabel = Number.isFinite(lastShort?.value)
-        ? formatPnl(lastShort.value)
+      const shortLabel = Number.isFinite(shortVal)
+        ? formatPnl(shortVal)
         : "n/a";
+      let spreadLabel = "n/a";
+      if (
+        Number.isFinite(hedgeVal) &&
+        Number.isFinite(shortVal) &&
+        shortVal !== 0
+      ) {
+        const spreadPct = ((hedgeVal - shortVal) / Math.abs(shortVal)) * 100;
+        spreadLabel = `${spreadPct >= 0 ? "+" : ""}${spreadPct.toFixed(1)}%`;
+      }
       chartState.detailMetricText
         .text(`Total P&L: ${totalLabel}`)
         .attr("display", null);
       chartState.detailRoiText
-        .text(`Hedge: ${hedgeLabel} | Short: ${shortLabel}`)
+        .text(`Hedge: ${hedgeLabel} | Short: ${shortLabel} | Spread: ${spreadLabel}`)
         .attr("display", null);
     } else {
       const lastReplication =
         seriesByKey.replication_cost[seriesByKey.replication_cost.length - 1];
       const lastOption =
         seriesByKey.option_mark_change[seriesByKey.option_mark_change.length - 1];
-      const replicationLabel = Number.isFinite(lastReplication?.value)
-        ? formatPnl(lastReplication.value)
+      const repVal = lastReplication?.value;
+      const optVal = lastOption?.value;
+      const replicationLabel = Number.isFinite(repVal)
+        ? formatPnl(repVal)
         : "n/a";
-      const optionLabel = Number.isFinite(lastOption?.value)
-        ? formatPnl(lastOption.value)
+      const optionLabel = Number.isFinite(optVal)
+        ? formatPnl(optVal)
         : "n/a";
+      let spreadLabel = "n/a";
+      if (
+        Number.isFinite(repVal) &&
+        Number.isFinite(optVal) &&
+        optVal !== 0
+      ) {
+        const spreadPct = ((repVal - optVal) / Math.abs(optVal)) * 100;
+        spreadLabel = `${spreadPct >= 0 ? "+" : ""}${spreadPct.toFixed(1)}%`;
+      }
       chartState.detailMetricText
         .text(`Replication: ${replicationLabel}`)
         .attr("display", null);
       chartState.detailRoiText
-        .text(`Option: ${optionLabel}`)
+        .text(`Option: ${optionLabel} | Spread: ${spreadLabel}`)
         .attr("display", null);
     }
   };
