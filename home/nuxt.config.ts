@@ -10,4 +10,10 @@ export default defineNuxtConfig({
     '@nuxt/fonts'
   ],
   css: ['~/assets/css/main.css'],
+  nitro: {
+    prerender: {
+      routes: ["/"],
+      crawlLinks: false
+    }
+  }
 })
