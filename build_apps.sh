@@ -11,8 +11,8 @@ mkdir -p "${APPS_DEPLOY_DIR}"
 cd home
 npm install
 npm run generate
-
 cp -r .output/public ${APPS_DEPLOY_DIR}
+cd -
 
 cd apps
 for app in $(find . -mindepth 1 -maxdepth 1 -type d); do
