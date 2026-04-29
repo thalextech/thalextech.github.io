@@ -11,7 +11,7 @@ mkdir -p "${APPS_DEPLOY_DIR}"
 cd home
 npm install
 npm run generate
-cp -r .output/public/ ${APPS_DEPLOY_DIR}/
+cp -r .output/public/* ${APPS_DEPLOY_DIR}/
 cd -
 
 cd apps
