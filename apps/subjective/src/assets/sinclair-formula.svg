@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1300" height="1600" viewBox="0 0 1300 1600" role="img" aria-label="Sinclair subjective pricing formulas">
+  <rect width="1300" height="1600" fill="#000000"/>
+
+  <g fill="#ffffff" font-family="Times New Roman, Times, serif" font-style="italic">
+    <text x="120" y="250" font-size="86">d<tspan baseline-shift="sub" font-size="56">3</tspan> =</text>
+
+    <text x="360" y="188" font-size="78">ln(S/K) + (r + μ + σ²/2)T</text>
+    <line x1="340" y1="260" x2="1130" y2="260" stroke="#ffffff" stroke-width="6"/>
+    <text x="610" y="338" font-size="78">σ√T</text>
+
+    <text x="120" y="740" font-size="86">d<tspan baseline-shift="sub" font-size="56">4</tspan> =</text>
+
+    <text x="360" y="678" font-size="78">ln(S/K) + (r + μ − σ²/2)T</text>
+    <line x1="340" y1="750" x2="1130" y2="750" stroke="#ffffff" stroke-width="6"/>
+    <text x="610" y="828" font-size="78">σ√T</text>
+
+    <text x="90" y="1260" font-size="88">C = Se<tspan baseline-shift="super" font-size="52">μT</tspan>N(d<tspan baseline-shift="sub" font-size="56">3</tspan>) − Ke<tspan baseline-shift="super" font-size="52">−rT</tspan>N(d<tspan baseline-shift="sub" font-size="56">4</tspan>)</text>
+  </g>
+</svg>
