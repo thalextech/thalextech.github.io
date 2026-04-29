@@ -16,6 +16,8 @@ useHead({
           :description="app.description"
           :to="app.path"
           target="_blank"
+          variant="subtle"
+          :ui="{ container: 'lg:flex'}"
       >
         <NuxtPicture
             v-if="app.image"
