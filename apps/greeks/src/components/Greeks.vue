@@ -394,7 +394,7 @@ const render = () => {
       const size = 95;
       const radius = Math.sqrt(size / Math.PI);
 
-      ctx.globalAlpha = 0.22;
+      ctx.globalAlpha = 0.5;
       ctx.fillStyle = pointColor(d);
       ctx.strokeStyle = "#111";
       ctx.lineWidth = 0.8;
