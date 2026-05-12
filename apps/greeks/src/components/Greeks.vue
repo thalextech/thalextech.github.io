@@ -12,6 +12,8 @@ const props = defineProps({
   mode: { type: String, default: "single" },
   greek: { type: String, default: "delta" },
   resolution: { type: String, default: "1h" },
+  opacity: { type: Number, default: null },
+  circleSize: { type: Number, default: 95 },
 });
 
 const svgRef = ref(null);
@@ -391,10 +393,10 @@ const render = () => {
 
       const cx = panel.x(xAccessor(d));
       const cy = y(yAccessor(d));
-      const size = 95;
+      const size = props.circleSize;
       const radius = Math.sqrt(size / Math.PI);
 
-      ctx.globalAlpha = 0.5;
+      ctx.globalAlpha = props.opacity ?? (isMultiMode ? 0.5 : 0.75);
       ctx.fillStyle = pointColor(d);
       ctx.strokeStyle = "#111";
       ctx.lineWidth = 0.8;
@@ -625,6 +627,8 @@ watch(
     props.mode,
     props.greek,
     props.resolution,
+    props.opacity,
+    props.circleSize,
   ],
   () => render(),
   { deep: false },

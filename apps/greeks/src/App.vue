@@ -43,6 +43,9 @@ const ui = reactive({
   greek: "delta",
   loading: false,
   error: "",
+  opacity: null,
+  circleSize: 95,
+  opacityOpen: false,
 });
 
 const data = reactive({
@@ -53,6 +56,7 @@ const data = reactive({
   requestedRange: null,
 });
 const chartRef = ref(null);
+const opacityMenuRef = ref(null);
 const isBootstrapping = ref(true);
 const progressiveDots = ref(0);
 const expiryPanelLoading = reactive({
@@ -690,7 +694,15 @@ async function reloadAll() {
   );
 }
 
+const handleDocumentPointerDown = (event) => {
+  if (!ui.opacityOpen) return;
+  if (!opacityMenuRef.value?.contains(event.target)) {
+    ui.opacityOpen = false;
+  }
+};
+
 onMounted(async () => {
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
     const all = await fetchInstruments();
     data.instruments = Array.isArray(all) ? all : [];
@@ -722,6 +734,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
   if (errorAutoClearTimer) {
     clearTimeout(errorAutoClearTimer);
     errorAutoClearTimer = null;
@@ -757,6 +770,7 @@ watch(
   () => ui.mode,
   async () => {
     if (isBootstrapping.value) return;
+    ui.opacity = null;
     await reloadAll();
   },
   { immediate: false },
@@ -859,6 +873,49 @@ watch(
         >
           Save PNG
         </button>
+
+        <div class="settingsWrap settingsWrap--controls" ref="opacityMenuRef">
+          <button
+            class="settingsButton settingsButton--icon"
+            type="button"
+            title="Opacity"
+            aria-label="Opacity"
+            @click="ui.opacityOpen = !ui.opacityOpen"
+          ></button>
+          <div v-if="ui.opacityOpen" class="settingsDropdown">
+            <div class="settingsHint">
+              Opacity: {{ Math.round((ui.opacity ?? (ui.mode === 'multi' ? 0.5 : 0.75)) * 100) }}%
+            </div>
+            <input
+              class="settingsSlider"
+              type="range"
+              min="0.1"
+              max="1"
+              step="0.05"
+              :value="ui.opacity ?? (ui.mode === 'multi' ? 0.5 : 0.75)"
+              @input="ui.opacity = parseFloat($event.target.value)"
+            />
+            <div class="settingsRange">
+              <span>10%</span>
+              <span>100%</span>
+            </div>
+            <div class="settingsHint" style="margin-top: 10px;">
+              Size: {{ ui.circleSize }}
+            </div>
+            <input
+              class="settingsSlider"
+              type="range"
+              min="20"
+              max="200"
+              step="5"
+              v-model.number="ui.circleSize"
+            />
+            <div class="settingsRange">
+              <span>20</span>
+              <span>200</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
@@ -878,6 +935,8 @@ watch(
         :mode="ui.mode"
         :greek="ui.greek"
         :resolution="ui.resolution"
+        :opacity="ui.opacity"
+        :circle-size="ui.circleSize"
       />
     </div>
   </div>
@@ -911,6 +970,125 @@ watch(
 
 .greekSymbolButton.active {
   color: var(--text);
+  font-weight: 600;
+}
+
+.settingsWrap {
+  position: relative;
+}
+
+.settingsButton {
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.7);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.settingsButton:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.settingsButton--icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.settingsWrap--controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
+.settingsButton--icon::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #e8ebf2;
+}
+
+.settingsDropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 200px;
+  border: 0.5px solid rgba(255, 255, 255, 0.9);
+  background: #080a0f;
+  border-radius: 6px;
+  padding: 10px 12px 12px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+}
+
+.settingsHint {
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.settingsSlider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settingsSlider:focus {
+  outline: none;
+}
+
+.settingsSlider::-webkit-slider-runnable-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  margin-top: -3px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
+}
+
+.settingsSlider::-moz-range-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
+}
+
+.settingsRange {
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  color: #a9abb6;
+  font-size: 10px;
   font-weight: 600;
 }
 
