@@ -29,6 +29,7 @@ const layout = {
   margin: { top: 90, right: 70, bottom: 80, left: 80 },
 };
 const PANEL_X_TICK_COUNT = 5;
+const SECONDS_PER_DAY = 24 * 60 * 60;
 
 const TEXT_STYLES = {
   axisText: { fill: "#ffffff", size: "12px" },
@@ -162,6 +163,16 @@ const render = () => {
   const xAccessor = (d) => d.m;
 
   const yAccessor = (d) => normalizeGreekValue(greekKey, d[greekKey]);
+  const daysToExpirationAccessor = (d) => {
+    const tte = Number(d?.tte);
+    if (Number.isFinite(tte)) return tte / SECONDS_PER_DAY;
+
+    const expiration = Number(d?.expiration ?? d?.expiration_timestamp);
+    const ts = Number(d?.ts);
+    return Number.isFinite(expiration) && Number.isFinite(ts)
+      ? (expiration - ts) / SECONDS_PER_DAY
+      : NaN;
+  };
   const yValues = props.data.map(yAccessor).filter(Number.isFinite);
   if (!yValues.length) return;
 
@@ -340,11 +351,8 @@ const render = () => {
   const expiryIndexByLabel = new Map(
     expiryLabels.map((label, index) => [label, index]),
   );
-  const colorLabel = isGamma ? `|${greekKey}| [x10^4]` : `|${greekKey}|`;
-  const colorAccessor = (d) => {
-    const value = yAccessor(d);
-    return Number.isFinite(value) ? Math.abs(value) : NaN;
-  };
+  const colorLabel = "Days to expiration";
+  const colorAccessor = daysToExpirationAccessor;
   const colorExtent = d3.extent(props.data, colorAccessor);
   const domainMin = Number.isFinite(colorExtent[0]) ? colorExtent[0] : 0;
   const domainMax = Number.isFinite(colorExtent[1])
@@ -364,13 +372,16 @@ const render = () => {
   const continuousColorScale = d3
     .scaleSequential()
     .domain([domainMin, domainMax])
-    .interpolator((t) => d3.interpolateRdBu(1 - t));
+    .interpolator(d3.interpolateRdBu);
   const pointColor = (point) => {
     if (isMultiMode) {
       const rank = expiryIndexByLabel.get(point?.expiry_date) ?? 0;
       return expiryColorScale(rank);
     }
-    return continuousColorScale(colorAccessor(point));
+    const value = colorAccessor(point);
+    return Number.isFinite(value)
+      ? continuousColorScale(value)
+      : d3.interpolateRdBu(0.5);
   };
 
   const points = [...props.data].filter(
@@ -415,6 +426,8 @@ const render = () => {
 
   const formatIndexPrice = (val) =>
     Number.isFinite(val) ? d3.format("$,.2f")(val) : "N/A";
+  const formatDaysToExpiration = (val) =>
+    Number.isFinite(val) ? d3.format(".1f")(val) : "N/A";
   const legendWidth = 160;
   const legendHeight = 10;
   const legendX = mainChartRight - legendWidth - 10;
@@ -446,7 +459,7 @@ const render = () => {
     gradient
       .append("stop")
       .attr("offset", "0%")
-      .attr("stop-color", d3.interpolateRdBu(1));
+      .attr("stop-color", d3.interpolateRdBu(0));
     gradient
       .append("stop")
       .attr("offset", "50%")
@@ -454,7 +467,7 @@ const render = () => {
     gradient
       .append("stop")
       .attr("offset", "100%")
-      .attr("stop-color", d3.interpolateRdBu(0));
+      .attr("stop-color", d3.interpolateRdBu(1));
   }
 
   const legend = svg
@@ -484,7 +497,11 @@ const render = () => {
       .append("text")
       .attr("x", 0)
       .attr("y", 32)
-      .text(isMultiMode ? expiryLabels[0] || "short" : domainMin.toFixed(2)),
+      .text(
+        isMultiMode
+          ? expiryLabels[0] || "short"
+          : formatDaysToExpiration(domainMin),
+      ),
     "legendLabel",
   );
 
@@ -497,7 +514,7 @@ const render = () => {
       .text(
         isMultiMode
           ? expiryLabels[expiryLabels.length - 1] || "long"
-          : domainMax.toFixed(2),
+          : formatDaysToExpiration(domainMax),
       ),
     "legendLabel",
   );
@@ -529,6 +546,7 @@ const render = () => {
     const lines = [
       d.instrument_name,
       `Expiry: ${d.expiry_date || "N/A"}`,
+      `DTE: ${formatDaysToExpiration(daysToExpirationAccessor(d))}`,
       `Index: ${formatIndexPrice(d.index_price_close)}`,
       `Delta: ${formatGreek(d.delta)}`,
       `Gamma: ${formatGreek(d.gamma, 6)}`,
