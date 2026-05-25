@@ -38,6 +38,11 @@ const DEFAULT_T = 30 / 365.25;
 const MARK_CONCURRENCY = 10;
 const LOAD_DEBOUNCE_MS = 140;
 
+const UNDERLYING_OPTIONS = [
+  { value: "BTCUSD", label: "BTC" },
+  { value: "ETHUSD", label: "ETH" },
+];
+
 const ui = reactive({
   resolutionKey: "900",
   maxPoints: DEFAULT_MAX_POINTS_PER_FETCH,
@@ -47,9 +52,16 @@ const ui = reactive({
   error: "",
 });
 
+const underlying = ref("BTCUSD");
 const positionLegs = ref([]);
 
-const instruments = ref([]);
+const allInstruments = ref([]);
+const instruments = computed(() =>
+  (allInstruments.value || []).filter(
+    (instrument) =>
+      instrument?.type === "option" && instrument?.underlying === underlying.value,
+  ),
+);
 const tickerByInstrument = ref({});
 const indexByName = ref({});
 const indexSeries = ref([]);
@@ -181,12 +193,7 @@ const selectedInstrumentNames = computed(() =>
   ),
 );
 
-const activeIndexName = computed(() => {
-  const firstUnderlying = selectedLegInstruments.value.find(
-    (entry) => entry.underlying,
-  )?.underlying;
-  return firstUnderlying || "BTCUSD";
-});
+const activeIndexName = computed(() => underlying.value);
 
 const chartSubtitle = computed(() => {
   const rows = indexSeries.value;
@@ -224,9 +231,15 @@ const indexDisplay = computed(() => {
   };
 });
 
+const FALLBACK_SPOT_BY_UNDERLYING = {
+  BTCUSD: 95_000,
+  ETHUSD: 3_000,
+};
+
 const spot = computed(() => {
   const live = Number(indexDisplay.value?.price);
-  return Number.isFinite(live) && live > 0 ? live : 95_000;
+  if (Number.isFinite(live) && live > 0) return live;
+  return FALLBACK_SPOT_BY_UNDERLYING[underlying.value] ?? 95_000;
 });
 
 const pickNearestStrike = (strikes, targetPrice) => {
@@ -436,10 +449,11 @@ const sortRowsByTs = (rows) =>
     );
 
 const loadInitialAnchoredIndexSnapshot = async () => {
+  const indexName = underlying.value;
   try {
     const { resolution, from, to } = getTimestampRange();
     const rows = await fetchIndexHistory({
-      index_name: "BTCUSD",
+      index_name: indexName,
       resolution,
       from,
       to,
@@ -454,7 +468,7 @@ const loadInitialAnchoredIndexSnapshot = async () => {
     if (!Number.isFinite(price)) return;
     const ts = normalizeTimestampSeconds(anchored?.ts);
     indexByName.value = {
-      BTCUSD: {
+      [indexName]: {
         data: {
           ...anchored,
           index_price_close: price,
@@ -956,14 +970,33 @@ watch(
   { deep: true },
 );
 
+const switchUnderlying = async (next) => {
+  if (next === underlying.value) return;
+  if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
+  underlying.value = next;
+  positionLegs.value = [];
+  indexHistoryRows.value = [];
+  indexByName.value = {};
+  markHistoryByInstrument.value = {};
+  tickerByInstrument.value = {};
+  indexSeries.value = [];
+  comboBaseSeries.value = [];
+  comboSeries.value = [];
+  await loadInitialAnchoredIndexSnapshot();
+  seedDefaultLegs();
+  if (loadTimer) {
+    clearTimeout(loadTimer);
+    loadTimer = null;
+  }
+  await loadSeries();
+  await nextTick();
+  alignSettingsToBuilderMinusX();
+};
+
 onMounted(async () => {
   document.addEventListener("pointerdown", handleDocumentPointerDown);
   window.addEventListener("resize", alignSettingsToBuilderMinusX);
-  const allInstruments = await fetchAllInstruments();
-  instruments.value = (allInstruments || []).filter(
-    (instrument) =>
-      instrument?.type === "option" && instrument?.underlying === "BTCUSD",
-  );
+  allInstruments.value = (await fetchAllInstruments()) || [];
 
   await loadInitialAnchoredIndexSnapshot();
   seedDefaultLegs();
@@ -994,6 +1027,21 @@ watch(
 
 <template>
   <div class="appRoot">
+    <div class="underlyingRow">
+      <div class="underlyingToggle" role="group" aria-label="Underlying">
+        <button
+          v-for="opt in UNDERLYING_OPTIONS"
+          :key="opt.value"
+          type="button"
+          class="underlyingButton"
+          :class="{ underlyingButtonActive: underlying === opt.value }"
+          :disabled="ui.loading && underlying !== opt.value"
+          @click="switchUnderlying(opt.value)"
+        >
+          {{ opt.label }}
+        </button>
+      </div>
+    </div>
     <div class="builderRow">
       <div class="builderMain">
         <PositionBuilder
@@ -1126,6 +1174,47 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 0;
+}
+
+.underlyingRow {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 12px;
+}
+
+.underlyingToggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.underlyingButton {
+  border: none;
+  background: transparent;
+  color: rgba(226, 232, 240, 0.55);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 4px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.underlyingButton:hover:not(:disabled):not(.underlyingButtonActive) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.underlyingButtonActive {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.underlyingButton:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .settingsWrap {
