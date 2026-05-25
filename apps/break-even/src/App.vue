@@ -55,18 +55,17 @@ const chartRef = ref(null);
 const settingsMenuRef = ref(null);
 const settingsButtonRef = ref(null);
 const settingsOpen = ref(false);
+const nowTs = ref(Math.floor(Date.now() / 1000));
 const isInitializing = ref(true);
 let prefetchedIndexForInitialLoad = null;
 let loadRequestId = 0;
+let nowTimer = null;
 
 const maturityFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "2-digit",
   year: "2-digit",
   timeZone: "UTC",
-});
-const priceFormatter = new Intl.NumberFormat("en-US", {
-  maximumFractionDigits: 0,
 });
 
 const normalizeCreateTimeSeconds = (value) => {
@@ -882,6 +881,11 @@ function handleSavePng() {
 }
 
 onMounted(async () => {
+  nowTs.value = Math.floor(Date.now() / 1000);
+  nowTimer = window.setInterval(() => {
+    nowTs.value = Math.floor(Date.now() / 1000);
+  }, 30_000);
+
   document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
     const { resolution, from, to } = getTimestampRange();
@@ -941,6 +945,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener("pointerdown", handleDocumentPointerDown);
+  if (nowTimer) {
+    window.clearInterval(nowTimer);
+    nowTimer = null;
+  }
 });
 
 watch(
@@ -1066,6 +1074,7 @@ watch(
         :spot-price="latestSpot"
         :spot-ts="latestSpotTs"
         :expiry-ts="selectedMaturityTs"
+        :current-ts="nowTs"
         :title="breakEvenTitle"
         :subtitle="breakEvenSubtitle"
         :loading="ui.loading"
@@ -1214,4 +1223,5 @@ watch(
   font-size: 10px;
   font-weight: 600;
 }
+
 </style>

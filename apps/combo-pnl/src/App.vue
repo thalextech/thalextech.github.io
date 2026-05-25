@@ -58,6 +58,7 @@ const comboSeries = ref([]);
 const indexHistoryRows = ref([]);
 const markHistoryByInstrument = ref({});
 const chartAnchorTs = ref(null);
+const chartRef = ref(null);
 const chartBlockRef = ref(null);
 const topSettingsMenuRef = ref(null);
 const bottomSettingsMenuRef = ref(null);
@@ -203,6 +204,13 @@ const chartSubtitle = computed(() => {
   const to = fmt.format(rows[rows.length - 1].date);
   return `${from} - ${to}`;
 });
+
+const handleSavePng = () => {
+  if (!chartRef.value) return;
+  chartRef.value.exportPng({
+    filename: `combo-pnl-${activeResolutionLabel.value}.png`,
+  });
+};
 
 const indexDisplay = computed(() => {
   const snapshot = indexByName.value[activeIndexName.value];
@@ -1021,6 +1029,14 @@ watch(
     </div>
 
     <div class="chartBlock" ref="chartBlockRef">
+      <button
+        class="savePngButton"
+        type="button"
+        @click="handleSavePng"
+        :disabled="ui.loading || !comboSeries.length"
+      >
+        Save PNG
+      </button>
       <div
         class="settingsWrap settingsWrap--chart"
         ref="topSettingsMenuRef"
@@ -1083,6 +1099,7 @@ watch(
       </div>
 
       <IndexMarkComboChart
+        ref="chartRef"
         :index-data="indexSeries"
         :combo-data="comboSeries"
         :delta-hedge-enabled="ui.deltaHedgeEnabled"
@@ -1176,6 +1193,33 @@ watch(
   top: calc(47% + 8px);
   right: 40px;
   z-index: 25;
+}
+
+.savePngButton {
+  position: absolute;
+  top: 5px;
+  right: 40px;
+  z-index: 24;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.7);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.savePngButton:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.savePngButton:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .settingsTitle {

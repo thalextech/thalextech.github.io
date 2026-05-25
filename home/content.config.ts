@@ -9,6 +9,11 @@ export default defineContentConfig({
       source: {
         cwd: resolve("../apps"),
         include: '**/index.yml',
+        exclude: [
+          '**/node_modules/**',
+          '**/dist/**',
+          '**/.vite/**',
+        ],
       },
       schema: z.object({
         image: z.string().optional(),

@@ -1,6 +1,11 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
 
+html.dark,
+html.dark body {
+    background-color: #000;
+}
+
 @theme {
     --color-blue-50: #ebf0ff;
     --color-blue-100: #d6e1ff;

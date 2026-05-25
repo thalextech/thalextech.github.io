@@ -2,6 +2,7 @@
 import * as d3 from "d3";
 import { onMounted, ref, watch } from "vue";
 import { exportChartToPng } from "../../../../lib/export-png.js";
+import { buildBreakEvenSnapshot } from "../lib/breakEvenSnapshot.js";
 
 const props = defineProps({
   tracks: { type: Array, default: () => [] },
@@ -10,6 +11,7 @@ const props = defineProps({
   spotPrice: { type: Number, default: null },
   spotTs: { type: Number, default: null },
   expiryTs: { type: Number, default: null },
+  currentTs: { type: Number, default: null },
   title: { type: String, default: "BTC Option Break-Even Forecast" },
   subtitle: { type: String, default: "" },
   loading: { type: Boolean, default: false },
@@ -20,14 +22,14 @@ const svgRef = ref(null);
 const layout = {
   width: 1800,
   height: 920,
-  margin: { top: 96, right: 96, bottom: 82, left: 84 },
+  margin: { top: 96, right: 390, bottom: 82, left: 84 },
 };
 
 const formatPrice = d3.format(",.0f");
 const formatProb = d3.format(".1%");
-const RULER_LABEL_MIN_GAP = 12;
 const RULER_LABEL_VERTICAL_OFFSET = 8;
-const SECONDS_PER_BS_YEAR = 365.25 * 24 * 60 * 60;
+const NOW_LABEL_BASELINE_OFFSET = 4;
+const TOOLTIP_HIT_RADIUS = 28;
 const Y_AXIS_LABEL_PADDING = 72;
 
 const axisStyle = (axisG) => {
@@ -58,116 +60,32 @@ const getTrackColor = (optionType, index, total) => {
   return scale(index);
 };
 
-const getNearestTrackPoint = (points, targetDate) => {
-  if (!Array.isArray(points) || points.length === 0) return null;
-  const first = points[0];
-  const last = points[points.length - 1];
-  if (!(first?.date instanceof Date) || !(last?.date instanceof Date)) return null;
-  if (targetDate < first.date || targetDate > last.date) return null;
-  const bisect = d3.bisector((point) => point.date).center;
-  const index = bisect(points, targetDate);
-  const point = points[index];
-  if (!(point?.date instanceof Date) || !Number.isFinite(point?.breakEven)) return null;
-  return point;
+const getSnapshotRowText = (row) => {
+  const nd2Text = Number.isFinite(row.nd2) ? formatProb(row.nd2) : "n/a";
+  return `${row.optionType === "call" ? "C" : "P"} ${formatPrice(row.strike)} ${row.nd2Label}=${nd2Text} BE=${formatPrice(row.breakEven)}`;
 };
 
-const erfApprox = (x) => {
-  const sign = x < 0 ? -1 : 1;
-  const absX = Math.abs(x);
-  const t = 1 / (1 + 0.5 * absX);
-  const tau =
-    t *
-    Math.exp(
-      -absX * absX -
-        1.26551223 +
-        t *
-          (1.00002368 +
-            t *
-              (0.37409196 +
-                t *
-                  (0.09678418 +
-                    t *
-                      (-0.18628806 +
-                        t *
-                          (0.27886807 +
-                            t *
-                              (-1.13520398 +
-                                t *
-                                  (1.48851587 +
-                                    t * (-0.82215223 + t * 0.17087277)))))))),
-    );
-  return sign * (1 - tau);
-};
-
-const normalCdf = (x) => 0.5 * (1 + erfApprox(x / Math.SQRT2));
-
-const calcNd2 = ({ spot, strike, iv, tauSeconds }) => {
-  if (!Number.isFinite(spot) || spot <= 0) return null;
-  if (!Number.isFinite(strike) || strike <= 0) return null;
-  if (!Number.isFinite(iv) || iv <= 0) return null;
-  if (!Number.isFinite(tauSeconds)) return null;
-  if (tauSeconds <= 0) {
-    if (spot > strike) return 1;
-    if (spot < strike) return 0;
-    return 0.5;
+const getSnapshotLabels = ({ snapshot, y }) => {
+  const labels = [];
+  for (const row of snapshot.rows) {
+    const labelY = y(row.breakEven);
+    if (!Number.isFinite(labelY)) continue;
+    labels.push({
+      id: row.id,
+      text: getSnapshotRowText(row),
+      color: "#ffffff",
+      rawY: labelY - RULER_LABEL_VERTICAL_OFFSET,
+    });
   }
-  const tau = tauSeconds / SECONDS_PER_BS_YEAR;
-  if (!Number.isFinite(tau) || tau <= 0) return null;
-  const sqrtTau = Math.sqrt(tau);
-  const d2 = (Math.log(spot / strike) - 0.5 * iv * iv * tau) / (iv * sqrtTau);
-  if (!Number.isFinite(d2)) return null;
-  return normalCdf(d2);
-};
-
-const calcOptionNd2 = ({ optionType, spot, strike, iv, tauSeconds }) => {
-  const callNd2 = calcNd2({ spot, strike, iv, tauSeconds });
-  if (!Number.isFinite(callNd2)) return null;
-  return optionType === "put" ? 1 - callNd2 : callNd2;
-};
-
-const interpolateSeriesValue = (points, targetDate) => {
-  if (!Array.isArray(points) || points.length === 0) return null;
-  const first = points[0];
-  const last = points[points.length - 1];
-  if (!(first?.date instanceof Date) || !(last?.date instanceof Date)) return null;
-  if (targetDate <= first.date) return Number(first?.value);
-  if (targetDate >= last.date) return Number(last?.value);
-  const bisect = d3.bisector((point) => point.date).left;
-  const index = bisect(points, targetDate);
-  const left = points[Math.max(0, index - 1)];
-  const right = points[Math.min(points.length - 1, index)];
-  const leftValue = Number(left?.value);
-  const rightValue = Number(right?.value);
-  if (!Number.isFinite(leftValue) && !Number.isFinite(rightValue)) return null;
-  if (!Number.isFinite(leftValue)) return rightValue;
-  if (!Number.isFinite(rightValue)) return leftValue;
-  const t0 = left.date.getTime();
-  const t1 = right.date.getTime();
-  if (!Number.isFinite(t0) || !Number.isFinite(t1) || t1 <= t0) return leftValue;
-  const ratio = (targetDate.getTime() - t0) / (t1 - t0);
-  return leftValue + (rightValue - leftValue) * ratio;
-};
-
-const spreadLabelY = (labels, minY, maxY, gap) => {
-  const sorted = labels
-    .map((label) => ({ ...label }))
-    .sort((a, b) => a.rawY - b.rawY);
-  let cursor = minY;
-  for (const label of sorted) {
-    label.y = Math.max(label.rawY, cursor);
-    cursor = label.y + gap;
+  if (Number.isFinite(snapshot.spot)) {
+    labels.push({
+      id: "spot",
+      text: `Spot ${formatPrice(snapshot.spot)}`,
+      color: "#ffffff",
+      rawY: y(snapshot.spot) - RULER_LABEL_VERTICAL_OFFSET,
+    });
   }
-  const overflow = sorted.length ? sorted[sorted.length - 1].y - maxY : 0;
-  if (overflow > 0) {
-    for (const label of sorted) {
-      label.y -= overflow;
-    }
-  }
-  for (const label of sorted) {
-    if (label.y < minY) label.y = minY;
-    if (label.y > maxY) label.y = maxY;
-  }
-  return sorted;
+  return labels;
 };
 
 function exportPng({ filename = "break-even.png", scale = 4, padding = 24 } = {}) {
@@ -424,90 +342,140 @@ function render() {
       .attr("d", breakEvenLine);
   }
 
-  const rulerLayer = g.append("g").attr("display", "none");
-  const rulerLine = rulerLayer
-    .append("line")
-    .attr("stroke", "#d6d7de")
-    .attr("stroke-width", 1.2)
-    .attr("stroke-dasharray", "4,4")
-    .attr("opacity", 0.9);
-  const labelsLayer = rulerLayer.append("g");
+  if (Number.isFinite(props.currentTs)) {
+    const nowSnapshot = buildBreakEvenSnapshot({
+      tracks,
+      indexCurvePoints,
+      targetDate: new Date(props.currentTs * 1000),
+      expiryTs: props.expiryTs,
+      spotPrice: props.spotPrice,
+    });
+    const nowLabels = getSnapshotLabels({ snapshot: nowSnapshot, y }).map((label) => ({
+      ...label,
+      y: clamp(
+        label.rawY + RULER_LABEL_VERTICAL_OFFSET + NOW_LABEL_BASELINE_OFFSET,
+        8,
+        innerHeight - 8,
+      ),
+    }));
+    const nowLabelX = innerWidth + 14;
 
-  const renderRulerAtX = (xPx) => {
+    g.append("g")
+      .attr("class", "nowLabels")
+      .selectAll("text.nowLabel")
+      .data(nowLabels, (label) => label.id)
+      .join("text")
+      .attr("class", "nowLabel")
+      .attr("x", nowLabelX)
+      .attr("y", (label) => label.y)
+      .attr("text-anchor", "start")
+      .attr("fill", (label) => label.color)
+      .style("font-size", "13px")
+      .style("font-weight", 400)
+      .style("font-family", "ui-sans-serif, system-ui")
+      .attr("paint-order", "stroke")
+      .attr("stroke", "#000")
+      .attr("stroke-width", 3)
+      .text((label) => label.text);
+  }
+
+  const tooltipLayer = g.append("g").attr("display", "none");
+  const tooltipDot = tooltipLayer
+    .append("circle")
+    .attr("r", 4.5)
+    .attr("fill", "#ffffff")
+    .attr("stroke", "#000")
+    .attr("stroke-width", 2);
+  const tooltipBg = tooltipLayer
+    .append("rect")
+    .attr("rx", 4)
+    .attr("ry", 4)
+    .attr("fill", "rgba(0,0,0,0.86)")
+    .attr("stroke", "rgba(255,255,255,0.55)")
+    .attr("stroke-width", 1);
+  const tooltipText = tooltipLayer
+    .append("text")
+    .attr("fill", "#ffffff")
+    .style("font-size", "13px")
+    .style("font-weight", 500)
+    .style("font-family", "ui-sans-serif, system-ui");
+
+  const hideTooltip = () => {
+    tooltipLayer.attr("display", "none");
+  };
+
+  const renderTooltip = (xPx, yPx) => {
     const clampedX = clamp(xPx, 0, innerWidth);
     const hoverDate = x.invert(clampedX);
-    const tauSeconds = Number.isFinite(props.expiryTs)
-      ? props.expiryTs - hoverDate.getTime() / 1000
-      : null;
-    const interpolatedSpot = interpolateSeriesValue(indexCurvePoints, hoverDate);
-    const spotAtHover = Number.isFinite(interpolatedSpot)
-      ? interpolatedSpot
-      : props.spotPrice;
-    rulerLine
-      .attr("x1", clampedX)
-      .attr("x2", clampedX)
-      .attr("y1", 0)
-      .attr("y2", innerHeight);
+    const snapshot = buildBreakEvenSnapshot({
+      tracks,
+      indexCurvePoints,
+      targetDate: hoverDate,
+      expiryTs: props.expiryTs,
+      spotPrice: props.spotPrice,
+    });
 
-    const labels = [];
-    for (const track of tracks) {
-      const nearest = getNearestTrackPoint(track.points, hoverDate);
-      if (!nearest) continue;
-      const iv = Number.isFinite(nearest?.iv) ? nearest.iv : track.referenceIv;
-      const optionNd2 = calcOptionNd2({
-        optionType: track.optionType,
-        spot: spotAtHover,
-        strike: track.strike,
-        iv,
-        tauSeconds,
-      });
-      const nd2Label = track.optionType === "put" ? "N(-d2)" : "N(d2)";
-      const nd2Text = Number.isFinite(optionNd2) ? formatProb(optionNd2) : "n/a";
-      const labelY = y(nearest.breakEven);
-      if (!Number.isFinite(labelY)) continue;
-      labels.push({
-        id: `${track.optionType}:${track.strike}`,
-        text: `${track.optionType === "call" ? "C" : "P"} ${formatPrice(track.strike)} ${nd2Label}=${nd2Text} BE=${formatPrice(nearest.breakEven)}`,
-        color: "#ffffff",
-        rawY: labelY - RULER_LABEL_VERTICAL_OFFSET,
-      });
-    }
-    if (Number.isFinite(spotAtHover)) {
-      labels.push({
-        id: "spot",
-        text: `Spot ${formatPrice(spotAtHover)}`,
-        color: "#ffffff",
-        rawY: y(spotAtHover) - RULER_LABEL_VERTICAL_OFFSET,
-      });
+    const candidates = snapshot.rows
+      .map((row) => ({
+        row,
+        y: y(row.breakEven),
+      }))
+      .filter((candidate) => Number.isFinite(candidate.y));
+
+    if (!candidates.length) {
+      hideTooltip();
+      return;
     }
 
-    const spaced = spreadLabelY(labels, 8, innerHeight - 8, RULER_LABEL_MIN_GAP);
-    const placeRight = clampedX < innerWidth * 0.75;
-    const labelX = placeRight ? clampedX + 10 : clampedX - 10;
-    const anchor = placeRight ? "start" : "end";
+    const nearest = candidates.reduce((best, candidate) => {
+      const distance = Math.abs(candidate.y - yPx);
+      if (!best || distance < best.distance) {
+        return { ...candidate, distance };
+      }
+      return best;
+    }, null);
 
-    labelsLayer
-      .selectAll("text.rulerLabel")
-      .data(spaced, (label) => label.id)
-      .join(
-        (enter) =>
-          enter
-            .append("text")
-            .attr("class", "rulerLabel")
-            .attr("fill", (label) => label.color)
-            .style("font-size", "13px")
-            .style("font-weight", 400)
-            .style("font-family", "ui-sans-serif, system-ui")
-            .attr("paint-order", "stroke")
-            .attr("stroke", "#000")
-            .attr("stroke-width", 3),
-        (update) => update,
-        (exit) => exit.remove(),
-      )
-      .attr("text-anchor", anchor)
-      .attr("x", labelX)
-      .attr("y", (label) => label.y)
-      .text((label) => label.text);
+    if (!nearest || nearest.distance > TOOLTIP_HIT_RADIUS) {
+      hideTooltip();
+      return;
+    }
+
+    const text = getSnapshotRowText(nearest.row);
+    tooltipText.text(text);
+    const bbox = tooltipText.node()?.getBBox();
+    if (!bbox) {
+      hideTooltip();
+      return;
+    }
+
+    const paddingX = 10;
+    const paddingY = 7;
+    const tooltipWidth = bbox.width + paddingX * 2;
+    const tooltipHeight = bbox.height + paddingY * 2;
+    const preferredRight = clampedX + 14;
+    const tooltipX =
+      preferredRight + tooltipWidth <= innerWidth
+        ? preferredRight
+        : clampedX - tooltipWidth - 14;
+    const tooltipY = clamp(
+      nearest.y - tooltipHeight - 10,
+      8,
+      innerHeight - tooltipHeight - 8,
+    );
+
+    tooltipLayer.attr("display", null);
+    tooltipDot
+      .attr("cx", clampedX)
+      .attr("cy", nearest.y)
+      .attr("fill", nearest.row.color || "#ffffff");
+    tooltipBg
+      .attr("x", tooltipX)
+      .attr("y", tooltipY)
+      .attr("width", tooltipWidth)
+      .attr("height", tooltipHeight);
+    tooltipText
+      .attr("x", tooltipX + paddingX)
+      .attr("y", tooltipY + paddingY - bbox.y);
   };
 
   g.append("rect")
@@ -518,17 +486,14 @@ function render() {
     .attr("fill", "transparent")
     .style("cursor", "crosshair")
     .on("mouseenter", function onEnter(event) {
-      rulerLayer.attr("display", null);
-      const [xPx] = d3.pointer(event, this);
-      renderRulerAtX(xPx);
+      const [xPx, yPx] = d3.pointer(event, this);
+      renderTooltip(xPx, yPx);
     })
     .on("mousemove", function onMove(event) {
-      const [xPx] = d3.pointer(event, this);
-      renderRulerAtX(xPx);
+      const [xPx, yPx] = d3.pointer(event, this);
+      renderTooltip(xPx, yPx);
     })
-    .on("mouseleave", () => {
-      rulerLayer.attr("display", "none");
-    });
+    .on("mouseleave", hideTooltip);
 
   const legend = g.append("g").attr("transform", "translate(8,8)");
   legend
@@ -591,6 +556,7 @@ watch(
     props.spotPrice,
     props.spotTs,
     props.expiryTs,
+    props.currentTs,
     props.title,
     props.subtitle,
     props.loading,

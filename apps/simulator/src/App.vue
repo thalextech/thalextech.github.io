@@ -34,14 +34,20 @@ const DRAWN_PATHS_STEP = 100;
 const TIME_STEPS_MIN = 24;
 const TIME_STEPS_MAX = 4000;
 const TIME_STEPS_STEP = 24;
+const EXPORT_PADDING_LEFT = 120;
+const EXPORT_PADDING_TOP = 100;
+const EXPORT_PADDING_RIGHT = 56;
+const EXPORT_PADDING_BOTTOM = 48;
 
 const generateSeed = (): number => Math.floor(Math.random() * 1_000_000_000);
 const seed = ref(generateSeed());
+const appMainRef = ref<HTMLElement | null>(null);
 const chartSectionRef = ref<HTMLElement | null>(null);
 const guideMu = ref<number | null>(null);
 const guideVol = ref<number | null>(null);
 const histogramMode = ref<"price" | "payoff" | "prob">("payoff");
 const settingsOpen = ref(false);
+const exportInProgress = ref(false);
 const cloudPathLimit = ref(2000);
 const colorMinPercent = ref(15);
 const colorMaxPercent = ref(85);
@@ -106,6 +112,285 @@ const regenerate = (): void => {
 const applyParams = (): void => {
   Object.assign(appliedParams, pendingParams);
   regenerate();
+};
+
+const SVG_EXPORT_STYLE = `
+  svg { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .mu-guide line { stroke: #fff; }
+  .mu-cone-fill { opacity: 1; }
+  .mu-cone-edge { fill: none; stroke: rgba(255, 255, 255, 0.55); stroke-width: 1.5; }
+  .axis text { fill: rgba(148, 163, 184, 0.86); font-size: 10px; }
+  .axis path, .axis line, .hist-baseline { stroke: rgba(255, 255, 255, 0.18); }
+  .forward-value-label { fill: rgba(148, 163, 184, 0.88); font-size: 10px; font-variant-numeric: tabular-nums; }
+`;
+
+const isVisibleForExport = (element: Element): boolean => {
+  if (!(element instanceof HTMLElement || element instanceof SVGElement))
+    return false;
+  if (element.classList.contains("save-png-button")) return false;
+  const style = window.getComputedStyle(element);
+  return (
+    style.display !== "none" &&
+    style.visibility !== "hidden" &&
+    Number(style.opacity) !== 0
+  );
+};
+
+const parseCssPixels = (value: string): number => {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const isRenderableColor = (value: string): boolean =>
+  !!value &&
+  value !== "transparent" &&
+  value !== "rgba(0, 0, 0, 0)" &&
+  value !== "hsla(0, 0%, 0%, 0)";
+
+const drawRoundedRect = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+): void => {
+  const r = Math.min(radius, width / 2, height / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + width - r, y);
+  ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+  ctx.lineTo(x + width, y + height - r);
+  ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  ctx.lineTo(x + r, y + height);
+  ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+};
+
+const loadImage = (url: string): Promise<HTMLImageElement> =>
+  new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () =>
+      reject(new Error("Failed to render simulator export."));
+    image.src = url;
+  });
+
+const svgElementToImage = (
+  svgElement: SVGSVGElement,
+): Promise<HTMLImageElement> => {
+  const clone = svgElement.cloneNode(true) as SVGSVGElement;
+  if (!clone.getAttribute("xmlns")) {
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  }
+  const rect = svgElement.getBoundingClientRect();
+  clone.setAttribute("width", String(Math.max(1, Math.ceil(rect.width))));
+  clone.setAttribute("height", String(Math.max(1, Math.ceil(rect.height))));
+  const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
+  style.textContent = SVG_EXPORT_STYLE;
+  const defs = clone.querySelector("defs");
+  if (defs) defs.insertBefore(style, defs.firstChild);
+  else clone.insertBefore(style, clone.firstChild);
+  const source = new XMLSerializer().serializeToString(clone);
+  const blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  return loadImage(url).finally(() => URL.revokeObjectURL(url));
+};
+
+const drawElementBox = (
+  ctx: CanvasRenderingContext2D,
+  element: Element,
+  rootRect: DOMRect,
+): void => {
+  if (!(element instanceof HTMLElement || element instanceof SVGElement))
+    return;
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+  const style = window.getComputedStyle(element);
+  const x = rect.left - rootRect.left;
+  const y = rect.top - rootRect.top;
+  const radius = parseCssPixels(style.borderTopLeftRadius);
+  if (isRenderableColor(style.backgroundColor)) {
+    ctx.fillStyle = style.backgroundColor;
+    drawRoundedRect(ctx, x, y, rect.width, rect.height, radius);
+    ctx.fill();
+  }
+  const borderWidth = parseCssPixels(style.borderTopWidth);
+  if (borderWidth > 0 && isRenderableColor(style.borderTopColor)) {
+    ctx.strokeStyle = style.borderTopColor;
+    ctx.lineWidth = borderWidth;
+    drawRoundedRect(
+      ctx,
+      x + borderWidth / 2,
+      y + borderWidth / 2,
+      Math.max(0, rect.width - borderWidth),
+      Math.max(0, rect.height - borderWidth),
+      Math.max(0, radius - borderWidth / 2),
+    );
+    ctx.stroke();
+  }
+};
+
+const drawText = (
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  rect: DOMRect,
+  style: CSSStyleDeclaration,
+  rootRect: DOMRect,
+): void => {
+  const trimmed = text.replace(/\s+/g, " ").trim();
+  if (!trimmed || rect.width <= 0 || rect.height <= 0) return;
+  ctx.fillStyle = style.color || "#fff";
+  ctx.font = style.font;
+  ctx.textAlign = style.textAlign === "right" ? "right" : "left";
+  ctx.textBaseline = "alphabetic";
+  const fontSize = parseCssPixels(style.fontSize) || 12;
+  const x =
+    rect.left - rootRect.left + (ctx.textAlign === "right" ? rect.width : 0);
+  const y = rect.top - rootRect.top + rect.height - fontSize * 0.18;
+  ctx.fillText(trimmed, x, y);
+  ctx.textAlign = "left";
+};
+
+const drawFormValue = (
+  ctx: CanvasRenderingContext2D,
+  element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
+  rootRect: DOMRect,
+): void => {
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  const value =
+    element instanceof HTMLSelectElement
+      ? (element.selectedOptions[0]?.textContent ?? element.value)
+      : element.value;
+  const fontSize = parseCssPixels(style.fontSize) || 12;
+  const x =
+    rect.left -
+    rootRect.left +
+    (style.textAlign === "right" ? rect.width - 8 : 8);
+  const y = rect.top - rootRect.top + rect.height / 2 + fontSize * 0.35;
+  ctx.fillStyle = style.color || "#fff";
+  ctx.font = style.font;
+  ctx.textAlign = style.textAlign === "right" ? "right" : "left";
+  ctx.fillText(value, x, y);
+  ctx.textAlign = "left";
+};
+
+const renderElementToCanvas = async (
+  ctx: CanvasRenderingContext2D,
+  element: Element,
+  rootRect: DOMRect,
+): Promise<void> => {
+  if (!isVisibleForExport(element)) return;
+
+  drawElementBox(ctx, element, rootRect);
+
+  if (element instanceof HTMLCanvasElement) {
+    const rect = element.getBoundingClientRect();
+    ctx.drawImage(
+      element,
+      rect.left - rootRect.left,
+      rect.top - rootRect.top,
+      rect.width,
+      rect.height,
+    );
+    return;
+  }
+
+  if (element instanceof SVGSVGElement) {
+    const rect = element.getBoundingClientRect();
+    const image = await svgElementToImage(element);
+    ctx.drawImage(
+      image,
+      rect.left - rootRect.left,
+      rect.top - rootRect.top,
+      rect.width,
+      rect.height,
+    );
+    return;
+  }
+
+  if (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLTextAreaElement
+  ) {
+    drawFormValue(ctx, element, rootRect);
+  }
+
+  for (const node of Array.from(element.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent ?? "";
+      if (!text.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const rect = range.getBoundingClientRect();
+      range.detach();
+      drawText(ctx, text, rect, window.getComputedStyle(element), rootRect);
+    } else if (node instanceof Element) {
+      await renderElementToCanvas(ctx, node, rootRect);
+    }
+  }
+};
+
+const downloadCanvas = (canvas: HTMLCanvasElement, filename: string): void => {
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, "image/png");
+};
+
+const exportElementScreenshot = async (
+  element: HTMLElement,
+  filename: string,
+): Promise<void> => {
+  const rect = element.getBoundingClientRect();
+  const width = Math.ceil(rect.width);
+  const height = Math.ceil(rect.height);
+  if (width <= 0 || height <= 0) return;
+
+  await document.fonts?.ready;
+
+  const scale = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  const exportWidth = width + EXPORT_PADDING_LEFT + EXPORT_PADDING_RIGHT;
+  const exportHeight = height + EXPORT_PADDING_TOP + EXPORT_PADDING_BOTTOM;
+  const output = document.createElement("canvas");
+  output.width = Math.round(exportWidth * scale);
+  output.height = Math.round(exportHeight * scale);
+  const ctx = output.getContext("2d");
+  if (!ctx) return;
+  ctx.scale(scale, scale);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, exportWidth, exportHeight);
+  ctx.save();
+  ctx.translate(EXPORT_PADDING_LEFT, EXPORT_PADDING_TOP);
+  await renderElementToCanvas(ctx, element, rect);
+  ctx.restore();
+  downloadCanvas(output, filename);
+};
+
+const handleSavePng = (): void => {
+  if (!appMainRef.value || exportInProgress.value) return;
+  exportInProgress.value = true;
+  void exportElementScreenshot(
+    appMainRef.value,
+    `simulator-${histogramMode.value}.png`,
+  )
+    .catch((error) => {
+      console.error("Failed to export simulator PNG", error);
+    })
+    .finally(() => {
+      exportInProgress.value = false;
+    });
 };
 
 const setMuFromChart = (mu: number): void => {
@@ -1011,7 +1296,7 @@ watch(
 </script>
 
 <template>
-  <main class="app-main">
+  <main ref="appMainRef" class="app-main">
     <section class="builder-section">
       <PositionBuilder
         v-model:legs="positionLegs"
@@ -1056,6 +1341,14 @@ watch(
             </span>
             <span class="chart-horizon-label">{{ horizonDaysLabel }}</span>
           </div>
+          <button
+            class="save-png-button"
+            type="button"
+            @click="handleSavePng"
+            :disabled="exportInProgress"
+          >
+            {{ exportInProgress ? "Saving..." : "Save PNG" }}
+          </button>
         </div>
       </div>
       <div class="sim-stats-card" aria-live="polite">
@@ -1340,6 +1633,7 @@ watch(
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .chart-meta {
@@ -1398,6 +1692,29 @@ watch(
 
 .sim-settings-btn:hover {
   color: var(--text-primary);
+}
+
+.save-png-button {
+  flex-shrink: 0;
+  padding: 5px 9px;
+  border-radius: 7px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(15, 23, 42, 0.72);
+  color: rgba(226, 232, 240, 0.92);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.save-png-button:hover:not(:disabled) {
+  border-color: rgba(226, 232, 240, 0.48);
+  background: rgba(30, 41, 59, 0.86);
+  color: #ffffff;
+}
+
+.save-png-button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .sim-settings-popover {

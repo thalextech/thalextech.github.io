@@ -1,6 +1,7 @@
 <script setup>
 import * as d3 from "d3";
 import { onMounted, ref, watch } from "vue";
+import { exportChartToPng } from "../../../../lib/export-png.js";
 
 const props = defineProps({
   indexData: { type: Array, default: () => [] },
@@ -257,6 +258,17 @@ const axisStyle = (axisG) => {
     .style("font-size", "10px")
     .style("font-family", SVG_FONT_FAMILY);
 };
+
+function exportPng({ filename = "combo-pnl.png", scale = 4, padding = 24 } = {}) {
+  exportChartToPng({
+    element: svgRef.value,
+    filename,
+    scale,
+    padding,
+  });
+}
+
+defineExpose({ exportPng });
 
 const isHiddenSeries = (key) => hiddenDetailSeriesKeys.has(key);
 
