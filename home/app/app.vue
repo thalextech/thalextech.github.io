@@ -9,6 +9,7 @@ const APP_ORDER = [
   "Break Even",
   "Roll PnL",
   "Basis",
+  "Subjective Valuation",
 ];
 
 const { data: apps } = await useAsyncData(() => queryCollection("apps").all(), {

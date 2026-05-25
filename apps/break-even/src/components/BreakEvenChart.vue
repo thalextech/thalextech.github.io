@@ -31,7 +31,6 @@ const RULER_LABEL_VERTICAL_OFFSET = 8;
 const NOW_LABEL_BASELINE_OFFSET = 4;
 const NOW_LABEL_MIN_SPACING = 15;
 const NOW_LABEL_LEADER_THRESHOLD = 3;
-const TOOLTIP_HIT_RADIUS = 28;
 const Y_AXIS_LABEL_PADDING = 72;
 
 const axisStyle = (axisG) => {
@@ -43,8 +42,6 @@ const axisStyle = (axisG) => {
     .style("font-size", "14px")
     .style("font-family", "ui-sans-serif, system-ui");
 };
-
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 const getTrackColor = (optionType, index, total) => {
   if (optionType === "call") {
@@ -416,122 +413,6 @@ function render() {
       .attr("stroke-width", 3)
       .text((label) => label.text);
   }
-
-  const tooltipLayer = g.append("g").attr("display", "none");
-  const tooltipDot = tooltipLayer
-    .append("circle")
-    .attr("r", 4.5)
-    .attr("fill", "#ffffff")
-    .attr("stroke", "#000")
-    .attr("stroke-width", 2);
-  const tooltipBg = tooltipLayer
-    .append("rect")
-    .attr("rx", 4)
-    .attr("ry", 4)
-    .attr("fill", "rgba(0,0,0,0.86)")
-    .attr("stroke", "rgba(255,255,255,0.55)")
-    .attr("stroke-width", 1);
-  const tooltipText = tooltipLayer
-    .append("text")
-    .attr("fill", "#ffffff")
-    .style("font-size", "13px")
-    .style("font-weight", 500)
-    .style("font-family", "ui-sans-serif, system-ui");
-
-  const hideTooltip = () => {
-    tooltipLayer.attr("display", "none");
-  };
-
-  const renderTooltip = (xPx, yPx) => {
-    const clampedX = clamp(xPx, 0, innerWidth);
-    const hoverDate = x.invert(clampedX);
-    const snapshot = buildBreakEvenSnapshot({
-      tracks,
-      indexCurvePoints,
-      targetDate: hoverDate,
-      expiryTs: props.expiryTs,
-      spotPrice: props.spotPrice,
-    });
-
-    const candidates = snapshot.rows
-      .map((row) => ({
-        row,
-        y: y(row.breakEven),
-      }))
-      .filter((candidate) => Number.isFinite(candidate.y));
-
-    if (!candidates.length) {
-      hideTooltip();
-      return;
-    }
-
-    const nearest = candidates.reduce((best, candidate) => {
-      const distance = Math.abs(candidate.y - yPx);
-      if (!best || distance < best.distance) {
-        return { ...candidate, distance };
-      }
-      return best;
-    }, null);
-
-    if (!nearest || nearest.distance > TOOLTIP_HIT_RADIUS) {
-      hideTooltip();
-      return;
-    }
-
-    const text = getSnapshotRowText(nearest.row);
-    tooltipText.text(text);
-    const bbox = tooltipText.node()?.getBBox();
-    if (!bbox) {
-      hideTooltip();
-      return;
-    }
-
-    const paddingX = 10;
-    const paddingY = 7;
-    const tooltipWidth = bbox.width + paddingX * 2;
-    const tooltipHeight = bbox.height + paddingY * 2;
-    const preferredRight = clampedX + 14;
-    const tooltipX =
-      preferredRight + tooltipWidth <= innerWidth
-        ? preferredRight
-        : clampedX - tooltipWidth - 14;
-    const tooltipY = clamp(
-      nearest.y - tooltipHeight - 10,
-      8,
-      innerHeight - tooltipHeight - 8,
-    );
-
-    tooltipLayer.attr("display", null);
-    tooltipDot
-      .attr("cx", clampedX)
-      .attr("cy", nearest.y)
-      .attr("fill", nearest.row.color || "#ffffff");
-    tooltipBg
-      .attr("x", tooltipX)
-      .attr("y", tooltipY)
-      .attr("width", tooltipWidth)
-      .attr("height", tooltipHeight);
-    tooltipText
-      .attr("x", tooltipX + paddingX)
-      .attr("y", tooltipY + paddingY - bbox.y);
-  };
-
-  g.append("rect")
-    .attr("x", 0)
-    .attr("y", 0)
-    .attr("width", innerWidth)
-    .attr("height", innerHeight)
-    .attr("fill", "transparent")
-    .style("cursor", "crosshair")
-    .on("mouseenter", function onEnter(event) {
-      const [xPx, yPx] = d3.pointer(event, this);
-      renderTooltip(xPx, yPx);
-    })
-    .on("mousemove", function onMove(event) {
-      const [xPx, yPx] = d3.pointer(event, this);
-      renderTooltip(xPx, yPx);
-    })
-    .on("mouseleave", hideTooltip);
 
   const legend = g.append("g").attr("transform", "translate(8,8)");
   legend
