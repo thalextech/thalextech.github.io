@@ -29,6 +29,8 @@ const formatPrice = d3.format(",.0f");
 const formatProb = d3.format(".1%");
 const RULER_LABEL_VERTICAL_OFFSET = 8;
 const NOW_LABEL_BASELINE_OFFSET = 4;
+const NOW_LABEL_MIN_SPACING = 15;
+const NOW_LABEL_LEADER_THRESHOLD = 3;
 const TOOLTIP_HIT_RADIUS = 28;
 const Y_AXIS_LABEL_PADDING = 72;
 
@@ -86,6 +88,23 @@ const getSnapshotLabels = ({ snapshot, y }) => {
     });
   }
   return labels;
+};
+
+// Two-pass push-apart so right-side labels don't overlap when break-evens cluster.
+// Mutates each item by setting `.y` to a de-collided baseline.
+const deCollideLabels = (items, minY, maxY, spacing) => {
+  if (!items.length) return;
+  const sorted = [...items].sort((a, b) => a.targetY - b.targetY);
+  let prev = minY - spacing;
+  for (const item of sorted) {
+    item.y = Math.max(item.targetY, prev + spacing);
+    prev = item.y;
+  }
+  let next = maxY + spacing;
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    sorted[i].y = Math.min(sorted[i].y, next - spacing);
+    next = sorted[i].y;
+  }
 };
 
 function exportPng({ filename = "break-even.png", scale = 4, padding = 24 } = {}) {
@@ -350,15 +369,34 @@ function render() {
       expiryTs: props.expiryTs,
       spotPrice: props.spotPrice,
     });
-    const nowLabels = getSnapshotLabels({ snapshot: nowSnapshot, y }).map((label) => ({
-      ...label,
-      y: clamp(
-        label.rawY + RULER_LABEL_VERTICAL_OFFSET + NOW_LABEL_BASELINE_OFFSET,
-        8,
-        innerHeight - 8,
-      ),
-    }));
+    const nowLabels = getSnapshotLabels({ snapshot: nowSnapshot, y }).map((label) => {
+      const anchorY = label.rawY + RULER_LABEL_VERTICAL_OFFSET;
+      return {
+        ...label,
+        anchorY,
+        targetY: anchorY + NOW_LABEL_BASELINE_OFFSET,
+      };
+    });
+    deCollideLabels(nowLabels, 14, innerHeight - 6, NOW_LABEL_MIN_SPACING);
     const nowLabelX = innerWidth + 14;
+
+    const displacedLabels = nowLabels.filter(
+      (label) => Math.abs(label.y - label.targetY) > NOW_LABEL_LEADER_THRESHOLD,
+    );
+
+    g.append("g")
+      .attr("class", "nowLabelLeaders")
+      .selectAll("line.nowLabelLeader")
+      .data(displacedLabels, (label) => label.id)
+      .join("line")
+      .attr("class", "nowLabelLeader")
+      .attr("x1", innerWidth + 2)
+      .attr("x2", nowLabelX - 3)
+      .attr("y1", (label) => label.anchorY)
+      .attr("y2", (label) => label.y - NOW_LABEL_BASELINE_OFFSET)
+      .attr("stroke", (label) => label.color)
+      .attr("stroke-width", 0.75)
+      .attr("opacity", 0.55);
 
     g.append("g")
       .attr("class", "nowLabels")
