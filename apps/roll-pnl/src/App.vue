@@ -19,7 +19,11 @@ const RESOLUTION_CONFIG = {
 const MAIN_POINT_LIMIT = 300;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 
-const DEFAULT_UNDERLYING = "BTCUSD";
+const UNDERLYING_OPTIONS = [
+  { value: "BTCUSD", label: "BTC", perpetualName: "BTC-PERPETUAL" },
+  { value: "ETHUSD", label: "ETH", perpetualName: "ETH-PERPETUAL" },
+];
+
 const SECONDS_PER_DAY = 24 * 60 * 60;
 const DAYS_UNTIL_TARGET_FUTURE = 7;
 
@@ -30,6 +34,8 @@ const uiState = reactive({
   loading: false,
   error: "",
 });
+const underlying = ref("BTCUSD");
+const allInstruments = shallowRef([]);
 const showRollPnl = ref(false);
 const perpetuals = shallowRef([]);
 const futures = shallowRef([]);
@@ -161,7 +167,7 @@ async function loadPerpetual({ perpetualInstrument, resolutionKey }) {
   uiState.error = "";
 
   const { from, to, resolution } = getTimestampRange(resolutionKey);
-  const indexName = perpetualInstrument?.underlying || DEFAULT_UNDERLYING;
+  const indexName = perpetualInstrument?.underlying || underlying.value;
 
   try {
     const [mainMarkResult, mainIndex] = await Promise.all([
@@ -245,33 +251,52 @@ function handleSavePng() {
   chartRef.value.exportPng({ filename: "cost_of_carry_comparison.png" });
 }
 
-onMounted(async () => {
-  const allInstruments = await fetchInstruments();
-
-  // Filter perpetuals and futures for BTC
-  const perps = allInstruments.filter(
-    (i) => i?.type === "perpetual" && i?.underlying === DEFAULT_UNDERLYING,
+const applyUnderlyingFilter = () => {
+  const list = allInstruments.value || [];
+  const perps = list.filter(
+    (i) => i?.type === "perpetual" && i?.underlying === underlying.value,
   );
-  const futureInstruments = allInstruments
-    .filter((i) => i?.type === "future" && i?.underlying === DEFAULT_UNDERLYING)
+  const futureInstruments = list
+    .filter((i) => i?.type === "future" && i?.underlying === underlying.value)
     .sort(
       (a, b) => (a.expiration_timestamp || 0) - (b.expiration_timestamp || 0),
     );
-
-  // Set available instruments
-  const defaultPerp = findInstrument(perps, "BTC-PERPETUAL");
   perpetuals.value = perps;
   futures.value = futureInstruments;
 
-  // Set initial perpetual selection
-  uiState.perpetualInstrumentName = defaultPerp?.instrument_name || "";
+  const expectedPerpName = UNDERLYING_OPTIONS.find(
+    (opt) => opt.value === underlying.value,
+  )?.perpetualName;
+  const defaultPerp = expectedPerpName
+    ? findInstrument(perps, expectedPerpName)
+    : null;
+  uiState.perpetualInstrumentName =
+    defaultPerp?.instrument_name || perps[0]?.instrument_name || "";
 
-  // Set initial future selection (closest to 7 days from now)
   if (futureInstruments.length) {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const closest = findClosestFuture(futureInstruments, nowSeconds);
-    uiState.futureInstrumentName = closest.instrument_name;
+    uiState.futureInstrumentName = closest?.instrument_name || "";
+  } else {
+    uiState.futureInstrumentName = "";
   }
+};
+
+const switchUnderlying = async (next) => {
+  if (next === underlying.value) return;
+  if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
+  underlying.value = next;
+  displayed.perpMark = [];
+  displayed.futureMark = [];
+  displayed.index = [];
+  uiState.error = "";
+  applyUnderlyingFilter();
+};
+
+onMounted(async () => {
+  const fetchedInstruments = await fetchInstruments();
+  allInstruments.value = fetchedInstruments || [];
+  applyUnderlyingFilter();
 });
 
 watch(
@@ -313,6 +338,19 @@ watch(
       </div>
 
       <div class="controls">
+        <div class="underlyingToggle" role="group" aria-label="Underlying">
+          <button
+            v-for="opt in UNDERLYING_OPTIONS"
+            :key="opt.value"
+            type="button"
+            class="underlyingButton"
+            :class="{ underlyingButtonActive: underlying === opt.value }"
+            :disabled="uiState.loading && underlying !== opt.value"
+            @click="switchUnderlying(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
         <div class="field">
           <label for="perpetual-instrument">Perpetual</label>
           <select

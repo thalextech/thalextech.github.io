@@ -147,6 +147,39 @@ a {
   font-weight: 600;
 }
 
+.underlyingToggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
+  border-radius: 10px;
+  overflow: hidden;
+  height: 40px;
+}
+
+.underlyingButton {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 16px;
+  cursor: pointer;
+  height: 100%;
+}
+
+.underlyingButton + .underlyingButton {
+  border-left: 1px solid var(--border);
+}
+
+.underlyingButton:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.underlyingButtonActive {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .meta {
   color: var(--muted);
   font-size: 13px;

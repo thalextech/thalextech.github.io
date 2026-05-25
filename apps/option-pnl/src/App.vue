@@ -20,6 +20,11 @@ const MAIN_POINT_LIMIT = 360;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 const MIN_DATA_TS = Math.floor(MIN_DATA_DATE.getTime() / 1000);
 
+const UNDERLYING_OPTIONS = [
+  { value: "BTCUSD", label: "BTC" },
+  { value: "ETHUSD", label: "ETH" },
+];
+
 const ui = reactive({
   resolutionKey: "900",
   optionMaturity: "",
@@ -28,6 +33,8 @@ const ui = reactive({
   loading: false,
   error: "",
 });
+const underlying = ref("BTCUSD");
+const allInstruments = ref([]);
 const data = reactive({
   optionInstruments: [],
   optionMark: {},
@@ -320,7 +327,7 @@ async function load(instrument) {
 
   try {
     const optionInstrument = instrument;
-    const indexName = optionInstrument?.underlying || "BTCUSD";
+    const indexName = optionInstrument?.underlying || underlying.value;
     const optionName = optionInstrument?.instrument_name || "";
     const indexPromise = prefetchedIndex
       ? Promise.resolve(prefetchedIndex)
@@ -373,26 +380,71 @@ function handleSavePng() {
   chartRef.value.exportPng({ filename });
 }
 
+const rebuildOptionInstruments = () => {
+  data.optionInstruments = (allInstruments.value || [])
+    .filter((i) => i?.type === "option" && i?.underlying === underlying.value)
+    .map(normalizeOptionInstrument)
+    .sort(
+      (a, b) =>
+        (a.expiration_ts || 0) - (b.expiration_ts || 0) ||
+        (a.strike || 0) - (b.strike || 0),
+    );
+};
+
+const switchUnderlying = async (next) => {
+  if (next === underlying.value) return;
+  if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
+  underlying.value = next;
+  data.optionMark = {};
+  data.index = {};
+  ui.optionMaturity = "";
+  ui.optionStrike = "";
+  prefetchedIndexForInitialLoad = null;
+  isInitializing.value = true;
+  try {
+    rebuildOptionInstruments();
+    const { resolution, from, to } = getTimestampRange();
+    const prefetchedIndex = await fetchIndexHistory({
+      index_name: next,
+      resolution,
+      from,
+      to,
+    });
+    const oldest = getOldestOptionInstrument(data.optionInstruments);
+    if (oldest && Number.isFinite(oldest.expiration_ts)) {
+      ui.optionMaturity = String(oldest.expiration_ts);
+    }
+    data.index[ui.resolutionKey] = prefetchedIndex || [];
+    prefetchedIndexForInitialLoad = {
+      resolutionKey: ui.resolutionKey,
+      rows: prefetchedIndex || [],
+    };
+    const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
+    ui.optionStrike = getDefaultStrikeValue({
+      maturityInstruments: optionInstrumentsForMaturity.value,
+      optionType: ui.optionType,
+      indexPrice: latestIndexClose,
+      fallbackStrikes: optionStrikes.value,
+    });
+  } finally {
+    isInitializing.value = false;
+  }
+};
+
 onMounted(async () => {
   try {
     const { resolution, from, to } = getTimestampRange();
-    const [all_instruments, prefetchedIndex] = await Promise.all([
+    const [fetchedInstruments, prefetchedIndex] = await Promise.all([
       fetchInstruments(),
       fetchIndexHistory({
-        index_name: "BTCUSD",
+        index_name: underlying.value,
         resolution,
         from,
         to,
       }),
     ]);
-    data.optionInstruments = all_instruments
-      .filter((i) => i?.type === "option" && i?.underlying === "BTCUSD")
-      .map(normalizeOptionInstrument)
-      .sort(
-        (a, b) =>
-          (a.expiration_ts || 0) - (b.expiration_ts || 0) ||
-          (a.strike || 0) - (b.strike || 0),
-      );
+    allInstruments.value = fetchedInstruments || [];
+    rebuildOptionInstruments();
 
     const oldest = getOldestOptionInstrument(data.optionInstruments);
     if (oldest && Number.isFinite(oldest.expiration_ts)) {
@@ -476,6 +528,19 @@ watch(
       </div>
 
       <div class="controls">
+        <div class="underlyingToggle" role="group" aria-label="Underlying">
+          <button
+            v-for="opt in UNDERLYING_OPTIONS"
+            :key="opt.value"
+            type="button"
+            class="underlyingButton"
+            :class="{ underlyingButtonActive: underlying === opt.value }"
+            :disabled="ui.loading && underlying !== opt.value"
+            @click="switchUnderlying(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
         <div class="field">
           <label for="option-maturity">Maturity</label>
           <select id="option-maturity" v-model="ui.optionMaturity">

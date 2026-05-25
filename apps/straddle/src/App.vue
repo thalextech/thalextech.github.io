@@ -32,6 +32,11 @@ const MIN_CIRCLE_SIZE = 2;
 const MAX_CIRCLE_SIZE = 12;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 
+const UNDERLYING_OPTIONS = [
+  { value: "BTCUSD", label: "BTC" },
+  { value: "ETHUSD", label: "ETH" },
+];
+
 const ui = reactive({
   resolutionKey: "3600",
   optionMaturity: "",
@@ -42,6 +47,8 @@ const ui = reactive({
   loading: false,
   error: "",
 });
+const underlying = ref("BTCUSD");
+const allInstruments = ref([]);
 const data = reactive({
   optionInstruments: [],
   callMark: {},
@@ -544,7 +551,7 @@ async function load({ callInstrument, putInstrument }) {
 
   try {
     const indexName =
-      callInstrument?.underlying || putInstrument?.underlying || "BTCUSD";
+      callInstrument?.underlying || putInstrument?.underlying || underlying.value;
     const callName = callInstrument?.instrument_name || "";
     const putName = putInstrument?.instrument_name || "";
 
@@ -613,14 +620,80 @@ function handleSavePng() {
   });
 }
 
+const rebuildOptionInstruments = () => {
+  data.optionInstruments = (allInstruments.value || [])
+    .filter((i) => i?.type === "option" && i?.underlying === underlying.value)
+    .map(normalizeOptionInstrument)
+    .sort(
+      (a, b) =>
+        (a.expiration_ts || 0) - (b.expiration_ts || 0) ||
+        (a.strike || 0) - (b.strike || 0),
+    );
+};
+
+const switchUnderlying = async (next) => {
+  if (next === underlying.value) return;
+  if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
+  underlying.value = next;
+  data.callMark = {};
+  data.putMark = {};
+  data.index = {};
+  ui.optionMaturity = "";
+  ui.optionStrike = "";
+  prefetchedIndexForInitialLoad = null;
+  isInitializing.value = true;
+  try {
+    rebuildOptionInstruments();
+    const { resolution, from, to } = getTimestampRange();
+    const prefetchedIndex = await fetchIndexHistory({
+      index_name: next,
+      resolution,
+      from,
+      to,
+      count: maxPointsToFetch.value,
+    });
+    data.index[ui.resolutionKey] = prefetchedIndex || [];
+    prefetchedIndexForInitialLoad = {
+      resolutionKey: ui.resolutionKey,
+      maxPoints: maxPointsToFetch.value,
+      rows: prefetchedIndex || [],
+    };
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const oneWeekAhead = nowSeconds + 7 * 24 * 60 * 60;
+    const expiries = optionMaturities.value
+      .map((option) => Number(option.value))
+      .filter((ts) => Number.isFinite(ts));
+    const upcomingExpiries = expiries.filter((ts) => ts > nowSeconds);
+    const candidateExpiries = upcomingExpiries.length ? upcomingExpiries : expiries;
+    const closestExpiry = candidateExpiries.reduce((best, ts) => {
+      if (!Number.isFinite(best)) return ts;
+      const bestDistance = Math.abs(best - oneWeekAhead);
+      const currentDistance = Math.abs(ts - oneWeekAhead);
+      return currentDistance < bestDistance ? ts : best;
+    }, NaN);
+    if (Number.isFinite(closestExpiry)) {
+      ui.optionMaturity = String(closestExpiry);
+    }
+    const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
+    ui.optionStrike = getDefaultStrikeValue({
+      maturityInstruments: optionInstrumentsForMaturity.value,
+      indexPrice: latestIndexClose,
+      fallbackStrikes: optionStrikes.value,
+    });
+  } finally {
+    isInitializing.value = false;
+  }
+};
+
 onMounted(async () => {
   document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
     const { resolution, from, to } = getTimestampRange();
-    const [allInstruments, prefetchedIndex] = await Promise.all([
+    const [fetchedInstruments, prefetchedIndex] = await Promise.all([
       fetchInstruments(),
       fetchIndexHistory({
-        index_name: "BTCUSD",
+        index_name: underlying.value,
         resolution,
         from,
         to,
@@ -628,14 +701,8 @@ onMounted(async () => {
       }),
     ]);
 
-    data.optionInstruments = allInstruments
-      .filter((i) => i?.type === "option" && i?.underlying === "BTCUSD")
-      .map(normalizeOptionInstrument)
-      .sort(
-        (a, b) =>
-          (a.expiration_ts || 0) - (b.expiration_ts || 0) ||
-          (a.strike || 0) - (b.strike || 0),
-      );
+    allInstruments.value = fetchedInstruments || [];
+    rebuildOptionInstruments();
 
     const nowSeconds = Math.floor(Date.now() / 1000);
     const oneWeekAhead = nowSeconds + 7 * 24 * 60 * 60;
@@ -748,6 +815,19 @@ watch(
       </div>
 
       <div class="controls">
+        <div class="underlyingToggle" role="group" aria-label="Underlying">
+          <button
+            v-for="opt in UNDERLYING_OPTIONS"
+            :key="opt.value"
+            type="button"
+            class="underlyingButton"
+            :class="{ underlyingButtonActive: underlying === opt.value }"
+            :disabled="ui.loading && underlying !== opt.value"
+            @click="switchUnderlying(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
         <div class="field">
           <label for="option-maturity">Maturity</label>
           <select id="option-maturity" v-model="ui.optionMaturity">
@@ -1046,6 +1126,39 @@ watch(
   justify-content: space-between;
   color: #a9abb6;
   font-size: 10px;
+  font-weight: 600;
+}
+
+.underlyingToggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
+  border-radius: 10px;
+  overflow: hidden;
+  height: 40px;
+}
+
+.underlyingButton {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 16px;
+  cursor: pointer;
+  height: 100%;
+}
+
+.underlyingButton + .underlyingButton {
+  border-left: 1px solid var(--border);
+}
+
+.underlyingButton:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.underlyingButtonActive {
+  color: var(--text);
   font-weight: 600;
 }
 </style>

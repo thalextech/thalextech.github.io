@@ -930,36 +930,23 @@ const selectedInstrumentNames = computed(() =>
   ),
 );
 
-const selectedIndexNames = computed<string[]>(() =>
-  Array.from(
-    new Set(
-      selectedInstruments.value
-        .map((instrument) => instrument.index_name)
-        .filter(
-          (name): name is string => typeof name === "string" && name.length > 0,
-        ),
-    ),
-  ),
-);
+const UNDERLYING_OPTIONS = [
+  { value: "BTCUSD", label: "BTC" },
+  { value: "ETHUSD", label: "ETH" },
+] as const;
+type UnderlyingValue = (typeof UNDERLYING_OPTIONS)[number]["value"];
 
-const FORCED_INDEX_NAME = "BTCUSD";
+const underlying = ref<UnderlyingValue>("BTCUSD");
 
-const inferIndexName = (instrumentName: string): string | null => {
-  if (!instrumentName) return null;
-  const base = instrumentName.split("-")[0];
-  if (!base) return null;
-  if (base.endsWith("USD")) return base;
-  return `${base}USD`;
+const resolvedIndexNames = computed<string[]>(() => [underlying.value]);
+
+const switchUnderlying = (next: UnderlyingValue): void => {
+  if (next === underlying.value) return;
+  if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
+  underlying.value = next;
+  positionLegs.value = [];
+  defaultTradeInitialized.value = false;
 };
-
-const resolvedIndexNames = computed<string[]>(() => {
-  if (FORCED_INDEX_NAME) return [FORCED_INDEX_NAME];
-  if (selectedIndexNames.value.length) return selectedIndexNames.value;
-  const inferred = selectedInstrumentNames.value
-    .map(inferIndexName)
-    .filter((name): name is string => !!name);
-  return inferred.length ? Array.from(new Set(inferred)) : [];
-});
 
 const extractIndexPrice = (data: unknown): number | null => {
   if (!data || typeof data !== "object") return null;
@@ -1297,6 +1284,20 @@ watch(
 
 <template>
   <main ref="appMainRef" class="app-main">
+    <div class="underlying-row">
+      <div class="underlying-toggle" role="group" aria-label="Underlying">
+        <button
+          v-for="opt in UNDERLYING_OPTIONS"
+          :key="opt.value"
+          type="button"
+          class="underlying-button"
+          :class="{ 'underlying-button--active': underlying === opt.value }"
+          @click="switchUnderlying(opt.value)"
+        >
+          {{ opt.label }}
+        </button>
+      </div>
+    </div>
     <section class="builder-section">
       <PositionBuilder
         v-model:legs="positionLegs"
@@ -1618,6 +1619,39 @@ watch(
   width: 100%;
   min-width: 0;
   overflow-x: auto;
+}
+
+.underlying-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.underlying-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.underlying-button {
+  background: transparent;
+  color: rgba(226, 232, 240, 0.55);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 4px 14px;
+  border-radius: 999px;
+}
+
+.underlying-button:hover:not(.underlying-button--active) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.underlying-button--active {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
 }
 
 .chart-header {

@@ -37,6 +37,11 @@ const MAX_ABS_DELTA = 0.55;
 const STRIKE_MIN_INDEX_MULTIPLIER = 0.8;
 const STRIKE_MAX_INDEX_MULTIPLIER = 1.2;
 
+const UNDERLYING_OPTIONS = [
+  { value: "BTCUSD", label: "BTC" },
+  { value: "ETHUSD", label: "ETH" },
+];
+
 const ui = reactive({
   resolutionKey: "3600",
   optionMaturity: "",
@@ -45,6 +50,8 @@ const ui = reactive({
   error: "",
 });
 
+const underlying = ref("BTCUSD");
+const allInstruments = ref([]);
 const data = reactive({
   optionInstruments: [],
   index: {},
@@ -816,7 +823,7 @@ async function load() {
     const indexPromise = prefetchedIndex
       ? Promise.resolve(prefetchedIndex)
       : fetchIndexHistory({
-          index_name: "BTCUSD",
+          index_name: underlying.value,
           resolution,
           from,
           to,
@@ -880,6 +887,70 @@ function handleSavePng() {
   });
 }
 
+const rebuildOptionInstruments = () => {
+  data.optionInstruments = (allInstruments.value || [])
+    .filter((instrument) => instrument?.type === "option")
+    .filter((instrument) => instrument?.underlying === underlying.value)
+    .map(normalizeOptionInstrument)
+    .sort(
+      (a, b) =>
+        (a.expiration_ts || 0) - (b.expiration_ts || 0) ||
+        (a.strike || 0) - (b.strike || 0),
+    );
+};
+
+const pickDefaultMaturity = () => {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const oneWeekAhead = nowSeconds + 7 * 24 * 60 * 60;
+  const expiries = optionMaturities.value
+    .map((option) => Number(option.value))
+    .filter((ts) => Number.isFinite(ts));
+  const upcomingExpiries = expiries.filter((ts) => ts > nowSeconds);
+  const candidateExpiries = upcomingExpiries.length ? upcomingExpiries : expiries;
+  const closestExpiry = candidateExpiries.reduce((best, ts) => {
+    if (!Number.isFinite(best)) return ts;
+    const bestDistance = Math.abs(best - oneWeekAhead);
+    const currentDistance = Math.abs(ts - oneWeekAhead);
+    return currentDistance < bestDistance ? ts : best;
+  }, NaN);
+  return Number.isFinite(closestExpiry) ? String(closestExpiry) : "";
+};
+
+const switchUnderlying = async (next) => {
+  if (next === underlying.value) return;
+  if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
+  underlying.value = next;
+  data.index = {};
+  data.markByInstrument = {};
+  ui.optionMaturity = "";
+  prefetchedIndexForInitialLoad = null;
+  isInitializing.value = true;
+  try {
+    rebuildOptionInstruments();
+    const { resolution, from, to } = getTimestampRange();
+    const prefetchedIndex = await fetchIndexHistory({
+      index_name: next,
+      resolution,
+      from,
+      to,
+      count: maxPointsToFetch.value,
+    });
+    data.index[ui.resolutionKey] = Array.isArray(prefetchedIndex)
+      ? prefetchedIndex
+      : [];
+    prefetchedIndexForInitialLoad = {
+      resolutionKey: ui.resolutionKey,
+      rows: Array.isArray(prefetchedIndex) ? prefetchedIndex : [],
+    };
+    ui.optionMaturity = pickDefaultMaturity();
+  } finally {
+    isInitializing.value = false;
+    if (ui.optionMaturity) {
+      await load();
+    }
+  }
+};
+
 onMounted(async () => {
   nowTs.value = Math.floor(Date.now() / 1000);
   nowTimer = window.setInterval(() => {
@@ -889,10 +960,10 @@ onMounted(async () => {
   document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
     const { resolution, from, to } = getTimestampRange();
-    const [allInstruments, prefetchedIndex] = await Promise.all([
+    const [fetchedInstruments, prefetchedIndex] = await Promise.all([
       fetchInstruments(),
       fetchIndexHistory({
-        index_name: "BTCUSD",
+        index_name: underlying.value,
         resolution,
         from,
         to,
@@ -900,15 +971,8 @@ onMounted(async () => {
       }),
     ]);
 
-    data.optionInstruments = allInstruments
-      .filter((instrument) => instrument?.type === "option")
-      .filter((instrument) => instrument?.underlying === "BTCUSD")
-      .map(normalizeOptionInstrument)
-      .sort(
-        (a, b) =>
-          (a.expiration_ts || 0) - (b.expiration_ts || 0) ||
-          (a.strike || 0) - (b.strike || 0),
-      );
+    allInstruments.value = fetchedInstruments || [];
+    rebuildOptionInstruments();
 
     data.index[ui.resolutionKey] = Array.isArray(prefetchedIndex)
       ? prefetchedIndex
@@ -918,23 +982,7 @@ onMounted(async () => {
       rows: Array.isArray(prefetchedIndex) ? prefetchedIndex : [],
     };
 
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const oneWeekAhead = nowSeconds + 7 * 24 * 60 * 60;
-    const expiries = optionMaturities.value
-      .map((option) => Number(option.value))
-      .filter((ts) => Number.isFinite(ts));
-    const upcomingExpiries = expiries.filter((ts) => ts > nowSeconds);
-    const candidateExpiries = upcomingExpiries.length ? upcomingExpiries : expiries;
-    const closestExpiry = candidateExpiries.reduce((best, ts) => {
-      if (!Number.isFinite(best)) return ts;
-      const bestDistance = Math.abs(best - oneWeekAhead);
-      const currentDistance = Math.abs(ts - oneWeekAhead);
-      return currentDistance < bestDistance ? ts : best;
-    }, NaN);
-
-    if (Number.isFinite(closestExpiry)) {
-      ui.optionMaturity = String(closestExpiry);
-    }
+    ui.optionMaturity = pickDefaultMaturity();
   } finally {
     isInitializing.value = false;
     if (ui.optionMaturity) {
@@ -990,6 +1038,19 @@ watch(
       </div>
 
       <div class="controls">
+        <div class="underlyingToggle" role="group" aria-label="Underlying">
+          <button
+            v-for="opt in UNDERLYING_OPTIONS"
+            :key="opt.value"
+            type="button"
+            class="underlyingButton"
+            :class="{ underlyingButtonActive: underlying === opt.value }"
+            :disabled="ui.loading && underlying !== opt.value"
+            @click="switchUnderlying(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
         <div class="field">
           <label for="option-maturity">Maturity</label>
           <select id="option-maturity" v-model="ui.optionMaturity">

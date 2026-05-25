@@ -36,6 +36,11 @@ const REQUEST_RETRY_DELAY_MS = 2000;
 const ERROR_AUTO_CLEAR_MS = 5_000;
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
+const UNDERLYING_OPTIONS = [
+  { value: "BTCUSD", label: "BTC", product: "OBTCUSD" },
+  { value: "ETHUSD", label: "ETH", product: "OETHUSD" },
+];
+
 const ui = reactive({
   expirationPrimary: "",
   mode: "single",
@@ -47,6 +52,13 @@ const ui = reactive({
   circleSize: 95,
   opacityOpen: false,
 });
+
+const underlying = ref("BTCUSD");
+const productCode = computed(
+  () =>
+    UNDERLYING_OPTIONS.find((opt) => opt.value === underlying.value)?.product ??
+    "OBTCUSD",
+);
 
 const data = reactive({
   instruments: [],
@@ -93,7 +105,7 @@ const expirationByValue = computed(() => {
 const expirationOptions = computed(() => {
   const map = new Map();
   for (const instrument of data.instruments) {
-    if (!instrument || instrument.product !== "OBTCUSD") continue;
+    if (!instrument || instrument.product !== productCode.value) continue;
     const expiry = instrument.expiry_date;
     const ts = instrument.expiration_timestamp;
     if (!expiry || !Number.isFinite(ts)) continue;
@@ -115,7 +127,7 @@ const selectedInstruments = computed(() => {
   if (!selected.size) return [];
   return data.instruments.filter(
     (instrument) =>
-      instrument?.product === "OBTCUSD" &&
+      instrument?.product === productCode.value &&
       selected.has(instrument?.expiry_date) &&
       (instrument?.option_type || "call").toLowerCase() === "call",
   );
@@ -561,7 +573,7 @@ async function loadIndex() {
     const indexRows = await fetchWithRetries(
       () =>
         fetchIndexHistory({
-          index_name: "BTCUSD",
+          index_name: underlying.value,
           resolution: ui.resolution,
           from: range.from,
           to: range.to,
@@ -595,7 +607,7 @@ async function loadExpiry(expiry, { rebuild = true, panelKey = null } = {}) {
   const resolution = ui.resolution;
   const instruments = data.instruments.filter(
     (instrument) =>
-      instrument?.product === "OBTCUSD" &&
+      instrument?.product === productCode.value &&
       instrument?.expiry_date === expiry &&
       (instrument?.option_type || "call").toLowerCase() === "call",
   );
@@ -693,6 +705,36 @@ async function reloadAll() {
     ),
   );
 }
+
+const switchUnderlying = async (next) => {
+  if (next === underlying.value) return;
+  if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
+  underlying.value = next;
+  ui.expirationPrimary = "";
+  markRequestIdByExpiry.clear();
+  markRowsCache.clear();
+  data.indexRows = [];
+  data.markRowsByExpiry = {};
+  data.markRows = [];
+  data.requestedRange = null;
+  const options = expirationOptions.value;
+  if (!options.length) {
+    setError(`No option expirations found for ${next}.`);
+    return;
+  }
+  const now = Date.now() / 1000;
+  const target = now + 30 * 24 * 60 * 60;
+  const upcoming = options.filter((option) => option.expiration_timestamp > now);
+  const pickFrom = upcoming.length ? upcoming : options;
+  const closest = pickFrom.reduce((best, option) => {
+    if (!best) return option;
+    const bestDiff = Math.abs(best.expiration_timestamp - target);
+    const optionDiff = Math.abs(option.expiration_timestamp - target);
+    return optionDiff < bestDiff ? option : best;
+  }, null);
+  ui.expirationPrimary = (closest || options[0]).value;
+  await reloadAll();
+};
 
 const handleDocumentPointerDown = (event) => {
   if (!ui.opacityOpen) return;
@@ -801,6 +843,19 @@ watch(
       </div>
 
       <div class="controls">
+        <div class="underlyingToggle" role="group" aria-label="Underlying">
+          <button
+            v-for="opt in UNDERLYING_OPTIONS"
+            :key="opt.value"
+            type="button"
+            class="underlyingButton"
+            :class="{ underlyingButtonActive: underlying === opt.value }"
+            :disabled="ui.loading && underlying !== opt.value"
+            @click="switchUnderlying(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
         <div class="modeToggle">
           <button
             class="modeToggleButton"

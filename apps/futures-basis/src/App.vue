@@ -18,12 +18,19 @@ const RESOLUTION_CONFIG = {
 const MAIN_POINT_LIMIT = 400;
 const DETAIL_POINT_LIMIT = 24 * MAIN_POINT_LIMIT;
 
+const UNDERLYING_OPTIONS = [
+  { value: "BTCUSD", label: "BTC" },
+  { value: "ETHUSD", label: "ETH" },
+];
+
 const ui = reactive({
   resolution: "1d",
   instrumentName: "",
   loading: false,
   error: "",
 });
+const underlying = ref("BTCUSD");
+const allInstruments = ref([]);
 const data = reactive({
   instruments: [],
   instrument: null,
@@ -142,16 +149,35 @@ function handleSavePng() {
   chartRef.value.exportPng({ filename });
 }
 
-onMounted(async () => {
-  const all_instruments = await fetchInstruments();
-  data.instruments = all_instruments
-    .filter((i) => i?.type === "future" && i?.underlying === "BTCUSD")
+const applyUnderlyingFilter = () => {
+  data.instruments = (allInstruments.value || [])
+    .filter((i) => i?.type === "future" && i?.underlying === underlying.value)
     .sort((a, b) => a.create_time_ms - b.create_time_ms);
-  // longest running expiry is top of list and selected by default
   if (data.instruments.length) {
     data.instrument = data.instruments[0];
     ui.instrumentName = data.instruments[0].instrument_name;
+  } else {
+    data.instrument = null;
+    ui.instrumentName = "";
   }
+};
+
+const switchUnderlying = async (next) => {
+  if (next === underlying.value) return;
+  if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
+  underlying.value = next;
+  data.mark = {};
+  data.index = {};
+  applyUnderlyingFilter();
+  if (data.instrument) {
+    await load({ instrument: data.instrument, resolutionKey: ui.resolution });
+  }
+};
+
+onMounted(async () => {
+  const fetched = await fetchInstruments();
+  allInstruments.value = fetched || [];
+  applyUnderlyingFilter();
   if (data.instrument) {
     await load({ instrument: data.instrument, resolutionKey: ui.resolution });
   }
@@ -181,6 +207,19 @@ watch(
       </div>
 
       <div class="controls">
+        <div class="underlyingToggle" role="group" aria-label="Underlying">
+          <button
+            v-for="opt in UNDERLYING_OPTIONS"
+            :key="opt.value"
+            type="button"
+            class="underlyingButton"
+            :class="{ underlyingButtonActive: underlying === opt.value }"
+            :disabled="ui.loading && underlying !== opt.value"
+            @click="switchUnderlying(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
         <div class="field">
           <label for="instrument">Instrument</label>
           <select id="instrument" v-model="ui.instrumentName">

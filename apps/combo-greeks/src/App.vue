@@ -45,12 +45,22 @@ const MAX_POINTS_PER_FETCH = 1000;
 const MARK_CONCURRENCY = 10;
 const LOAD_DEBOUNCE_MS = 140;
 const SCENARIO_POINT_COUNT = 91;
-const SCENARIO_SPOT_MIN = 30_000;
-const SCENARIO_SPOT_MAX = 120_000;
+const SCENARIO_SPOT_MIN_FACTOR = 0.32;
+const SCENARIO_SPOT_MAX_FACTOR = 1.32;
 const CHARM_FD_STEP_SECONDS = 24 * 60 * 60;
 const LEG_VOL_MULTIPLIERS = [0.6, 0.7, 0.8, 0.9, 1.1, 1.2, 1.3, 1.4];
 const LEG_VOL_LINE_OPACITY = 0.28;
 const TOTAL_VOL_LINE_OPACITY = 0.28;
+
+const UNDERLYING_OPTIONS = [
+  { value: "BTCUSD", label: "BTC" },
+  { value: "ETHUSD", label: "ETH" },
+];
+
+const FALLBACK_SPOT_BY_UNDERLYING = {
+  BTCUSD: 95_000,
+  ETHUSD: 3_000,
+};
 
 const ui = reactive({
   resolutionKey: "900",
@@ -61,8 +71,15 @@ const ui = reactive({
   error: "",
 });
 
+const underlying = ref("BTCUSD");
 const positionLegs = ref([]);
-const instruments = ref([]);
+const allInstruments = ref([]);
+const instruments = computed(() =>
+  (allInstruments.value || []).filter(
+    (instrument) =>
+      instrument?.type === "option" && instrument?.underlying === underlying.value,
+  ),
+);
 const tickerByInstrument = ref({});
 const indexByName = ref({});
 const indexHistoryRows = ref([]);
@@ -335,12 +352,7 @@ const selectedInstrumentNames = computed(() =>
   ),
 );
 
-const activeIndexName = computed(() => {
-  const firstUnderlying = selectedLegInstruments.value.find(
-    (entry) => entry.underlying,
-  )?.underlying;
-  return firstUnderlying || "BTCUSD";
-});
+const activeIndexName = computed(() => underlying.value);
 
 const indexDisplay = computed(() => {
   const snapshot = indexByName.value[activeIndexName.value];
@@ -355,7 +367,8 @@ const indexDisplay = computed(() => {
 
 const spot = computed(() => {
   const live = Number(indexDisplay.value?.price);
-  return Number.isFinite(live) && live > 0 ? live : 95_000;
+  if (Number.isFinite(live) && live > 0) return live;
+  return FALLBACK_SPOT_BY_UNDERLYING[underlying.value] ?? 95_000;
 });
 
 const getFetchedReferenceSpot = () => {
@@ -388,9 +401,10 @@ const getTimestampRange = () => {
 };
 
 const loadInitialIndexSnapshot = async () => {
+  const indexName = underlying.value;
   const now = Math.floor(Date.now() / 1000);
   const rows = await fetchIndexHistory({
-    index_name: "BTCUSD",
+    index_name: indexName,
     resolution: "1m",
     from: now - 2 * 60 * 60,
     to: now,
@@ -401,7 +415,7 @@ const loadInitialIndexSnapshot = async () => {
   const ts = extractIndexTs(latest);
   if (!latest || !Number.isFinite(price)) return;
   indexByName.value = {
-    BTCUSD: {
+    [indexName]: {
       data: {
         ...latest,
         index_price_close: price,
@@ -539,10 +553,13 @@ const rebuildBuilderSnapshots = (anchorTs = null) => {
 
 const buildScenarioSpotGrid = () => {
   const points = [];
+  const referenceSpot = getFetchedReferenceSpot() ?? spot.value;
+  if (!Number.isFinite(referenceSpot) || referenceSpot <= 0) return points;
+  const minSpot = referenceSpot * SCENARIO_SPOT_MIN_FACTOR;
+  const maxSpot = referenceSpot * SCENARIO_SPOT_MAX_FACTOR;
   for (let i = 0; i < SCENARIO_POINT_COUNT; i += 1) {
     const t = SCENARIO_POINT_COUNT === 1 ? 0.5 : i / (SCENARIO_POINT_COUNT - 1);
-    const scenarioSpot =
-      SCENARIO_SPOT_MIN + (SCENARIO_SPOT_MAX - SCENARIO_SPOT_MIN) * t;
+    const scenarioSpot = minSpot + (maxSpot - minSpot) * t;
     if (!Number.isFinite(scenarioSpot) || scenarioSpot <= 0) continue;
     points.push({
       scenarioIndex: i,
@@ -1080,13 +1097,37 @@ watch(
   { deep: true },
 );
 
+const switchUnderlying = async (next) => {
+  if (next === underlying.value) return;
+  if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
+  underlying.value = next;
+  positionLegs.value = [];
+  indexByName.value = {};
+  indexHistoryRows.value = [];
+  markHistoryByInstrument.value = {};
+  tickerByInstrument.value = {};
+  simulationRows.value = [];
+  simulationAnchorTs.value = null;
+  simulationAnchorSpot.value = null;
+  isBootstrapping.value = true;
+  try {
+    await loadInitialIndexSnapshot();
+    seedDefaultLegs();
+    if (loadTimer) {
+      clearTimeout(loadTimer);
+      loadTimer = null;
+    }
+    await loadSeries();
+  } catch (error) {
+    ui.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    isBootstrapping.value = false;
+  }
+};
+
 onMounted(async () => {
   try {
-    const allInstruments = await fetchAllInstruments();
-    instruments.value = (allInstruments || []).filter(
-      (instrument) =>
-        instrument?.type === "option" && instrument?.underlying === "BTCUSD",
-    );
+    allInstruments.value = (await fetchAllInstruments()) || [];
 
     await loadInitialIndexSnapshot();
     seedDefaultLegs();
@@ -1114,6 +1155,21 @@ onUnmounted(() => {
     </header>
 
     <main class="workspaceShell">
+      <div class="underlyingRow">
+        <div class="underlyingToggle" role="group" aria-label="Underlying">
+          <button
+            v-for="opt in UNDERLYING_OPTIONS"
+            :key="opt.value"
+            type="button"
+            class="underlyingButton"
+            :class="{ underlyingButtonActive: underlying === opt.value }"
+            :disabled="ui.loading && underlying !== opt.value"
+            @click="switchUnderlying(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
+      </div>
       <div class="builderRow">
         <div class="builderMain">
           <PositionBuilder
@@ -1211,6 +1267,46 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.underlyingRow {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.underlyingToggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.underlyingButton {
+  border: none;
+  background: transparent;
+  color: rgba(226, 232, 240, 0.55);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 4px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.underlyingButton:hover:not(:disabled):not(.underlyingButtonActive) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.underlyingButtonActive {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.underlyingButton:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .titleRow {
