@@ -31,6 +31,29 @@ useHead({
 
 <template>
   <UContainer class="py-20">
+    <header class="mb-10 flex items-center">
+      <a
+        href="https://thalex.com/"
+        target="_blank"
+        rel="noopener"
+        aria-label="Thalex"
+        class="inline-flex items-center"
+      >
+        <img
+          src="/images/LOGO_THALEX_WHITE.svg"
+          alt="Thalex"
+          class="h-9 w-auto"
+        />
+      </a>
+      <a
+        href="https://thalex.com/"
+        target="_blank"
+        rel="noopener"
+        class="ml-10 text-xl text-neutral-400 hover:text-white transition-colors"
+      >
+        thalex.com
+      </a>
+    </header>
     <UPageGrid>
       <UPageCard
         v-for="app in apps"
