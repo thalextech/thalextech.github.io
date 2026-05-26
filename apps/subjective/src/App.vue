@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { toCanvas } from "html-to-image";
 
 const API_BASE = import.meta.env.DEV
   ? "/api/v2/public"
@@ -718,6 +719,58 @@ async function refreshInputs() {
   await loadMarketForSelected();
 }
 
+const screenshotRef = ref(null);
+const savingPng = ref(false);
+
+async function handleSavePng() {
+  const node = screenshotRef.value;
+  if (!node || savingPng.value) return;
+  savingPng.value = true;
+  // .capturing hides scrollbars and forces inner scroll containers visible
+  // so cloned DOM doesn't render scrollbars into the PNG.
+  node.classList.add("capturing");
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  try {
+    const pixelRatio = 2;
+    const padding = 32;
+    // scrollWidth/Height covers content that overflows the node's box
+    // (e.g. .topControls with width: max-content on narrow viewports).
+    const contentWidth = Math.max(node.scrollWidth, node.offsetWidth);
+    const contentHeight = Math.max(node.scrollHeight, node.offsetHeight);
+    const source = await toCanvas(node, {
+      pixelRatio,
+      backgroundColor: "#000",
+      cacheBust: true,
+      width: contentWidth,
+      height: contentHeight,
+    });
+
+    const padPx = padding * pixelRatio;
+    const out = document.createElement("canvas");
+    out.width = source.width + padPx * 2;
+    out.height = source.height + padPx * 2;
+    const ctx = out.getContext("2d");
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.drawImage(source, padPx, padPx);
+
+    const blob = await new Promise((resolve) => out.toBlob(resolve, "image/png"));
+    if (!blob) return;
+    const expiryCode = selectedExpiry.value?.code || "expiry";
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `subjective-${ui.underlying}-${expiryCode}-${ui.viewMode}.png`;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error("Failed to export PNG", err);
+  } finally {
+    node.classList.remove("capturing");
+    savingPng.value = false;
+  }
+}
+
 onMounted(async () => {
   await initialize();
 });
@@ -746,12 +799,21 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app subjectiveApp">
+  <div class="app subjectiveApp" ref="screenshotRef">
     <header class="header">
       <div class="titleRow">
         <h1>Subjective Valuation</h1>
         <div class="titleRight">
           <div class="updatedStamp">Last modified: {{ formatUpdated(data.lastLoadedAt) }}</div>
+          <button
+            class="headerActionButton"
+            type="button"
+            @click="handleSavePng"
+            :disabled="savingPng || ui.loading"
+            title="Save screenshot as PNG"
+          >
+            {{ savingPng ? "..." : "Save PNG" }}
+          </button>
           <button class="headerRefreshButton" type="button" @click="refreshInputs" :disabled="ui.loading">
             <span aria-hidden="true">↻</span>
           </button>
@@ -1074,9 +1136,45 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
+.headerActionButton {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0f1318;
+  color: #f8fafc;
+  font: 600 13px var(--ui-font);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.headerActionButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .layoutFrame {
   width: var(--content-width);
   margin: 0 auto;
+}
+
+.subjectiveApp.capturing,
+.subjectiveApp.capturing * {
+  scrollbar-width: none;
+}
+
+.subjectiveApp.capturing ::-webkit-scrollbar,
+.subjectiveApp.capturing::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.subjectiveApp.capturing .strikeChartWrap {
+  overflow: visible;
 }
 
 .topDashboard {
