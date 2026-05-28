@@ -37,6 +37,9 @@ const DEFAULT_VOL = 0.4;
 const DEFAULT_T = 30 / 365.25;
 const MARK_CONCURRENCY = 10;
 const LOAD_DEBOUNCE_MS = 140;
+const MIN_HEDGE_FREQUENCY_HOURS = 1;
+const MAX_HEDGE_FREQUENCY_HOURS = 24;
+const DEFAULT_HEDGE_FREQUENCY_HOURS = 1;
 
 const UNDERLYING_OPTIONS = [
   { value: "BTCUSD", label: "BTC" },
@@ -47,6 +50,7 @@ const ui = reactive({
   resolutionKey: "900",
   maxPoints: DEFAULT_MAX_POINTS_PER_FETCH,
   deltaHedgeEnabled: false,
+  hedgeFrequencyHours: DEFAULT_HEDGE_FREQUENCY_HOURS,
   showHigherOrderGreeks: false,
   loading: false,
   error: "",
@@ -363,6 +367,46 @@ const activeResolutionLabel = computed(() => {
   return Number.isFinite(seconds) && seconds > 0 ? `${seconds}s` : "n/a";
 });
 
+const minSupportedHedgeFrequencyHours = computed(() => {
+  const resolutionHours = Math.ceil(activeResolutionSeconds.value / (60 * 60));
+  if (!Number.isFinite(resolutionHours)) return MIN_HEDGE_FREQUENCY_HOURS;
+  return Math.max(
+    MIN_HEDGE_FREQUENCY_HOURS,
+    Math.min(MAX_HEDGE_FREQUENCY_HOURS, resolutionHours),
+  );
+});
+
+const selectedHedgeFrequencyHours = computed(() => {
+  const hours = Math.round(Number(ui.hedgeFrequencyHours));
+  if (!Number.isFinite(hours)) return DEFAULT_HEDGE_FREQUENCY_HOURS;
+  return Math.max(
+    MIN_HEDGE_FREQUENCY_HOURS,
+    Math.min(MAX_HEDGE_FREQUENCY_HOURS, hours),
+  );
+});
+
+const activeHedgeFrequencyHours = computed(() => {
+  return Math.max(
+    minSupportedHedgeFrequencyHours.value,
+    selectedHedgeFrequencyHours.value,
+  );
+});
+
+const activeHedgeIntervalSeconds = computed(
+  () => activeHedgeFrequencyHours.value * 60 * 60,
+);
+
+const activeHedgeFrequencyLabel = computed(
+  () => `${activeHedgeFrequencyHours.value}h`,
+);
+
+const hedgeFrequencyControlTitle = computed(() => {
+  if (activeHedgeFrequencyHours.value > selectedHedgeFrequencyHours.value) {
+    return `Effective rebalance: ${activeHedgeFrequencyLabel.value}, limited by ${activeResolutionLabel.value} candles`;
+  }
+  return `Rebalance every ${activeHedgeFrequencyLabel.value}`;
+});
+
 const getTimestampRange = () => {
   const now = Math.floor(Date.now() / 1000);
   const resolutionConfig = RESOLUTION_CONFIG[ui.resolutionKey];
@@ -576,6 +620,7 @@ const applyTimeBasedDeltaHedge = (rows, intervalSeconds) => {
 
   for (let i = 0; i < nextRows.length; i += 1) {
     const row = nextRows[i];
+    const indexOpen = Number(row?.index_price_open);
     const indexClose = Number(row?.index_price_close);
     const combinedDelta = Number(row?.combined_delta);
     const shouldRehedge =
@@ -588,6 +633,8 @@ const applyTimeBasedDeltaHedge = (rows, intervalSeconds) => {
         row.ts - lastRehedgeTs >= safeInterval);
 
     if (shouldRehedge) {
+      const tradePrice =
+        i === 0 && Number.isFinite(indexOpen) ? indexOpen : indexClose;
       const targetPosition = -combinedDelta;
       const tradeQty = targetPosition - hedgePosition;
       const hasTrade = Math.abs(tradeQty) > 1e-12;
@@ -599,24 +646,24 @@ const applyTimeBasedDeltaHedge = (rows, intervalSeconds) => {
         if (!hasOpenPosition || sameDirection) {
           const entryPrice = Number.isFinite(avgEntryPrice)
             ? avgEntryPrice
-            : indexClose;
+            : tradePrice;
           const prevNotional = hasOpenPosition
             ? Math.abs(hedgePosition) * entryPrice
             : 0;
           const nextQtyAbs = Math.abs(hedgePosition + tradeQty);
-          const nextNotional = prevNotional + Math.abs(tradeQty) * indexClose;
+          const nextNotional = prevNotional + Math.abs(tradeQty) * tradePrice;
           avgEntryPrice = nextQtyAbs > 0 ? nextNotional / nextQtyAbs : null;
           hedgePosition += tradeQty;
         } else {
           const closingQty = Math.min(Math.abs(hedgePosition), Math.abs(tradeQty));
           const entryPrice = Number.isFinite(avgEntryPrice)
             ? avgEntryPrice
-            : indexClose;
+            : tradePrice;
 
           if (hedgePosition > 0) {
-            realizedHedgePnl += closingQty * (indexClose - entryPrice);
+            realizedHedgePnl += closingQty * (tradePrice - entryPrice);
           } else {
-            realizedHedgePnl += closingQty * (entryPrice - indexClose);
+            realizedHedgePnl += closingQty * (entryPrice - tradePrice);
           }
 
           const remainingQtyAbs = Math.abs(tradeQty) - closingQty;
@@ -628,7 +675,7 @@ const applyTimeBasedDeltaHedge = (rows, intervalSeconds) => {
             }
           } else {
             hedgePosition = Math.sign(tradeQty) * remainingQtyAbs;
-            avgEntryPrice = indexClose;
+            avgEntryPrice = tradePrice;
           }
         }
       }
@@ -645,7 +692,7 @@ const applyTimeBasedDeltaHedge = (rows, intervalSeconds) => {
         ? hedgePosition * (indexClose - avgEntryPrice)
         : 0;
     const totalHedgePnl = realizedHedgePnl + unrealizedHedgePnl;
-    const periodHedgePnl = i === 0 ? 0 : totalHedgePnl - prevTotalHedgePnl;
+    const periodHedgePnl = totalHedgePnl - prevTotalHedgePnl;
     prevTotalHedgePnl = totalHedgePnl;
 
     row.hedge_PL = periodHedgePnl;
@@ -669,7 +716,7 @@ const rebuildDisplayedComboSeries = () => {
   comboSeries.value = ui.deltaHedgeEnabled
     ? applyTimeBasedDeltaHedge(
         comboBaseSeries.value,
-        activeResolutionSeconds.value,
+        activeHedgeIntervalSeconds.value,
       )
     : [...comboBaseSeries.value];
 };
@@ -885,6 +932,7 @@ const loadSeries = async () => {
       top.push({
         ts,
         date,
+        index_price_open: Number(indexRow?.index_price_open),
         index_price_close: indexClose,
         iv_close: ivClose,
       });
@@ -892,6 +940,7 @@ const loadSeries = async () => {
       bottom.push({
         ts,
         date,
+        index_price_open: Number(indexRow?.index_price_open),
         index_price_close: indexClose,
         mark_price_close: totalMark,
         iv_close: ivClose,
@@ -950,7 +999,7 @@ watch(
 );
 
 watch(
-  () => [ui.deltaHedgeEnabled, activeResolutionSeconds.value],
+  () => [ui.deltaHedgeEnabled, activeHedgeIntervalSeconds.value],
   () => {
     rebuildDisplayedComboSeries();
   },
@@ -1061,11 +1110,28 @@ watch(
               type="button"
               class="deltaHedgeButton"
               :class="{ deltaHedgeButtonActive: ui.deltaHedgeEnabled }"
-              :title="`Rebalance every ${activeResolutionLabel}`"
+              :title="hedgeFrequencyControlTitle"
               @click="ui.deltaHedgeEnabled = !ui.deltaHedgeEnabled"
             >
               {{ ui.deltaHedgeEnabled ? "− Delta hedge" : "+ Delta hedge" }}
             </button>
+            <label
+              class="hedgeFrequencyControl"
+              :class="{ hedgeFrequencyControlDisabled: !ui.deltaHedgeEnabled }"
+              :title="hedgeFrequencyControlTitle"
+            >
+              <span class="hedgeFrequencyLabel">Every</span>
+              <input
+                v-model.number="ui.hedgeFrequencyHours"
+                class="hedgeFrequencySlider"
+                type="range"
+                :min="minSupportedHedgeFrequencyHours"
+                :max="MAX_HEDGE_FREQUENCY_HOURS"
+                step="1"
+                :disabled="!ui.deltaHedgeEnabled"
+              />
+              <span class="hedgeFrequencyValue">{{ activeHedgeFrequencyLabel }}</span>
+            </label>
           </template>
         </PositionBuilder>
       </div>
@@ -1439,6 +1505,80 @@ watch(
 
 .deltaHedgeButtonActive {
   color: #8ad5a1;
+}
+
+.hedgeFrequencyControl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 150px;
+  color: rgba(226, 232, 240, 0.72);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.hedgeFrequencyControlDisabled {
+  opacity: 0.45;
+}
+
+.hedgeFrequencyLabel,
+.hedgeFrequencyValue {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.hedgeFrequencyValue {
+  min-width: 20px;
+  color: #8ad5a1;
+}
+
+.hedgeFrequencySlider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1 1 auto;
+  min-width: 64px;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.hedgeFrequencySlider:disabled {
+  cursor: default;
+}
+
+.hedgeFrequencySlider:focus {
+  outline: none;
+}
+
+.hedgeFrequencySlider::-webkit-slider-runnable-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.42);
+  border-radius: 999px;
+}
+
+.hedgeFrequencySlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  margin-top: -3px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
+}
+
+.hedgeFrequencySlider::-moz-range-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.42);
+  border-radius: 999px;
+}
+
+.hedgeFrequencySlider::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
 }
 
 .builderMain :deep(.legs-section) {

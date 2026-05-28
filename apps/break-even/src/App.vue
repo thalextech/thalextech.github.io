@@ -24,14 +24,17 @@ const DEFAULT_LOOKBACK_POINT_LIMIT = 360;
 const MIN_LOOKBACK_POINT_LIMIT = 120;
 const MAX_LOOKBACK_POINT_LIMIT = 1440;
 const SECONDS_PER_DAY = 24 * 60 * 60;
-const MARK_FETCH_CONCURRENCY = 16;
-const MARK_REQUEST_BURST_LIMIT = 100;
-const MARK_REQUEST_SUSTAINED_PER_SECOND = 10;
+const MARK_FETCH_CONCURRENCY = 4;
+const MARK_REQUEST_BURST_LIMIT = 5;
+const MARK_REQUEST_SUSTAINED_PER_SECOND = 4;
 const MARK_REQUEST_SCHEDULER_POLL_MS = 50;
-const MARK_REQUEST_MAX_RETRIES = 2;
-const MARK_REQUEST_RETRY_DELAY_MS = 1200;
+const MARK_REQUEST_MAX_RETRIES = 4;
+const MARK_REQUEST_RETRY_BASE_MS = 800;
+const MARK_REQUEST_RETRY_MAX_MS = 8_000;
 const MARK_REQUEST_TIMEOUT_MS = 45_000;
 const MARK_HISTORY_REQUEST_POINT_LIMIT = 360;
+const MARK_RATE_LIMIT_COOLDOWN_BASE_MS = 1_500;
+const MARK_RATE_LIMIT_COOLDOWN_MAX_MS = 15_000;
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const MAX_ABS_DELTA = 0.55;
 const STRIKE_MIN_INDEX_MULTIPLIER = 0.8;
@@ -610,6 +613,19 @@ const isRetryableRequestError = (error) => {
   return error instanceof TypeError;
 };
 
+// Thalex returns 429 without CORS headers, so the browser surfaces it as a
+// TypeError (net::ERR_FAILED). Treat both as rate-limit signals.
+const looksLikeRateLimit = (error) => {
+  if (!error) return false;
+  if (Number(error?.status) === 429) return true;
+  return error instanceof TypeError;
+};
+
+const computeBackoffMs = (attempt, baseMs, maxMs) => {
+  const exp = Math.min(maxMs, baseMs * 2 ** attempt);
+  return exp + Math.random() * 250;
+};
+
 async function fetchWithRetries(
   fetcher,
   { maxRetries = MARK_REQUEST_MAX_RETRIES, isCanceled = null } = {},
@@ -630,7 +646,9 @@ async function fetchWithRetries(
         isRetryableRequestError(error) &&
         !isCanceled?.();
       if (!canRetry) throw error;
-      await sleep(MARK_REQUEST_RETRY_DELAY_MS * (attempt + 1));
+      await sleep(
+        computeBackoffMs(attempt, MARK_REQUEST_RETRY_BASE_MS, MARK_REQUEST_RETRY_MAX_MS),
+      );
     }
   }
   throw lastError || new Error("Request failed");
@@ -644,6 +662,10 @@ function createMarkRequestScheduler({
   let startedAtMs = null;
   let launchedCount = 0;
   let pendingReservation = Promise.resolve();
+  // Shared cooldown: once any request hits a rate limit, every worker pauses
+  // until this timestamp before issuing the next request.
+  let cooldownUntilMs = 0;
+  let consecutiveRateLimits = 0;
 
   const reserveSlot = async () => {
     if (!Number.isFinite(startedAtMs)) {
@@ -655,6 +677,13 @@ function createMarkRequestScheduler({
         const canceledError = new Error("Request canceled");
         canceledError.canceled = true;
         throw canceledError;
+      }
+
+      const now = Date.now();
+      if (now < cooldownUntilMs) {
+        const remaining = cooldownUntilMs - now;
+        await sleep(Math.min(remaining, MARK_REQUEST_SCHEDULER_POLL_MS));
+        continue;
       }
 
       if (launchedCount < burstLimit) {
@@ -682,6 +711,19 @@ function createMarkRequestScheduler({
       const reservation = pendingReservation.then(() => reserveSlot());
       pendingReservation = reservation.catch(() => {});
       return reservation;
+    },
+    noteRateLimit() {
+      consecutiveRateLimits += 1;
+      const backoff = computeBackoffMs(
+        consecutiveRateLimits - 1,
+        MARK_RATE_LIMIT_COOLDOWN_BASE_MS,
+        MARK_RATE_LIMIT_COOLDOWN_MAX_MS,
+      );
+      const until = Date.now() + backoff;
+      if (until > cooldownUntilMs) cooldownUntilMs = until;
+    },
+    noteSuccess() {
+      consecutiveRateLimits = 0;
     },
   };
 }
@@ -733,17 +775,24 @@ async function fetchMarkHistoriesByInstrument({
       const fetchedRows = await fetchWithRetries(
         async () => {
           await requestScheduler.acquire();
-          return fetchMarkHistory({
-            instrument_name: instrumentName,
-            resolution,
-            from: chunkFrom,
-            to: chunkTo,
-            count: MARK_HISTORY_REQUEST_POINT_LIMIT,
-            requestOptions: {
-              timeoutMs: MARK_REQUEST_TIMEOUT_MS,
-              maxRetries: 0,
-            },
-          });
+          try {
+            const result = await fetchMarkHistory({
+              instrument_name: instrumentName,
+              resolution,
+              from: chunkFrom,
+              to: chunkTo,
+              count: MARK_HISTORY_REQUEST_POINT_LIMIT,
+              requestOptions: {
+                timeoutMs: MARK_REQUEST_TIMEOUT_MS,
+                maxRetries: 0,
+              },
+            });
+            requestScheduler.noteSuccess();
+            return result;
+          } catch (error) {
+            if (looksLikeRateLimit(error)) requestScheduler.noteRateLimit();
+            throw error;
+          }
         },
         { isCanceled: () => requestId !== loadRequestId },
       );
@@ -779,7 +828,7 @@ async function fetchMarkHistoriesByInstrument({
         if (requestId !== loadRequestId) return;
       } catch (error) {
         if (requestId !== loadRequestId) return;
-        if (error?.status === 429) {
+        if (looksLikeRateLimit(error)) {
           rateLimitedCount += 1;
         }
         rows = [];

@@ -703,11 +703,13 @@ const render = () => {
     if (bottomMode === "mark") {
       const firstVisibleHedgeBaseline = props.deltaHedgeEnabled
         ? (() => {
-            const baselinePoint = comboFiltered.find(
-              (point) =>
+            const baselinePoint = combo
+              .filter((point) => point.date < domainStart)
+              .sort((a, b) => b.date - a.date)
+              .find((point) =>
                 Number.isFinite(point.option_mark_price_close) &&
                 Number.isFinite(point.hedge_cumulative_PL),
-            );
+              );
             return Number.isFinite(baselinePoint?.hedge_cumulative_PL)
               ? Number(baselinePoint.hedge_cumulative_PL)
               : 0;
@@ -984,11 +986,32 @@ const render = () => {
           total,
         };
       });
-      const baselinePoint = hedgePoints[0] || {
-        realized: 0,
-        unrealized: 0,
-        total: 0,
-      };
+      const priorHedgePoint = combo
+        .filter((point) => point.date < domainStart)
+        .sort((a, b) => b.date - a.date)
+        .find(
+          (point) =>
+            Number.isFinite(point.hedge_realized_cumulative) ||
+            Number.isFinite(point.hedge_unrealized) ||
+            Number.isFinite(point.hedge_cumulative_PL),
+        );
+      const baselinePoint = priorHedgePoint
+        ? {
+            realized: Number.isFinite(priorHedgePoint.hedge_realized_cumulative)
+              ? priorHedgePoint.hedge_realized_cumulative
+              : 0,
+            unrealized: Number.isFinite(priorHedgePoint.hedge_unrealized)
+              ? priorHedgePoint.hedge_unrealized
+              : 0,
+            total: Number.isFinite(priorHedgePoint.hedge_cumulative_PL)
+              ? priorHedgePoint.hedge_cumulative_PL
+              : 0,
+          }
+        : {
+            realized: 0,
+            unrealized: 0,
+            total: 0,
+          };
       const baselineRealized = Number.isFinite(baselinePoint.realized)
         ? baselinePoint.realized
         : 0;
