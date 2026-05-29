@@ -197,6 +197,26 @@ const selectedInstrumentNames = computed(() =>
   ),
 );
 
+const formatSignedLegQty = (value) => {
+  const qty = Math.abs(Number(value));
+  if (!Number.isFinite(qty)) return "0";
+  return Number.isInteger(qty)
+    ? String(qty)
+    : qty.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+};
+
+const comboLegTitle = computed(() => {
+  const legs = selectedLegInstruments.value;
+  if (!legs.length) return "Combination Mark Price";
+  return legs
+    .map((entry) => {
+      const signedQty = Number(entry.signedQty);
+      const sign = signedQty < 0 ? "-" : "+";
+      return `${sign}${formatSignedLegQty(signedQty)} ${entry.instrumentName}`;
+    })
+    .join(" / ");
+});
+
 const activeIndexName = computed(() => underlying.value);
 
 const chartSubtitle = computed(() => {
@@ -1218,6 +1238,7 @@ watch(
         :combo-data="comboSeries"
         :delta-hedge-enabled="ui.deltaHedgeEnabled"
         :option-instrument-name="activeIndexName"
+        :combo-title="comboLegTitle"
         :subtitle="chartSubtitle"
         :loading="ui.loading"
         :resolution-key="ui.resolutionKey"

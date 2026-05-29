@@ -9,6 +9,7 @@ const props = defineProps({
   deltaHedgeEnabled: { type: Boolean, default: false },
   showHigherOrderGreeks: { type: Boolean, default: false },
   optionInstrumentName: { type: String, default: "" },
+  comboTitle: { type: String, default: "" },
   subtitle: { type: String, default: "" },
   loading: { type: Boolean, default: false },
   resolutionKey: { type: String, default: "900" },
@@ -739,7 +740,7 @@ const render = () => {
         .attr("fill", "#fff")
         .style("font-size", "14px")
         .style("font-weight", 600)
-        .text("Combination Mark Price");
+        .text(props.comboTitle || "Combination Mark Price");
 
       bottomPanelGroup
         .append("text")
@@ -1036,7 +1037,7 @@ const render = () => {
         .attr("fill", "#fff")
         .style("font-size", "14px")
         .style("font-weight", 600)
-        .text("Delta Hedge P&L");
+        .text(props.comboTitle || "Delta Hedge P&L");
 
       bottomPanelGroup
         .append("text")
@@ -1455,7 +1456,7 @@ const render = () => {
       .attr("fill", "#fff")
       .style("font-size", "14px")
       .style("font-weight", 600)
-      .text("Greeks P&L");
+      .text(props.comboTitle || "Greeks P&L");
 
     bottomPanelGroup
       .append("text")
@@ -1583,6 +1584,7 @@ watch(
     props.comboData,
     props.deltaHedgeEnabled,
     props.optionInstrumentName,
+    props.comboTitle,
     props.subtitle,
     props.loading,
     props.resolutionKey,
