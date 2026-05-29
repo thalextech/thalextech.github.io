@@ -205,17 +205,22 @@ const formatSignedLegQty = (value) => {
     : qty.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
 };
 
-const comboLegTitle = computed(() => {
-  const legs = selectedLegInstruments.value;
-  if (!legs.length) return "Combination Mark Price";
-  return legs
-    .map((entry) => {
-      const signedQty = Number(entry.signedQty);
-      const sign = signedQty < 0 ? "-" : "+";
-      return `${sign}${formatSignedLegQty(signedQty)} ${entry.instrumentName}`;
-    })
-    .join(" / ");
-});
+const exportPageTitle = computed(() =>
+  [
+    selectedLegInstruments.value
+      .map((entry) => {
+        const signedQty = Number(entry.signedQty);
+        const sign = signedQty < 0 ? "-" : "+";
+        return `${sign}${formatSignedLegQty(signedQty)} ${entry.instrumentName}`;
+      })
+      .join(" "),
+    ui.deltaHedgeEnabled
+      ? `Delta-hedged every ${activeHedgeFrequencyHours.value} hours`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n"),
+);
 
 const activeIndexName = computed(() => underlying.value);
 
@@ -240,6 +245,7 @@ const handleSavePng = () => {
   if (!chartRef.value) return;
   chartRef.value.exportPng({
     filename: `combo-pnl-${activeResolutionLabel.value}.png`,
+    pageTitle: exportPageTitle.value,
   });
 };
 
@@ -1238,7 +1244,6 @@ watch(
         :combo-data="comboSeries"
         :delta-hedge-enabled="ui.deltaHedgeEnabled"
         :option-instrument-name="activeIndexName"
-        :combo-title="comboLegTitle"
         :subtitle="chartSubtitle"
         :loading="ui.loading"
         :resolution-key="ui.resolutionKey"

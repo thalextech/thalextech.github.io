@@ -260,12 +260,109 @@ const axisStyle = (axisG) => {
     .style("font-family", SVG_FONT_FAMILY);
 };
 
-function exportPng({ filename = "combo-pnl.png", scale = 4, padding = 24 } = {}) {
+function truncateCanvasText(ctx, text, maxWidth) {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let truncated = `${text}...`;
+  while (truncated.length > 4 && ctx.measureText(truncated).width > maxWidth) {
+    truncated = `${truncated.slice(0, -4)}...`;
+  }
+  return truncated;
+}
+
+function splitPositionTitle(title) {
+  const matches = title.match(/[+-][^\s]+\s+[^\s]+/g);
+  return matches?.length ? matches : [title];
+}
+
+function buildExportTitleLines({ ctx, title, maxWidth, maxLines = 2 }) {
+  const lines = [];
+  const pieces = splitPositionTitle(title);
+
+  let current = "";
+  for (const piece of pieces) {
+    const next = current ? `${current} ${piece}` : piece;
+    if (ctx.measureText(next).width <= maxWidth || !current) {
+      current = next;
+      continue;
+    }
+    lines.push(current);
+    current = piece;
+    if (lines.length === maxLines) break;
+  }
+  if (current && lines.length < maxLines) lines.push(current);
+
+  if (lines.length) {
+    lines[lines.length - 1] = truncateCanvasText(
+      ctx,
+      lines[lines.length - 1],
+      maxWidth,
+    );
+  }
+
+  return lines;
+}
+
+function drawExportPageTitle({ ctx, width, padding, pageTitle }) {
+  const title = String(pageTitle || "").trim();
+  if (!title) return;
+
+  const maxWidth = width + padding * 2 - 48;
+  const [positionTitle = "", subtitle = ""] = title
+    .split(/\n+/)
+    .map((line) => line.trim());
+
+  ctx.save();
+  ctx.fillStyle = "#fff";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = `600 16px ${SVG_FONT_FAMILY}`;
+
+  const lines = buildExportTitleLines({
+    ctx,
+    title: positionTitle,
+    maxWidth,
+  });
+  const lineHeight = 19;
+  const hasSubtitle = Boolean(subtitle);
+  const startY = lines.length > 1 || hasSubtitle ? 18 : 32;
+  lines.forEach((line, index) => {
+    ctx.fillText(line, width / 2 + padding, startY + index * lineHeight);
+  });
+  if (hasSubtitle) {
+    ctx.fillStyle = "#c9c9cf";
+    ctx.font = `400 13px ${SVG_FONT_FAMILY}`;
+    ctx.fillText(
+      truncateCanvasText(ctx, subtitle, maxWidth),
+      width / 2 + padding,
+      startY + lines.length * lineHeight,
+    );
+  }
+  ctx.restore();
+}
+
+function exportPng({
+  filename = "combo-pnl.png",
+  scale = 4,
+  padding = 24,
+  pageTitle = "",
+} = {}) {
+  const exportPadding = String(pageTitle || "").trim()
+    ? Math.max(padding, 82)
+    : padding;
+
   exportChartToPng({
     element: svgRef.value,
     filename,
     scale,
-    padding,
+    padding: exportPadding,
+    drawBefore: ({ ctx, width, padding: resolvedPadding }) => {
+      drawExportPageTitle({
+        ctx,
+        width,
+        padding: resolvedPadding,
+        pageTitle,
+      });
+    },
   });
 }
 
