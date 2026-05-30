@@ -20,6 +20,7 @@ const layout = {
 
 const fontFamily =
   "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif";
+let renderSequence = 0;
 
 function exportPng({ filename = "binary.png", scale = 4, padding = 24 } = {}) {
   exportChartToPng({
@@ -45,6 +46,7 @@ const axisStyle = (axisG) => {
 function render() {
   const svgEl = svgRef.value;
   if (!svgEl) return;
+  const renderId = ++renderSequence;
 
   const svg = d3.select(svgEl);
   svg.selectAll("*").remove();
@@ -108,6 +110,20 @@ function render() {
   const chartG = svg
     .append("g")
     .attr("transform", `translate(${margin.left},${margin.top})`);
+  const clipId = `nd2-clip-${renderId}`;
+
+  svg
+    .append("clipPath")
+    .attr("id", clipId)
+    .append("rect")
+    .attr("x", margin.left)
+    .attr("y", margin.top)
+    .attr("width", 0)
+    .attr("height", innerHeight)
+    .transition()
+    .duration(900)
+    .ease(d3.easeCubicOut)
+    .attr("width", innerWidth);
 
   chartG
     .append("g")
@@ -148,6 +164,7 @@ function render() {
   chartG
     .append("path")
     .datum(rows)
+    .attr("clip-path", `url(#${clipId})`)
     .attr("fill", "none")
     .attr("stroke", "#7aa2ff")
     .attr("stroke-width", 2)
@@ -161,7 +178,12 @@ function render() {
     .attr("r", 4)
     .attr("fill", "#7aa2ff")
     .attr("stroke", "#020204")
-    .attr("stroke-width", 1.5);
+    .attr("stroke-width", 1.5)
+    .attr("opacity", 0)
+    .transition()
+    .delay(760)
+    .duration(180)
+    .attr("opacity", 1);
 
   chartG
     .append("text")
@@ -171,7 +193,12 @@ function render() {
     .style("font-size", "13px")
     .style("font-weight", 650)
     .style("font-family", fontFamily)
-    .text(d3.format(".1%")(last.nd2));
+    .attr("opacity", 0)
+    .text(d3.format(".1%")(last.nd2))
+    .transition()
+    .delay(760)
+    .duration(180)
+    .attr("opacity", 1);
 }
 
 watch(
