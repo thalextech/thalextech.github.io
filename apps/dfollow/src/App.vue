@@ -185,9 +185,8 @@ const thresholdValue = computed(() => {
 });
 const toleranceValue = computed(() => {
   const value = Number(ui.tolerance);
-  return Number.isFinite(value)
-    ? Math.max(thresholdValue.value, value)
-    : thresholdValue.value;
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.max(thresholdValue.value, value);
 });
 const periodHours = computed(() => {
   const period = Number(ui.period);
@@ -304,16 +303,18 @@ function buildDfollowSimulation({
     const thresholdInput = Number(settings.threshold);
     const toleranceInput = Number(settings.tolerance);
     const periodInput = Number(settings.period);
-    const threshold = Number.isFinite(thresholdInput)
-      ? Math.max(0, thresholdInput)
-      : 0;
-    const tolerance = Number.isFinite(toleranceInput)
-      ? Math.max(threshold, toleranceInput)
-      : threshold;
+    const threshold =
+      Number.isFinite(thresholdInput) && thresholdInput > 0
+        ? thresholdInput
+        : 0;
+    const tolerance =
+      Number.isFinite(toleranceInput) && toleranceInput > 0
+        ? Math.max(threshold, toleranceInput)
+        : 0;
     const period = Number.isFinite(periodInput) ? Math.max(0, periodInput) : 0;
 
-    const outsideTolerance = absDeviation > tolerance;
-    const outsideThreshold = absDeviation > threshold;
+    const outsideTolerance = tolerance > 0 && absDeviation > tolerance;
+    const outsideThreshold = threshold > 0 && absDeviation > threshold;
     let trigger = null;
 
     if (outsideTolerance) {
@@ -678,7 +679,7 @@ watch(
             <span
               class="infoDot infoDotTooltip"
               tabindex="0"
-              data-tooltip="The bot allows the deltas to stay outside of [target_delta - threshold, target_delta + threshold] for period seconds before making any adjustments to the portfolio."
+              data-tooltip="The bot allows the deltas to stay outside of [target_delta - threshold, target_delta + threshold] for period seconds before making any adjustments to the portfolio. Set to 0 to disable period-based hedging."
             >i</span>
           </span>
           <input v-model.number="ui.threshold" type="number" min="0" step="0.01" />
@@ -690,7 +691,7 @@ watch(
             <span
               class="infoDot infoDotTooltip"
               tabindex="0"
-              data-tooltip="If the deltas are outside of [target_delta - tolerance, target_delta + tolerance], the bot will hedge them immediately, without waiting period seconds."
+              data-tooltip="If the deltas are outside of [target_delta - tolerance, target_delta + tolerance], the bot will hedge them immediately, without waiting period seconds. Set to 0 to disable immediate hedging."
             >i</span>
           </span>
           <input v-model.number="ui.tolerance" type="number" min="0" step="0.01" />
