@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import DfollowChart from "./components/DfollowChart.vue";
 import {
   calcGreeks,
@@ -15,8 +15,6 @@ const RESOLUTION_CONFIG = {
   3600: { label: "1h", resolution: "1h", intervalSeconds: 60 * 60 },
 };
 const DEFAULT_POINT_LIMIT = 480;
-const MIN_POINT_LIMIT = 60;
-const MAX_POINT_LIMIT = 10000;
 
 const UNDERLYING_OPTIONS = [
   { value: "BTCUSD", label: "BTC" },
@@ -32,7 +30,6 @@ const ui = reactive({
   period: 12 * 60 * 60,
   threshold: 0,
   tolerance: 0.01,
-  pointLimit: DEFAULT_POINT_LIMIT,
   loading: false,
   error: "",
 });
@@ -47,23 +44,8 @@ const data = reactive({
   index: {},
 });
 const chartRef = ref(null);
-const settingsWrapRef = ref(null);
-const settingsOpen = ref(false);
 const initialized = ref(false);
 let loadRequestId = 0;
-
-const toggleSettings = () => {
-  settingsOpen.value = !settingsOpen.value;
-};
-
-const handleDocumentPointerDown = (event) => {
-  if (!settingsOpen.value) return;
-  const target = event?.target;
-  if (!(target instanceof Node)) return;
-  if (!settingsWrapRef.value?.contains(target)) {
-    settingsOpen.value = false;
-  }
-};
 
 const maturityFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -103,16 +85,10 @@ const normalizeInstrument = (instrument) => {
   };
 };
 
-const clampPointLimit = (value) => {
-  const numeric = Math.round(Number(value));
-  if (!Number.isFinite(numeric)) return DEFAULT_POINT_LIMIT;
-  return Math.min(MAX_POINT_LIMIT, Math.max(MIN_POINT_LIMIT, numeric));
-};
-
 const getTimestampRange = () => {
   const now = Math.floor(Date.now() / 1000);
   const config = RESOLUTION_CONFIG[ui.resolutionKey] || RESOLUTION_CONFIG[300];
-  const maxPoints = clampPointLimit(ui.pointLimit);
+  const maxPoints = DEFAULT_POINT_LIMIT;
   const to = now - (now % config.intervalSeconds);
   return {
     resolution: config.resolution,
@@ -555,7 +531,6 @@ async function switchUnderlying(next) {
 }
 
 onMounted(async () => {
-  document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
     const { resolution, from, to, maxPoints } = getTimestampRange();
     const [instruments, indexRows] = await Promise.all([
@@ -582,17 +557,12 @@ onMounted(async () => {
   }
 });
 
-onBeforeUnmount(() => {
-  document.removeEventListener("pointerdown", handleDocumentPointerDown);
-});
-
 watch(
   () => [
     ui.resolutionKey,
     ui.targetMaturity,
     ui.targetStrike,
     ui.targetType,
-    ui.pointLimit,
   ],
   async () => {
     if (!initialized.value) return;
@@ -636,35 +606,6 @@ watch(
           >
             {{ RESOLUTION_CONFIG[key].label }}
           </button>
-        </div>
-
-        <div class="settingsWrap" ref="settingsWrapRef">
-          <button
-            class="settingsButton settingsButton--icon"
-            type="button"
-            title="Data points"
-            aria-label="Data points"
-            aria-haspopup="true"
-            :aria-expanded="settingsOpen ? 'true' : 'false'"
-            @click="toggleSettings"
-          ></button>
-          <div v-if="settingsOpen" class="settingsDropdown">
-            <div class="settingsHint">
-              Number of data points: {{ ui.pointLimit }}
-            </div>
-            <input
-              v-model.lazy.number="ui.pointLimit"
-              class="settingsSlider"
-              type="range"
-              :min="MIN_POINT_LIMIT"
-              :max="MAX_POINT_LIMIT"
-              step="60"
-            />
-            <div class="settingsRange">
-              <span>{{ MIN_POINT_LIMIT }}</span>
-              <span>{{ MAX_POINT_LIMIT }}</span>
-            </div>
-          </div>
         </div>
 
         <button
@@ -850,116 +791,6 @@ watch(
   font-weight: 500;
 }
 
-.settingsWrap {
-  position: relative;
-}
-
-.settingsButton {
-  border: none;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(226, 232, 240, 0.7);
-  cursor: pointer;
-  box-shadow: none;
-  padding: 0;
-}
-
-.settingsButton:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: #fff;
-}
-
-.settingsButton--icon {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.settingsButton--icon::before {
-  content: "";
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #e8ebf2;
-}
-
-.settingsDropdown {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  width: 240px;
-  border: 0.5px solid rgba(255, 255, 255, 0.9);
-  background: #080a0f;
-  border-radius: 6px;
-  padding: 10px 12px 12px;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
-  z-index: 20;
-  color: #a9abb6;
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.settingsHint {
-  color: #a9abb6;
-  font-size: 10px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
-.settingsSlider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 14px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.settingsSlider:focus {
-  outline: none;
-}
-
-.settingsSlider::-webkit-slider-runnable-track {
-  height: 2px;
-  background: rgba(245, 245, 245, 0.45);
-  border-radius: 999px;
-}
-
-.settingsSlider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 8px;
-  height: 8px;
-  margin-top: -3px;
-  border-radius: 50%;
-  border: none;
-  background: #f5f5f7;
-}
-
-.settingsSlider::-moz-range-track {
-  height: 2px;
-  background: rgba(245, 245, 245, 0.45);
-  border-radius: 999px;
-}
-
-.settingsSlider::-moz-range-thumb {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: none;
-  background: #f5f5f7;
-}
-
-.settingsRange {
-  margin-top: 4px;
-  display: flex;
-  justify-content: space-between;
-  color: #a9abb6;
-  font-size: 10px;
-  font-weight: 600;
-}
 
 .workspace :deep(.chartWrap) {
   grid-column: 1;
