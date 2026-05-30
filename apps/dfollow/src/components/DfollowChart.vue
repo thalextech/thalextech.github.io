@@ -1,6 +1,6 @@
 <script setup>
 import * as d3 from "d3";
-import { onMounted, ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { exportChartToPng } from "../../../../lib/export-png.js";
 
 const props = defineProps({
@@ -11,10 +11,11 @@ const props = defineProps({
 });
 
 const svgRef = ref(null);
+let resizeObserver = null;
 
 const layout = {
-  width: 1800,
-  height: 980,
+  fallbackWidth: 1800,
+  fallbackHeight: 980,
   margin: { top: 74, right: 56, bottom: 64, left: 78 },
 };
 
@@ -49,12 +50,24 @@ function render() {
   const svg = d3.select(svgEl);
   svg.selectAll("*").remove();
 
-  const { width, height, margin } = layout;
+  const wrap = svgEl.parentElement;
+  const width = Math.max(
+    480,
+    Math.round(wrap?.clientWidth || layout.fallbackWidth),
+  );
+  const height = Math.max(
+    420,
+    Math.round(wrap?.clientHeight || layout.fallbackHeight),
+  );
+  const { margin } = layout;
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
+  const panelGap = Math.min(58, Math.max(36, innerHeight * 0.07));
+  const pnlHeight = Math.min(280, Math.max(160, innerHeight * 0.28));
+  const priceHeight = innerHeight - pnlHeight - panelGap;
 
   svg.attr("viewBox", `0 0 ${width} ${height}`);
-  svg.attr("preserveAspectRatio", "xMidYMid meet");
+  svg.attr("preserveAspectRatio", "none");
 
   svg
     .append("rect")
@@ -105,13 +118,17 @@ function render() {
     .scaleLinear()
     .domain([priceExtent[0] - pricePad, priceExtent[1] + pricePad])
     .nice()
-    .range([innerHeight, 0]);
+    .range([priceHeight, 0]);
 
-  const g = svg
+  const priceG = svg
     .append("g")
     .attr("transform", `translate(${margin.left},${margin.top})`);
+  const pnlG = svg
+    .append("g")
+    .attr("transform", `translate(${margin.left},${margin.top + priceHeight + panelGap})`);
 
-  g.append("g")
+  priceG
+    .append("g")
     .call(
       d3
         .axisLeft(y)
@@ -122,15 +139,11 @@ function render() {
     )
     .call(axisStyle);
 
-  g.append("g")
-    .attr("transform", `translate(0,${innerHeight})`)
-    .call(d3.axisBottom(x).ticks(9).tickSize(0).tickPadding(16))
-    .call(axisStyle);
-
-  g.append("text")
-    .attr("x", -54)
-    .attr("y", innerHeight / 2)
-    .attr("transform", `rotate(-90,-54,${innerHeight / 2})`)
+  priceG
+    .append("text")
+    .attr("x", -66)
+    .attr("y", priceHeight / 2)
+    .attr("transform", `rotate(-90,-66,${priceHeight / 2})`)
     .attr("text-anchor", "middle")
     .attr("fill", "#d6d7de")
     .style("font-size", "14px")
@@ -144,7 +157,8 @@ function render() {
     .y((d) => y(d.hedgePrice))
     .curve(d3.curveStepAfter);
 
-  g.append("path")
+  priceG
+    .append("path")
     .datum(rows)
     .attr("fill", "none")
     .attr("stroke", "mistyrose")
@@ -158,7 +172,8 @@ function render() {
       Number.isFinite(trade?.tradeAmount),
   );
 
-  g.append("g")
+  priceG
+    .append("g")
     .selectAll("circle")
     .data(tradeRows)
     .join("circle")
@@ -169,7 +184,7 @@ function render() {
     .attr("stroke", "#020204")
     .attr("stroke-width", 1.8);
 
-  const legend = g
+  const legend = priceG
     .append("g")
     .attr("transform", `translate(${innerWidth - 220},${-36})`);
   const legendItems = [
@@ -198,6 +213,121 @@ function render() {
         .style("font-family", fontFamily)
         .text((d) => d.label);
     });
+
+  const pnlRows = rows.filter(
+    (row) => Number.isFinite(row?.botPnl) && Number.isFinite(row?.optionPnl),
+  );
+  if (!pnlRows.length) return;
+
+  const pnlExtent = d3.extent([
+    0,
+    ...pnlRows.map((row) => row.botPnl),
+    ...pnlRows.map((row) => row.optionPnl),
+  ]);
+  const pnlPad = Math.max(1, (pnlExtent[1] - pnlExtent[0]) * 0.12);
+  const yPnl = d3
+    .scaleLinear()
+    .domain([pnlExtent[0] - pnlPad, pnlExtent[1] + pnlPad])
+    .nice()
+    .range([pnlHeight, 0]);
+
+  pnlG
+    .append("g")
+    .call(
+      d3
+        .axisLeft(yPnl)
+        .ticks(5)
+        .tickSize(-innerWidth)
+        .tickPadding(12)
+        .tickFormat(d3.format(",.0f")),
+    )
+    .call(axisStyle);
+
+  pnlG
+    .append("g")
+    .attr("transform", `translate(0,${pnlHeight})`)
+    .call(d3.axisBottom(x).ticks(9).tickSize(0).tickPadding(16))
+    .call(axisStyle);
+
+  pnlG
+    .append("line")
+    .attr("x1", 0)
+    .attr("x2", innerWidth)
+    .attr("y1", yPnl(0))
+    .attr("y2", yPnl(0))
+    .attr("stroke", "rgba(255,255,255,0.22)")
+    .attr("stroke-width", 1);
+
+  pnlG
+    .append("text")
+    .attr("x", -66)
+    .attr("y", pnlHeight / 2)
+    .attr("transform", `rotate(-90,-66,${pnlHeight / 2})`)
+    .attr("text-anchor", "middle")
+    .attr("fill", "#d6d7de")
+    .style("font-size", "14px")
+    .style("font-weight", 650)
+    .style("font-family", fontFamily)
+    .text("Cumulative PnL");
+
+  const botPnlLine = d3
+    .line()
+    .x((d) => x(d.date))
+    .y((d) => yPnl(d.botPnl))
+    .curve(d3.curveStepAfter);
+  const optionPnlLine = d3
+    .line()
+    .x((d) => x(d.date))
+    .y((d) => yPnl(d.optionPnl))
+    .curve(d3.curveStepAfter);
+
+  pnlG
+    .append("path")
+    .datum(pnlRows)
+    .attr("fill", "none")
+    .attr("stroke", "#7aa2ff")
+    .attr("stroke-width", 2)
+    .attr("d", botPnlLine);
+
+  pnlG
+    .append("path")
+    .datum(pnlRows)
+    .attr("fill", "none")
+    .attr("stroke", "#f59e0b")
+    .attr("stroke-width", 2)
+    .attr("d", optionPnlLine);
+
+  const pnlLegend = pnlG
+    .append("g")
+    .attr("transform", `translate(${innerWidth - 310},${-28})`);
+  const pnlLegendItems = [
+    { label: "DFollow PnL", color: "#7aa2ff" },
+    { label: "Option PnL", color: "#f59e0b" },
+  ];
+
+  pnlLegend
+    .selectAll("g")
+    .data(pnlLegendItems)
+    .join("g")
+    .attr("transform", (_, i) => `translate(${i * 150},0)`)
+    .call((item) => {
+      item
+        .append("line")
+        .attr("x1", 0)
+        .attr("x2", 22)
+        .attr("y1", 0)
+        .attr("y2", 0)
+        .attr("stroke", (d) => d.color)
+        .attr("stroke-width", 3);
+      item
+        .append("text")
+        .attr("x", 30)
+        .attr("y", 4)
+        .attr("fill", "#cfd3dd")
+        .style("font-size", "12px")
+        .style("font-family", fontFamily)
+        .text((d) => d.label);
+    });
 }
 
 watch(
@@ -206,7 +336,22 @@ watch(
   { deep: false },
 );
 
-onMounted(() => render());
+onMounted(() => {
+  render();
+  const svgEl = svgRef.value;
+  const wrap = svgEl?.parentElement;
+  if (wrap && typeof ResizeObserver !== "undefined") {
+    resizeObserver = new ResizeObserver(() => render());
+    resizeObserver.observe(wrap);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
+});
 </script>
 
 <template>

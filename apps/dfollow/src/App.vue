@@ -13,7 +13,6 @@ const RESOLUTION_CONFIG = {
   300: { label: "5m", resolution: "5m", intervalSeconds: 5 * 60 },
   900: { label: "15m", resolution: "15m", intervalSeconds: 15 * 60 },
   3600: { label: "1h", resolution: "1h", intervalSeconds: 60 * 60 },
-  86400: { label: "1d", resolution: "1d", intervalSeconds: 24 * 60 * 60 },
 };
 const DEFAULT_POINT_LIMIT = 480;
 
@@ -190,17 +189,23 @@ const toleranceValue = computed(() => {
     ? Math.max(thresholdValue.value, value)
     : thresholdValue.value;
 });
-const chartSubtitle = computed(() => {
-  if (!targetTitle.value) return "";
-  return `${targetTitle.value} x ${amountFormatter.format(Number(ui.targetAmount))}, threshold ${deltaFormatter.format(thresholdValue.value)}, period ${amountFormatter.format(Number(ui.period))}s`;
-});
-
 const periodHours = computed(() => {
   const period = Number(ui.period);
   if (!Number.isFinite(period)) return "0h";
   if (period < 3600) return `${Math.round(period / 60)}m`;
   return `${Math.round((period / 3600) * 10) / 10}h`;
 });
+
+const chartSubtitle = computed(() => {
+  if (!targetTitle.value) return "";
+  return `${targetTitle.value} x ${amountFormatter.format(Number(ui.targetAmount))}, threshold ${deltaFormatter.format(thresholdValue.value)}, tolerance ${deltaFormatter.format(toleranceValue.value)}, period ${periodHours.value}`;
+});
+
+const slugValue = (value) =>
+  String(value ?? "")
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 
 const optionDelta = ({ instrument, markPoint, indexPoint }) => {
   const spot = Number(indexPoint?.index_price_close);
@@ -259,6 +264,8 @@ function buildDfollowSimulation({
     .sort((a, b) => a - b);
 
   let position = 0;
+  let cash = 0;
+  let initialTargetPrice = null;
 
   let breachStartTs = null;
   const rows = [];
@@ -268,6 +275,8 @@ function buildDfollowSimulation({
     const indexPoint = indexByTs.get(ts);
     const targetPoint = targetByTs.get(ts);
     const hedgePoint = hedgeByTs.get(ts);
+    const hedgePrice = markClose(hedgePoint, indexPoint.index_price_close);
+    const targetPrice = markClose(targetPoint);
     const targetUnitDelta = unitDelta({
       instrument: target,
       markPoint: targetPoint,
@@ -282,11 +291,13 @@ function buildDfollowSimulation({
     if (!Number.isFinite(targetUnitDelta) || !Number.isFinite(hedgeUnitDelta)) {
       continue;
     }
+    if (!Number.isFinite(hedgePrice) || !Number.isFinite(targetPrice)) continue;
     if (Math.abs(hedgeUnitDelta) < 1e-8) continue;
+    if (!Number.isFinite(initialTargetPrice)) initialTargetPrice = targetPrice;
 
     const targetAmount = Number(settings.targetAmount);
-    const targetDelta =
-      targetUnitDelta * (Number.isFinite(targetAmount) ? targetAmount : 0);
+    const safeTargetAmount = Number.isFinite(targetAmount) ? targetAmount : 0;
+    const targetDelta = targetUnitDelta * safeTargetAmount;
     const portfolioDeltaBefore = position * hedgeUnitDelta;
     const deviationBefore = portfolioDeltaBefore - targetDelta;
     const absDeviation = Math.abs(deviationBefore);
@@ -318,6 +329,7 @@ function buildDfollowSimulation({
     if (trigger) {
       const nextPosition = targetDelta / hedgeUnitDelta;
       tradeAmount = nextPosition - position;
+      cash -= tradeAmount * hedgePrice;
       position = nextPosition;
       breachStartTs = null;
       trades.push({
@@ -328,21 +340,30 @@ function buildDfollowSimulation({
         position,
         targetDelta,
         deviationBefore,
-        hedgePrice: markClose(hedgePoint, indexPoint.index_price_close),
+        hedgePrice,
       });
     }
+
+    const botPnl = cash + position * hedgePrice;
+    const optionPnl = Number.isFinite(initialTargetPrice)
+      ? safeTargetAmount * (targetPrice - initialTargetPrice)
+      : 0;
 
     rows.push({
       ts,
       date: new Date(ts * 1000),
       indexPrice: indexPoint.index_price_close,
-      hedgePrice: markClose(hedgePoint, indexPoint.index_price_close),
+      hedgePrice,
+      targetPrice,
       targetDelta,
       portfolioDelta: position * hedgeUnitDelta,
       deviation: position * hedgeUnitDelta - targetDelta,
       targetUnitDelta,
       hedgeUnitDelta,
       position,
+      cash,
+      botPnl,
+      optionPnl,
       tradeAmount,
     });
   }
@@ -369,7 +390,14 @@ const canSavePng = computed(() => simulationRows.value.length > 0);
 function handleSavePng() {
   if (!chartRef.value) return;
   const base = targetInstrument.value?.instrument_name || "dfollow";
-  chartRef.value.exportPng({ filename: `${base}-dfollow.png` });
+  const parts = [
+    base,
+    "dfollow",
+    `period_${periodHours.value}`,
+    `threshold_${thresholdValue.value}`,
+    `tolerance_${toleranceValue.value}`,
+  ].map(slugValue);
+  chartRef.value.exportPng({ filename: `${parts.join("-")}.png` });
 }
 
 const chooseClosestStrike = () => {
@@ -607,7 +635,7 @@ watch(
         </p>
 
         <label class="panelField">
-          <span>Target Instrument <span class="infoDot">i</span></span>
+          <span>Target Instrument</span>
           <select v-model="targetInstrumentName">
             <option
               v-for="instrument in data.options"
@@ -620,7 +648,7 @@ watch(
         </label>
 
         <label class="panelField">
-          <span>Amount <span class="infoDot">i</span></span>
+          <span>Amount</span>
           <div class="inputShell">
             <input v-model.number="ui.targetAmount" type="number" step="0.01" />
             <span>contracts</span>
@@ -628,7 +656,7 @@ watch(
         </label>
 
         <label class="panelField">
-          <span>Period <span class="infoDot">i</span></span>
+          <span>Period</span>
           <input
             v-model.number="ui.period"
             class="rangeInput"
@@ -645,12 +673,26 @@ watch(
         </label>
 
         <label class="panelField">
-          <span>Threshold <span class="infoDot">i</span></span>
+          <span>
+            Threshold
+            <span
+              class="infoDot infoDotTooltip"
+              tabindex="0"
+              data-tooltip="The bot allows the deltas to stay outside of [target_delta - threshold, target_delta + threshold] for period seconds before making any adjustments to the portfolio."
+            >i</span>
+          </span>
           <input v-model.number="ui.threshold" type="number" min="0" step="0.01" />
         </label>
 
         <label class="panelField">
-          <span>Tolerance <span class="infoDot">i</span></span>
+          <span>
+            Tolerance
+            <span
+              class="infoDot infoDotTooltip"
+              tabindex="0"
+              data-tooltip="If the deltas are outside of [target_delta - tolerance, target_delta + tolerance], the bot will hedge them immediately, without waiting period seconds."
+            >i</span>
+          </span>
           <input v-model.number="ui.tolerance" type="number" min="0" step="0.01" />
         </label>
 
@@ -764,7 +806,7 @@ watch(
   grid-row: 2;
   display: flex;
   flex-direction: column;
-  gap: 15px;
+  gap: 18px;
   height: 100%;
   min-height: 0;
   max-height: 100%;
@@ -784,9 +826,10 @@ watch(
 }
 
 .panelField {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .panelField > span {
@@ -809,6 +852,37 @@ watch(
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
+}
+
+.infoDotTooltip::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  padding: 10px 12px;
+  border: 1px solid #3f3f43;
+  border-radius: 8px;
+  background: #08090d;
+  color: #e5e7eb;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-align: left;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.infoDotTooltip:hover::after,
+.infoDotTooltip:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .panelField select,
