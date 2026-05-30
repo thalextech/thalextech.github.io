@@ -1,0 +1,3 @@
+title: "Binary Options"
+description: "Price a binary payout from a selected Thalex option and compare index price, strike, fair value, and mark-to-market PnL."
+image: "/images/option-pnl.png"
