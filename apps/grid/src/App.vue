@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import OptionGridChart from "./components/OptionGridChart.vue";
 import { fetchIndexHistory, fetchInstruments } from "../../../lib/thalex.js";
 
@@ -9,10 +9,10 @@ const MIN_POINT_LIMIT = 80;
 const MAX_POINT_LIMIT = 1600;
 const DEFAULT_EXPIRY_COUNT = 6;
 const DEFAULT_STRIKE_LEVELS = 12;
-const TICKER_BURST_REQUESTS = 60;
-const TICKER_BURST_INTERVAL_MS = 75;
-const TICKER_SUSTAINED_INTERVAL_MS = 350;
-const TICKER_MATURITY_PAUSE_MS = 750;
+const TICKER_BURST_REQUESTS = 100;
+const TICKER_BURST_INTERVAL_MS = 0;
+const TICKER_SUSTAINED_INTERVAL_MS = 110;
+const TICKER_MATURITY_PAUSE_MS = 0;
 const SECONDS_PER_YEAR = 365.25 * 24 * 60 * 60;
 
 const RESOLUTION_CONFIG = {
@@ -27,11 +27,28 @@ const UNDERLYING_OPTIONS = [
   { value: "ETHUSD", label: "ETH" },
 ];
 
+const METRIC_OPTIONS = [
+  {
+    value: "omega",
+    label: "Omega",
+    tooltip:
+      "Omega (Ω) — leverage of the option vs the underlying. |Δ · S / V|: % change in option value per 1% spot move.",
+  },
+  {
+    value: "touch",
+    label: "Touch",
+    tooltip:
+      "One-touch multiplier — 1 / P(spot touches strike before expiry). Estimated from current IV under a GBM model.",
+  },
+];
+
 const ui = reactive({
   resolutionKey: "3600",
   maxPoints: DEFAULT_POINT_LIMIT,
   expiryCount: DEFAULT_EXPIRY_COUNT,
   strikeLevels: DEFAULT_STRIKE_LEVELS,
+  strikeRangePct: DEFAULT_STRIKE_RANGE_PCT,
+  metric: "omega",
   loadingIndex: false,
   loadingTickers: false,
   error: "",
@@ -44,6 +61,7 @@ const tickerByInstrument = ref({});
 const failedTickerFetches = reactive({});
 const chartRef = ref(null);
 const initialized = ref(false);
+const selectedOption = ref(null);
 let indexRequestId = 0;
 let tickerRequestId = 0;
 let tickerAbortController = null;
@@ -149,6 +167,35 @@ function calcOneTouchMultiplier(args) {
   const probability = calcOneTouchProbability(args);
   if (!Number.isFinite(probability) || probability <= 0) return null;
   return 1 / probability;
+}
+
+function calcNd2({ forward, strike, expirationTs, iv, optionType }) {
+  if (![forward, strike, expirationTs, iv].every(Number.isFinite)) return null;
+  if (forward <= 0 || strike <= 0) return null;
+  const now = Math.floor(Date.now() / 1000);
+  const tte = expirationTs - now;
+  if (tte <= 0) return null;
+  const sigma = iv > 5 ? iv / 100 : iv;
+  if (!Number.isFinite(sigma) || sigma <= 0) return null;
+  const tau = tte / SECONDS_PER_YEAR;
+  const sigmaRootTau = sigma * Math.sqrt(tau);
+  if (!Number.isFinite(sigmaRootTau) || sigmaRootTau <= 0) return null;
+  const d1 = (Math.log(forward / strike) + 0.5 * sigma * sigma * tau) / sigmaRootTau;
+  const d2 = d1 - sigmaRootTau;
+  return optionType === "put" ? normalCdf(-d2) : normalCdf(d2);
+}
+
+function calcOmega({ delta, underlyingPrice, markPrice }) {
+  if (
+    !Number.isFinite(delta) ||
+    !Number.isFinite(underlyingPrice) ||
+    !Number.isFinite(markPrice) ||
+    markPrice <= 0
+  ) {
+    return null;
+  }
+  const omega = (delta * underlyingPrice) / markPrice;
+  return Number.isFinite(omega) ? Math.abs(omega) : null;
 }
 
 const normalizeOptionInstrument = (instrument) => {
@@ -344,45 +391,115 @@ const selectedExpiries = computed(() => {
     .slice(0, count);
 });
 
-const selectedStrikes = computed(() => {
+const CHART_INNER_HEIGHT_PX = 740;
+const STRIKE_PIXEL_GAP = 26;
+const DOMAIN_PADDING_FACTOR = 1.16;
+const STRIKE_RANGE_OPTIONS = [10, 20, 30];
+const DEFAULT_STRIKE_RANGE_PCT = 20;
+
+const perExpiryStrikes = computed(() => {
   const spot = latestSpot.value;
+  const result = new Map();
+  if (!Number.isFinite(spot)) return result;
+
   const count = Math.max(
     6,
     Math.min(22, Math.floor(Number(ui.strikeLevels)) || DEFAULT_STRIKE_LEVELS),
   );
-  const strikes = Array.from(
-    new Set(
-      optionUniverse.value
-        .filter((option) => selectedExpiries.value.includes(option.expiration_ts))
-        .map((option) => option.strike),
-    ),
-  );
+  const aboveTarget = Math.ceil(count / 2);
+  const belowTarget = count - aboveTarget;
 
-  if (!Number.isFinite(spot)) return strikes.sort((a, b) => a - b).slice(0, count);
-
-  const minStrikeGap = Math.max(1, spot * 0.011);
-  const selected = [];
-  for (const strike of strikes.sort(
-    (a, b) => Math.abs(a - spot) - Math.abs(b - spot) || a - b,
-  )) {
-    if (selected.length >= count) break;
-    if (selected.every((picked) => Math.abs(picked - strike) >= minStrikeGap)) {
-      selected.push(strike);
+  const pickWithGap = (sorted, targetCount, gap) => {
+    const picked = [];
+    for (const strike of sorted) {
+      if (picked.length >= targetCount) break;
+      if (gap <= 0 || picked.every((p) => Math.abs(p - strike) >= gap)) {
+        picked.push(strike);
+      }
     }
+    return picked;
+  };
+
+  const rangePct =
+    (STRIKE_RANGE_OPTIONS.includes(ui.strikeRangePct)
+      ? ui.strikeRangePct
+      : DEFAULT_STRIKE_RANGE_PCT) / 100;
+  const minAllowedStrike = spot * (1 - rangePct);
+  const maxAllowedStrike = spot * (1 + rangePct);
+
+  const expiryStrikes = new Map();
+  for (const expiryTs of selectedExpiries.value) {
+    expiryStrikes.set(
+      expiryTs,
+      Array.from(
+        new Set(
+          optionUniverse.value
+            .filter(
+              (option) =>
+                option.expiration_ts === expiryTs &&
+                option.strike >= minAllowedStrike &&
+                option.strike <= maxAllowedStrike,
+            )
+            .map((option) => option.strike),
+        ),
+      ),
+    );
   }
 
-  return selected.sort((a, b) => a - b);
+  const pass1Strikes = new Set();
+  for (const [, strikesAtExpiry] of expiryStrikes) {
+    const aboveAll = strikesAtExpiry.filter((s) => s >= spot).sort((a, b) => a - b);
+    const belowAll = strikesAtExpiry.filter((s) => s < spot).sort((a, b) => b - a);
+    aboveAll.slice(0, aboveTarget).forEach((s) => pass1Strikes.add(s));
+    belowAll.slice(0, belowTarget).forEach((s) => pass1Strikes.add(s));
+  }
+
+  const domainValues = [spot, ...pass1Strikes];
+  for (const row of indexRows.value || []) {
+    const value = toFiniteNumber(row?.index_price_close);
+    if (Number.isFinite(value)) domainValues.push(value);
+  }
+  const minVal = Math.min(...domainValues);
+  const maxVal = Math.max(...domainValues);
+  const domainSpan = (maxVal - minVal) * DOMAIN_PADDING_FACTOR;
+  const minStrikeGap =
+    domainSpan > 0
+      ? Math.max(1, (domainSpan / CHART_INNER_HEIGHT_PX) * STRIKE_PIXEL_GAP)
+      : Math.max(1, spot * 0.015);
+
+  for (const [expiryTs, strikesAtExpiry] of expiryStrikes) {
+    const above = pickWithGap(
+      strikesAtExpiry.filter((s) => s >= spot).sort((a, b) => a - b),
+      aboveTarget,
+      minStrikeGap,
+    );
+    const below = pickWithGap(
+      strikesAtExpiry.filter((s) => s < spot).sort((a, b) => b - a),
+      belowTarget,
+      minStrikeGap,
+    );
+    result.set(expiryTs, new Set([...above, ...below]));
+  }
+
+  return result;
+});
+
+const selectedStrikes = computed(() => {
+  const all = new Set();
+  for (const strikes of perExpiryStrikes.value.values()) {
+    strikes.forEach((s) => all.add(s));
+  }
+  return Array.from(all).sort((a, b) => a - b);
 });
 
 const gridOptions = computed(() => {
   const spot = latestSpot.value;
   if (!Number.isFinite(spot)) return [];
-  const expirySet = new Set(selectedExpiries.value);
-  const strikeSet = new Set(selectedStrikes.value);
+  const perExpiry = perExpiryStrikes.value;
 
   return optionUniverse.value.filter((option) => {
-    if (!expirySet.has(option.expiration_ts)) return false;
-    if (!strikeSet.has(option.strike)) return false;
+    const allowed = perExpiry.get(option.expiration_ts);
+    if (!allowed?.has(option.strike)) return false;
     if (option.strike >= spot) return option.option_type_normalized === "call";
     return option.option_type_normalized === "put";
   });
@@ -408,8 +525,23 @@ const gridRows = computed(() =>
   gridOptions.value.map((option) => {
     const ticker = tickerByInstrument.value[option.instrument_name] || {};
     const iv = toFiniteNumber(ticker.iv);
+    const markPrice = toFiniteNumber(ticker.mark_price);
+    const forward = toFiniteNumber(ticker.forward);
+    const delta = toFiniteNumber(ticker.delta);
     const oneTouchMultiplier = calcOneTouchMultiplier({
       spot: latestSpot.value,
+      strike: option.strike,
+      expirationTs: option.expiration_ts,
+      iv,
+      optionType: option.option_type_normalized,
+    });
+    const omega = calcOmega({
+      delta,
+      underlyingPrice: Number.isFinite(forward) ? forward : latestSpot.value,
+      markPrice,
+    });
+    const nd2 = calcNd2({
+      forward,
       strike: option.strike,
       expirationTs: option.expiration_ts,
       iv,
@@ -421,20 +553,16 @@ const gridRows = computed(() =>
       expiryLabel: expiryFormatter.format(new Date(option.expiration_ts * 1000)),
       strike: option.strike,
       optionType: option.option_type_normalized,
-      markPrice: toFiniteNumber(ticker.mark_price),
+      markPrice,
       iv,
-      forward: toFiniteNumber(ticker.forward),
+      forward,
+      delta,
       oneTouchMultiplier,
+      omega,
+      nd2,
     };
   }),
 );
-
-const chartSubtitle = computed(() => {
-  const resolution = RESOLUTION_CONFIG[ui.resolutionKey]?.label || ui.resolutionKey;
-  const spot = latestSpot.value;
-  const spotText = Number.isFinite(spot) ? spot.toLocaleString("en-US") : "-";
-  return `${underlying.value} index ${resolution} | spot ${spotText}`;
-});
 
 const canSavePng = computed(() => indexRows.value.length > 0 || gridRows.value.length > 0);
 const loading = computed(() => ui.loadingIndex || ui.loadingTickers);
@@ -445,6 +573,12 @@ const slugValue = (value) =>
     .replace(/[^a-zA-Z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
 
+function cycleStrikeRange() {
+  const idx = STRIKE_RANGE_OPTIONS.indexOf(ui.strikeRangePct);
+  ui.strikeRangePct =
+    STRIKE_RANGE_OPTIONS[(idx + 1) % STRIKE_RANGE_OPTIONS.length];
+}
+
 function handleSavePng() {
   if (!chartRef.value) return;
   const parts = [
@@ -453,6 +587,92 @@ function handleSavePng() {
     RESOLUTION_CONFIG[ui.resolutionKey]?.label || ui.resolutionKey,
   ].map(slugValue);
   chartRef.value.exportPng({ filename: `${parts.join("-")}.png` });
+}
+
+const fullExpiryFormatter = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  timeZone: "UTC",
+});
+
+function formatExpiryIso(ts) {
+  const d = new Date(ts * 1000);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+const compactNumber = (value, digits = 2) =>
+  Number.isFinite(value)
+    ? Number(value).toLocaleString("en-US", {
+        maximumFractionDigits: digits,
+      })
+    : "-";
+
+const selectedDetails = computed(() => {
+  const option = selectedOption.value;
+  if (!option) return null;
+  const thalexUrl = `https://thalex.com/exchange/options?underlying=${encodeURIComponent(
+    underlying.value,
+  )}&expiration=${formatExpiryIso(option.expiryTs)}`;
+  return {
+    raw: option,
+    title: option.instrumentName,
+    typeLabel: option.optionType === "call" ? "Call" : "Put",
+    thalexUrl,
+    rows: [
+      { key: "instrument", label: "Instrument", value: option.instrumentName },
+      { key: "underlying", label: "Underlying", value: underlying.value },
+      { key: "type", label: "Type", value: option.optionType === "call" ? "Call" : "Put" },
+      { key: "strike", label: "Strike", value: compactNumber(option.strike, 0) },
+      {
+        key: "expiry",
+        label: "Expiry (UTC)",
+        value: fullExpiryFormatter.format(new Date(option.expiryTs * 1000)),
+      },
+      {
+        key: "mark",
+        label: "Mark price",
+        value: compactNumber(option.markPrice, 4),
+      },
+      {
+        key: "iv",
+        label: "IV",
+        value: Number.isFinite(option.iv)
+          ? `${compactNumber(option.iv * 100, 2)}%`
+          : "-",
+      },
+      {
+        key: "forward",
+        label: "Forward",
+        value: compactNumber(option.forward, 2),
+      },
+      {
+        key: "nd2",
+        label: "N(d2)",
+        value: Number.isFinite(option.nd2)
+          ? `${compactNumber(option.nd2 * 100, 2)}%`
+          : "-",
+      },
+      {
+        key: "omega",
+        label: "Omega",
+        value: Number.isFinite(option.omega)
+          ? `${compactNumber(option.omega, 2)}x`
+          : "-",
+      },
+    ],
+  };
+});
+
+function handleSelectOption(option) {
+  selectedOption.value = option;
+}
+
+function closeOptionModal() {
+  selectedOption.value = null;
 }
 
 async function loadIndexData() {
@@ -574,6 +794,17 @@ watch(
   },
   { deep: false },
 );
+
+function handleKeydown(event) {
+  if (event.key === "Escape" && selectedOption.value) {
+    closeOptionModal();
+  }
+}
+
+onMounted(() => window.addEventListener("keydown", handleKeydown));
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", handleKeydown);
+});
 </script>
 
 <template>
@@ -598,30 +829,29 @@ watch(
             </button>
           </div>
 
-          <div class="segmented" role="group" aria-label="Resolution">
+          <div class="segmented" role="group" aria-label="Metric">
             <button
-              v-for="key in Object.keys(RESOLUTION_CONFIG)"
-              :key="key"
+              v-for="opt in METRIC_OPTIONS"
+              :key="opt.value"
               type="button"
-              :class="{ active: ui.resolutionKey === key }"
-              @click="ui.resolutionKey = key"
+              :class="{ active: ui.metric === opt.value }"
+              :title="opt.tooltip"
+              @click="ui.metric = opt.value"
             >
-              {{ RESOLUTION_CONFIG[key].label }}
+              {{ opt.label }}
             </button>
           </div>
         </div>
 
         <div class="toolbarGroup">
-          <label class="pointSlider">
-            <span>{{ ui.maxPoints }} index points</span>
-            <input
-              v-model.number="ui.maxPoints"
-              type="range"
-              :min="MIN_POINT_LIMIT"
-              :max="MAX_POINT_LIMIT"
-              step="20"
-            />
-          </label>
+          <button
+            type="button"
+            class="rangeToggle"
+            @click="cycleStrikeRange"
+            :aria-label="`Strike range ±${ui.strikeRangePct}%`"
+          >
+            ±{{ ui.strikeRangePct }}%
+          </button>
 
           <label class="stepper">
             <span>Expiries</span>
@@ -649,10 +879,64 @@ watch(
         :index-rows="indexRows"
         :grid-rows="gridRows"
         :spot="latestSpot"
-        :subtitle="chartSubtitle"
         :loading="ui.loadingIndex"
+        :underlying="underlying"
+        :metric="ui.metric"
+        @select-option="handleSelectOption"
       />
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
+    </div>
+
+    <div
+      v-if="selectedDetails"
+      class="modalBackdrop"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="selectedDetails.title"
+      @click.self="closeOptionModal"
+    >
+      <div class="modalCard">
+        <div class="modalHeader">
+          <div class="modalTitleGroup">
+            <span class="typeBadge" :class="selectedDetails.raw.optionType">
+              {{ selectedDetails.typeLabel }}
+            </span>
+            <h2 class="modalTitle">{{ selectedDetails.title }}</h2>
+          </div>
+          <button
+            type="button"
+            class="closeButton"
+            aria-label="Close"
+            @click="closeOptionModal"
+          >
+            ×
+          </button>
+        </div>
+
+        <dl class="modalGrid">
+          <div
+            v-for="row in selectedDetails.rows"
+            :key="row.key"
+            class="modalRow"
+          >
+            <dt>{{ row.label }}</dt>
+            <dd>
+              <span class="rowValue">{{ row.value }}</span>
+            </dd>
+          </div>
+        </dl>
+
+        <div class="modalActions">
+          <a
+            class="thalexLink"
+            :href="selectedDetails.thalexUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            View expiry on Thalex →
+          </a>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -662,9 +946,10 @@ watch(
   width: 100%;
   min-height: 100vh;
   padding: 14px 14px 18px;
-  background:
-    radial-gradient(circle at 45% 52%, rgba(235, 84, 156, 0.14), transparent 28%),
-    linear-gradient(135deg, #221018 0%, #12080d 48%, #080607 100%);
+  background: #000;
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
 }
 
 .header {
@@ -673,9 +958,10 @@ watch(
 
 .header h1 {
   margin: 0;
-  color: #fff8fb;
+  color: #fafafa;
   font-size: 28px;
-  font-weight: 760;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   line-height: 1.05;
   text-align: center;
 }
@@ -710,9 +996,9 @@ watch(
   display: inline-flex;
   height: 31px;
   overflow: hidden;
-  border: 1px solid rgba(244, 126, 181, 0.35);
+  border: 1px solid #262626;
   border-radius: 6px;
-  background: rgba(18, 8, 13, 0.9);
+  background: #0a0a0a;
 }
 
 .segmented button,
@@ -720,34 +1006,50 @@ watch(
   height: 100%;
   border: 0;
   background: transparent;
-  color: #f7d7e6;
+  color: #a1a1a1;
   cursor: pointer;
   padding: 0 16px;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
   font-family: inherit;
 }
 
 .segmented button + button {
-  border-left: 1px solid rgba(244, 126, 181, 0.22);
+  border-left: 1px solid #262626;
 }
 
 .segmented .active {
-  background: rgba(244, 126, 181, 0.23);
-  color: #fff;
+  background: #fafafa;
+  color: #000;
 }
 
-.saveButton {
+.saveButton,
+.rangeToggle {
   height: 31px;
-  border: 1px solid rgba(244, 126, 181, 0.35);
+  border: 1px solid #262626;
   border-radius: 6px;
-  background: rgba(18, 8, 13, 0.9);
+  background: #0a0a0a;
+  color: #a1a1a1;
+  cursor: pointer;
+  padding: 0 14px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+}
+
+.rangeToggle:hover {
+  color: #fafafa;
+}
+
+.saveButton:hover:not(:disabled),
+.segmented button:hover:not(:disabled):not(.active) {
+  color: #fafafa;
 }
 
 .saveButton:disabled,
 .segmented button:disabled {
   cursor: not-allowed;
-  opacity: 0.45;
+  opacity: 0.4;
 }
 
 .pointSlider,
@@ -759,24 +1061,24 @@ watch(
 
 .pointSlider span,
 .stepper span {
-  color: #e7a0c5;
+  color: #a1a1a1;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
   white-space: nowrap;
 }
 
 .pointSlider input {
   width: 160px;
-  accent-color: #f4e94d;
+  accent-color: #fafafa;
 }
 
 .stepper input {
   width: 58px;
   height: 31px;
-  border: 1px solid rgba(244, 126, 181, 0.35);
+  border: 1px solid #262626;
   border-radius: 6px;
-  background: rgba(18, 8, 13, 0.9);
-  color: #fff8fb;
+  background: #0a0a0a;
+  color: #fafafa;
   padding: 0 8px;
   font-size: 12px;
   font-family: inherit;
@@ -799,11 +1101,165 @@ watch(
   justify-self: center;
   margin-top: 18px;
   padding: 8px 12px;
-  border: 1px solid rgba(253, 164, 175, 0.3);
+  border: 1px solid #525252;
   border-radius: 8px;
-  background: rgba(127, 29, 29, 0.2);
-  color: #fda4af;
+  background: #171717;
+  color: #fafafa;
   font-size: 13px;
   line-height: 1.35;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(2px);
+}
+
+.modalCard {
+  width: min(440px, 100%);
+  background: #0a0a0a;
+  border: 1px solid #262626;
+  border-radius: 12px;
+  padding: 20px 22px 18px;
+  color: #fafafa;
+  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.8);
+}
+
+.modalHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.modalTitleGroup {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.modalTitle {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #fafafa;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.typeBadge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid #fafafa;
+}
+
+.typeBadge.call {
+  background: #fafafa;
+  color: #000;
+}
+
+.typeBadge.put {
+  background: transparent;
+  color: #fafafa;
+}
+
+.closeButton {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: #a1a1a1;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.closeButton:hover {
+  color: #fafafa;
+  background: #171717;
+}
+
+.modalGrid {
+  margin: 0;
+  display: grid;
+  gap: 1px;
+  background: #262626;
+  border: 1px solid #262626;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.modalRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: #0a0a0a;
+}
+
+.modalRow dt {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #a1a1a1;
+}
+
+.modalRow dd {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fafafa;
+  font-variant-numeric: tabular-nums;
+}
+
+.rowValue {
+  text-align: right;
+}
+
+.modalActions {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.thalexLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #000;
+  background: #fafafa;
+  border-radius: 6px;
+  text-decoration: none;
+  border: 1px solid #fafafa;
+}
+
+.thalexLink:hover {
+  background: #e5e5e5;
+  border-color: #e5e5e5;
 }
 </style>
