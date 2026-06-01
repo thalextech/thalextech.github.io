@@ -522,46 +522,48 @@ const tickerMaturityGroups = computed(() =>
 );
 
 const gridRows = computed(() =>
-  gridOptions.value.map((option) => {
-    const ticker = tickerByInstrument.value[option.instrument_name] || {};
-    const iv = toFiniteNumber(ticker.iv);
-    const markPrice = toFiniteNumber(ticker.mark_price);
-    const forward = toFiniteNumber(ticker.forward);
-    const delta = toFiniteNumber(ticker.delta);
-    const oneTouchMultiplier = calcOneTouchMultiplier({
-      spot: latestSpot.value,
-      strike: option.strike,
-      expirationTs: option.expiration_ts,
-      iv,
-      optionType: option.option_type_normalized,
-    });
-    const omega = calcOmega({
-      delta,
-      underlyingPrice: Number.isFinite(forward) ? forward : latestSpot.value,
-      markPrice,
-    });
-    const nd2 = calcNd2({
-      forward,
-      strike: option.strike,
-      expirationTs: option.expiration_ts,
-      iv,
-      optionType: option.option_type_normalized,
-    });
-    return {
-      instrumentName: option.instrument_name,
-      expiryTs: option.expiration_ts,
-      expiryLabel: expiryFormatter.format(new Date(option.expiration_ts * 1000)),
-      strike: option.strike,
-      optionType: option.option_type_normalized,
-      markPrice,
-      iv,
-      forward,
-      delta,
-      oneTouchMultiplier,
-      omega,
-      nd2,
-    };
-  }),
+  gridOptions.value
+    .map((option) => {
+      const ticker = tickerByInstrument.value[option.instrument_name] || {};
+      const iv = toFiniteNumber(ticker.iv);
+      const markPrice = toFiniteNumber(ticker.mark_price);
+      const forward = toFiniteNumber(ticker.forward);
+      const delta = toFiniteNumber(ticker.delta);
+      const oneTouchMultiplier = calcOneTouchMultiplier({
+        spot: latestSpot.value,
+        strike: option.strike,
+        expirationTs: option.expiration_ts,
+        iv,
+        optionType: option.option_type_normalized,
+      });
+      const omega = calcOmega({
+        delta,
+        underlyingPrice: Number.isFinite(forward) ? forward : latestSpot.value,
+        markPrice,
+      });
+      const nd2 = calcNd2({
+        forward,
+        strike: option.strike,
+        expirationTs: option.expiration_ts,
+        iv,
+        optionType: option.option_type_normalized,
+      });
+      return {
+        instrumentName: option.instrument_name,
+        expiryTs: option.expiration_ts,
+        expiryLabel: expiryFormatter.format(new Date(option.expiration_ts * 1000)),
+        strike: option.strike,
+        optionType: option.option_type_normalized,
+        markPrice,
+        iv,
+        forward,
+        delta,
+        oneTouchMultiplier,
+        omega,
+        nd2,
+      };
+    })
+    .filter((row) => row.markPrice !== 0),
 );
 
 const canSavePng = computed(() => indexRows.value.length > 0 || gridRows.value.length > 0);
