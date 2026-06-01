@@ -1,3 +1,3 @@
 title: "Option Grid"
-description: "Compare Thalex index history against option mark-price squares by strike and expiry."
-image: "/images/option-pnl.png"
+description: "Grid showing leverage (omega) and N(d2)^-1 by strike and expiry."
+image: "/images/grid.png"
