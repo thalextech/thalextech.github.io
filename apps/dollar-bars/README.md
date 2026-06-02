@@ -30,10 +30,10 @@ npm install
 npm run dev
 ```
 
-## Bitfinex CORS
+## Bitfinex API
 
-Bitfinex does not send browser CORS headers on `https://api-pub.bitfinex.com`.
-During local development, Vite proxies `/api/bitfinex/*` to Bitfinex.
+The Bitfinex API URL is hardcoded to:
 
-For a static production deploy, serve the same `/api/bitfinex` proxy yourself or
-set `VITE_BITFINEX_API_BASE` to a same-origin proxy before building.
+```text
+https://api-pub.bitfinex.com/v2/candles
+```

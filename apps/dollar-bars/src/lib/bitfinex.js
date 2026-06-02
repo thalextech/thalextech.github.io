@@ -1,6 +1,4 @@
-const BITFINEX_API_BASE =
-  import.meta.env?.VITE_BITFINEX_API_BASE || "/api/bitfinex";
-const BITFINEX_CANDLES_URL = `${BITFINEX_API_BASE}/v2/candles`;
+const BITFINEX_CANDLES_URL = "https://api-pub.bitfinex.com/v2/candles";
 const MAX_CANDLE_LIMIT = 10_000;
 const REQUESTS_PER_MINUTE = 30;
 const REQUEST_INTERVAL_MS = Math.ceil(60_000 / REQUESTS_PER_MINUTE);
@@ -108,6 +106,14 @@ function createRequestScheduler() {
 
 const requestScheduler = createRequestScheduler();
 
+function createHttpError(response, payload) {
+  const message = `Bitfinex returned ${response.status}.`;
+  const error = new Error(message);
+  error.status = response.status;
+  error.payload = payload;
+  return error;
+}
+
 async function fetchJsonWithRetries(
   url,
   {
@@ -132,10 +138,7 @@ async function fetchJsonWithRetries(
         const payload = await response.json().catch(() => null);
 
         if (!response.ok) {
-          const error = new Error(`Bitfinex returned ${response.status}.`);
-          error.status = response.status;
-          error.payload = payload;
-          throw error;
+          throw createHttpError(response, payload);
         }
 
         requestScheduler.noteSuccess();
