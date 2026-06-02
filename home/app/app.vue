@@ -7,6 +7,7 @@ const APP_ORDER = [
   "Greeks",
   "Option PnL",
   "Break Even",
+  "Dollar Bars",
   "Roll PnL",
   "Basis",
   "Subjective Valuation",
