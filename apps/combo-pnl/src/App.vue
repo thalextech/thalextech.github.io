@@ -170,6 +170,7 @@ const resolveInstrumentForLeg = (leg) => {
 
 const selectedLegInstruments = computed(() => {
   const result = [];
+
   for (const leg of selectedOptionLegs.value) {
     const instrument = resolveInstrumentForLeg(leg);
     if (!instrument?.instrument_name) continue;
@@ -186,8 +187,10 @@ const selectedLegInstruments = computed(() => {
       strike: Number(instrument.strike),
       expirationTs: Number(instrument.expiration_ts),
       underlying: instrument.underlying,
+      expiryDate: instrument.expiry_date
     });
   }
+
   return result;
 });
 
@@ -286,6 +289,26 @@ const pickNearestStrike = (strikes, targetPrice) => {
   }
   return chosenStrike;
 };
+
+const thalexUrl = computed(() => {
+  if (selectedLegInstruments.value.length === 0) {
+    return undefined;
+  }
+
+  let url = "https://thalex.com/exchange/options";
+
+  for (let i = 0; i < selectedLegInstruments.value.length; i++) {
+    const { signedQty, instrumentName, underlying, expiryDate } = selectedLegInstruments.value[i];
+
+    if (i === 0) {
+      url += `?underlying=${underlying}&expiration=${expiryDate}`;
+    }
+
+    url += `&instruments[${i}][0]=${instrumentName}&instruments[${i}][1]=${signedQty}`;
+  }
+
+  return url;
+});
 
 const seedDefaultLegs = () => {
   if (selectedOptionLegs.value.length) return;
@@ -1116,6 +1139,9 @@ watch(
           {{ opt.label }}
         </button>
       </div>
+      <div>
+        <a v-if="thalexUrl" :href="thalexUrl"  class="tradeThalexButton" target="_blank">Trade on Thalex</a>
+      </div>
     </div>
     <div class="builderRow">
       <div class="builderMain">
@@ -1270,7 +1296,8 @@ watch(
 
 .underlyingRow {
   display: flex;
-  justify-content: flex-start;
+  justify-content: space-between;
+  justify-items: center;
   margin-bottom: 12px;
 }
 
@@ -1374,6 +1401,20 @@ watch(
   top: calc(47% + 8px);
   right: 40px;
   z-index: 25;
+}
+
+.tradeThalexButton {
+  height: 31px;
+  padding: 0 16px;
+  border: 1px solid #3d3d42;
+  border-radius: 6px;
+  background: #050506;
+  color: #f0f1f4;
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  text-decoration: none;
 }
 
 .savePngButton {

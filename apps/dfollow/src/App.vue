@@ -200,6 +200,32 @@ const chartSubtitle = computed(() => {
   return `${targetTitle.value} x ${amountFormatter.format(Number(ui.targetAmount))}, threshold ${deltaFormatter.format(thresholdValue.value)}, tolerance ${deltaFormatter.format(toleranceValue.value)}, period ${periodHours.value}`;
 });
 
+const thalexUrl = computed(() => {
+  let url = "https://thalex.com/exchange/bots?strategy=dfollow";
+
+  if (targetInstrumentName.value) {
+    url += `&target_instrument=${targetInstrumentName.value}`
+  }
+
+  if (ui.targetAmount) {
+    url += `&amount=${ui.targetAmount}`
+  }
+
+  if (ui.period) {
+    url += `&period=${ui.period}`;
+  }
+
+  if (thresholdValue.value) {
+    url += `&threshold=${thresholdValue.value}`;
+  }
+
+  if (toleranceValue.value) {
+    url += `&tolerance=${toleranceValue.value}`;
+  }
+
+  return url;
+});
+
 const slugValue = (value) =>
   String(value ?? "")
     .trim()
@@ -697,6 +723,8 @@ watch(
         </label>
 
         <div v-if="ui.error" class="error">{{ ui.error }}</div>
+
+        <a :href="thalexUrl" class="tradeThalexButton" target="_blank">Trade on Thalex</a>
       </aside>
     </div>
   </div>
@@ -791,6 +819,19 @@ watch(
   font-weight: 500;
 }
 
+.tradeThalexButton {
+  height: 31px;
+  padding: 0 16px;
+  border: 1px solid #3d3d42;
+  border-radius: 6px;
+  background: #050506;
+  color: #f0f1f4;
+  font-size: 12px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  text-decoration: none;
+}
 
 .workspace :deep(.chartWrap) {
   grid-column: 1;
