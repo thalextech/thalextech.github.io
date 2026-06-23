@@ -1,0 +1,3 @@
+title: "Hedging"
+description: "Simulate threshold, tolerance, and period based delta hedging for a selected option."
+image: "/images/hedging.png"

@@ -1,6 +1,6 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
-import DfollowChart from "./components/DfollowChart.vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import HedgingChart from "./components/HedgingChart.vue";
 import {
   calcGreeks,
   fetchIndexHistory,
@@ -13,8 +13,12 @@ const RESOLUTION_CONFIG = {
   300: { label: "5m", resolution: "5m", intervalSeconds: 5 * 60 },
   900: { label: "15m", resolution: "15m", intervalSeconds: 15 * 60 },
   3600: { label: "1h", resolution: "1h", intervalSeconds: 60 * 60 },
+  86400: { label: "1d", resolution: "1d", intervalSeconds: 24 * 60 * 60 },
 };
-const DEFAULT_POINT_LIMIT = 480;
+const MIN_HORIZON_HOURS = 1;
+const MAX_HORIZON_HOURS = 30 * 24;
+const MAX_POINTS_PER_FETCH = 10000;
+const LOAD_DEBOUNCE_MS = 160;
 
 const UNDERLYING_OPTIONS = [
   { value: "BTCUSD", label: "BTC" },
@@ -27,9 +31,11 @@ const ui = reactive({
   targetStrike: "",
   targetType: "put",
   targetAmount: 1,
-  period: 12 * 60 * 60,
+  horizonHours: 7 * 24,
+  period: 10 * 60,
   threshold: 0.02,
   tolerance: 0.16,
+  showOptionPrice: false,
   loading: false,
   error: "",
 });
@@ -46,6 +52,7 @@ const data = reactive({
 const chartRef = ref(null);
 const initialized = ref(false);
 let loadRequestId = 0;
+let loadTimer = null;
 
 const maturityFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -85,14 +92,68 @@ const normalizeInstrument = (instrument) => {
   };
 };
 
+const selectedHorizonHours = computed(() => {
+  const horizonHours = Number(ui.horizonHours);
+  return Number.isFinite(horizonHours)
+    ? Math.min(MAX_HORIZON_HOURS, Math.max(MIN_HORIZON_HOURS, horizonHours))
+    : 7 * 24;
+});
+
+const selectedHorizonSeconds = computed(
+  () => selectedHorizonHours.value * 60 * 60,
+);
+
+const activeResolutionEntry = computed(() => {
+  const requestedKey = Number(ui.resolutionKey);
+  const candidates = Object.entries(RESOLUTION_CONFIG)
+    .map(([key, config]) => ({ key, ...config }))
+    .filter((entry) => entry.intervalSeconds >= requestedKey)
+    .sort((a, b) => a.intervalSeconds - b.intervalSeconds);
+  const fallback = candidates[candidates.length - 1] || {
+    key: "3600",
+    ...RESOLUTION_CONFIG[3600],
+  };
+
+  return (
+    candidates.find(
+      (entry) =>
+        Math.floor(selectedHorizonSeconds.value / entry.intervalSeconds) + 1 <=
+        MAX_POINTS_PER_FETCH,
+    ) || fallback
+  );
+});
+
+const activeResolutionKey = computed(() => activeResolutionEntry.value.key);
+const activeResolutionLabel = computed(() => activeResolutionEntry.value.label);
+const requestedResolutionLabel = computed(
+  () => RESOLUTION_CONFIG[ui.resolutionKey]?.label || String(ui.resolutionKey),
+);
+const effectivePointCount = computed(
+  () =>
+    Math.floor(
+      selectedHorizonSeconds.value / activeResolutionEntry.value.intervalSeconds,
+    ) + 1,
+);
+const activeDataKey = computed(() => activeResolutionKey.value);
+const effectiveResolutionSummary = computed(() => {
+  const summary = `${activeResolutionLabel.value}, ${effectivePointCount.value} pts`;
+  if (activeResolutionKey.value === String(ui.resolutionKey)) return summary;
+  return `${requestedResolutionLabel.value} -> ${summary}`;
+});
+
 const getTimestampRange = () => {
   const now = Math.floor(Date.now() / 1000);
-  const config = RESOLUTION_CONFIG[ui.resolutionKey] || RESOLUTION_CONFIG[300];
-  const maxPoints = DEFAULT_POINT_LIMIT;
+  const config = activeResolutionEntry.value;
+  const horizonSeconds = selectedHorizonSeconds.value;
+  const maxPoints = Math.min(
+    MAX_POINTS_PER_FETCH,
+    Math.floor(horizonSeconds / config.intervalSeconds) + 1,
+  );
   const to = now - (now % config.intervalSeconds);
   return {
+    resolutionKey: config.key,
     resolution: config.resolution,
-    from: to - config.intervalSeconds * (maxPoints - 1),
+    from: to - horizonSeconds,
     to,
     maxPoints,
   };
@@ -159,21 +220,6 @@ const targetInstrument = computed(() => {
   );
 });
 
-const targetInstrumentName = computed({
-  get() {
-    return targetInstrument.value?.instrument_name || "";
-  },
-  set(nextName) {
-    const instrument = data.options.find(
-      (option) => option.instrument_name === nextName,
-    );
-    if (!instrument) return;
-    ui.targetMaturity = String(instrument.expiration_ts);
-    ui.targetStrike = String(instrument.strike);
-    ui.targetType = instrument.option_type_normalized === "call" ? "call" : "put";
-  },
-});
-
 const hedgeInstrument = computed(
   () => data.hedges[0] || null,
 );
@@ -194,10 +240,16 @@ const periodHours = computed(() => {
   if (period < 3600) return `${Math.round(period / 60)}m`;
   return `${Math.round((period / 3600) * 10) / 10}h`;
 });
+const horizonLabel = computed(() => {
+  const hours = Number(ui.horizonHours);
+  if (!Number.isFinite(hours)) return "0h";
+  if (hours < 24) return `${Math.round(hours)}h`;
+  return `${Math.round((hours / 24) * 10) / 10}d`;
+});
 
 const chartSubtitle = computed(() => {
   if (!targetTitle.value) return "";
-  return `${targetTitle.value} x ${amountFormatter.format(Number(ui.targetAmount))}, threshold ${deltaFormatter.format(thresholdValue.value)}, tolerance ${deltaFormatter.format(toleranceValue.value)}, period ${periodHours.value}`;
+  return `${targetTitle.value} x ${amountFormatter.format(Number(ui.targetAmount))}, horizon ${horizonLabel.value}, resolution ${effectiveResolutionSummary.value}, threshold ${deltaFormatter.format(thresholdValue.value)}, tolerance ${deltaFormatter.format(toleranceValue.value)}, period ${periodHours.value}`;
 });
 
 const slugValue = (value) =>
@@ -226,13 +278,30 @@ const unitDelta = ({ instrument, markPoint, indexPoint }) => {
   return 1;
 };
 
+const optionVegaPnl = ({ instrument, markPoint, indexPoint, amount }) => {
+  const spot = Number(indexPoint?.index_price_open);
+  const strike = Number(instrument?.strike);
+  const expiration = Number(instrument?.expiration_ts);
+  const ts = Number(markPoint?.ts);
+  const ivOpen = Number(markPoint?.iv_open);
+  const ivClose = Number(markPoint?.iv_close);
+  const optionType =
+    instrument?.option_type_normalized === "put" ? "put" : "call";
+  const dIV = ivClose - ivOpen;
+  if (!Number.isFinite(dIV)) return null;
+
+  const greeks = calcGreeks(spot, strike, expiration - ts, ivOpen, optionType);
+  const vegaPnl = Number(amount) * Number(greeks.vega) * dIV;
+  return Number.isFinite(vegaPnl) ? vegaPnl : null;
+};
+
 const markClose = (row, fallback = null) => {
   const value = Number(row?.mark_price_close);
   if (Number.isFinite(value)) return value;
   return Number.isFinite(fallback) ? fallback : null;
 };
 
-function buildDfollowSimulation({
+function buildHedgingSimulation({
   indexRows,
   targetRows,
   hedgeRows,
@@ -265,6 +334,7 @@ function buildDfollowSimulation({
   let position = 0;
   let cash = 0;
   let initialTargetPrice = null;
+  let cumulativeVegaPnl = 0;
 
   let breachStartTs = null;
   const rows = [];
@@ -297,8 +367,8 @@ function buildDfollowSimulation({
     const targetAmount = Number(settings.targetAmount);
     const safeTargetAmount = Number.isFinite(targetAmount) ? targetAmount : 0;
     const targetDelta = targetUnitDelta * safeTargetAmount;
-    const portfolioDeltaBefore = position * hedgeUnitDelta;
-    const deviationBefore = portfolioDeltaBefore - targetDelta;
+    const hedgeDeltaBefore = position * hedgeUnitDelta;
+    const deviationBefore = targetDelta + hedgeDeltaBefore;
     const absDeviation = Math.abs(deviationBefore);
     const thresholdInput = Number(settings.threshold);
     const toleranceInput = Number(settings.tolerance);
@@ -327,7 +397,7 @@ function buildDfollowSimulation({
 
     let tradeAmount = 0;
     if (trigger) {
-      const nextPosition = targetDelta / hedgeUnitDelta;
+      const nextPosition = -targetDelta / hedgeUnitDelta;
       tradeAmount = nextPosition - position;
       cash -= tradeAmount * hedgePrice;
       position = nextPosition;
@@ -348,7 +418,14 @@ function buildDfollowSimulation({
     const optionPnl = Number.isFinite(initialTargetPrice)
       ? safeTargetAmount * (targetPrice - initialTargetPrice)
       : 0;
-    const cumulativePnl = optionPnl - botPnl;
+    const cumulativePnl = optionPnl + botPnl;
+    const vegaPnlStep = optionVegaPnl({
+      instrument: target,
+      markPoint: targetPoint,
+      indexPoint,
+      amount: safeTargetAmount,
+    });
+    if (Number.isFinite(vegaPnlStep)) cumulativeVegaPnl += vegaPnlStep;
 
     rows.push({
       ts,
@@ -358,7 +435,7 @@ function buildDfollowSimulation({
       targetPrice,
       targetDelta,
       portfolioDelta: position * hedgeUnitDelta,
-      deviation: position * hedgeUnitDelta - targetDelta,
+      deviation: targetDelta + position * hedgeUnitDelta,
       targetUnitDelta,
       hedgeUnitDelta,
       position,
@@ -366,6 +443,7 @@ function buildDfollowSimulation({
       botPnl,
       optionPnl,
       cumulativePnl,
+      vegaPnl: cumulativeVegaPnl,
       tradeAmount,
     });
   }
@@ -374,10 +452,10 @@ function buildDfollowSimulation({
 }
 
 const simulation = computed(() =>
-  buildDfollowSimulation({
-    indexRows: data.index[ui.resolutionKey] || [],
-    targetRows: data.targetMark[ui.resolutionKey] || [],
-    hedgeRows: data.hedgeMark[ui.resolutionKey] || [],
+  buildHedgingSimulation({
+    indexRows: data.index[activeDataKey.value] || [],
+    targetRows: data.targetMark[activeDataKey.value] || [],
+    hedgeRows: data.hedgeMark[activeDataKey.value] || [],
     target: targetInstrument.value,
     hedge: hedgeInstrument.value,
     settings: ui,
@@ -391,10 +469,11 @@ const canSavePng = computed(() => simulationRows.value.length > 0);
 
 function handleSavePng() {
   if (!chartRef.value) return;
-  const base = targetInstrument.value?.instrument_name || "dfollow";
+  const base = targetInstrument.value?.instrument_name || "hedging";
   const parts = [
     base,
-    "dfollow",
+    "hedging",
+    `horizon_${horizonLabel.value}`,
     `period_${periodHours.value}`,
     `threshold_${thresholdValue.value}`,
     `tolerance_${toleranceValue.value}`,
@@ -403,7 +482,7 @@ function handleSavePng() {
 }
 
 const chooseClosestStrike = () => {
-  const latestIndex = getLatestIndexClose(data.index[ui.resolutionKey] || []);
+  const latestIndex = getLatestIndexClose(data.index[activeDataKey.value] || []);
   const strikes = targetStrikes.value;
   if (!strikes.length) {
     ui.targetStrike = "";
@@ -494,7 +573,7 @@ async function loadSimulation() {
   ui.loading = true;
   ui.error = "";
 
-  const { resolution, from, to, maxPoints } = getTimestampRange();
+  const { resolutionKey, resolution, from, to, maxPoints } = getTimestampRange();
   try {
     const [indexRows, targetMarkRows, hedgeMarkRows] = await Promise.all([
       fetchIndexHistory({
@@ -521,18 +600,26 @@ async function loadSimulation() {
     ]);
 
     if (requestId !== loadRequestId) return;
-    data.index[ui.resolutionKey] = indexRows || [];
-    data.targetMark[ui.resolutionKey] = targetMarkRows || [];
-    data.hedgeMark[ui.resolutionKey] = hedgeMarkRows || [];
+    data.index[resolutionKey] = indexRows || [];
+    data.targetMark[resolutionKey] = targetMarkRows || [];
+    data.hedgeMark[resolutionKey] = hedgeMarkRows || [];
   } catch (error) {
     if (requestId !== loadRequestId) return;
     ui.error = error instanceof Error ? error.message : String(error);
-    data.index[ui.resolutionKey] = [];
-    data.targetMark[ui.resolutionKey] = [];
-    data.hedgeMark[ui.resolutionKey] = [];
+    data.index[resolutionKey] = [];
+    data.targetMark[resolutionKey] = [];
+    data.hedgeMark[resolutionKey] = [];
   } finally {
     if (requestId === loadRequestId) ui.loading = false;
   }
+}
+
+function scheduleLoadSimulation() {
+  if (loadTimer) clearTimeout(loadTimer);
+  loadTimer = setTimeout(() => {
+    loadTimer = null;
+    loadSimulation();
+  }, LOAD_DEBOUNCE_MS);
 }
 
 async function switchUnderlying(next) {
@@ -550,7 +637,7 @@ async function switchUnderlying(next) {
 
 onMounted(async () => {
   try {
-    const { resolution, from, to, maxPoints } = getTimestampRange();
+    const { resolutionKey, resolution, from, to, maxPoints } = getTimestampRange();
     const [instruments, indexRows] = await Promise.all([
       fetchInstruments(),
       fetchIndexHistory({
@@ -562,7 +649,7 @@ onMounted(async () => {
       }),
     ]);
     allInstruments.value = instruments || [];
-    data.index[ui.resolutionKey] = indexRows || [];
+    data.index[resolutionKey] = indexRows || [];
     rebuildInstruments();
     chooseDefaultMaturity();
     chooseClosestStrike();
@@ -578,22 +665,38 @@ onMounted(async () => {
 watch(
   () => [
     ui.resolutionKey,
+    ui.horizonHours,
+    activeResolutionKey.value,
     ui.targetMaturity,
     ui.targetStrike,
     ui.targetType,
   ],
   async () => {
     if (!initialized.value) return;
-    await loadSimulation();
+    const hasSelectedStrike = targetStrikes.value.some(
+      (strike) => strike.value === ui.targetStrike,
+    );
+    if (!hasSelectedStrike) {
+      chooseClosestStrike();
+      return;
+    }
+    scheduleLoadSimulation();
   },
 );
+
+onBeforeUnmount(() => {
+  if (loadTimer) {
+    clearTimeout(loadTimer);
+    loadTimer = null;
+  }
+});
 </script>
 
 <template>
   <div class="app">
     <header class="header">
       <div class="titleRow">
-        <h1>Delta Follower Simulator</h1>
+        <h1>Hedging Simulator</h1>
       </div>
     </header>
 
@@ -612,6 +715,69 @@ watch(
             {{ opt.label }}
           </button>
         </div>
+
+        <div class="optionSelectorGroup" aria-label="Option instrument">
+          <div class="optionTypeToggle" role="group" aria-label="Option type">
+            <button
+              type="button"
+              class="toolbarButton"
+              :class="{ toolbarButtonActive: ui.targetType === 'call' }"
+              @click="ui.targetType = 'call'"
+            >
+              Call
+            </button>
+            <button
+              type="button"
+              class="toolbarButton"
+              :class="{ toolbarButtonActive: ui.targetType === 'put' }"
+              @click="ui.targetType = 'put'"
+            >
+              Put
+            </button>
+          </div>
+
+          <label class="toolbarField">
+            <span>Maturity</span>
+            <select v-model="ui.targetMaturity">
+              <option
+                v-for="maturity in optionMaturities"
+                :key="maturity.value"
+                :value="maturity.value"
+              >
+                {{ maturity.label }}
+              </option>
+            </select>
+          </label>
+
+          <label class="toolbarField toolbarFieldStrike">
+            <span>Strike</span>
+            <select v-model="ui.targetStrike">
+              <option
+                v-for="strike in targetStrikes"
+                :key="strike.value"
+                :value="strike.value"
+              >
+              {{ strike.label }}
+            </option>
+          </select>
+        </label>
+
+          <label class="toolbarField toolbarFieldAmount">
+            <span>Amount</span>
+            <input
+              v-model.number="ui.targetAmount"
+              aria-label="Option amount, negative for short"
+              type="number"
+              step="0.01"
+            />
+          </label>
+        </div>
+
+        <label class="toolbarSwitch">
+          <span>Option Price</span>
+          <input v-model="ui.showOptionPrice" type="checkbox" />
+          <span class="toolbarSwitchTrack" aria-hidden="true"></span>
+        </label>
 
         <div class="resolutionToggle" role="group" aria-label="Resolution">
           <button
@@ -636,40 +802,37 @@ watch(
         </button>
       </div>
 
-      <DfollowChart
+      <HedgingChart
         ref="chartRef"
         :data="simulationRows"
         :trades="trades"
+        :show-option-price="ui.showOptionPrice"
         :subtitle="chartSubtitle"
         :loading="ui.loading"
       />
 
-      <aside class="configPanel" aria-label="Delta follower configuration">
+      <aside class="configPanel" aria-label="Hedging configuration">
         <p class="botDescription">
-          Replicates the delta of the target option with the perpetual. The bot
-          allows delta to drift within the threshold for the selected period,
-          then trades the perpetual back toward the target delta. If deviation
+          Hedges the selected option delta with the perpetual. The bot allows
+          delta to drift within the threshold for the selected period, then
+          trades the perpetual back toward the option delta. If deviation
           exceeds tolerance, it hedges immediately.
         </p>
 
         <label class="panelField">
-          <span>Target Instrument</span>
-          <select v-model="targetInstrumentName">
-            <option
-              v-for="instrument in data.options"
-              :key="instrument.instrument_name"
-              :value="instrument.instrument_name"
-            >
-              {{ instrument.instrument_name }}
-            </option>
-          </select>
-        </label>
-
-        <label class="panelField">
-          <span>Amount</span>
-          <div class="inputShell">
-            <input v-model.number="ui.targetAmount" type="number" step="0.01" />
-            <span>contracts</span>
+          <span>Time Horizon</span>
+          <input
+            v-model.number="ui.horizonHours"
+            class="rangeInput"
+            type="range"
+            :min="MIN_HORIZON_HOURS"
+            :max="MAX_HORIZON_HOURS"
+            step="1"
+          />
+          <div class="rangeLabels">
+            <span>1h</span>
+            <strong>{{ horizonLabel }} | {{ effectiveResolutionSummary }}</strong>
+            <span>30d</span>
           </div>
         </label>
 
@@ -755,13 +918,15 @@ watch(
   grid-column: 1;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
   min-width: 0;
 }
 
 .chartToolbar .underlyingToggle,
+.optionTypeToggle,
 .resolutionToggle {
+  flex: 0 0 auto;
   display: inline-flex;
   height: 31px;
   overflow: hidden;
@@ -783,7 +948,8 @@ watch(
 }
 
 .chartToolbar .underlyingButton + .underlyingButton,
-.toolbarButton + .toolbarButton {
+.optionTypeToggle .toolbarButton + .toolbarButton,
+.resolutionToggle .toolbarButton + .toolbarButton {
   border-left: 1px solid #2e2e32;
 }
 
@@ -798,7 +964,127 @@ watch(
   padding: 0 13px;
 }
 
+.optionSelectorGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.toolbarField {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  width: 190px;
+  height: 31px;
+  min-width: 0;
+}
+
+.toolbarFieldStrike {
+  width: 132px;
+}
+
+.toolbarFieldAmount {
+  width: 142px;
+}
+
+.toolbarField span {
+  color: #aeb4c2;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.toolbarField select,
+.toolbarField input {
+  width: 100%;
+  height: 31px;
+  min-width: 0;
+  border: 1px solid #3d3d42;
+  border-radius: 6px;
+  background: #050506;
+  color: #f0f1f4;
+  padding: 0 9px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.toolbarField input {
+  appearance: textfield;
+}
+
+.toolbarField input::-webkit-outer-spin-button,
+.toolbarField input::-webkit-inner-spin-button {
+  margin: 0;
+}
+
+.toolbarField select:focus,
+.toolbarField input:focus {
+  outline: none;
+  border-color: #6d86ff;
+}
+
+.toolbarSwitch {
+  flex: 0 0 auto;
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 8px;
+  height: 31px;
+  color: #aeb4c2;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.toolbarSwitch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toolbarSwitchTrack {
+  position: relative;
+  width: 42px;
+  height: 22px;
+  border: 1px solid #3d3d42;
+  border-radius: 999px;
+  background: #050506;
+}
+
+.toolbarSwitchTrack::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #aeb4c2;
+  transition:
+    transform 130ms ease,
+    background 130ms ease;
+}
+
+.toolbarSwitch input:checked + .toolbarSwitchTrack {
+  border-color: #d28a6f;
+}
+
+.toolbarSwitch input:checked + .toolbarSwitchTrack::after {
+  transform: translateX(19px);
+  background: #d28a6f;
+}
+
+.toolbarSwitch input:focus-visible + .toolbarSwitchTrack {
+  outline: 2px solid #6d86ff;
+  outline-offset: 2px;
+}
+
 .chartToolbar .saveButton {
+  flex: 0 0 auto;
+  margin-left: auto;
   height: 31px;
   padding: 0 16px;
   border: 1px solid #3d3d42;
@@ -926,33 +1212,6 @@ watch(
 .panelField input:focus {
   outline: none;
   border-color: #6d86ff;
-}
-
-.inputShell {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  min-height: 42px;
-  border: 1px solid #3f3f43;
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-.inputShell input {
-  border: 0;
-  border-radius: 0;
-  min-height: 40px;
-}
-
-.inputShell span {
-  align-self: stretch;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 14px;
-  border-left: 1px solid #3f3f43;
-  color: #d7d7dc;
-  font-size: 13px;
-  font-weight: 650;
 }
 
 .rangeInput {

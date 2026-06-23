@@ -7,6 +7,7 @@ const props = defineProps({
   data: { type: Array, default: () => [] },
   trades: { type: Array, default: () => [] },
   subtitle: { type: String, default: "" },
+  showOptionPrice: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
 });
 
@@ -21,8 +22,11 @@ const layout = {
 
 const fontFamily =
   "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif";
+const pnlBlue = "#58c4df";
+const optionSalmon = "#d28a6f";
+const vegaLine = "#a78bfa";
 
-function exportPng({ filename = "dfollow.png", scale = 4, padding = 24 } = {}) {
+function exportPng({ filename = "hedging.png", scale = 4, padding = 24 } = {}) {
   exportChartToPng({
     element: svgRef.value,
     filename,
@@ -59,7 +63,10 @@ function render() {
     420,
     Math.round(wrap?.clientHeight || layout.fallbackHeight),
   );
-  const { margin } = layout;
+  const margin = {
+    ...layout.margin,
+    right: props.showOptionPrice ? 96 : layout.margin.right,
+  };
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
   const panelGap = Math.min(58, Math.max(36, innerHeight * 0.07));
@@ -119,6 +126,21 @@ function render() {
     .domain([priceExtent[0] - pricePad, priceExtent[1] + pricePad])
     .nice()
     .range([priceHeight, 0]);
+  const optionRows = props.showOptionPrice
+    ? rows.filter((row) => Number.isFinite(row?.targetPrice))
+    : [];
+  const optionExtent = d3.extent(optionRows, (row) => row.targetPrice);
+  const optionRange = Number.isFinite(optionExtent[1] - optionExtent[0])
+    ? optionExtent[1] - optionExtent[0]
+    : 0;
+  const optionPad = Math.max(0.01, optionRange * 0.08);
+  const yOption = optionRows.length
+    ? d3
+        .scaleLinear()
+        .domain([optionExtent[0] - optionPad, optionExtent[1] + optionPad])
+        .nice()
+        .range([priceHeight, 0])
+    : null;
 
   const priceG = svg
     .append("g")
@@ -151,6 +173,34 @@ function render() {
     .style("font-family", fontFamily)
     .text("Mark price");
 
+  if (yOption) {
+    const optionMax = Math.max(Math.abs(optionExtent[0]), Math.abs(optionExtent[1]));
+    priceG
+      .append("g")
+      .attr("transform", `translate(${innerWidth},0)`)
+      .call(
+        d3
+          .axisRight(yOption)
+          .ticks(7)
+          .tickSize(0)
+          .tickPadding(12)
+          .tickFormat(d3.format(optionMax < 100 ? ",.2f" : ",.0f")),
+      )
+      .call(axisStyle);
+
+    priceG
+      .append("text")
+      .attr("x", innerWidth + 66)
+      .attr("y", priceHeight / 2)
+      .attr("transform", `rotate(90,${innerWidth + 66},${priceHeight / 2})`)
+      .attr("text-anchor", "middle")
+      .attr("fill", optionSalmon)
+      .style("font-size", "14px")
+      .style("font-weight", 650)
+      .style("font-family", fontFamily)
+      .text("Option price");
+  }
+
   const priceLine = d3
     .line()
     .x((d) => x(d.date))
@@ -164,6 +214,23 @@ function render() {
     .attr("stroke", "mistyrose")
     .attr("stroke-width", 2)
     .attr("d", priceLine);
+
+  if (yOption) {
+    const optionPriceLine = d3
+      .line()
+      .x((d) => x(d.date))
+      .y((d) => yOption(d.targetPrice))
+      .curve(d3.curveStepAfter);
+
+    priceG
+      .append("path")
+      .datum(optionRows)
+      .attr("fill", "none")
+      .attr("stroke", optionSalmon)
+      .attr("stroke-width", 1.8)
+      .attr("stroke-dasharray", "6 4")
+      .attr("d", optionPriceLine);
+  }
 
   const tradeRows = (props.trades || []).filter(
     (trade) =>
@@ -214,10 +281,17 @@ function render() {
         .text((d) => d.label);
     });
 
-  const pnlRows = rows.filter((row) => Number.isFinite(row?.cumulativePnl));
+  const pnlRows = rows.filter(
+    (row) =>
+      Number.isFinite(row?.cumulativePnl) && Number.isFinite(row?.vegaPnl),
+  );
   if (!pnlRows.length) return;
 
-  const pnlExtent = d3.extent([0, ...pnlRows.map((row) => row.cumulativePnl)]);
+  const pnlExtent = d3.extent([
+    0,
+    ...pnlRows.map((row) => row.cumulativePnl),
+    ...pnlRows.map((row) => row.vegaPnl),
+  ]);
   const pnlPad = Math.max(1, (pnlExtent[1] - pnlExtent[0]) * 0.12);
   const yPnl = d3
     .scaleLinear()
@@ -264,30 +338,38 @@ function render() {
     .style("font-family", fontFamily)
     .text("Cumulative PnL");
 
-  const cumulativePnlLine = d3
-    .line()
-    .x((d) => x(d.date))
-    .y((d) => yPnl(d.cumulativePnl))
-    .curve(d3.curveStepAfter);
+  const pnlLine = (key) =>
+    d3
+      .line()
+      .x((d) => x(d.date))
+      .y((d) => yPnl(d[key]))
+      .curve(d3.curveStepAfter);
+
+  const pnlLegendItems = [
+    { label: "Combined PnL", key: "cumulativePnl", color: pnlBlue },
+    { label: "Vega PnL", key: "vegaPnl", color: vegaLine },
+  ];
 
   pnlG
-    .append("path")
-    .datum(pnlRows)
+    .append("g")
+    .selectAll("path")
+    .data(pnlLegendItems)
+    .join("path")
     .attr("fill", "none")
-    .attr("stroke", "#7aa2ff")
-    .attr("stroke-width", 2)
-    .attr("d", cumulativePnlLine);
+    .attr("stroke", (d) => d.color)
+    .attr("stroke-width", (d) => (d.key === "cumulativePnl" ? 2.6 : 1.9))
+    .attr("stroke-dasharray", (d) => (d.key === "vegaPnl" ? "5 4" : null))
+    .attr("d", (d) => pnlLine(d.key)(pnlRows));
 
   const pnlLegend = pnlG
     .append("g")
-    .attr("transform", `translate(${innerWidth - 170},${-28})`);
-  const pnlLegendItems = [{ label: "Option - Hedge PnL", color: "#7aa2ff" }];
+    .attr("transform", `translate(${Math.max(0, innerWidth - 280)},${-28})`);
 
   pnlLegend
     .selectAll("g")
     .data(pnlLegendItems)
     .join("g")
-    .attr("transform", (_, i) => `translate(${i * 150},0)`)
+    .attr("transform", (_, i) => `translate(${i * 145},0)`)
     .call((item) => {
       item
         .append("line")
@@ -309,7 +391,13 @@ function render() {
 }
 
 watch(
-  () => [props.data, props.trades, props.subtitle, props.loading],
+  () => [
+    props.data,
+    props.trades,
+    props.subtitle,
+    props.showOptionPrice,
+    props.loading,
+  ],
   () => render(),
   { deep: false },
 );
