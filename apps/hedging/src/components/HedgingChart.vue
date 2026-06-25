@@ -12,6 +12,12 @@ const props = defineProps({
 });
 
 const svgRef = ref(null);
+const pnlSeriesVisible = ref({
+  cumulativePnl: true,
+  optionPnl: true,
+  hedgePnl: true,
+  vegaPnl: true,
+});
 let resizeObserver = null;
 
 const layout = {
@@ -24,6 +30,7 @@ const fontFamily =
   "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif";
 const pnlBlue = "#58c4df";
 const optionSalmon = "#d28a6f";
+const hedgeGreen = "#22c55e";
 const vegaLine = "#a78bfa";
 
 function exportPng({ filename = "hedging.png", scale = 4, padding = 24 } = {}) {
@@ -283,14 +290,29 @@ function render() {
 
   const pnlRows = rows.filter(
     (row) =>
-      Number.isFinite(row?.cumulativePnl) && Number.isFinite(row?.vegaPnl),
+      Number.isFinite(row?.cumulativePnl) &&
+      Number.isFinite(row?.optionPnl) &&
+      Number.isFinite(row?.hedgePnl) &&
+      Number.isFinite(row?.vegaPnl),
   );
   if (!pnlRows.length) return;
 
+  const pnlLegendItems = [
+    { label: "Combined PnL", key: "cumulativePnl", color: pnlBlue },
+    { label: "Option PnL", key: "optionPnl", color: optionSalmon },
+    { label: "Hedge PnL", key: "hedgePnl", color: hedgeGreen },
+    { label: "Vega PnL", key: "vegaPnl", color: vegaLine },
+  ];
+  const visiblePnlItems = pnlLegendItems.filter(
+    (item) => pnlSeriesVisible.value[item.key],
+  );
+  const visiblePnlValues = visiblePnlItems.flatMap((item) =>
+    pnlRows.map((row) => row[item.key]),
+  );
+
   const pnlExtent = d3.extent([
     0,
-    ...pnlRows.map((row) => row.cumulativePnl),
-    ...pnlRows.map((row) => row.vegaPnl),
+    ...visiblePnlValues,
   ]);
   const pnlPad = Math.max(1, (pnlExtent[1] - pnlExtent[0]) * 0.12);
   const yPnl = d3
@@ -345,15 +367,10 @@ function render() {
       .y((d) => yPnl(d[key]))
       .curve(d3.curveStepAfter);
 
-  const pnlLegendItems = [
-    { label: "Combined PnL", key: "cumulativePnl", color: pnlBlue },
-    { label: "Vega PnL", key: "vegaPnl", color: vegaLine },
-  ];
-
   pnlG
     .append("g")
     .selectAll("path")
-    .data(pnlLegendItems)
+    .data(visiblePnlItems)
     .join("path")
     .attr("fill", "none")
     .attr("stroke", (d) => d.color)
@@ -363,13 +380,33 @@ function render() {
 
   const pnlLegend = pnlG
     .append("g")
-    .attr("transform", `translate(${Math.max(0, innerWidth - 280)},${-28})`);
+    .attr("transform", `translate(${Math.max(0, innerWidth - 575)},${-28})`);
 
   pnlLegend
     .selectAll("g")
     .data(pnlLegendItems)
     .join("g")
     .attr("transform", (_, i) => `translate(${i * 145},0)`)
+    .attr("role", "button")
+    .attr("tabindex", 0)
+    .attr("aria-pressed", (d) => String(pnlSeriesVisible.value[d.key]))
+    .style("cursor", "pointer")
+    .on("click", (_, d) => {
+      pnlSeriesVisible.value = {
+        ...pnlSeriesVisible.value,
+        [d.key]: !pnlSeriesVisible.value[d.key],
+      };
+      render();
+    })
+    .on("keydown", (event, d) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      pnlSeriesVisible.value = {
+        ...pnlSeriesVisible.value,
+        [d.key]: !pnlSeriesVisible.value[d.key],
+      };
+      render();
+    })
     .call((item) => {
       item
         .append("line")
@@ -378,12 +415,14 @@ function render() {
         .attr("y1", 0)
         .attr("y2", 0)
         .attr("stroke", (d) => d.color)
-        .attr("stroke-width", 3);
+        .attr("stroke-width", 3)
+        .attr("opacity", (d) => (pnlSeriesVisible.value[d.key] ? 1 : 0.24));
       item
         .append("text")
         .attr("x", 30)
         .attr("y", 4)
         .attr("fill", "#cfd3dd")
+        .attr("opacity", (d) => (pnlSeriesVisible.value[d.key] ? 1 : 0.38))
         .style("font-size", "12px")
         .style("font-family", fontFamily)
         .text((d) => d.label);

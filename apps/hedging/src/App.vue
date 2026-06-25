@@ -441,6 +441,7 @@ function buildHedgingSimulation({
       position,
       cash,
       botPnl,
+      hedgePnl: botPnl,
       optionPnl,
       cumulativePnl,
       vegaPnl: cumulativeVegaPnl,
