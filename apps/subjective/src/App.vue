@@ -11,9 +11,14 @@ const UNDERLYING_OPTIONS = [
   { value: "BTCUSD", label: "BTC" },
   { value: "ETHUSD", label: "ETH" },
 ];
+const OPTION_TYPE_OPTIONS = [
+  { value: "call", label: "Call" },
+  { value: "put", label: "Put" },
+];
 
 const ui = reactive({
   underlying: "BTCUSD",
+  optionType: "call",
   expiryTs: "",
   optionStrike: "",
   adjustedForward: "",
@@ -143,6 +148,9 @@ const selectedUnderlyingLabel = computed(() => {
       ?.label || selectedUnderlying.value
   );
 });
+const selectedOptionType = computed(() =>
+  normalizeOptionType(ui.optionType),
+);
 
 const filteredOptions = computed(() => {
   const now = Date.now() / 1000;
@@ -190,7 +198,7 @@ const instrumentOptions = computed(() => {
     .filter(
       (option) =>
         Number(option.expiration_timestamp) === ts &&
-        normalizeOptionType(option.option_type) === "call",
+        normalizeOptionType(option.option_type) === selectedOptionType.value,
     )
     .slice()
     .sort((a, b) => {
@@ -477,10 +485,17 @@ const chartBars = computed(() => {
     const d4 = calcD4(spot, strike, T, valuationIv, r, mu);
     const nd3 = normalCdf(d3);
     const nd4 = normalCdf(d4);
-    const adjusted =
+    const nd3Neg = normalCdf(-d3);
+    const nd4Neg = normalCdf(-d4);
+    const optionType = normalizeOptionType(option.option_type);
+    const call =
       spot * Math.exp(mu * T) * nd3 - strike * Math.exp(-r * T) * nd4;
+    const put =
+      strike * Math.exp(-r * T) * nd4Neg - spot * Math.exp(mu * T) * nd3Neg;
+    const adjusted = optionType === "call" ? call : put;
 
     rows.push({
+      optionType,
       strike,
       strikeLabel: formatStrikeLabel(strike),
       market: Math.max(0, markPrice),
@@ -686,6 +701,20 @@ async function onStrikeChange() {
   await loadMarketForSelected();
 }
 
+async function onOptionTypeChange(nextType) {
+  const optionType = normalizeOptionType(nextType);
+  if (optionType === selectedOptionType.value) return;
+
+  ui.optionType = optionType;
+  const selected = selectedStrike.value;
+  const hasSelectedStrike = instrumentOptions.value.some(
+    (option) => Number(option.strike_price) === selected,
+  );
+  if (!hasSelectedStrike) chooseDefaultStrike();
+  adjustedDirty.value = false;
+  await loadMarketForSelected();
+}
+
 async function onUnderlyingChange(nextUnderlying) {
   const underlying = String(nextUnderlying || "BTCUSD");
   if (underlying === selectedUnderlying.value) return;
@@ -841,6 +870,21 @@ onUnmounted(() => {
               </div>
             </div>
 
+            <div class="controlBlock">
+              <div class="viewToggle optionTypeToggle" role="group" aria-label="Option type">
+                <button
+                  v-for="optionType in OPTION_TYPE_OPTIONS"
+                  :key="optionType.value"
+                  type="button"
+                  class="viewToggleButton"
+                  :class="{ active: selectedOptionType === optionType.value }"
+                  @click="onOptionTypeChange(optionType.value)"
+                >
+                  {{ optionType.label }}
+                </button>
+              </div>
+            </div>
+
             <div class="controlBlock controlBlockInputs">
               <div class="field fieldExpiry">
                 <label for="expiry">Expiry</label>
@@ -929,9 +973,9 @@ onUnmounted(() => {
               </td>
               <td class="formulaCell">
                 <div class="equationRow" v-if="model" :class="{ flash: muFlash }">
-                  <span class="eqLhs eqLhsD">N(d₃) =</span>
+                  <span class="eqLhs eqLhsD">{{ model.optionType === "put" ? "N(−d₃)" : "N(d₃)" }} =</span>
                   <div class="eqValue">
-                    {{ formatProbability(model.nd3, 2) }}
+                    {{ formatProbability(model.optionType === "put" ? model.nd3Neg : model.nd3, 2) }}
                     <span class="eqCompare">// N(d₁) {{ formatProbability(model.nd1, 2) }}</span>
                   </div>
                 </div>
@@ -951,9 +995,9 @@ onUnmounted(() => {
               </td>
               <td class="formulaCell">
                 <div class="equationRow" v-if="model">
-                  <span class="eqLhs eqLhsD">N(d₄) =</span>
+                  <span class="eqLhs eqLhsD">{{ model.optionType === "put" ? "N(−d₄)" : "N(d₄)" }} =</span>
                   <div class="eqValue">
-                    {{ formatProbability(model.nd4, 2) }}
+                    {{ formatProbability(model.optionType === "put" ? model.nd4Neg : model.nd4, 2) }}
                     <span class="eqCompare">// N(d₂) {{ formatProbability(model.nd2, 2) }}</span>
                   </div>
                 </div>
@@ -963,16 +1007,21 @@ onUnmounted(() => {
             <tr>
               <td class="formulaCell">
                 <div class="equationRow">
-                  <span class="eqLhs eqLhsC">C =</span>
+                  <span class="eqLhs eqLhsC">{{ selectedOptionType === "put" ? "P" : "C" }} =</span>
                   <div class="eqValue eqValueFormula">
-                    Se<sup>μT</sup>N(d₃) − Ke<sup>−rT</sup>N(d₄)
+                    <template v-if="selectedOptionType === 'put'">
+                      Ke<sup>−rT</sup>N(−d₄) − Se<sup>μT</sup>N(−d₃)
+                    </template>
+                    <template v-else>
+                      Se<sup>μT</sup>N(d₃) − Ke<sup>−rT</sup>N(d₄)
+                    </template>
                   </div>
                 </div>
               </td>
               <td class="formulaCell">
                 <template v-if="model">
                   <div class="equationRow">
-                    <span class="eqLhs eqLhsC">C =</span>
+                    <span class="eqLhs eqLhsC">{{ model.optionType === "put" ? "P" : "C" }} =</span>
                     <div class="eqValue eqValueAnswer">{{ formatMoney(model.subjectivePrice, 0) }}</div>
                   </div>
                   <div class="eqMeta">
@@ -1021,7 +1070,7 @@ onUnmounted(() => {
 
                 <div class="strikePlot">
                   <div class="strikeHead">
-                    <div v-for="bar in chartBars" :key="`head-${bar.strike}`" class="strikeHeadItem">
+                    <div v-for="bar in chartBars" :key="`head-${bar.optionType}-${bar.strike}`" class="strikeHeadItem">
                       <div class="barDataLabels">
                         <div class="barDataMain">{{ formatMoney(bar.adjusted, 0) }}</div>
                         <div class="barDataMuted" :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }">{{ formatMultiplier(bar.ratio, 2) }}</div>
@@ -1040,7 +1089,7 @@ onUnmounted(() => {
                     </div>
 
                     <div class="strikeChart">
-                      <div v-for="bar in chartBars" :key="bar.strike" class="strikeColumn">
+                      <div v-for="bar in chartBars" :key="`${bar.optionType}-${bar.strike}`" class="strikeColumn">
                       <div class="strikeBars">
                         <div class="bar barMarket" :style="{ height: `${bar.marketPct}%` }"></div>
                         <div
