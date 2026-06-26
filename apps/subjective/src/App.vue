@@ -521,27 +521,6 @@ const chartBars = computed(() => {
   }));
 });
 
-const chartAxisTicks = computed(() => {
-  const maxValue = chartBars.value.reduce(
-    (max, bar) => Math.max(max, bar.market, bar.adjusted),
-    0,
-  );
-  const axisMax = maxValue > 0 ? maxValue : 1;
-  const steps = 4;
-  const ticks = [];
-
-  for (let i = steps; i >= 0; i -= 1) {
-    const value = (axisMax * i) / steps;
-    ticks.push({
-      value,
-      label: formatCompactNumber(value, 0, 1),
-      pct: (i / steps) * 100,
-    });
-  }
-
-  return ticks;
-});
-
 function chooseDefaultStrike() {
   const options = instrumentOptions.value;
   if (!options.length) {
@@ -1053,21 +1032,6 @@ onUnmounted(() => {
 
             <div class="strikeChartWrap">
               <div class="strikeChartFrame">
-                <div class="strikeAxis">
-                  <div class="strikeAxisSpacer" aria-hidden="true"></div>
-                  <div class="strikeAxisBody">
-                    <div class="strikeAxisTitle paramLabel">Price (USD)</div>
-                    <div
-                      v-for="tick in chartAxisTicks"
-                      :key="`tick-${tick.value}`"
-                      class="strikeAxisTick barDataMuted"
-                      :style="{ bottom: `${tick.pct}%` }"
-                    >
-                      {{ tick.label }}
-                    </div>
-                  </div>
-                </div>
-
                 <div class="strikePlot">
                   <div class="strikeHead">
                     <div v-for="bar in chartBars" :key="`head-${bar.optionType}-${bar.strike}`" class="strikeHeadItem">
@@ -1079,15 +1043,6 @@ onUnmounted(() => {
                   </div>
 
                   <div class="strikeBody">
-                    <div class="strikeGrid">
-                      <div
-                        v-for="tick in chartAxisTicks"
-                        :key="`grid-${tick.value}`"
-                        class="strikeGridLine"
-                        :style="{ bottom: `${tick.pct}%` }"
-                      ></div>
-                    </div>
-
                     <div class="strikeChart">
                       <div v-for="bar in chartBars" :key="`${bar.optionType}-${bar.strike}`" class="strikeColumn">
                       <div class="strikeBars">
@@ -1651,41 +1606,6 @@ onUnmounted(() => {
 
 .strikeChartFrame {
   min-height: 500px;
-  display: grid;
-  grid-template-columns: 78px minmax(0, 1fr);
-  align-items: stretch;
-  gap: 8px;
-}
-
-.strikeAxis {
-  display: grid;
-  grid-template-rows: auto 1fr;
-  align-items: stretch;
-}
-
-.strikeAxisSpacer {
-  height: 116px;
-}
-
-.strikeAxisBody {
-  position: relative;
-  min-height: 354px;
-  padding-bottom: 34px;
-}
-
-.strikeAxisTitle {
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%) rotate(180deg);
-  writing-mode: vertical-rl;
-  white-space: nowrap;
-}
-
-.strikeAxisTick {
-  position: absolute;
-  right: 8px;
-  transform: translateY(50%);
 }
 
 .strikePlot {
@@ -1709,26 +1629,9 @@ onUnmounted(() => {
   display: grid;
 }
 
-.strikeGrid {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  bottom: 34px;
-  pointer-events: none;
-}
-
 .strikeBody {
   position: relative;
   min-height: 354px;
-}
-
-.strikeGridLine {
-  position: absolute;
-  left: 0;
-  right: 0;
-  border-top: 1px solid;
-  opacity: 0.2;
 }
 
 .strikeChart {
@@ -1977,20 +1880,6 @@ onUnmounted(() => {
 
   .strikeChartFrame {
     min-height: 360px;
-    grid-template-columns: 56px minmax(0, 1fr);
-  }
-
-  .strikeAxisSpacer {
-    height: 90px;
-  }
-
-  .strikeAxis {
-    min-height: 360px;
-  }
-
-  .strikeAxisBody {
-    min-height: 242px;
-    padding-bottom: 28px;
   }
 
   .strikePlot {
@@ -2005,11 +1894,6 @@ onUnmounted(() => {
 
   .strikeBody {
     min-height: 242px;
-  }
-
-  .strikeGrid {
-    top: 0;
-    bottom: 28px;
   }
 
   .strikeColumn {
