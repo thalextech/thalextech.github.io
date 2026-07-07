@@ -1139,12 +1139,14 @@ watch(
           {{ opt.label }}
         </button>
       </div>
-      <div>
-        <a v-if="thalexUrl" :href="thalexUrl"  class="tradeThalexButton" target="_blank">Trade on Thalex</a>
-      </div>
     </div>
     <div class="builderRow">
       <div class="builderMain">
+        <div class="builderActionRow">
+          <a v-if="thalexUrl" :href="thalexUrl" class="tradeThalexButton" target="_blank" rel="noopener">
+            Trade on Thalex
+          </a>
+        </div>
         <PositionBuilder
           :legs="positionLegs"
           :spot="spot"
@@ -1296,8 +1298,8 @@ watch(
 
 .underlyingRow {
   display: flex;
-  justify-content: space-between;
-  justify-items: center;
+  justify-content: flex-start;
+  align-items: center;
   margin-bottom: 12px;
 }
 
@@ -1404,16 +1406,19 @@ watch(
 }
 
 .tradeThalexButton {
-  height: 31px;
-  padding: 0 16px;
+  box-sizing: border-box;
+  height: 25px;
+  padding: 0 14px;
   border: 1px solid #3d3d42;
-  border-radius: 6px;
+  border-radius: 999px;
   background: #050506;
   color: #f0f1f4;
-  font-size: 12px;
-  font-weight: 500;
-  display: flex;
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
+  line-height: 1;
   text-decoration: none;
 }
 
@@ -1552,6 +1557,13 @@ watch(
 .builderMain {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.builderActionRow {
+  width: min(100%, 960px);
+  margin: 0 0 6px 8px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .deltaHedgeButton {
@@ -1723,6 +1735,11 @@ watch(
   .builderRow {
     flex-direction: column;
     gap: 10px;
+  }
+
+  .builderActionRow {
+    width: 100%;
+    margin-left: 0;
   }
 
   .chartBlock {
