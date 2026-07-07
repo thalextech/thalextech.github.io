@@ -930,6 +930,54 @@ const selectedInstrumentNames = computed(() =>
   ),
 );
 
+const selectedTradeLegs = computed(() =>
+  optionLegs.value
+    .map((leg) => {
+      const instrument = resolveInstrumentForLeg(leg);
+      if (!instrument?.instrument_name) return null;
+      const qty = Math.max(0, Number(leg.qty) || 0);
+      if (!qty) return null;
+      return {
+        instrument,
+        signedQty: leg.side === "sell" ? -qty : qty,
+      };
+    })
+    .filter(
+      (
+        entry,
+      ): entry is {
+        instrument: ResolvedInstrument;
+        signedQty: number;
+      } => Boolean(entry),
+    ),
+);
+
+const tradeExpirationForInstrument = (
+  instrument: ResolvedInstrument,
+): string | null => {
+  const fromName = instrument.instrument_name.match(/^[A-Z]+-(\d{2}[A-Z]{3}\d{2})-/);
+  if (fromName?.[1]) return fromName[1];
+  const ts = Number(instrument.expiration_timestamp);
+  if (!Number.isFinite(ts)) return null;
+  return formatExpiryFromTs(ts).replace(/\s+/g, "").toUpperCase();
+};
+
+const thalexUrl = computed(() => {
+  if (!selectedTradeLegs.value.length) return undefined;
+  const firstInstrument = selectedTradeLegs.value[0].instrument;
+  const underlyingName = firstInstrument.index_name ?? underlying.value;
+  const expiration = tradeExpirationForInstrument(firstInstrument);
+  if (!expiration) return undefined;
+
+  let url = `https://thalex.com/exchange/options?underlying=${underlyingName}&expiration=${expiration}`;
+
+  selectedTradeLegs.value.forEach(({ instrument, signedQty }, index) => {
+    url += `&instruments[${index}][0]=${instrument.instrument_name}&instruments[${index}][1]=${signedQty}`;
+  });
+
+  return url;
+});
+
 const UNDERLYING_OPTIONS = [
   { value: "BTCUSD", label: "BTC" },
   { value: "ETHUSD", label: "ETH" },
@@ -1297,6 +1345,9 @@ watch(
           {{ opt.label }}
         </button>
       </div>
+      <a v-if="thalexUrl" :href="thalexUrl" class="trade-thalex-button" target="_blank" rel="noopener">
+        Trade on Thalex
+      </a>
     </div>
     <section class="builder-section">
       <PositionBuilder
@@ -1622,12 +1673,18 @@ watch(
 }
 
 .underlying-row {
+  --top-control-height: 31px;
   display: flex;
   justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
 }
 
 .underlying-toggle {
+  box-sizing: border-box;
+  height: var(--top-control-height);
   display: inline-flex;
+  align-items: center;
   gap: 2px;
   padding: 2px;
   border-radius: 999px;
@@ -1635,13 +1692,19 @@ watch(
 }
 
 .underlying-button {
+  box-sizing: border-box;
+  height: calc(var(--top-control-height) - 4px);
   background: transparent;
   color: rgba(226, 232, 240, 0.55);
   font-size: 11px;
   font-weight: 600;
+  line-height: 1;
   letter-spacing: 0.02em;
-  padding: 4px 14px;
+  padding: 0 14px;
   border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .underlying-button:hover:not(.underlying-button--active) {
@@ -1652,6 +1715,24 @@ watch(
 .underlying-button--active {
   background: rgba(255, 255, 255, 0.14);
   color: #fff;
+}
+
+.trade-thalex-button {
+  box-sizing: border-box;
+  height: var(--top-control-height);
+  padding: 0 16px;
+  border: 1px solid #3d3d42;
+  border-radius: 999px;
+  background: #050506;
+  color: #f0f1f4;
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
 }
 
 .chart-header {
@@ -2007,6 +2088,7 @@ watch(
     margin: 24px auto 48px;
     padding: 0 12px;
   }
+
 }
 
 @media (max-width: 640px) {

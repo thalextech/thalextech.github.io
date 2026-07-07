@@ -1139,14 +1139,12 @@ watch(
           {{ opt.label }}
         </button>
       </div>
+      <a v-if="thalexUrl" :href="thalexUrl" class="tradeThalexButton" target="_blank" rel="noopener">
+        Trade on Thalex
+      </a>
     </div>
     <div class="builderRow">
       <div class="builderMain">
-        <div class="builderActionRow">
-          <a v-if="thalexUrl" :href="thalexUrl" class="tradeThalexButton" target="_blank" rel="noopener">
-            Trade on Thalex
-          </a>
-        </div>
         <PositionBuilder
           :legs="positionLegs"
           :spot="spot"
@@ -1297,14 +1295,19 @@ watch(
 }
 
 .underlyingRow {
+  --top-control-height: 31px;
   display: flex;
   justify-content: flex-start;
   align-items: center;
+  gap: 8px;
   margin-bottom: 12px;
 }
 
 .underlyingToggle {
+  box-sizing: border-box;
+  height: var(--top-control-height);
   display: inline-flex;
+  align-items: center;
   gap: 2px;
   padding: 2px;
   border-radius: 999px;
@@ -1312,15 +1315,21 @@ watch(
 }
 
 .underlyingButton {
+  box-sizing: border-box;
+  height: calc(var(--top-control-height) - 4px);
   border: none;
   background: transparent;
   color: rgba(226, 232, 240, 0.55);
   font-size: 11px;
   font-weight: 600;
+  line-height: 1;
   letter-spacing: 0.02em;
-  padding: 4px 14px;
+  padding: 0 14px;
   border-radius: 999px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .underlyingButton:hover:not(:disabled):not(.underlyingButtonActive) {
@@ -1407,8 +1416,8 @@ watch(
 
 .tradeThalexButton {
   box-sizing: border-box;
-  height: 25px;
-  padding: 0 14px;
+  height: var(--top-control-height);
+  padding: 0 16px;
   border: 1px solid #3d3d42;
   border-radius: 999px;
   background: #050506;
@@ -1420,6 +1429,7 @@ watch(
   justify-content: center;
   line-height: 1;
   text-decoration: none;
+  white-space: nowrap;
 }
 
 .savePngButton {
@@ -1557,13 +1567,6 @@ watch(
 .builderMain {
   flex: 1 1 auto;
   min-width: 0;
-}
-
-.builderActionRow {
-  width: min(100%, 960px);
-  margin: 0 0 6px 8px;
-  display: flex;
-  justify-content: flex-end;
 }
 
 .deltaHedgeButton {
@@ -1735,11 +1738,6 @@ watch(
   .builderRow {
     flex-direction: column;
     gap: 10px;
-  }
-
-  .builderActionRow {
-    width: 100%;
-    margin-left: 0;
   }
 
   .chartBlock {
