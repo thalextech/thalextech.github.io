@@ -70,6 +70,11 @@ const ui = reactive({
   exitHoldDays: 7,
 });
 
+const maxExitHoldDays = computed(() => {
+  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
+  return m.value;
+});
+
 const openMenu = ref(null);
 
 function toggleMenu(name) {
@@ -111,6 +116,26 @@ function updateHedgeInterval(val) {
 const hedgePct = computed(() => {
   const val = Number(localHedgeIntervalHours.value) || 1;
   return ((val - 1) / 23) * 100 + '%';
+});
+
+const localExitHoldDays = ref(ui.exitHoldDays);
+
+watch(() => ui.exitHoldDays, (val) => {
+  localExitHoldDays.value = val;
+});
+
+function updateExitHoldDays(val) {
+  const max = maxExitHoldDays.value;
+  const numVal = Math.max(1, Math.min(max, Number(val) || 1));
+  localExitHoldDays.value = numVal;
+  ui.exitHoldDays = numVal;
+}
+
+const exitPct = computed(() => {
+  const val = Number(localExitHoldDays.value) || 1;
+  const max = Number(maxExitHoldDays.value) || 30;
+  const denom = Math.max(1, max - 1);
+  return ((val - 1) / denom) * 100 + '%';
 });
 
 const activeRailGroup = ref("instrument");
@@ -237,7 +262,7 @@ const railGroups = computed(() => {
   const entryLbl = `${wd.label} ${String(ui.entryHourUtc).padStart(2,"0")}:00 UTC`;
   const hedgeLbl = !ui.hedgeEnabled ? "Off" : ui.hedgeIntervalHours === 24 ? `Daily ${String(ui.entryHourUtc).padStart(2,"0")}:00` : `Every ${ui.hedgeIntervalHours}h`;
   const hedge2 = ui.hedgeEnabled ? "Perp · no fees" : "Option-only PnL";
-  const exit1 = ui.holdToExpiry ? "Hold to expiry" : `Close after ${ui.exitHoldDays}D`;
+  const exit1 = ui.holdToExpiry ? "Hold to expiry" : `Roll every ${ui.exitHoldDays}D`;
   const exit2 = ui.holdToExpiry ? "Use selected expiry" : `Max ${mat.value}D`;
   return [
     { key: "instrument", label: "Instrument", primary: `BTC · ${struc.label}`, secondary: `${mat.label} · ${opt}` },
@@ -297,15 +322,10 @@ const hedgePill = computed(() => {
 const exitPill = computed(() => {
   return ui.holdToExpiry
     ? "Hold to expiry"
-    : `Close after ${ui.exitHoldDays}D`;
+    : `Roll every ${ui.exitHoldDays}D`;
 });
 
 const holdPill = computed(() => ui.holdToExpiry ? "On" : "Off");
-
-const maxExitHoldDays = computed(() => {
-  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
-  return m.value;
-});
 
 // Metrics for new design (only 3)
 const finalPnlValue = computed(() => {
@@ -498,8 +518,9 @@ watch(
 );
 
 watch(() => ui.maturityDays, () => {
-  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
-  if (ui.exitHoldDays > m.value) ui.exitHoldDays = m.value;
+  if (ui.exitHoldDays > maxExitHoldDays.value) {
+    ui.exitHoldDays = maxExitHoldDays.value;
+  }
 });
 
 watch(
@@ -548,21 +569,42 @@ onMounted(loadBacktest);
           <div v-if="openMenu === 'instrument'" class="dropdown" style="min-width: 260px;" @click.stop>
             <div class="inst-field">
               <label class="inst-label">Structure</label>
-              <select v-model="ui.structure">
-                <option v-for="s in STRUCTURE_OPTIONS" :key="s.value" :value="s.value">{{ s.label }}</option>
-              </select>
+              <div class="inst-choices">
+                <div
+                  v-for="s in STRUCTURE_OPTIONS"
+                  :key="s.value"
+                  :class="['inst-choice', { active: ui.structure === s.value }]"
+                  @click="ui.structure = s.value"
+                >
+                  {{ s.label }}
+                </div>
+              </div>
             </div>
             <div class="inst-field">
               <label class="inst-label">Maturity</label>
-              <select v-model.number="ui.maturityDays">
-                <option v-for="m in MATURITY_OPTIONS" :key="m.value" :value="m.value">{{ m.label }}</option>
-              </select>
+              <div class="inst-choices">
+                <div
+                  v-for="m in MATURITY_OPTIONS"
+                  :key="m.value"
+                  :class="['inst-choice', { active: Number(ui.maturityDays) === m.value }]"
+                  @click="ui.maturityDays = m.value"
+                >
+                  {{ m.label }}
+                </div>
+              </div>
             </div>
             <div class="inst-field">
               <label class="inst-label">Delta</label>
-              <select v-model.number="ui.targetDelta" :disabled="ui.structure === 'straddle'">
-                <option v-for="d in DELTA_OPTIONS" :key="d.value" :value="d.value">{{ d.label }}</option>
-              </select>
+              <div class="inst-choices">
+                <div
+                  v-for="d in DELTA_OPTIONS"
+                  :key="d.value"
+                  :class="['inst-choice', { active: Number(ui.targetDelta) === d.value, 'is-disabled': ui.structure === 'straddle' }]"
+                  @click="ui.structure !== 'straddle' && (ui.targetDelta = d.value)"
+                >
+                  {{ d.label }}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -572,9 +614,17 @@ onMounted(loadBacktest);
           <span class="pillLabel">Entry</span>
           <span class="pillValue">{{ entryPill }}</span>
           <div v-if="openMenu === 'entry'" class="dropdown" style="min-width: 380px;" @click.stop>
-            <select v-model.number="ui.entryWeekday" @change="openMenu = null">
-              <option v-for="w in WEEKDAY_OPTIONS" :key="w.value" :value="w.value">{{ w.label }}</option>
-            </select>
+            <label class="inst-label" style="margin-bottom: 3px;">Weekday</label>
+            <div class="inst-choices weekday-choices">
+              <div
+                v-for="w in WEEKDAY_OPTIONS"
+                :key="w.value"
+                :class="['inst-choice', { active: Number(ui.entryWeekday) === w.value }]"
+                @click="ui.entryWeekday = w.value; openMenu = null"
+              >
+                {{ w.label.slice(0,3) }}
+              </div>
+            </div>
             <div class="hour-grid">
               <button
                 v-for="h in 24"
@@ -627,8 +677,32 @@ onMounted(loadBacktest);
           <span class="pillLabel">Exit</span>
           <span class="pillValue">{{ exitPill }}</span>
           <div v-if="openMenu === 'exit'" class="dropdown" @click.stop>
-            <input type="checkbox" v-model="ui.holdToExpiry" />
-            <input type="range" v-model.number.lazy="ui.exitHoldDays" min="1" :max="maxExitHoldDays" :disabled="ui.holdToExpiry" />
+            <div class="freq-toggle-row">
+              <span class="freq-row__label">Hold to expiry</span>
+              <label class="toggle-switch">
+                <input type="checkbox" v-model="ui.holdToExpiry" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div v-if="!ui.holdToExpiry">
+              <label class="freq-row__label" for="exit-days">Roll every</label>
+              <input
+                id="exit-days"
+                class="freq-slider"
+                type="range"
+                min="1"
+                :max="maxExitHoldDays"
+                step="1"
+                :value="localExitHoldDays"
+                @input="updateExitHoldDays(Number($event.target.value))"
+                :style="{ '--pct': exitPct }"
+              >
+              <div class="freq-footer">
+                <span class="freq-footer__edge">1D</span>
+                <span class="freq-footer__value">Every {{ localExitHoldDays }}D</span>
+                <span class="freq-footer__edge">{{ maxExitHoldDays }}D</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -697,6 +771,7 @@ onMounted(loadBacktest);
   background: #0a0b0e;
   color: #e8eaed;
   font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  color-scheme: dark;
 }
 
 .app {
@@ -776,20 +851,26 @@ onMounted(loadBacktest);
   -moz-appearance: none;
 }
 
-.pill select option {
-  background: #000;
-  color: #fff;
+.pill select option,
+.dropdown select option {
+  background: #0a0b0e;
+  color: #e8eaed;
 }
 
 /* In dropdowns, no borders on inner inputs */
-.dropdown select,
-.dropdown input {
-  border: none !important;
-  background: #000;
-  color: #fff;
-  padding: 4px 6px;
+.dropdown select {
+  border: 1px solid rgba(255,255,255,0.1);
+  background: #0a0b0e;
+  color: #e8eaed;
+  padding: 6px 8px;
   width: 100%;
   margin-bottom: 4px;
+  border-radius: 4px;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  font-size: 12px;
+  color-scheme: dark;
 }
 
 .dropdown .freq-toggle-row {
@@ -834,19 +915,7 @@ onMounted(loadBacktest);
   border: none;
 }
 
-.dropdown select {
-  width: 100%;
-  margin-bottom: 2px;
-  background: #000;
-  color: #fff;
-  border: none;
-  border-radius: 3px;
-  padding: 4px 6px;
-  font-size: 12px;
-  appearance: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-}
+/* Base dropdown selects are styled via the .dropdown select rule above */
 
 .hour-grid {
   display: grid;
@@ -903,21 +972,46 @@ onMounted(loadBacktest);
   margin-bottom: 4px;
 }
 
-.inst-field select {
+.inst-choices {
+  display: flex;
+  gap: 4px;
+}
+
+.weekday-choices .inst-choice {
+  font-size: 10px;
+  padding: 4px 2px;
+}
+
+.inst-choice {
+  flex: 1;
+  text-align: center;
+  padding: 5px 6px;
+  font-size: 11px;
   background: #0a0b0e;
   color: #e8eaed;
   border: 1px solid rgba(255,255,255,0.1);
   border-radius: 3px;
-  padding: 5px 6px;
-  font-size: 12px;
-  width: 100%;
-  appearance: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
+  cursor: pointer;
+  transition: all 0.1s;
+  user-select: none;
 }
-.inst-field select:disabled {
-  opacity: 0.55;
+
+.inst-choice:hover:not(.is-disabled) {
+  background: #111114;
+  border-color: rgba(255,255,255,0.3);
+}
+
+.inst-choice.active {
+  background: #7dd3fc;
+  color: #000;
+  border-color: #7dd3fc;
+  font-weight: 500;
+}
+
+.inst-choice.is-disabled {
+  opacity: 0.45;
   cursor: not-allowed;
+  background: #0a0b0e;
 }
 
 /* Frequency Dropdown Menu styles from spec */
@@ -1015,16 +1109,16 @@ onMounted(loadBacktest);
 }
 .freq-slider::-webkit-slider-thumb {
   -webkit-appearance: none; appearance: none;
-  width: 18px; height: 18px; margin-top: -6px;
+  width: 14px; height: 14px; margin-top: -4px;
   border-radius: 50%; border: none;
   background: var(--handle, #ffffff);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.06);
 }
 .freq-slider::-moz-range-thumb {
-  width: 18px; height: 18px;
+  width: 14px; height: 14px;
   border-radius: 50%; border: none;
   background: var(--handle, #ffffff);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.06);
 }
 
 .freq-footer {
