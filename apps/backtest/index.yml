@@ -1,0 +1,3 @@
+title: "Backtest"
+description: "Run the weekly BTC short straddle delta-hedged backtest from local Thalex parquet history."
+image: "/images/straddle.png"
