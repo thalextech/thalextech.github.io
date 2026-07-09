@@ -70,6 +70,49 @@ const ui = reactive({
   exitHoldDays: 7,
 });
 
+const openMenu = ref(null);
+
+function toggleMenu(name) {
+  openMenu.value = openMenu.value === name ? null : name;
+}
+
+// Close menu on outside click
+watch(openMenu, (val) => {
+  if (!val) return;
+  const handler = (e) => {
+    const targetPill = e.target.closest('.pill');
+    if (!targetPill) {
+      openMenu.value = null;
+    }
+    document.removeEventListener('click', handler);
+  };
+  setTimeout(() => {
+    document.addEventListener('click', handler, { once: true });
+  }, 0);
+});
+
+const localHedgeIntervalHours = ref(ui.hedgeIntervalHours);
+
+watch(() => ui.hedgeIntervalHours, (val) => {
+  localHedgeIntervalHours.value = val;
+});
+
+let hedgeDebounce = null;
+
+function updateHedgeInterval(val) {
+  const numVal = Number(val);
+  localHedgeIntervalHours.value = numVal;
+  clearTimeout(hedgeDebounce);
+  hedgeDebounce = setTimeout(() => {
+    ui.hedgeIntervalHours = numVal;
+  }, 500);
+}
+
+const hedgePct = computed(() => {
+  const val = Number(localHedgeIntervalHours.value) || 1;
+  return ((val - 1) / 23) * 100 + '%';
+});
+
 const activeRailGroup = ref("instrument");
 const mode = ref("single");
 const sweepDimension = ref("entry_hour");
@@ -211,6 +254,95 @@ const strategyTitle = computed(() => {
   const opt = ui.structure === "straddle" ? "ATM" : d.label;
   const h = ui.hedgeEnabled ? `${ui.hedgeIntervalHours}h Delta Hedge` : "Unhedged";
   return `${m.label} ${opt} ${s.label} - ${h}`;
+});
+
+// New design pill values
+const instrumentPill = computed(() => {
+  const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
+  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
+  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
+  const opt = ui.structure === "straddle" ? "ATM" : `${d.label} ${s.label}`;
+  return `BTC · ${s.label} · ${m.label} ${opt}`;
+});
+
+const structureLabel = computed(() => {
+  const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
+  return s.label;
+});
+
+const maturityLabel = computed(() => {
+  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
+  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
+  const opt = ui.structure === "straddle" ? "ATM" : d.label;
+  return `${m.label} ${opt}`;
+});
+
+const deltaLabel = computed(() => {
+  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
+  return d.label;
+});
+
+const entryPill = computed(() => {
+  const wd = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
+  return `${wd.label.slice(0,3)} ${String(ui.entryHourUtc).padStart(2,'0')}:00`;
+});
+
+const hedgePill = computed(() => {
+  if (!ui.hedgeEnabled) return "Off";
+  return ui.hedgeIntervalHours === 24
+    ? `Daily ${String(ui.entryHourUtc).padStart(2,'0')}:00 · Perp`
+    : `Every ${ui.hedgeIntervalHours}h · Perp`;
+});
+
+const exitPill = computed(() => {
+  return ui.holdToExpiry
+    ? "Hold to expiry"
+    : `Close after ${ui.exitHoldDays}D`;
+});
+
+const holdPill = computed(() => ui.holdToExpiry ? "On" : "Off");
+
+const maxExitHoldDays = computed(() => {
+  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
+  return m.value;
+});
+
+// Metrics for new design (only 3)
+const finalPnlValue = computed(() => {
+  if (!result.value?.summary) return "—";
+  return formatUsd.format(result.value.summary.finalEquityUsd);
+});
+
+const sharpeValue = computed(() => {
+  const s = result.value?.summary?.sharpeRatio;
+  return Number.isFinite(s) ? formatNumber.format(s) : "—";
+});
+
+const maxDdValue = computed(() => {
+  if (!result.value) return "—";
+  const dd = maxDrawdown.value;
+  return formatUsd.format(dd);
+});
+
+// Chart data and titles
+const chartRows = computed(() => result.value?.weeklyChartData || []);
+
+const chartTitle = computed(() => {
+  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
+  const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
+  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
+  const opt = ui.structure === "straddle" ? "ATM" : d.label;
+  const hedgeLabel = ui.hedgeEnabled ? "Hedged" : "Unhedged";
+  return `${m.label} ${opt} ${s.label} — ${hedgeLabel}`;
+});
+
+const chartSubtitle = computed(() => {
+  if (!result.value) return "";
+  const start = new Date(result.value.summary?.start || "2025-06-01");
+  const end = result.value.dataEnd || new Date();
+  const startLabel = start.toLocaleString("en-US", { month: "short", year: "2-digit" });
+  const endLabel = end.toLocaleString("en-US", { month: "short", year: "2-digit" });
+  return `Bars show weekly hedged PnL; line shows cumulative hedged PnL · ${startLabel} – ${endLabel} · Source: Thalex`;
 });
 
 const buildConfig = (overrides = {}) => {
@@ -403,256 +535,154 @@ onMounted(loadBacktest);
 
 <template>
   <main class="app">
-    <header class="header">
-      <h1>Backtest</h1>
-      <div class="configCluster" aria-label="Mode">
-        <div class="modeToggle" role="group" aria-label="Mode">
-          <button
-            type="button"
-            :class="{ active: mode === 'single' }"
-            @click="mode = 'single'"
-          >
-            Single run
-          </button>
-          <button
-            type="button"
-            :class="{ active: mode === 'sweep' }"
-            @click="mode = 'sweep'"
-          >
-            Sweep
-          </button>
-        </div>
-      </div>
-    </header>
+    <!-- Top bar -->
+    <div class="topBar">
+      <div class="wordmark">Backtest</div>
+      <div class="divider"></div>
 
-    <section class="workspace">
-      <aside class="rail" aria-label="Backtest configuration">
-        <div class="railGroups">
-          <section
-            v-for="group in railGroups"
-            :key="group.key"
-            class="railGroup"
-            :class="{ expanded: activeRailGroup === group.key }"
-          >
-            <button
-              type="button"
-              class="railGroupButton"
-              @click="activeRailGroup = activeRailGroup === group.key ? '' : group.key"
-            >
-              <span>{{ group.label }}</span>
-              <strong>{{ group.primary }}</strong>
-              <em>{{ group.secondary }}</em>
-            </button>
-
-            <div v-if="activeRailGroup === 'instrument' && group.key === 'instrument'" class="railPanel">
-              <label class="field">
-                <span>Structure</span>
-                <select v-model="ui.structure">
-                  <option
-                    v-for="structure in STRUCTURE_OPTIONS"
-                    :key="structure.value"
-                    :value="structure.value"
-                  >
-                    {{ structure.label }}
-                  </option>
-                </select>
-              </label>
-
-              <label class="field">
-                <span>Maturity</span>
-                <select v-model.number="ui.maturityDays">
-                  <option
-                    v-for="maturity in MATURITY_OPTIONS"
-                    :key="maturity.value"
-                    :value="maturity.value"
-                  >
-                    {{ maturity.label }}
-                  </option>
-                </select>
-              </label>
-
-              <label class="field">
-                <span>Target delta</span>
-                <select v-model.number="ui.targetDelta" :disabled="ui.structure === 'straddle'">
-                  <option
-                    v-for="delta in DELTA_OPTIONS"
-                    :key="delta.value"
-                    :value="delta.value"
-                  >
-                    {{ delta.label }}
-                  </option>
-                </select>
-              </label>
+      <div class="configPills">
+        <!-- Instrument -->
+        <div class="pill" style="position: relative;" @click="toggleMenu('instrument')">
+          <span class="pillLabel">Instrument</span>
+          <span class="pillValue">{{ instrumentPill }}</span>
+          <div v-if="openMenu === 'instrument'" class="dropdown" style="min-width: 260px;" @click.stop>
+            <div class="inst-field">
+              <label class="inst-label">Structure</label>
+              <select v-model="ui.structure">
+                <option v-for="s in STRUCTURE_OPTIONS" :key="s.value" :value="s.value">{{ s.label }}</option>
+              </select>
             </div>
-
-            <div v-else-if="activeRailGroup === 'entry' && group.key === 'entry'" class="railPanel">
-              <label class="field">
-                <span>Weekday</span>
-                <select v-model.number="ui.entryWeekday">
-                  <option
-                    v-for="weekday in WEEKDAY_OPTIONS"
-                    :key="weekday.value"
-                    :value="weekday.value"
-                  >
-                    {{ weekday.label }}
-                  </option>
-                </select>
-              </label>
-
-              <label class="field">
-                <span>Hour UTC</span>
-                <select v-model.number="ui.entryHourUtc">
-                  <option
-                    v-for="hour in HOUR_OPTIONS"
-                    :key="hour.value"
-                    :value="hour.value"
-                  >
-                    {{ hour.label }}
-                  </option>
-                </select>
-              </label>
+            <div class="inst-field">
+              <label class="inst-label">Maturity</label>
+              <select v-model.number="ui.maturityDays">
+                <option v-for="m in MATURITY_OPTIONS" :key="m.value" :value="m.value">{{ m.label }}</option>
+              </select>
             </div>
-
-            <div v-else-if="activeRailGroup === 'hedging' && group.key === 'hedging'" class="railPanel">
-              <label class="toggleField">
-                <span>Delta hedge</span>
-                <input v-model="ui.hedgeEnabled" type="checkbox" />
-              </label>
-
-              <label class="rangeField" :class="{ disabled: !ui.hedgeEnabled }">
-                <span>Every {{ ui.hedgeIntervalHours }}h</span>
-                <input
-                  v-model.number.lazy="ui.hedgeIntervalHours"
-                  type="range"
-                  min="1"
-                  max="24"
-                  step="1"
-                  :disabled="!ui.hedgeEnabled"
-                />
-              </label>
+            <div class="inst-field">
+              <label class="inst-label">Delta</label>
+              <select v-model.number="ui.targetDelta" :disabled="ui.structure === 'straddle'">
+                <option v-for="d in DELTA_OPTIONS" :key="d.value" :value="d.value">{{ d.label }}</option>
+              </select>
             </div>
-
-            <div v-else-if="activeRailGroup === 'exit' && group.key === 'exit'" class="railPanel">
-              <label class="toggleField">
-                <span>Hold to expiry</span>
-                <input v-model="ui.holdToExpiry" type="checkbox" />
-              </label>
-
-              <label class="rangeField" :class="{ disabled: ui.holdToExpiry }">
-                <span>Hold {{ ui.exitHoldDays }}D</span>
-                <input
-                  v-model.number.lazy="ui.exitHoldDays"
-                  type="range"
-                  min="1"
-                  :max="(MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0]).value"
-                  step="1"
-                  :disabled="ui.holdToExpiry"
-                />
-              </label>
-            </div>
-
-            <div v-else-if="activeRailGroup === group.key" class="railPanel readonlyPanel">
-              <div class="readonlyRow">
-                <span>{{ group.primary }}</span>
-                <strong>{{ group.secondary }}</strong>
-              </div>
-            </div>
-          </section>
+          </div>
         </div>
 
-        <button
-          type="button"
-          class="runButton"
-          :disabled="state.loading || sweepRunning"
-          @click="runCurrent"
-        >
-          Run
-        </button>
-      </aside>
-
-      <section class="mainPanel">
-        <div class="strategyHeader">
-          <p>BTC / Thalex parquet history</p>
-          <h2>{{ strategyTitle }}</h2>
-        </div>
-
-        <section class="summaryStrip" aria-label="Backtest summary">
-          <div
-            v-for="metric in metrics"
-            :key="metric.label"
-            class="metric"
-            :class="{ skeptical: metric.tone === 'skeptical' }"
-          >
-            <span>{{ metric.label }}</span>
-            <strong>{{ metric.value }}</strong>
-          </div>
-        </section>
-
-        <section class="chartPanel">
-          <div v-if="state.loading" class="status">
-            <strong>Loading</strong>
-            <span>{{ state.progress }}</span>
-          </div>
-          <div v-else-if="state.error" class="status error">
-            <strong>Could not run backtest</strong>
-            <span>{{ state.error }}</span>
-          </div>
-          <div v-else-if="mode === 'sweep'" class="sweepPanel">
-            <div class="sweepToolbar">
-              <label class="field sweepSelect">
-                <span>Sweep</span>
-                <select v-model="sweepDimension">
-                  <option
-                    v-for="dimension in SWEEP_DIMENSION_OPTIONS"
-                    :key="dimension.value"
-                    :value="dimension.value"
-                    :disabled="dimension.value === 'delta_band' && ui.structure === 'straddle'"
-                  >
-                    {{ dimension.label }}
-                  </option>
-                </select>
-              </label>
-
-              <div class="sweepAnnotation">
-                <strong>{{ sweepResults.length.toLocaleString("en-US") }} configs tested</strong>
-              </div>
-            </div>
-
-            <div v-if="sweepRunning" class="sweepEmpty">
-              Running {{ sweepProgress }}
-            </div>
-
-            <div v-else-if="!sweepResults.length" class="sweepEmpty">
-              {{ sweepDimension === "delta_band" && ui.structure === "straddle" ? "Delta band applies to strangle and risk reversal." : "Press Run to sweep this dimension." }}
-            </div>
-
-            <div v-else class="sweepGrid" :class="`sweepGrid-${sweepDimension}`">
+        <!-- Entry -->
+        <div class="pill" style="position: relative;" @click="toggleMenu('entry')">
+          <span class="pillLabel">Entry</span>
+          <span class="pillValue">{{ entryPill }}</span>
+          <div v-if="openMenu === 'entry'" class="dropdown" style="min-width: 380px;" @click.stop>
+            <select v-model.number="ui.entryWeekday" @change="openMenu = null">
+              <option v-for="w in WEEKDAY_OPTIONS" :key="w.value" :value="w.value">{{ w.label }}</option>
+            </select>
+            <div class="hour-grid">
               <button
-                v-for="cell in sweepResults"
-                :key="cell.key"
-                type="button"
-                class="sweepCell"
-                :style="sweepCellStyle(cell)"
-                @click="applySweepResult(cell)"
+                v-for="h in 24"
+                :key="h-1"
+                :class="{ active: ui.entryHourUtc === h-1 }"
+                @click="ui.entryHourUtc = h-1; openMenu = null"
               >
-                <span>{{ cell.label }}</span>
-                <strong>
-                  {{ Number.isFinite(cell.sharpe) ? formatNumber.format(cell.sharpe) : "n/a" }}
-                </strong>
-                <em>{{ formatUsd.format(cell.pnl) }}</em>
+                {{ String(h-1).padStart(2, '0') }}
               </button>
             </div>
           </div>
-          <WeeklyBacktestChart v-else :rows="result?.weeklyChartData || []" />
-        </section>
-
-        <div v-if="result" class="runFacts">
-          <span>Cycles: {{ result.counts.closedCycles.toLocaleString("en-US") }}</span>
-          <span>Return: {{ formatPct.format(result.summary.cumulativeReturnOnNotional) }}</span>
-          <span>Entry DTE: {{ formatDte(result.summary.meanEntryDteDays) }} avg</span>
         </div>
-      </section>
-    </section>
+
+        <!-- Hedge -->
+        <div class="pill" style="position: relative;" @click="toggleMenu('hedge')">
+          <span class="pillLabel">Hedge</span>
+          <span class="pillValue">{{ hedgePill }}</span>
+          <div v-if="openMenu === 'hedge'" class="dropdown" @click.stop>
+            <div class="freq-toggle-row">
+              <span class="freq-row__label">Hedge</span>
+              <label class="toggle-switch">
+                <input type="checkbox" v-model="ui.hedgeEnabled" />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <label class="freq-row__label" for="freq">Frequency</label>
+            <input 
+              id="freq" 
+              class="freq-slider" 
+              type="range" 
+              min="1" 
+              max="24" 
+              step="1" 
+              :value="localHedgeIntervalHours"
+              @input="updateHedgeInterval(Number($event.target.value))"
+              :style="{ '--pct': hedgePct }"
+              :disabled="!ui.hedgeEnabled"
+              @change="openMenu = null"
+            >
+            <div class="freq-footer">
+              <span class="freq-footer__edge">1h</span>
+              <span class="freq-footer__value">Every {{ localHedgeIntervalHours }}h</span>
+              <span class="freq-footer__edge">24h</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Exit -->
+        <div class="pill" style="position: relative;" @click="toggleMenu('exit')">
+          <span class="pillLabel">Exit</span>
+          <span class="pillValue">{{ exitPill }}</span>
+          <div v-if="openMenu === 'exit'" class="dropdown" @click.stop>
+            <input type="checkbox" v-model="ui.holdToExpiry" />
+            <input type="range" v-model.number.lazy="ui.exitHoldDays" min="1" :max="maxExitHoldDays" :disabled="ui.holdToExpiry" />
+          </div>
+        </div>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="segmented">
+        <div
+          class="segment"
+          :class="{ active: mode === 'single' }"
+          @click="mode = 'single'"
+        >
+          Single run
+        </div>
+        <div
+          class="segment"
+          :class="{ active: mode === 'sweep' }"
+          @click="mode = 'sweep'"
+        >
+          Sweep
+        </div>
+      </div>
+    </div>
+
+    <div class="main">
+      <!-- Left metrics column -->
+      <div class="metricsColumn">
+        <div class="metric">
+          <div class="metricValue">{{ finalPnlValue }}</div>
+          <div class="metricLabel">FINAL PNL</div>
+        </div>
+        <div class="metric">
+          <div class="metricValue">{{ sharpeValue }}</div>
+          <div class="metricLabel">SHARPE</div>
+        </div>
+        <div class="metric">
+          <div class="metricValue maxdd">{{ maxDdValue }}</div>
+          <div class="metricLabel">MAX DRAWDOWN</div>
+        </div>
+      </div>
+
+      <!-- Chart area -->
+      <div class="chartColumn">
+        <div class="chartHeader">
+          <div class="chartTitle">{{ chartTitle }}</div>
+          <div class="chartSubtitle">{{ chartSubtitle }}</div>
+        </div>
+
+        <WeeklyBacktestChart
+          :rows="chartRows"
+          :design-spec="true"
+        />
+      </div>
+    </div>
   </main>
 </template>
 
@@ -664,11 +694,9 @@ onMounted(loadBacktest);
 :global(body) {
   margin: 0;
   min-width: 320px;
-  background: #050506;
-  color: #f0f1f4;
-  font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+  background: #0a0b0e;
+  color: #e8eaed;
+  font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
 }
 
 .app {
@@ -676,26 +704,442 @@ onMounted(loadBacktest);
   width: 100%;
   min-height: 100vh;
   padding: 0;
-  background: #050506;
+  background: #0a0b0e;
+  display: flex;
+  flex-direction: column;
 }
 
-.header {
+.topBar {
+  display: flex;
+  align-items: center;
+  height: 58px;
+  padding: 0 28px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  gap: 20px;
+  flex-shrink: 0;
+}
+
+.wordmark {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e8eaed;
+}
+
+.divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(255,255,255,0.08);
+}
+
+.configPills {
+  display: flex;
+  gap: 8px;
+}
+
+.pill {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 8px;
+  padding: 7px 13px;
+  font-size: 12px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  position: relative;
+  overflow: visible;
+}
+
+.pill:hover {
+  border-color: rgba(255,255,255,0.2);
+}
+
+/* Ensure controls are visible and usable on hover */
+.pill select,
+.pill input {
+  cursor: pointer;
+}
+
+.pill select,
+.pill input[type="range"],
+.pill input[type="checkbox"] {
+  font-size: 11px;
+  background: #000;
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+}
+
+.pill select option {
+  background: #000;
+  color: #fff;
+}
+
+/* In dropdowns, no borders on inner inputs */
+.dropdown select,
+.dropdown input {
+  border: none !important;
+  background: #000;
+  color: #fff;
+  padding: 4px 6px;
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+.dropdown .freq-toggle-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.pillLabel {
+  color: #70767d;
+}
+
+.pillValue {
+  color: #e8eaed;
+  font-weight: 500;
+}
+
+.pillValue.off {
+  color: #565c63;
+}
+
+
+
+.dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 340px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  background: #0a0b0e;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.15);
+  z-index: 10;
+}
+
+/* Ensure no inner borders on dropdown content */
+.dropdown .freq-toggle-row,
+.dropdown .freq-row__label,
+.dropdown .freq-footer {
+  border: none;
+}
+
+.dropdown select {
+  width: 100%;
+  margin-bottom: 2px;
+  background: #000;
+  color: #fff;
+  border: none;
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-size: 12px;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+}
+
+.hour-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.hour-grid button {
+  padding: 14px 2px;
+  font-size: 16px;
+  background: #111114;
+  color: #e8eaed;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.1s;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hour-grid button:hover {
+  background: #222;
+  border-color: rgba(255,255,255,0.3);
+}
+
+.hour-grid button.active {
+  background: #7dd3fc;
+  color: #000;
+  border-color: #7dd3fc;
+  font-weight: 600;
+}
+
+.inst-field {
+  background: #111114;
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+}
+.inst-field:last-child {
+  margin-bottom: 0;
+}
+
+.inst-label {
+  display: block;
+  color: #70767d;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.inst-field select {
+  background: #0a0b0e;
+  color: #e8eaed;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 3px;
+  padding: 5px 6px;
+  font-size: 12px;
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+}
+.inst-field select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Frequency Dropdown Menu styles from spec */
+.freq-menu {
+  position: relative;
+  font-family: var(--font, 'Inter Tight', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  -webkit-font-smoothing: antialiased;
+  width: auto;
+}
+
+.freq-trigger {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 64px;
-  gap: 18px;
-  padding: 0 22px;
-  border-bottom: 1px solid #26262a;
-  background: #08080a;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 13px;
+  background: var(--surface, #131316);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.09));
+  border-radius: 8px;
+  color: var(--text, #f4f4f5);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+  min-width: 120px;
+}
+.freq-trigger:hover {
+  background: var(--surface-hover, #1a1a1f);
+  border-color: var(--border-hover, rgba(255, 255, 255, 0.14));
+}
+.freq-trigger__lead { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.freq-trigger__dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #7dd3fc;
+  box-shadow: 0 0 6px #7dd3fc;
 }
 
-h1 {
-  margin: 0;
-  color: #f5f5f7;
-  font-size: 24px;
-  font-weight: 650;
-  letter-spacing: 0;
+
+.freq-panel {
+  position: absolute;
+  top: 100%; left: 0; margin-top: 4px;
+  background: var(--panel, #0f0f12);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.09));
+  border-radius: 18px;
+  padding: 8px;
+  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.8),
+              0 0 0 1px rgba(255, 255, 255, 0.02);
+  z-index: 10;
+  min-width: 220px;
+}
+.freq-menu[data-open="false"] .freq-panel { display: none; }
+
+.freq-row {
+  padding: 12px 10px 10px;
+  border-radius: 12px;
+  transition: background .15s;
+}
+.freq-row:hover { background: var(--row-hover, rgba(255, 255, 255, 0.02)); }
+.freq-row__label {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--text-2, #e7e7ea);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.freq-slider {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 22px;
+  background: transparent;
+  outline: none;
+  border: none;
+  box-shadow: none;
+  cursor: pointer;
+  --pct: 32%;
+}
+.freq-slider::-webkit-slider-runnable-track {
+  height: 6px; border-radius: 99px;
+  background: linear-gradient(
+    to right,
+    var(--fill, #f4f4f5) 0 var(--pct),
+    var(--track, #2b2b30) var(--pct) 100%
+  );
+}
+.freq-slider::-moz-range-track {
+  height: 6px; border-radius: 99px; background: var(--track, #2b2b30);
+}
+.freq-slider::-moz-range-progress {
+  height: 6px; border-radius: 99px; background: var(--fill, #f4f4f5);
+}
+.freq-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 18px; height: 18px; margin-top: -6px;
+  border-radius: 50%; border: none;
+  background: var(--handle, #ffffff);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+.freq-slider::-moz-range-thumb {
+  width: 18px; height: 18px;
+  border-radius: 50%; border: none;
+  background: var(--handle, #ffffff);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+
+.freq-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+.freq-footer__edge {
+  color: var(--text-muted, #71717a); font-size: 11px; font-weight: 500;
+}
+.freq-footer__value {
+  padding: 4px 10px;
+  background: var(--surface-hover, #1a1a1f);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: var(--text, #f4f4f5);
+  font-size: 11px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* More padding below toggle and slider */
+.freq-toggle-row {
+  margin-bottom: 16px;
+}
+
+.freq-row .freq-slider {
+  margin-bottom: 8px;
+}
+
+/* Nice round toggle switch */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #333;
+  border-radius: 20px;
+  transition: .3s;
+  border: 1px solid rgba(255,255,255,0.2);
+}
+
+.toggle-slider:before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 2px;
+  bottom: 2px;
+  background-color: white;
+  border-radius: 50%;
+  transition: .3s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background-color: #7dd3fc;
+  border-color: #7dd3fc;
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+  transform: translateX(16px);
+}
+
+/* Grey out slider when hedging is off */
+.freq-slider:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.freq-slider:disabled::-webkit-slider-thumb {
+  background: #666;
+}
+
+.freq-slider:disabled::-moz-range-thumb {
+  background: #666;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.segmented {
+  display: flex;
+  background: rgba(255,255,255,0.05);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.segment {
+  font-size: 12px;
+  font-weight: 500;
+  color: #70767d;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.segment.active {
+  background: rgba(255,255,255,0.1);
+  color: #e8eaed;
 }
 
 .configCluster {
@@ -742,21 +1186,52 @@ h1 {
   color: #163f7d;
 }
 
-.workspace {
-  display: grid;
-  grid-template-columns: 338px minmax(0, 1fr);
-  min-height: calc(100vh - 64px);
+.main {
+  flex: 1;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 20px 36px 20px 28px;
+  min-height: 0;
+  height: 0; /* allow flex child to grow */
 }
 
-.rail {
+.metricsColumn {
   display: flex;
-  min-height: calc(100vh - 64px);
   flex-direction: column;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 22px;
-  border-right: 1px solid #26262a;
-  background: #09090b;
+  gap: 28px;
+  width: 170px;
+  flex: none;
+  padding-top: 44px;
+}
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  padding: 0;
+  min-height: auto;
+}
+
+.metricValue {
+  font-size: 22px;
+  font-weight: 300;
+  letter-spacing: -0.3px;
+  color: #e8eaed;
+}
+
+.metricValue.maxdd {
+  color: #9aa0a6;
+}
+
+.metricLabel {
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: #70767d;
 }
 
 .railGroups {
@@ -935,9 +1410,33 @@ h1 {
   opacity: 0.55;
 }
 
-.mainPanel {
+.chartColumn {
+  flex: 1;
   min-width: 0;
-  padding: 24px 28px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.chartHeader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+
+.chartTitle {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+  color: #e8eaed;
+}
+
+.chartSubtitle {
+  font-size: 12px;
+  color: #70767d;
 }
 
 .strategyHeader {
@@ -972,35 +1471,7 @@ h1 {
   text-align: right;
 }
 
-.summaryStrip {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 16px;
-}
 
-.metric {
-  display: grid;
-  align-content: center;
-  min-height: 94px;
-  gap: 8px;
-  padding: 18px 20px;
-  border: 1px solid #222227;
-  border-radius: 8px;
-  background: #101014;
-}
-
-.metric span,
-.metric strong {
-  color: #f4f4f5;
-  font-size: 30px;
-  font-weight: 650;
-  line-height: 1.05;
-}
-
-.metric.skeptical strong {
-  color: #d89430;
-}
 
 .chartPanel {
   width: 100%;
@@ -1174,10 +1645,6 @@ h1 {
 
   .strategyHeader h2 {
     text-align: left;
-  }
-
-  .summaryStrip {
-    grid-template-columns: 1fr;
   }
 
   .chartPanel {

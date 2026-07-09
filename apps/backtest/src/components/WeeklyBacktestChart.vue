@@ -21,131 +21,136 @@ const draw = () => {
   const rows = [...(props.rows || [])].sort(
     (a, b) => entryDate(a).getTime() - entryDate(b).getTime(),
   );
+
   const bounds = element.getBoundingClientRect();
-  const width = Math.max(900, bounds.width || 960);
-  const height = 650;
-  const margin = { top: 50, right: 76, bottom: 112, left: 76 };
-  const innerWidth = width - margin.left - margin.right;
-  const innerHeight = height - margin.top - margin.bottom;
+  const width = Math.max(900, bounds.width || 1360);
+  const allocatedHeight = Math.max(300, bounds.height || 470);
+  const height = allocatedHeight * 0.85;  // slightly less than full to leave breathing room
+
+  // Plot area: use most of the height for the chart, small bottom for x labels
+  const plotTop = 45;   // a bit more padding from the top
+  const plotBottom = height - 30;   // slightly less vertical space for the plot
+
+  const X0 = 55;
+  const X1 = width - 15;
 
   const svg = d3
     .select(element)
     .append("svg")
     .attr("viewBox", `0 0 ${width} ${height}`)
+    .attr("width", "100%")
+    .attr("height", "100%")
     .attr("role", "img")
     .attr("aria-label", "Weekly delta hedged straddle backtest chart");
 
-  const root = svg
-    .append("g")
-    .attr("transform", `translate(${margin.left},${margin.top})`);
-
   if (!rows.length) {
-    root
-      .append("text")
-      .attr("x", innerWidth / 2)
-      .attr("y", innerHeight / 2)
+    svg.append("text")
+      .attr("x", width / 2)
+      .attr("y", height / 2)
       .attr("text-anchor", "middle")
-      .attr("fill", "#8a94a6")
+      .attr("fill", "rgba(255,255,255,0.32)")
+      .attr("font-size", 14)
       .text("No chart data");
     return;
   }
 
-  const x = d3
-    .scaleUtc()
-    .domain(d3.extent(rows, entryDate))
-    .range([0, innerWidth])
-    .nice();
-  const step = innerWidth / Math.max(1, rows.length);
-  const barWidth = Math.max(3, step * 0.9);
+  // Normalize y to actual data range (include 0)
+  const allValues = rows.flatMap(r => [
+    r.deltaHedgedShortPnl || 0,
+    r.cumulativeDeltaHedgedPnl || 0,
+    0
+  ]);
+  let [dataMin, dataMax] = d3.extent(allValues);
+  if (dataMin > 0) dataMin = 0;
+  if (dataMax < 0) dataMax = 0;
 
-  const pnlExtent = d3.extent(
-    rows.flatMap((row) => [
-      row.deltaHedgedShortPnl,
-      row.cumulativeDeltaHedgedPnl,
-      0,
-    ]),
-  );
-  const y = d3
-    .scaleLinear()
-    .domain(pnlExtent)
-    .nice()
-    .range([innerHeight, 0]);
+  const y = d3.scaleLinear()
+    .domain([dataMax, dataMin])
+    .range([plotTop, plotBottom]);
 
-  const barMin = d3.min(rows, (row) => row.deltaHedgedShortPnl) ?? 0;
-  const barMax = d3.max(rows, (row) => row.deltaHedgedShortPnl) ?? 0;
-  const colorDomain = [Math.min(barMin, 0), 0, Math.max(barMax, 0)];
-  const color = d3.scaleDiverging(d3.interpolateRdBu).domain(colorDomain);
+  const x = d3.scaleLinear()
+    .domain([0, rows.length - 1])
+    .range([X0, X1]);
 
   const zeroY = y(0);
-  root
-    .append("line")
-    .attr("x1", 0)
-    .attr("x2", innerWidth)
-    .attr("y1", zeroY)
-    .attr("y2", zeroY)
-    .attr("stroke", "#444")
-    .attr("stroke-width", 1);
 
-  root
-    .selectAll("rect")
-    .data(rows)
-    .join("rect")
-    .attr("x", (row) => x(entryDate(row)) - barWidth / 2)
-    .attr("y", (row) => Math.min(y(row.deltaHedgedShortPnl), zeroY))
-    .attr("width", barWidth)
-    .attr("height", (row) => Math.abs(y(row.deltaHedgedShortPnl) - zeroY))
-    .attr("rx", 0)
-    .attr("fill", (row) => color(row.deltaHedgedShortPnl));
+  // Grid lines at nice values (aim for ~7, ensure 0 is included)
+  let ticks = y.ticks(7);
+  if (!ticks.includes(0) && dataMin <= 0 && dataMax >= 0) {
+    ticks.push(0);
+  }
+  ticks = ticks.filter(v => v >= dataMin && v <= dataMax).sort((a, b) => a - b);
+  ticks.forEach(v => {
+    const gy = y(v);
+    svg.append("line")
+      .attr("x1", X0 - 8)
+      .attr("x2", X1)
+      .attr("y1", gy)
+      .attr("y2", gy)
+      .attr("stroke", "rgba(255,255,255,0.055)");
+    svg.append("text")
+      .attr("x", X0 - 12)
+      .attr("y", gy + 3)
+      .attr("text-anchor", "end")
+      .attr("fill", "rgba(255,255,255,0.32)")
+      .attr("font-size", 11)
+      .text(formatUsd(v));
+  });
 
-  const line = d3
-    .line()
-    .x((row) => x(entryDate(row)))
-    .y((row) => y(row.cumulativeDeltaHedgedPnl))
-    .curve(d3.curveStepAfter);
+  const bw = Math.max(2, (X1 - X0) / (rows.length - 1) - 1);
 
-  root
-    .append("path")
-    .datum(rows)
+  // Proper diverging red/blue color scale for weekly PnL bars
+  const barValues = rows.map(r => r.deltaHedgedShortPnl || 0);
+  const [barMin, barMax] = d3.extent(barValues);
+  const colorDomain = [Math.min(barMin, 0), 0, Math.max(barMax, 0)];
+  const barColor = d3.scaleDiverging(d3.interpolateRdBu)
+    .domain(colorDomain);
+
+  // Bars from 0 baseline
+  rows.forEach((row, i) => {
+    const v = row.deltaHedgedShortPnl || 0;
+    const top = y(Math.max(0, v));
+    const bottom = y(Math.min(0, v));
+    const h = Math.max(1, bottom - top);
+    const fill = barColor(v);
+
+    svg.append("rect")
+      .attr("x", x(i) - bw / 2)
+      .attr("y", top)
+      .attr("width", bw)
+      .attr("height", h)
+      .attr("fill", fill);
+  });
+
+  // Cumulative step line
+  let d = `M ${x(0)} ${y(rows[0].cumulativeDeltaHedgedPnl || 0)}`;
+  for (let i = 1; i < rows.length; i++) {
+    const prevY = y(rows[i-1].cumulativeDeltaHedgedPnl || 0);
+    const currY = y(rows[i].cumulativeDeltaHedgedPnl || 0);
+    d += ` L ${x(i)} ${prevY}`;
+    d += ` L ${x(i)} ${currY}`;
+  }
+
+  svg.append("path")
+    .attr("d", d)
     .attr("fill", "none")
-    .attr("stroke", "whitesmoke")
-    .attr("stroke-width", 2)
-    .attr("d", line);
+    .attr("stroke", "#e8eaed")
+    .attr("stroke-width", 1.5);
 
-  root
-    .append("g")
-    .attr("transform", `translate(0,${innerHeight})`)
-    .call(
-      d3
-        .axisBottom(x)
-        .ticks(Math.min(12, rows.length))
-        .tickFormat(formatDate)
-        .tickSize(0)
-        .tickPadding(10),
-    )
-    .selectAll("text")
-    .attr("transform", "rotate(-35)")
-    .attr("text-anchor", "end")
-    .attr("fill", "white")
-    .attr("font-size", 10);
-
-  root
-    .append("g")
-    .call(d3.axisLeft(y).ticks(8).tickFormat(formatUsd).tickSize(0))
-    .selectAll(".tick text")
-    .attr("fill", "white")
-    .attr("font-size", 10);
-
-  root.selectAll(".domain").attr("stroke", "none");
-  root.selectAll(".tick line").attr("stroke", "none");
-
-  root
-    .append("text")
-    .attr("x", 0)
-    .attr("y", -14)
-    .attr("fill", "white")
-    .attr("font-size", 13)
-    .attr("font-weight", 700)
-    .text("Hedged PnL ($)");
+  // X labels at bottom
+  const labels = ["Jun 25", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan 26", "Feb", "Mar", "Apr", "May", "Jun", "Jul"];
+  const step = Math.max(1, Math.floor((rows.length - 1) / (labels.length - 1)));
+  labels.forEach((lab, i) => {
+    const idx = Math.min(i * step, rows.length - 1);
+    const lx = x(idx);
+    svg.append("text")
+      .attr("x", lx)
+      .attr("y", height - 6)
+      .attr("text-anchor", "middle")
+      .attr("fill", "rgba(255,255,255,0.28)")
+      .attr("font-size", 10)
+      .text(lab);
+  });
 };
 
 onMounted(() => {
@@ -166,15 +171,16 @@ watch(() => props.rows, draw, { deep: true });
 
 <style scoped>
 .chart {
-  min-height: 650px;
-  overflow-x: auto;
-  background: black;
+  flex: 1;
+  min-height: 0;
+  background: #0a0b0e;
+  display: flex;
 }
 
 .chart :deep(svg) {
   display: block;
   width: 100%;
-  min-width: 900px;
-  height: auto;
+  height: 85%;
+  margin-top: 8px; /* a bit more padding from the top */
 }
 </style>
