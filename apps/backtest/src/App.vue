@@ -1,10 +1,13 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from "vue";
+import CycleDetailChart from "./components/CycleDetailChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
 import WeeklyBacktestChart from "./components/WeeklyBacktestChart.vue";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
 import {
   DEFAULT_BACKTEST_CONFIG,
+  buildCycleDetail,
+  computeBreakEvens,
   prepareBacktestData,
   runWeeklyStraddleBacktest,
 } from "./lib/weeklyStraddleBacktest.js";
@@ -13,12 +16,24 @@ const MATURITY_OPTIONS = [
   { value: 7, label: "7D", minDteDays: 5, maxDteDays: 10 },
   { value: 14, label: "14D", minDteDays: 7, maxDteDays: 28 },
   { value: 30, label: "30D", minDteDays: 14, maxDteDays: 60 },
+  { value: 60, label: "60D", minDteDays: 45, maxDteDays: 75 },
+  { value: 90, label: "90D", minDteDays: 75, maxDteDays: 135 },
+  { value: 180, label: "180D", minDteDays: 135, maxDteDays: 240 },
+];
+
+const CALENDAR_MATURITY_OPTIONS = [
+  { value: "7-14", label: "7–14D", nearDays: 7, farDays: 14, minDteDays: 5, maxDteDays: 10 },
+  { value: "7-30", label: "7–30D", nearDays: 7, farDays: 30, minDteDays: 5, maxDteDays: 10 },
+  { value: "14-30", label: "14–30D", nearDays: 14, farDays: 30, minDteDays: 7, maxDteDays: 28 },
 ];
 
 const STRUCTURE_OPTIONS = [
   { value: "straddle", label: "Straddle" },
   { value: "strangle", label: "Strangle" },
   { value: "risk_reversal", label: "Risk reversal" },
+  { value: "call", label: "Call" },
+  { value: "put", label: "Put" },
+  { value: "calendar_spread", label: "Calendar spread" },
 ];
 
 const DELTA_OPTIONS = [
@@ -55,21 +70,33 @@ const HEDGE_FREQUENCY_OPTIONS = [
 
 const ui = reactive({
   structure: "straddle",
-  maturityDays: 7,
+  maturityDays: 30,
   targetDelta: 0.25,
   entryWeekday: 5,
   entryHourUtc: 8,
   hedgeEnabled: true,
   hedgeIntervalHours: 24,
   holdToExpiry: false,
-  exitHoldDays: 7,
+  exitHoldDays: 30,
   longOption: false,
+  investmentMode: "notional",
 });
 
 const maxExitHoldDays = computed(() => {
-  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
-  return m.value;
+  return currentMaturity.value.nearDays ?? currentMaturity.value.value;
 });
+
+const maturityOptions = computed(() =>
+  ui.structure === "calendar_spread" ? CALENDAR_MATURITY_OPTIONS : MATURITY_OPTIONS,
+);
+const currentMaturity = computed(() =>
+  maturityOptions.value.find((option) => String(option.value) === String(ui.maturityDays)) || maturityOptions.value[0],
+);
+const showDelta = computed(() => !["straddle", "calendar_spread"].includes(ui.structure));
+const rollDayOptions = computed(() =>
+  [1, 2, 3, 4, 5, 6, 7, 14, 30]
+    .filter((days) => days <= maxExitHoldDays.value),
+);
 
 const openMenu = ref(null);
 
@@ -121,30 +148,9 @@ const hedgePct = computed(() => {
   return ((val - 1) / 23) * 100 + '%';
 });
 
-const localExitHoldDays = ref(ui.exitHoldDays);
-
-watch(() => ui.exitHoldDays, (val) => {
-  localExitHoldDays.value = val;
-});
-
-function updateExitHoldDays(val) {
-  const max = maxExitHoldDays.value;
-  const numVal = Math.max(1, Math.min(max, Number(val) || 1));
-  localExitHoldDays.value = numVal;
-  ui.exitHoldDays = numVal;
-}
-
-const exitPct = computed(() => {
-  const val = Number(localExitHoldDays.value) || 1;
-  const max = Number(maxExitHoldDays.value) || 30;
-  const denom = Math.max(1, max - 1);
-  return ((val - 1) / denom) * 100 + '%';
-});
-
 const activeRailGroup = ref("instrument");
 
 const state = reactive({
-  loading: true,
   error: "",
   progress: "",
 });
@@ -205,17 +211,17 @@ const maxDrawdown = computed(() => {
 });
 
 const railGroups = computed(() => {
-  const mat = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
+  const mat = currentMaturity.value;
   const struc = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
   const del = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
   const wd = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
-  const opt = ui.structure === "straddle" ? "ATM" : del.label;
+  const opt = showDelta.value ? del.label : "ATM";
   const entryLbl = `${wd.label} ${String(ui.entryHourUtc).padStart(2,"0")}:00 UTC`;
   const hedgeLbl = !ui.hedgeEnabled ? "Off" : ui.hedgeIntervalHours === 24 ? `Daily ${String(ui.entryHourUtc).padStart(2,"0")}:00` : `Every ${ui.hedgeIntervalHours}h`;
   const hedge2 = ui.hedgeEnabled ? "Perp · no fees" : "Option-only PnL";
   const side = ui.longOption ? "Long" : "Short";
   const exit1 = ui.holdToExpiry ? "Hold to expiry" : `Roll every ${ui.exitHoldDays}D`;
-  const exit2 = ui.holdToExpiry ? "Use selected expiry" : `Max ${mat.value}D`;
+  const exit2 = ui.holdToExpiry ? "Use selected expiry" : `Max ${mat.nearDays ?? mat.value}D`;
   return [
     { key: "instrument", label: "Instrument", primary: `BTC · ${side} ${struc.label}`, secondary: `${mat.label} · ${opt}` },
     { key: "entry", label: "Entry", primary: entryLbl, secondary: "Filter: none" },
@@ -225,10 +231,10 @@ const railGroups = computed(() => {
 });
 
 const strategyTitle = computed(() => {
-  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
+  const m = currentMaturity.value;
   const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
   const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
-  const opt = ui.structure === "straddle" ? "ATM" : d.label;
+  const opt = showDelta.value ? d.label : "ATM";
   let h = "Unhedged";
   if (ui.hedgeEnabled) {
     const hrs = ui.hedgeIntervalHours;
@@ -247,11 +253,12 @@ const strategyTitle = computed(() => {
 // New design pill values
 const instrumentPill = computed(() => {
   const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
-  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
+  const m = currentMaturity.value;
   const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
   const side = ui.longOption ? "Long" : "Short";
-  const opt = ui.structure === "straddle" ? "ATM" : `${d.label} ${s.label}`;
-  return `BTC · ${side} ${s.label} · ${m.label} ${opt}`;
+  const opt = showDelta.value ? `${d.label} ${s.label}` : "ATM";
+  const investment = ui.investmentMode === "btc" ? "1 BTC" : "$100k";
+  return `BTC · ${side} ${s.label} · ${m.label} ${opt} · ${investment}`;
 });
 
 const structureLabel = computed(() => {
@@ -260,9 +267,9 @@ const structureLabel = computed(() => {
 });
 
 const maturityLabel = computed(() => {
-  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
+  const m = currentMaturity.value;
   const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
-  const opt = ui.structure === "straddle" ? "ATM" : d.label;
+  const opt = showDelta.value ? d.label : "ATM";
   return `${m.label} ${opt}`;
 });
 
@@ -316,11 +323,26 @@ const maxDdValue = computed(() => {
 // Chart data and titles
 const chartRef = ref(null);
 const chartMode = ref("weekly");
+const selectedCycle = ref(null);
+const cycleDetailRows = ref([]);
+const cycleBreakEvens = ref(null);
+const cycleDetailLoading = ref(false);
+const cycleDetailError = ref("");
+const cycleDetailCache = new Map();
 const chartRows = computed(() => result.value?.weeklyChartData || []);
 const hedgePerformanceRows = computed(() => result.value?.cycleSummary || []);
 
 const chartTitle = computed(() => {
-  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
+  if (selectedCycle.value) {
+    const entry = new Date(selectedCycle.value.entryTime).toLocaleDateString("en-GB", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    });
+    return `${entry} cycle · hourly detail`;
+  }
+  const m = currentMaturity.value;
   const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
   const side = ui.longOption ? "Long" : "Short";
   let strategy = `${side} straddle ${m.label}`;
@@ -328,6 +350,10 @@ const chartTitle = computed(() => {
     strategy = `${side} strangle ${m.label} (${d.label})`;
   } else if (ui.structure === "risk_reversal") {
     strategy = `Risk reversal ${m.label} (${d.label} call ${ui.longOption ? 'long' : 'short'} / put ${ui.longOption ? 'short' : 'long'})`;
+  } else if (ui.structure === "call" || ui.structure === "put") {
+    strategy = `${side} ${ui.structure} ${m.label} (${d.label})`;
+  } else if (ui.structure === "calendar_spread") {
+    strategy = `${side} ATM calendar spread ${m.label}`;
   }
   const hedge = ui.hedgeEnabled
     ? `hedged every ${ui.hedgeIntervalHours}h`
@@ -336,6 +362,20 @@ const chartTitle = computed(() => {
 });
 
 const chartSubtitle = computed(() => {
+  if (selectedCycle.value) {
+    const legs = selectedCycle.value.legs
+      .map((leg) => leg.instrumentName)
+      .join(" · ");
+    if (cycleBreakEvens.value) {
+      const be = cycleBreakEvens.value;
+      const fmt = (v) => Number.isFinite(v) ? v.toLocaleString("en-US", { maximumFractionDigits: 0 }) : null;
+      const parts = [];
+      if (Number.isFinite(be.lower)) parts.push(`BE low ${fmt(be.lower)}`);
+      if (Number.isFinite(be.upper)) parts.push(`BE high ${fmt(be.upper)}`);
+      if (parts.length) return `${legs}  ·  ${parts.join(" / ")}`;
+    }
+    return legs;
+  }
   const weekday = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
   const entryTime = `${String(ui.entryHourUtc).padStart(2, "0")}:00 UTC`;
   const exit = ui.holdToExpiry
@@ -358,11 +398,12 @@ const chartSourceSubtitle = computed(() => {
 });
 
 const buildConfig = (overrides = {}) => {
-  const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
+  const m = currentMaturity.value;
   return {
     ...DEFAULT_BACKTEST_CONFIG,
     end: new Date(),
-    targetDteDays: m.value,
+    targetDteDays: m.nearDays ?? m.value,
+    farTargetDteDays: m.farDays,
     minWeeklyDteDays: m.minDteDays,
     maxWeeklyDteDays: m.maxDteDays,
     maxHedgeDays: m.maxDteDays + 2,
@@ -376,12 +417,18 @@ const buildConfig = (overrides = {}) => {
     holdToExpiry: ui.holdToExpiry,
     exitHoldDays: Number(ui.exitHoldDays),
     longOption: ui.longOption,
+    sizingMode: ui.investmentMode,
+    btcQuantity: 1,
     ...overrides,
   };
 };
 
 const runCurrent = () => {
   if (!preparedData.value) return;
+  selectedCycle.value = null;
+  cycleDetailRows.value = [];
+  cycleBreakEvens.value = null;
+  cycleDetailCache.clear();
   const config = buildConfig();
   result.value = runWeeklyStraddleBacktest({
     preparedData: preparedData.value,
@@ -389,8 +436,49 @@ const runCurrent = () => {
   });
 };
 
+const closeCycleDetail = () => {
+  selectedCycle.value = null;
+  cycleDetailRows.value = [];
+  cycleBreakEvens.value = null;
+  cycleDetailError.value = "";
+};
+
+const handleCycleSelect = async (cycle) => {
+  if (!cycle || cycleDetailLoading.value) return;
+  selectedCycle.value = cycle;
+  cycleBreakEvens.value = computeBreakEvens(cycle);
+  cycleDetailError.value = "";
+  const cacheKey = `${cycle.entryTs}|${cycle.exitTs}|${ui.hedgeIntervalHours}|${ui.hedgeEnabled}`;
+  if (cycleDetailCache.has(cacheKey)) {
+    cycleDetailRows.value = cycleDetailCache.get(cacheKey);
+    return;
+  }
+
+  cycleDetailLoading.value = true;
+  cycleDetailRows.value = [];
+  try {
+    const config = buildConfig({ start: new Date(cycle.entryTime), end: new Date(cycle.exitTime) });
+    const loaded = await loadThalexHistory({
+      start: config.start,
+      end: config.end,
+      hourlyOffsets: Array.from({ length: 24 }, (_, hour) => hour),
+    });
+    const detailData = prepareBacktestData({
+      indexRows: loaded.indexRows,
+      markRows: loaded.markRows,
+      config,
+    });
+    const rows = buildCycleDetail({ plan: cycle, preparedData: detailData, config });
+    cycleDetailCache.set(cacheKey, rows);
+    cycleDetailRows.value = rows;
+  } catch (error) {
+    cycleDetailError.value = error?.message || "Unable to load hourly cycle detail";
+  } finally {
+    cycleDetailLoading.value = false;
+  }
+};
+
 const loadBacktest = async () => {
-  state.loading = true;
   state.error = "";
   state.progress = "Loading data";
   preparedData.value = null;
@@ -417,21 +505,17 @@ const loadBacktest = async () => {
     state.progress = "";
   } catch (error) {
     state.error = error?.message || "Backtest failed";
-  } finally {
-    state.loading = false;
   }
 };
 
 const handleMaturityChange = () => {
   state.error = "";
   clearTimeout(runDebounce);
-  state.loading = true;
   runDebounce = setTimeout(() => {
     if (!preparedData.value || requiredHoursKey.value !== loadedHoursKey) {
       loadBacktest();
     } else {
       runCurrent();
-      state.loading = false;
     }
   }, 80);
 };
@@ -448,6 +532,7 @@ watch(
     ui.holdToExpiry,
     ui.exitHoldDays,
     ui.longOption,
+    ui.investmentMode,
   ],
   handleMaturityChange,
 );
@@ -455,6 +540,17 @@ watch(
 watch(() => ui.maturityDays, () => {
   if (ui.exitHoldDays > maxExitHoldDays.value) {
     ui.exitHoldDays = maxExitHoldDays.value;
+  }
+});
+
+watch(() => ui.structure, (structure) => {
+  const isCalendarMaturity = CALENDAR_MATURITY_OPTIONS.some(
+    (option) => String(option.value) === String(ui.maturityDays),
+  );
+  if (structure === "calendar_spread" && !isCalendarMaturity) {
+    ui.maturityDays = CALENDAR_MATURITY_OPTIONS[0].value;
+  } else if (structure !== "calendar_spread" && isCalendarMaturity) {
+    ui.maturityDays = MATURITY_OPTIONS[0].value;
   }
 });
 
@@ -467,7 +563,9 @@ watch(() => ui.hedgeEnabled, (enabled) => {
 function handleSavePng() {
   if (!chartRef.value) return;
   const date = new Date().toISOString().slice(0, 10);
-  const filename = chartMode.value === "hedge"
+  const filename = selectedCycle.value
+    ? `cycle-detail-${date}.png`
+    : chartMode.value === "hedge"
     ? `hedge-performance-${date}.png`
     : `backtest-${date}.png`;
   chartRef.value.exportPng({
@@ -491,9 +589,7 @@ onMounted(loadBacktest);
   <main class="app">
     <!-- Top bar -->
     <div class="topBar">
-      <div class="wordmark">
-        Backtest<span v-if="state.loading" class="loading-dots"></span>
-      </div>
+      <div class="wordmark">Backtest</div>
       <div class="divider"></div>
 
       <div class="configPills">
@@ -536,16 +632,16 @@ onMounted(loadBacktest);
               <label class="inst-label">Maturity</label>
               <div class="inst-choices maturity-choices">
                 <div
-                  v-for="m in MATURITY_OPTIONS"
+                  v-for="m in maturityOptions"
                   :key="m.value"
-                  :class="['inst-choice', { active: Number(ui.maturityDays) === m.value }]"
+                  :class="['inst-choice', { active: String(ui.maturityDays) === String(m.value) }]"
                   @click="ui.maturityDays = m.value"
                 >
                   {{ m.label }}
                 </div>
               </div>
             </div>
-            <div v-if="ui.structure !== 'straddle'" class="inst-field">
+            <div v-if="showDelta" class="inst-field">
               <label class="inst-label">Delta</label>
               <div class="inst-choices delta-choices">
                 <div
@@ -555,6 +651,23 @@ onMounted(loadBacktest);
                   @click="ui.targetDelta = d.value"
                 >
                   {{ d.label }}
+                </div>
+              </div>
+            </div>
+            <div class="inst-field">
+              <label class="inst-label">Investment amount</label>
+              <div class="inst-choices side-choices">
+                <div
+                  :class="['inst-choice', { active: ui.investmentMode === 'notional' }]"
+                  @click="ui.investmentMode = 'notional'"
+                >
+                  $100k notional
+                </div>
+                <div
+                  :class="['inst-choice', { active: ui.investmentMode === 'btc' }]"
+                  @click="ui.investmentMode = 'btc'"
+                >
+                  1 BTC
                 </div>
               </div>
             </div>
@@ -643,22 +756,17 @@ onMounted(loadBacktest);
               </label>
             </div>
             <div v-if="!ui.holdToExpiry">
-              <label class="freq-row__label" for="exit-days">Roll every</label>
-              <input
-                id="exit-days"
-                class="freq-slider"
-                type="range"
-                min="1"
-                :max="maxExitHoldDays"
-                step="1"
-                :value="localExitHoldDays"
-                @input="updateExitHoldDays(Number($event.target.value))"
-                :style="{ '--pct': exitPct }"
-              >
-              <div class="freq-footer">
-                <span class="freq-footer__edge">1D</span>
-                <span class="freq-footer__value">Every {{ localExitHoldDays }}D</span>
-                <span class="freq-footer__edge">{{ maxExitHoldDays }}D</span>
+              <label class="freq-row__label">Roll every</label>
+              <div class="inst-choices exit-day-choices">
+                <button
+                  v-for="days in rollDayOptions"
+                  :key="days"
+                  type="button"
+                  :class="['inst-choice', { active: ui.exitHoldDays === days }]"
+                  @click="ui.exitHoldDays = days; openMenu = null"
+                >
+                  {{ days }}D
+                </button>
               </div>
             </div>
           </div>
@@ -697,26 +805,48 @@ onMounted(loadBacktest);
       <div class="chartColumn">
         <div class="chartHeader">
           <div class="chartTitleRow">
+            <button
+              v-if="selectedCycle"
+              class="backButton"
+              type="button"
+              @click="closeCycleDetail"
+              title="Back to cycles"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
+            </button>
             <div class="chartTitle">{{ chartTitle }}</div>
-            <button class="saveButton" type="button" @click="handleSavePng">Save PNG</button>
+            <div class="chartHeaderActions">
+              <button class="saveButton" type="button" :disabled="cycleDetailLoading" @click="handleSavePng">Save PNG</button>
+            </div>
           </div>
           <div class="chartSubtitle">{{ chartSubtitle }}</div>
           <div class="chartSourceSubtitle">{{ chartSourceSubtitle }}</div>
         </div>
 
         <WeeklyBacktestChart
-          v-if="chartMode === 'weekly'"
+          v-if="!selectedCycle && chartMode === 'weekly'"
           ref="chartRef"
           :rows="chartRows"
           :design-spec="true"
+          @select="handleCycleSelect"
         />
         <HedgePerformanceChart
-          v-else
+          v-else-if="!selectedCycle"
           ref="chartRef"
           :rows="hedgePerformanceRows"
         />
+        <div v-else-if="cycleDetailLoading" class="cycleDetailState">Loading hourly detail…</div>
+        <div v-else-if="cycleDetailError" class="cycleDetailState error">{{ cycleDetailError }}</div>
+        <CycleDetailChart
+          v-else
+          ref="chartRef"
+          :rows="cycleDetailRows"
+          :break-evens="cycleBreakEvens"
+        />
 
-        <div v-if="ui.hedgeEnabled" class="chartModeToggle" role="group" aria-label="Chart view">
+        <div v-if="ui.hedgeEnabled && !selectedCycle" class="chartModeToggle" role="group" aria-label="Chart view">
           <button
             type="button"
             :class="{ active: chartMode === 'weekly' }"
@@ -783,26 +913,6 @@ onMounted(loadBacktest);
   width: 1px;
   height: 20px;
   background: rgba(255,255,255,0.08);
-}
-
-.loading-dots {
-  margin-left: 3px;
-  color: #7dd3fc;
-  font-size: 12px;
-  font-weight: normal;
-  vertical-align: middle;
-  display: inline-block;
-}
-
-.loading-dots::after {
-  content: '.';
-  animation: loading-dots 1.2s steps(1, end) infinite;
-}
-
-@keyframes loading-dots {
-  0% { content: '.'; }
-  33% { content: '..'; }
-  66% { content: '...'; }
 }
 
 .configPills {
@@ -912,6 +1022,11 @@ onMounted(loadBacktest);
   min-width: min(460px, calc(100vw - 20px));
   left: -1px;
   right: auto;
+  background: #0a0b0e;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 14px 12px;
 }
 
 /* Make the content inside instrument dropdown scale horizontally to the new width */
@@ -1008,10 +1123,10 @@ onMounted(loadBacktest);
 }
 
 .inst-field {
-  background: #111114;
-  border-radius: 4px;
-  padding: 6px 8px;
-  margin-bottom: 8px;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  margin-bottom: 16px;
 }
 .inst-field:last-child {
   margin-bottom: 0;
@@ -1097,9 +1212,66 @@ onMounted(loadBacktest);
   margin-left: -1px;
 }
 
+.structure-choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 4px;
+}
+.structure-choices .inst-choice {
+  margin: 0;
+  border-radius: 0;
+  border: 0;
+}
+.structure-choices .inst-choice:nth-child(3n + 2),
+.structure-choices .inst-choice:nth-child(3n + 3) {
+  margin-left: 0;
+  border-left: 1px solid rgba(255,255,255,0.18);
+}
+.structure-choices .inst-choice:nth-child(n + 4) {
+  margin-top: 0;
+  border-top: 1px solid rgba(255,255,255,0.18);
+}
+
+.maturity-choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 4px;
+}
+.maturity-choices .inst-choice {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+.maturity-choices .inst-choice:nth-child(3n + 2),
+.maturity-choices .inst-choice:nth-child(3n + 3) {
+  margin-left: 0;
+  border-left: 1px solid rgba(255,255,255,0.18);
+}
+.maturity-choices .inst-choice:nth-child(n + 4) {
+  margin-top: 0;
+  border-top: 1px solid rgba(255,255,255,0.18);
+}
+
 .weekday-choices .inst-choice {
   font-size: 10px;
   padding: 4px 2px;
+}
+
+.exit-day-choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.exit-day-choices .inst-choice {
+  width: 100%;
+  font: inherit;
 }
 
 .inst-choice {
@@ -1666,12 +1838,37 @@ onMounted(loadBacktest);
   align-items: center;
   justify-content: center;
   width: 100%;
-  padding: 0 72px;
+  padding: 0 72px 0 36px;
 }
 
-.chartTitleRow .saveButton {
+.chartHeaderActions {
   position: absolute;
   right: 0;
+  display: flex;
+  gap: 6px;
+}
+
+.backButton {
+  position: absolute;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: transparent;
+  color: #70767d;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+
+.backButton:hover {
+  color: #7dd3fc;
+  border-color: rgba(125, 211, 252, 0.3);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .chartModeToggle {
@@ -1718,6 +1915,23 @@ onMounted(loadBacktest);
   color: #7dd3fc;
   border-color: rgba(125, 211, 252, 0.3);
   background: rgba(255, 255, 255, 0.03);
+}
+
+.saveButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.cycleDetailState {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: #70767d;
+  font-size: 13px;
+}
+
+.cycleDetailState.error {
+  color: #f87171;
 }
 
 .strategyHeader {

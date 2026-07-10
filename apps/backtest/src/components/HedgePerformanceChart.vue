@@ -15,7 +15,9 @@ const formatUsd = d3.format("$,.2f");
 const formatEntryDate = d3.utcFormat("%d %b %y");
 const valueFor = (row, key) => Number(row[key]) || 0;
 const instrumentName = (row) =>
-  (row.callInstrument || `Cycle ${row.cycle || ""}`).replace(/-[CP]$/, "-S");
+  row.legs?.length
+    ? row.legs.map((leg) => leg.instrumentName).join(" / ")
+    : `Cycle ${row.cycle || ""}`;
 
 const draw = () => {
   const element = chartRef.value;

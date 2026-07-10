@@ -26,14 +26,17 @@ export const DEFAULT_BACKTEST_CONFIG = {
   hedgeEnabled: true,
   hedgeIntervalHours: 24,
   holdToExpiry: false,
-  exitHoldDays: 7,
+  exitHoldDays: 30,
   longOption: false,
   targetDteDays: 7,
+  farTargetDteDays: 14,
   minWeeklyDteDays: 5,
   maxWeeklyDteDays: 10,
   maxHedgeDays: 12,
   daysPerYear: 365,
   notionalUsd: 100_000,
+  sizingMode: "notional",
+  btcQuantity: 1,
   structure: "straddle",
   targetDelta: 0.25,
 };
@@ -197,6 +200,11 @@ const closestByDelta = ({ rows, targetDelta, indexPrice }) => {
   return selected?.row || null;
 };
 
+const quantityForStrike = (config, strike) =>
+  config.sizingMode === "btc"
+    ? Math.max(0, Number(config.btcQuantity) || 1)
+    : config.notionalUsd / strike;
+
 const selectLegs = ({ group, entryIndexPrice, config }) => {
   if (config.structure === "straddle") {
     let selected = null;
@@ -213,12 +221,12 @@ const selectLegs = ({ group, entryIndexPrice, config }) => {
       }
     }
     if (!selected) return null;
-    const qty = config.notionalUsd / selected.call.strike;
+    const qty = quantityForStrike(config, selected.call.strike);
     return {
-      call: selected.call,
-      put: selected.put,
-      callQty: -qty,
-      putQty: -qty,
+      legs: [
+        { quote: selected.call, quantity: -qty },
+        { quote: selected.put, quantity: -qty },
+      ],
       sizingStrike: selected.call.strike,
       selectionMetric: selected.strikeDistance,
     };
@@ -246,26 +254,79 @@ const selectLegs = ({ group, entryIndexPrice, config }) => {
     indexPrice: entryIndexPrice,
   });
 
+  if (config.structure === "call") {
+    if (!call) return null;
+    return {
+      legs: [{ quote: call, quantity: -quantityForStrike(config, call.strike) }],
+      sizingStrike: call.strike,
+      selectionMetric: Math.abs(call.delta - targetDelta),
+    };
+  }
+  if (config.structure === "put") {
+    if (!put) return null;
+    return {
+      legs: [{ quote: put, quantity: -quantityForStrike(config, put.strike) }],
+      sizingStrike: put.strike,
+      selectionMetric: Math.abs(put.delta + targetDelta),
+    };
+  }
   if (!call || !put) return null;
-  const callQty = -config.notionalUsd / call.strike;
-  const putAbsQty = config.notionalUsd / put.strike;
+  const callQty = -quantityForStrike(config, call.strike);
+  const putAbsQty = quantityForStrike(config, put.strike);
   return {
-    call,
-    put,
-    callQty,
-    putQty: config.structure === "risk_reversal" ? putAbsQty : -putAbsQty,
+    legs: [
+      { quote: call, quantity: callQty },
+      { quote: put, quantity: config.structure === "risk_reversal" ? putAbsQty : -putAbsQty },
+    ],
     sizingStrike: entryIndexPrice,
     selectionMetric:
       Math.abs(call.delta - targetDelta) + Math.abs(put.delta + targetDelta),
   };
 };
 
+const selectCalendarLegs = ({ nearGroup, farGroup, entryIndexPrice, config }) => {
+  let selected = null;
+  for (const nearCall of nearGroup.calls) {
+    const nearPut = nearGroup.putsByStrike.get(nearCall.strike);
+    const farCall = farGroup.calls.find((quote) => quote.strike === nearCall.strike);
+    const farPut = farGroup.putsByStrike.get(nearCall.strike);
+    if (!nearPut || !farCall || !farPut) continue;
+    const strikeDistance = Math.abs(nearCall.strike - entryIndexPrice);
+    if (!selected || strikeDistance < selected.strikeDistance) {
+      selected = { nearCall, nearPut, farCall, farPut, strikeDistance };
+    }
+  }
+  if (!selected) return null;
+  const quantity = quantityForStrike(config, selected.nearCall.strike);
+  return {
+    // Base orientation is the short calendar. The Side toggle reverses all legs.
+    legs: [
+      { quote: selected.nearCall, quantity },
+      { quote: selected.nearPut, quantity },
+      { quote: selected.farCall, quantity: -quantity },
+      { quote: selected.farPut, quantity: -quantity },
+    ],
+    sizingStrike: selected.nearCall.strike,
+    selectionMetric: selected.strikeDistance,
+  };
+};
+
 const buildEntryPlan = ({ quotes, entryExpirations, config }) => {
   const quotesByEntryExpiry = new Map();
+  const expiryGroupsByEntry = new Map();
   for (const quote of quotes) {
     const key = `${quote.ts}|${quote.expirationTs}`;
     if (!quotesByEntryExpiry.has(key)) {
-      quotesByEntryExpiry.set(key, { calls: [], putsByStrike: new Map() });
+      const group = {
+        calls: [],
+        putsByStrike: new Map(),
+        expiration: quote.expiration,
+        expirationTs: quote.expirationTs,
+        dteDays: quote.dteDays,
+      };
+      quotesByEntryExpiry.set(key, group);
+      if (!expiryGroupsByEntry.has(quote.ts)) expiryGroupsByEntry.set(quote.ts, []);
+      expiryGroupsByEntry.get(quote.ts).push(group);
     }
     const group = quotesByEntryExpiry.get(key);
     if (quote.optionType === "C") {
@@ -287,17 +348,34 @@ const buildEntryPlan = ({ quotes, entryExpirations, config }) => {
     if (!group) continue;
     const entryIndexPrice =
       group.calls[0]?.indexPrice ?? [...group.putsByStrike.values()][0]?.indexPrice;
-    const selected = selectLegs({ group, entryIndexPrice, config });
+    let selected;
+    if (config.structure === "calendar_spread") {
+      const farGroup = (expiryGroupsByEntry.get(entry.entryTs) || [])
+        .filter((candidate) => candidate.expirationTs > entry.expirationTs)
+        .sort((a, b) =>
+          Math.abs(a.dteDays - config.farTargetDteDays) -
+          Math.abs(b.dteDays - config.farTargetDteDays)
+        )[0];
+      selected = farGroup
+        ? selectCalendarLegs({ nearGroup: group, farGroup, entryIndexPrice, config })
+        : null;
+    } else {
+      selected = selectLegs({ group, entryIndexPrice, config });
+    }
     if (selected) {
-      let callQty = selected.callQty;
-      let putQty = selected.putQty;
-      if (config.longOption) {
-        callQty = -callQty;
-        putQty = -putQty;
-      }
-      const entryOptionCashflowUsd = -(
-        callQty * selected.call.markPrice +
-        putQty * selected.put.markPrice
+      const legs = selected.legs.map(({ quote, quantity }) => ({
+        instrumentName: quote.instrumentName,
+        optionType: quote.optionType,
+        strike: quote.strike,
+        expiration: quote.expiration,
+        expirationTs: quote.expirationTs,
+        entryPrice: quote.markPrice,
+        entryDelta: quote.delta,
+        quantity: config.longOption ? -quantity : quantity,
+      }));
+      const entryOptionCashflowUsd = -legs.reduce(
+        (cashflow, leg) => cashflow + leg.quantity * leg.entryPrice,
+        0,
       );
       const requestedExitTime = config.holdToExpiry
         ? entry.expiration
@@ -328,19 +406,15 @@ const buildEntryPlan = ({ quotes, entryExpirations, config }) => {
         exitAtExpiry: exitTime.getTime() === entry.expiration.getTime(),
         dteDays: entry.entryDteDays,
         strike: selected.sizingStrike,
-        callStrike: selected.call.strike,
-        putStrike: selected.put.strike,
+        legs,
         entryIndexPrice,
         notionalUsd: config.notionalUsd,
-        optionQuantityBtc: Math.abs(callQty),
-        callQty,
-        putQty,
-        callInstrument: selected.call.instrumentName,
-        putInstrument: selected.put.instrumentName,
-        callEntryPrice: selected.call.markPrice,
-        putEntryPrice: selected.put.markPrice,
-        callEntryDelta: selected.call.delta,
-        putEntryDelta: selected.put.delta,
+        sizingMode: config.sizingMode,
+        btcQuantity: config.btcQuantity,
+        investmentUsd: config.sizingMode === "btc"
+          ? config.btcQuantity * entryIndexPrice
+          : config.notionalUsd,
+        optionQuantityBtc: Math.abs(legs[0]?.quantity || 0),
         entryOptionCashflowUsd,
         selectionMetric: selected.selectionMetric,
       });
@@ -351,7 +425,7 @@ const buildEntryPlan = ({ quotes, entryExpirations, config }) => {
   return plans.map((plan, index) => ({
     ...plan,
     cycle: index + 1,
-    entryStraddleMark: plan.callEntryPrice + plan.putEntryPrice,
+    entryStraddleMark: plan.legs.reduce((total, leg) => total + leg.entryPrice, 0),
     premiumReceivedUsd: plan.entryOptionCashflowUsd,
   }));
 };
@@ -375,6 +449,178 @@ const buildDecisionTimes = (plan, config) => {
   return [...times].sort((a, b) => a - b).map((ms) => new Date(ms));
 };
 
+export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
+  if (!plan || !preparedData) return [];
+  const config = { ...DEFAULT_BACKTEST_CONFIG, ...inc };
+  const indexRows = (preparedData.indexRows || [])
+    .filter((row) => row.ts >= plan.entryTs && row.ts <= plan.exitTs)
+    .sort((a, b) => a.ts - b.ts);
+  const quoteByTimeInstrument = new Map(
+    (preparedData.quotes || []).map((quote) => [
+      `${quote.ts}|${quote.instrumentName}`,
+      quote,
+    ]),
+  );
+  const decisionTimes = new Set(
+    buildDecisionTimes(plan, config).map((date) => date.getTime() / 1000),
+  );
+
+  let hedgeQuantity = 0;
+  let previousIndexPrice = null;
+  let hedgePnlUsd = 0;
+
+  return indexRows.map((indexRow) => {
+    const isExit = indexRow.ts === plan.exitTs;
+    const legQuotes = plan.legs.map((leg) => ({
+      leg,
+      quote: quoteByTimeInstrument.get(`${indexRow.ts}|${leg.instrumentName}`),
+    }));
+
+    if (previousIndexPrice != null && Number.isFinite(indexRow.indexPrice)) {
+      hedgePnlUsd += hedgeQuantity * (indexRow.indexPrice - previousIndexPrice);
+    }
+
+    let hedgeTrade = null;
+    if (config.hedgeEnabled && decisionTimes.has(indexRow.ts)) {
+      const hasDeltas = isExit || legQuotes.every(({ quote }) => Number.isFinite(quote?.delta));
+      const targetQuantity = hasDeltas
+        ? (isExit ? 0 : -legQuotes.reduce(
+            (delta, { leg, quote }) => delta + leg.quantity * quote.delta,
+            0,
+          ))
+        : hedgeQuantity;
+      const tradeQuantity = targetQuantity - hedgeQuantity;
+      if (Math.abs(tradeQuantity) > 1e-10) {
+        hedgeTrade = {
+          side: tradeQuantity > 0 ? "buy" : "sell",
+          quantity: Math.abs(tradeQuantity),
+          price: indexRow.indexPrice,
+        };
+      }
+      hedgeQuantity = targetQuantity;
+    }
+
+    const legMarks = legQuotes.map(({ leg, quote }) => {
+      const expiresNow = indexRow.ts === leg.expirationTs;
+      const mark = expiresNow
+        ? (leg.optionType === "C"
+            ? Math.max(indexRow.indexPrice - leg.strike, 0)
+            : Math.max(leg.strike - indexRow.indexPrice, 0))
+        : quote?.markPrice;
+      return { leg, mark };
+    });
+    const hasMarks = legMarks.every(({ mark }) => Number.isFinite(mark));
+    const optionPnlUsd = hasMarks
+      ? plan.entryOptionCashflowUsd + legMarks.reduce(
+          (value, { leg, mark }) => value + leg.quantity * mark,
+          0,
+        )
+      : Number.NaN;
+
+    previousIndexPrice = indexRow.indexPrice;
+    return {
+      ts: indexRow.ts,
+      dateTime: indexRow.dateTime,
+      indexPrice: indexRow.indexPrice,
+      legMarks: legMarks.map(({ leg, mark }) => ({ instrumentName: leg.instrumentName, mark })),
+      combinedMark: hasMarks ? legMarks.reduce((total, { mark }) => total + mark, 0) : Number.NaN,
+      optionPnlUsd,
+      hedgePnlUsd,
+      totalPnlUsd: Number.isFinite(optionPnlUsd) ? optionPnlUsd + hedgePnlUsd : Number.NaN,
+      hedgeQuantity,
+      hedgeTrade,
+    };
+  });
+};
+
+export function computeBreakEvens(plan) {
+  if (!plan || !Array.isArray(plan.legs) || plan.legs.length === 0) return null;
+  const cashflow = plan.entryOptionCashflowUsd;
+  if (!Number.isFinite(cashflow)) return null;
+
+  // We solve: sum(leg.quantity * intrinsic(S)) + cashflow === 0
+  // i.e. payoff(S) === -cashflow
+  const target = -cashflow;
+
+  const legs = plan.legs.filter((l) => Number.isFinite(l.strike) && (l.optionType === "C" || l.optionType === "P"));
+
+  const payoff = (S) => {
+    let sum = 0;
+    for (const leg of legs) {
+      const intr = leg.optionType === "C"
+        ? Math.max(0, S - leg.strike)
+        : Math.max(0, leg.strike - S);
+      sum += (Number(leg.quantity) || 0) * intr;
+    }
+    return sum;
+  };
+
+  const strikes = legs.map((l) => l.strike);
+  const minK = Math.min(...strikes);
+  const maxK = Math.max(...strikes);
+  const center = Number.isFinite(plan.entryIndexPrice) ? plan.entryIndexPrice : (minK + maxK) / 2;
+
+  // Wide search range
+  const low = Math.min(minK * 0.3, center * 0.4, 1000);
+  const high = Math.max(maxK * 2.5, center * 2.0, 300000);
+  const steps = 600;
+
+  let prevS = low;
+  let prevVal = payoff(prevS) - target;
+
+  const roots = [];
+
+  for (let i = 1; i <= steps; i++) {
+    const s = low + ((high - low) * i) / steps;
+    const val = payoff(s) - target;
+    if (prevVal * val < 0 || (prevVal === 0 && val !== 0)) {
+      // linear interpolate root
+      const root = prevS - (prevVal * (s - prevS)) / (val - prevVal || 1);
+      if (Number.isFinite(root) && root > 0) roots.push(root);
+    }
+    prevS = s;
+    prevVal = val;
+  }
+
+  if (roots.length === 0) {
+    // No crossing found. Could be always in the money or out.
+    // Return nulls; caller can decide.
+    return { lower: null, upper: null };
+  }
+
+  roots.sort((a, b) => a - b);
+
+  // Dedup close roots
+  const unique = [];
+  for (const r of roots) {
+    if (!unique.length || Math.abs(r - unique[unique.length - 1]) > 1) unique.push(r);
+  }
+
+  let lower = unique[0] ?? null;
+  let upper = unique[unique.length - 1] ?? null;
+
+  // For single-root cases (directional), assign appropriately
+  if (unique.length === 1) {
+    // If payoff at very low S suggests we need higher S to break even
+    const lowPay = payoff(low);
+    if (lowPay < target) {
+      lower = null;
+      upper = unique[0];
+    } else {
+      lower = unique[0];
+      upper = null;
+    }
+  }
+
+  // Clamp obviously bad values
+  const reasonableMin = Math.max(100, center * 0.1);
+  const reasonableMax = center * 4;
+  if (lower != null && (lower < reasonableMin || lower > reasonableMax)) lower = null;
+  if (upper != null && (upper < reasonableMin || upper > reasonableMax)) upper = null;
+
+  return { lower, upper };
+}
+
 const buildHedgePnlByCycle = ({ entryPlan, quotes, indexRows, config }) => {
   const hedgePnlByCycle = new Map(entryPlan.map(p => [p.cycle, 0]));
   if (!config.hedgeEnabled) return { hedgePnlByCycle };
@@ -389,12 +635,17 @@ const buildHedgePnlByCycle = ({ entryPlan, quotes, indexRows, config }) => {
       const ts = ht.getTime() / 1000;
       const isExit = ts === plan.exitTs;
       const idx = indexByTs.get(ts);
-      const cq = qmap.get(`${ts}|${plan.callInstrument}`);
-      const pq = qmap.get(`${ts}|${plan.putInstrument}`);
-      const cd = isExit ? 0 : cq?.delta;
-      const pd = isExit ? 0 : pq?.delta;
-      const has = Number.isFinite(cd) && Number.isFinite(pd);
-      const od = has ? plan.callQty * cd + plan.putQty * pd : null;
+      const legQuotes = plan.legs.map((leg) => ({
+        leg,
+        quote: qmap.get(`${ts}|${leg.instrumentName}`),
+      }));
+      const has = isExit || legQuotes.every(({ quote }) => Number.isFinite(quote?.delta));
+      const od = has
+        ? (isExit ? 0 : legQuotes.reduce(
+            (delta, { leg, quote }) => delta + leg.quantity * quote.delta,
+            0,
+          ))
+        : null;
       const tq = has ? -od : prevQty;
       const price = idx?.indexPrice;
       if (prevPrice != null && Number.isFinite(prevQty) && Number.isFinite(price)) {
@@ -416,19 +667,18 @@ const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, indexRows, quotes, conf
   let endingEquityUsd = 0;
   return [...entryPlan].sort((a, b) => a.entryTs - b.entryTs).map((plan) => {
     const settlementIndexPrice = indexByTs.get(plan.exitTs)?.indexPrice ?? Number.NaN;
-    const callPayoffUsd = Math.max(settlementIndexPrice - plan.callStrike, 0);
-    const putPayoffUsd = Math.max(plan.putStrike - settlementIndexPrice, 0);
-    const settlementStraddle = callPayoffUsd + putPayoffUsd;
-    const callExitQuote = quoteByTimeInstrument.get(`${plan.exitTs}|${plan.callInstrument}`);
-    const putExitQuote = quoteByTimeInstrument.get(`${plan.exitTs}|${plan.putInstrument}`);
-    const callExitValue = plan.exitAtExpiry
-      ? callPayoffUsd
-      : callExitQuote?.markPrice ?? Number.NaN;
-    const putExitValue = plan.exitAtExpiry
-      ? putPayoffUsd
-      : putExitQuote?.markPrice ?? Number.NaN;
-    const optionSettlementValueUsd =
-      plan.callQty * callExitValue + plan.putQty * putExitValue;
+    const legExitValues = plan.legs.map((leg) => {
+      const expiresAtExit = leg.expirationTs === plan.exitTs;
+      const payoff = leg.optionType === "C"
+        ? Math.max(settlementIndexPrice - leg.strike, 0)
+        : Math.max(leg.strike - settlementIndexPrice, 0);
+      const quote = quoteByTimeInstrument.get(`${plan.exitTs}|${leg.instrumentName}`);
+      return expiresAtExit ? payoff : quote?.markPrice ?? Number.NaN;
+    });
+    const optionSettlementValueUsd = plan.legs.reduce(
+      (value, leg, index) => value + leg.quantity * legExitValues[index],
+      0,
+    );
     const shortOptionPnlUsd =
       plan.entryOptionCashflowUsd + optionSettlementValueUsd;
     const hedgePnlUsd = hedgePnlByCycle.get(plan.cycle) ?? 0;
@@ -439,9 +689,9 @@ const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, indexRows, quotes, conf
       shortOptionPnlUsd,
       hedgePnlUsd,
       cyclePnlUsd,
-      cycleReturnOnNotional: cyclePnlUsd / config.notionalUsd,
+      cycleReturnOnNotional: cyclePnlUsd / plan.investmentUsd,
       endingEquityUsd,
-      closed: Number.isFinite(settlementIndexPrice),
+      closed: Number.isFinite(settlementIndexPrice) && legExitValues.every(Number.isFinite),
     };
   });
 };
@@ -465,8 +715,10 @@ export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, c
   c.hedgeEnabled = c.hedgeEnabled !== false;
   c.hedgeIntervalHours = Math.max(1, Math.min(24, Math.round(Number(c.hedgeIntervalHours) || 24)));
   c.holdToExpiry = c.holdToExpiry !== false;
-  c.exitHoldDays = Math.max(1, Math.round(Number(c.exitHoldDays) || 7));
+  c.exitHoldDays = Math.max(1, Math.round(Number(c.exitHoldDays) || 30));
   c.longOption = !!c.longOption;
+  c.sizingMode = c.sizingMode === "btc" ? "btc" : "notional";
+  c.btcQuantity = Math.max(0, Number(c.btcQuantity) || 1);
   c.targetDelta = Math.abs(Number(c.targetDelta) || 0.25);
   const config = c;
   const p = preparedData || prepareBacktestData({ indexRows, markRows, config });
@@ -528,6 +780,8 @@ export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, c
       annualizedCyclesPerYear,
       meanEntryDteDays: mean(entryDtes),
       notionalUsdPerCycle: config.notionalUsd,
+      sizingMode: config.sizingMode,
+      btcQuantity: config.btcQuantity,
     },
   };
 };

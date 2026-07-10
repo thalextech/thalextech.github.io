@@ -6,6 +6,7 @@ import { exportTitledChart } from "../lib/exportTitledChart.js";
 const props = defineProps({
   rows: { type: Array, default: () => [] },
 });
+const emit = defineEmits(["select"]);
 
 const chartRef = ref(null);
 
@@ -127,20 +128,27 @@ const draw = () => {
       .attr("y", top)
       .attr("width", bw)
       .attr("height", h)
-      .attr("fill", fill);
+      .attr("fill", fill)
+      .attr("tabindex", 0)
+      .attr("role", "button")
+      .attr("aria-label", `${formatDate(entryDate(row))}: ${formatUsd(v)}. Open hourly detail`)
+      .style("cursor", "pointer")
+      .on("click", () => emit("select", row))
+      .on("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") emit("select", row);
+      })
+      .append("title")
+      .text(`${formatDate(entryDate(row))} · ${formatUsd(v)} · Click for hourly detail`);
   });
 
-  // Cumulative step line
-  let d = `M ${x(0)} ${y(rows[0].cumulativeDeltaHedgedPnl || 0)}`;
-  for (let i = 1; i < rows.length; i++) {
-    const prevY = y(rows[i-1].cumulativeDeltaHedgedPnl || 0);
-    const currY = y(rows[i].cumulativeDeltaHedgedPnl || 0);
-    d += ` L ${x(i)} ${prevY}`;
-    d += ` L ${x(i)} ${currY}`;
-  }
+  const cumulativeLine = d3.line()
+    .x((_, index) => x(index))
+    .y((row) => y(row.cumulativeDeltaHedgedPnl || 0))
+    .curve(d3.curveStepBefore);
 
   svg.append("path")
-    .attr("d", d)
+    .datum(rows)
+    .attr("d", cumulativeLine)
     .attr("fill", "none")
     .attr("stroke", "#e8eaed")
     .attr("stroke-width", 1.5);
