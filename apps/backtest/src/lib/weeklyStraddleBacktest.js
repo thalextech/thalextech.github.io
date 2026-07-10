@@ -25,8 +25,9 @@ export const DEFAULT_BACKTEST_CONFIG = {
   entryWeekday: 5,
   hedgeEnabled: true,
   hedgeIntervalHours: 24,
-  holdToExpiry: true,
+  holdToExpiry: false,
   exitHoldDays: 7,
+  longOption: false,
   targetDteDays: 7,
   minWeeklyDteDays: 5,
   maxWeeklyDteDays: 10,
@@ -288,9 +289,15 @@ const buildEntryPlan = ({ quotes, entryExpirations, config }) => {
       group.calls[0]?.indexPrice ?? [...group.putsByStrike.values()][0]?.indexPrice;
     const selected = selectLegs({ group, entryIndexPrice, config });
     if (selected) {
+      let callQty = selected.callQty;
+      let putQty = selected.putQty;
+      if (config.longOption) {
+        callQty = -callQty;
+        putQty = -putQty;
+      }
       const entryOptionCashflowUsd = -(
-        selected.callQty * selected.call.markPrice +
-        selected.putQty * selected.put.markPrice
+        callQty * selected.call.markPrice +
+        putQty * selected.put.markPrice
       );
       const requestedExitTime = config.holdToExpiry
         ? entry.expiration
@@ -325,9 +332,9 @@ const buildEntryPlan = ({ quotes, entryExpirations, config }) => {
         putStrike: selected.put.strike,
         entryIndexPrice,
         notionalUsd: config.notionalUsd,
-        optionQuantityBtc: Math.abs(selected.callQty),
-        callQty: selected.callQty,
-        putQty: selected.putQty,
+        optionQuantityBtc: Math.abs(callQty),
+        callQty,
+        putQty,
         callInstrument: selected.call.instrumentName,
         putInstrument: selected.put.instrumentName,
         callEntryPrice: selected.call.markPrice,
@@ -459,6 +466,7 @@ export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, c
   c.hedgeIntervalHours = Math.max(1, Math.min(24, Math.round(Number(c.hedgeIntervalHours) || 24)));
   c.holdToExpiry = c.holdToExpiry !== false;
   c.exitHoldDays = Math.max(1, Math.round(Number(c.exitHoldDays) || 7));
+  c.longOption = !!c.longOption;
   c.targetDelta = Math.abs(Number(c.targetDelta) || 0.25);
   const config = c;
   const p = preparedData || prepareBacktestData({ indexRows, markRows, config });

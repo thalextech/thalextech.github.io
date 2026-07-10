@@ -68,8 +68,9 @@ const ui = reactive({
   entryHourUtc: 8,
   hedgeEnabled: true,
   hedgeIntervalHours: 24,
-  holdToExpiry: true,
+  holdToExpiry: false,
   exitHoldDays: 7,
+  longOption: false,
 });
 
 const maxExitHoldDays = computed(() => {
@@ -258,10 +259,11 @@ const railGroups = computed(() => {
   const entryLbl = `${wd.label} ${String(ui.entryHourUtc).padStart(2,"0")}:00 UTC`;
   const hedgeLbl = !ui.hedgeEnabled ? "Off" : ui.hedgeIntervalHours === 24 ? `Daily ${String(ui.entryHourUtc).padStart(2,"0")}:00` : `Every ${ui.hedgeIntervalHours}h`;
   const hedge2 = ui.hedgeEnabled ? "Perp · no fees" : "Option-only PnL";
+  const side = ui.longOption ? "Long" : "Short";
   const exit1 = ui.holdToExpiry ? "Hold to expiry" : `Roll every ${ui.exitHoldDays}D`;
   const exit2 = ui.holdToExpiry ? "Use selected expiry" : `Max ${mat.value}D`;
   return [
-    { key: "instrument", label: "Instrument", primary: `BTC · ${struc.label}`, secondary: `${mat.label} · ${opt}` },
+    { key: "instrument", label: "Instrument", primary: `BTC · ${side} ${struc.label}`, secondary: `${mat.label} · ${opt}` },
     { key: "entry", label: "Entry", primary: entryLbl, secondary: "Filter: none" },
     { key: "hedging", label: "Hedging", primary: hedgeLbl, secondary: hedge2 },
     { key: "exit", label: "Exit", primary: exit1, secondary: exit2 },
@@ -293,8 +295,9 @@ const instrumentPill = computed(() => {
   const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
   const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
   const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
+  const side = ui.longOption ? "Long" : "Short";
   const opt = ui.structure === "straddle" ? "ATM" : `${d.label} ${s.label}`;
-  return `BTC · ${s.label} · ${m.label} ${opt}`;
+  return `BTC · ${side} ${s.label} · ${m.label} ${opt}`;
 });
 
 const structureLabel = computed(() => {
@@ -365,11 +368,12 @@ const hedgePerformanceRows = computed(() => result.value?.cycleSummary || []);
 const chartTitle = computed(() => {
   const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
   const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
-  let strategy = `Short straddle ${m.label}`;
+  const side = ui.longOption ? "Long" : "Short";
+  let strategy = `${side} straddle ${m.label}`;
   if (ui.structure === "strangle") {
-    strategy = `Short strangle ${m.label} (${d.label})`;
+    strategy = `${side} strangle ${m.label} (${d.label})`;
   } else if (ui.structure === "risk_reversal") {
-    strategy = `Risk reversal ${m.label} (${d.label} call short / put long)`;
+    strategy = `Risk reversal ${m.label} (${d.label} call ${ui.longOption ? 'long' : 'short'} / put ${ui.longOption ? 'short' : 'long'})`;
   }
   const hedge = ui.hedgeEnabled
     ? `hedged every ${ui.hedgeIntervalHours}h`
@@ -417,6 +421,7 @@ const buildConfig = (overrides = {}) => {
     hedgeIntervalHours: Number(ui.hedgeIntervalHours),
     holdToExpiry: ui.holdToExpiry,
     exitHoldDays: Number(ui.exitHoldDays),
+    longOption: ui.longOption,
     ...overrides,
   };
 };
@@ -559,6 +564,7 @@ watch(
     ui.hedgeIntervalHours,
     ui.holdToExpiry,
     ui.exitHoldDays,
+    ui.longOption,
   ],
   handleMaturityChange,
 );
@@ -594,6 +600,7 @@ watch(
     ui.hedgeIntervalHours,
     ui.holdToExpiry,
     ui.exitHoldDays,
+    ui.longOption,
   ],
   () => {
     sweepResults.value = [];
@@ -640,10 +647,27 @@ onMounted(loadBacktest);
         <div class="pill" style="position: relative;" @click="toggleMenu('instrument')">
           <span class="pillLabel">Instrument</span>
           <span class="pillValue">{{ instrumentPill }}</span>
-          <div v-if="openMenu === 'instrument'" class="dropdown" style="min-width: 260px;" @click.stop>
+          <div v-if="openMenu === 'instrument'" class="dropdown instrument-dropdown" @click.stop>
+            <div class="inst-field">
+              <label class="inst-label">Side</label>
+              <div class="inst-choices side-choices">
+                <div
+                  :class="['inst-choice', { active: !ui.longOption }]"
+                  @click="ui.longOption = false"
+                >
+                  Short
+                </div>
+                <div
+                  :class="['inst-choice', { active: ui.longOption }]"
+                  @click="ui.longOption = true"
+                >
+                  Long
+                </div>
+              </div>
+            </div>
             <div class="inst-field">
               <label class="inst-label">Structure</label>
-              <div class="inst-choices">
+              <div class="inst-choices structure-choices">
                 <div
                   v-for="s in STRUCTURE_OPTIONS"
                   :key="s.value"
@@ -656,7 +680,7 @@ onMounted(loadBacktest);
             </div>
             <div class="inst-field">
               <label class="inst-label">Maturity</label>
-              <div class="inst-choices">
+              <div class="inst-choices maturity-choices">
                 <div
                   v-for="m in MATURITY_OPTIONS"
                   :key="m.value"
@@ -669,7 +693,7 @@ onMounted(loadBacktest);
             </div>
             <div class="inst-field">
               <label class="inst-label">Delta</label>
-              <div class="inst-choices">
+              <div class="inst-choices delta-choices">
                 <div
                   v-for="d in DELTA_OPTIONS"
                   :key="d.value"
@@ -1073,6 +1097,20 @@ onMounted(loadBacktest);
   z-index: 10;
 }
 
+.instrument-dropdown {
+  min-width: 0;
+  left: -1px;
+  right: -1px;
+}
+
+/* Make the content inside instrument dropdown scale horizontally to the new width */
+.instrument-dropdown .inst-field {
+  width: 100%;
+}
+.instrument-dropdown .inst-choices {
+  width: 100%;
+}
+
 /* Ensure no inner borders on dropdown content */
 .dropdown .freq-toggle-row,
 .dropdown .freq-row__label,
@@ -1183,6 +1221,65 @@ onMounted(loadBacktest);
   gap: 4px;
 }
 
+.side-choices {
+  gap: 0;
+}
+.side-choices .inst-choice {
+  flex: 1;
+  border-radius: 0;
+}
+.side-choices .inst-choice:first-child {
+  border-radius: 3px 0 0 3px;
+}
+.side-choices .inst-choice:last-child {
+  border-radius: 0 3px 3px 0;
+  border-left: none;
+}
+.side-choices .inst-choice + .inst-choice {
+  margin-left: -1px;
+}
+
+.delta-choices {
+  gap: 0;
+}
+.delta-choices .inst-choice {
+  flex: 1;
+  border-radius: 0;
+}
+.delta-choices .inst-choice:first-child {
+  border-radius: 3px 0 0 3px;
+}
+.delta-choices .inst-choice:last-child {
+  border-radius: 0 3px 3px 0;
+  border-left: none;
+}
+.delta-choices .inst-choice + .inst-choice {
+  margin-left: -1px;
+}
+
+.structure-choices,
+.maturity-choices {
+  gap: 0;
+}
+.structure-choices .inst-choice,
+.maturity-choices .inst-choice {
+  flex: 1;
+  border-radius: 0;
+}
+.structure-choices .inst-choice:first-child,
+.maturity-choices .inst-choice:first-child {
+  border-radius: 3px 0 0 3px;
+}
+.structure-choices .inst-choice:last-child,
+.maturity-choices .inst-choice:last-child {
+  border-radius: 0 3px 3px 0;
+  border-left: none;
+}
+.structure-choices .inst-choice + .inst-choice,
+.maturity-choices .inst-choice + .inst-choice {
+  margin-left: -1px;
+}
+
 .weekday-choices .inst-choice {
   font-size: 10px;
   padding: 4px 2px;
@@ -1195,7 +1292,7 @@ onMounted(loadBacktest);
   font-size: 11px;
   background: #0a0b0e;
   color: #e8eaed;
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.18);
   border-radius: 3px;
   cursor: pointer;
   transition: all 0.1s;
