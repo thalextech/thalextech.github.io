@@ -1,6 +1,7 @@
 <script setup>
 import * as d3 from "d3";
 import { onMounted, onUnmounted, ref, watch } from "vue";
+import { exportTitledChart } from "../lib/exportTitledChart.js";
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
@@ -8,6 +9,7 @@ const props = defineProps({
 
 const chartRef = ref(null);
 
+const CHART_FONT_FAMILY = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
 const formatUsd = d3.format("$,.0f");
 const formatDate = d3.utcFormat("%d %b %Y");
 
@@ -25,14 +27,14 @@ const draw = () => {
   const bounds = element.getBoundingClientRect();
   const width = Math.max(900, bounds.width || 1360);
   const allocatedHeight = Math.max(300, bounds.height || 470);
-  const height = allocatedHeight * 0.85;  // slightly less than full to leave breathing room
+  const height = allocatedHeight * 0.95;
 
   // Plot area: use most of the height for the chart, small bottom for x labels
-  const plotTop = 45;   // a bit more padding from the top
+  const plotTop = 20;
   const plotBottom = height - 30;   // slightly less vertical space for the plot
 
   const X0 = 55;
-  const X1 = width - 15;
+  const X1 = width - 40;
 
   const svg = d3
     .select(element)
@@ -40,6 +42,7 @@ const draw = () => {
     .attr("viewBox", `0 0 ${width} ${height}`)
     .attr("width", "100%")
     .attr("height", "100%")
+    .attr("font-family", CHART_FONT_FAMILY)
     .attr("role", "img")
     .attr("aria-label", "Weekly delta hedged straddle backtest chart");
 
@@ -162,7 +165,32 @@ onUnmounted(() => {
   window.removeEventListener("resize", draw);
 });
 
-watch(() => props.rows, draw, { deep: true });
+watch(() => props.rows, draw);
+
+function exportPng({
+  filename = "backtest.png",
+  scale = 3,
+  padding = 24,
+  title = "",
+  subtitle = "",
+  source = "",
+} = {}) {
+  const container = chartRef.value;
+  const svgEl = container ? container.querySelector("svg") : null;
+  if (!svgEl) return;
+  exportTitledChart({
+    svgEl,
+    title,
+    subtitle,
+    source,
+    filename,
+    scale,
+    padding,
+    background: "#0a0b0e",
+  });
+}
+
+defineExpose({ exportPng });
 </script>
 
 <template>
@@ -180,7 +208,7 @@ watch(() => props.rows, draw, { deep: true });
 .chart :deep(svg) {
   display: block;
   width: 100%;
-  height: 85%;
-  margin-top: 8px; /* a bit more padding from the top */
+  height: 95%;
+  margin-top: 2px;
 }
 </style>

@@ -1,5 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from "vue";
+import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
+import SweepResultsChart from "./components/SweepResultsChart.vue";
 import WeeklyBacktestChart from "./components/WeeklyBacktestChart.vue";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
 import {
@@ -77,6 +79,12 @@ const maxExitHoldDays = computed(() => {
 
 const openMenu = ref(null);
 
+// Legacy state for old hover/editing pill logic (kept to prevent Vue warnings during render)
+const editingPill = ref(null);
+const showHedgePanel = ref(false);
+const hoveredPill = ref(null);
+const hoveredControl = ref(null);
+
 function toggleMenu(name) {
   openMenu.value = openMenu.value === name ? null : name;
 }
@@ -103,6 +111,7 @@ watch(() => ui.hedgeIntervalHours, (val) => {
 });
 
 let hedgeDebounce = null;
+let runDebounce = null;
 
 function updateHedgeInterval(val) {
   const numVal = Number(val);
@@ -240,19 +249,6 @@ const sweepConfigs = computed(() => {
   }));
 });
 
-const sweepSharpeExtent = computed(() => {
-  const values = sweepResults.value.map(c => c.sharpe).filter(Number.isFinite);
-  return values.length ? [Math.min(...values), Math.max(...values)] : [0, 0];
-});
-
-const sweepCellStyle = (cell) => {
-  const [minS, maxS] = sweepSharpeExtent.value;
-  const v = Number.isFinite(cell.sharpe) ? cell.sharpe : minS;
-  const r = Math.max(0.001, maxS - minS);
-  const i = Math.max(0, Math.min(1, (v - minS) / r));
-  return { background: `hsl(${8 + i * 150} 48% ${22 + i * 22}%)` };
-};
-
 const railGroups = computed(() => {
   const mat = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
   const struc = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
@@ -277,7 +273,18 @@ const strategyTitle = computed(() => {
   const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
   const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
   const opt = ui.structure === "straddle" ? "ATM" : d.label;
-  const h = ui.hedgeEnabled ? `${ui.hedgeIntervalHours}h Delta Hedge` : "Unhedged";
+  let h = "Unhedged";
+  if (ui.hedgeEnabled) {
+    const hrs = ui.hedgeIntervalHours;
+    if (hrs === 24) {
+      h = "Hedged daily";
+    } else {
+      const d = hrs / 24;
+      const dStr = d.toFixed(hrs >= 12 ? 1 : 2).replace(/\.?0+$/, '');
+      const plural = parseFloat(dStr) === 1 ? '' : 's';
+      h = `Hedged every ${dStr} day${plural}`;
+    }
+  }
   return `${m.label} ${opt} ${s.label} - ${h}`;
 });
 
@@ -310,6 +317,11 @@ const deltaLabel = computed(() => {
 const entryPill = computed(() => {
   const wd = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
   return `${wd.label.slice(0,3)} ${String(ui.entryHourUtc).padStart(2,'0')}:00`;
+});
+
+const selectedWeekdayLabel = computed(() => {
+  const wd = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
+  return wd.label;
 });
 
 const hedgePill = computed(() => {
@@ -345,24 +357,46 @@ const maxDdValue = computed(() => {
 });
 
 // Chart data and titles
+const chartRef = ref(null);
+const chartMode = ref("weekly");
 const chartRows = computed(() => result.value?.weeklyChartData || []);
+const hedgePerformanceRows = computed(() => result.value?.cycleSummary || []);
 
 const chartTitle = computed(() => {
   const m = MATURITY_OPTIONS.find(o => o.value === Number(ui.maturityDays)) || MATURITY_OPTIONS[0];
-  const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
   const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
-  const opt = ui.structure === "straddle" ? "ATM" : d.label;
-  const hedgeLabel = ui.hedgeEnabled ? "Hedged" : "Unhedged";
-  return `${m.label} ${opt} ${s.label} — ${hedgeLabel}`;
+  let strategy = `Short straddle ${m.label}`;
+  if (ui.structure === "strangle") {
+    strategy = `Short strangle ${m.label} (${d.label})`;
+  } else if (ui.structure === "risk_reversal") {
+    strategy = `Risk reversal ${m.label} (${d.label} call short / put long)`;
+  }
+  const hedge = ui.hedgeEnabled
+    ? `hedged every ${ui.hedgeIntervalHours}h`
+    : "unhedged";
+  return `${strategy}, ${hedge}`;
 });
 
 const chartSubtitle = computed(() => {
-  if (!result.value) return "";
-  const start = new Date(result.value.summary?.start || "2025-06-01");
+  const weekday = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
+  const entryTime = `${String(ui.entryHourUtc).padStart(2, "0")}:00 UTC`;
+  const exit = ui.holdToExpiry
+    ? "Held to expiry"
+    : `Rolled after ${ui.exitHoldDays}D`;
+  return `Entered ${weekday.label} at ${entryTime} · ${exit}`;
+});
+
+const chartSourceSubtitle = computed(() => {
+  if (!result.value) return "Source: Thalex";
+  const start = DEFAULT_BACKTEST_CONFIG.start;
   const end = result.value.dataEnd || new Date();
-  const startLabel = start.toLocaleString("en-US", { month: "short", year: "2-digit" });
-  const endLabel = end.toLocaleString("en-US", { month: "short", year: "2-digit" });
-  return `Bars show weekly hedged PnL; line shows cumulative hedged PnL · ${startLabel} – ${endLabel} · Source: Thalex`;
+  const formatPeriodDate = (date) => date.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+  return `Source: Thalex · Backtest: ${formatPeriodDate(start)} – ${formatPeriodDate(end)}`;
 });
 
 const buildConfig = (overrides = {}) => {
@@ -410,7 +444,8 @@ const applySweepResult = (cell) => {
     ui.targetDelta = cell.config.targetDelta;
   }
   mode.value = "single";
-  runCurrent();
+  // Let the ui watcher + handleMaturityChange trigger the correct load + run
+  // based on whether hours changed for the selected config.
 };
 
 const runSingleConfigForSweep = async (cell, index, total) => {
@@ -443,6 +478,7 @@ const runSingleConfigForSweep = async (cell, index, total) => {
 const runSweep = async () => {
   if (sweepRunning.value) return;
   sweepRunning.value = true;
+  state.loading = true;
   state.error = "";
   sweepResults.value = [];
   try {
@@ -457,6 +493,7 @@ const runSweep = async () => {
     state.error = error?.message || "Sweep failed";
   } finally {
     sweepRunning.value = false;
+    state.loading = false;
   }
 };
 
@@ -495,11 +532,20 @@ const loadBacktest = async () => {
 
 const handleMaturityChange = () => {
   state.error = "";
-  if (!preparedData.value || requiredHoursKey.value !== loadedHoursKey) {
-    loadBacktest();
+  if (mode.value === 'sweep') {
+    // Sweep mode is manual; changing config doesn't auto re-sweep
     return;
   }
-  runCurrent();
+  clearTimeout(runDebounce);
+  state.loading = true;
+  runDebounce = setTimeout(() => {
+    if (!preparedData.value || requiredHoursKey.value !== loadedHoursKey) {
+      loadBacktest();
+    } else {
+      runCurrent();
+      state.loading = false;
+    }
+  }, 80);
 };
 
 watch(
@@ -521,6 +567,10 @@ watch(() => ui.maturityDays, () => {
   if (ui.exitHoldDays > maxExitHoldDays.value) {
     ui.exitHoldDays = maxExitHoldDays.value;
   }
+});
+
+watch(() => ui.hedgeEnabled, (enabled) => {
+  if (!enabled) chartMode.value = "weekly";
 });
 
 watch(
@@ -551,6 +601,28 @@ watch(
   },
 );
 
+function handleSavePng() {
+  if (!chartRef.value) return;
+  const date = new Date().toISOString().slice(0, 10);
+  const filename = chartMode.value === "hedge"
+    ? `hedge-performance-${date}.png`
+    : `backtest-${date}.png`;
+  chartRef.value.exportPng({
+    filename,
+    scale: 3,
+    title: chartTitle.value,
+    subtitle: chartSubtitle.value,
+    source: chartSourceSubtitle.value,
+  });
+}
+
+function switchToSweep() {
+  mode.value = 'sweep';
+  if (!sweepResults.value.length && !sweepRunning.value) {
+    runSweep();
+  }
+}
+
 onMounted(loadBacktest);
 </script>
 
@@ -558,7 +630,9 @@ onMounted(loadBacktest);
   <main class="app">
     <!-- Top bar -->
     <div class="topBar">
-      <div class="wordmark">Backtest</div>
+      <div class="wordmark">
+        Backtest<span v-if="state.loading" class="loading-dots"></span>
+      </div>
       <div class="divider"></div>
 
       <div class="configPills">
@@ -613,27 +687,33 @@ onMounted(loadBacktest);
         <div class="pill" style="position: relative;" @click="toggleMenu('entry')">
           <span class="pillLabel">Entry</span>
           <span class="pillValue">{{ entryPill }}</span>
-          <div v-if="openMenu === 'entry'" class="dropdown" style="min-width: 380px;" @click.stop>
+          <div v-if="openMenu === 'entry'" class="dropdown entry-dropdown" @click.stop>
             <label class="inst-label" style="margin-bottom: 3px;">Weekday</label>
             <div class="inst-choices weekday-choices">
               <div
                 v-for="w in WEEKDAY_OPTIONS"
                 :key="w.value"
                 :class="['inst-choice', { active: Number(ui.entryWeekday) === w.value }]"
-                @click="ui.entryWeekday = w.value; openMenu = null"
+                @click="ui.entryWeekday = w.value"
               >
                 {{ w.label.slice(0,3) }}
               </div>
             </div>
-            <div class="hour-grid">
-              <button
-                v-for="h in 24"
-                :key="h-1"
-                :class="{ active: ui.entryHourUtc === h-1 }"
-                @click="ui.entryHourUtc = h-1; openMenu = null"
-              >
-                {{ String(h-1).padStart(2, '0') }}
-              </button>
+            <div class="entry-picker">
+              <div class="entry-picker__header">
+                <span class="entry-picker__day">{{ selectedWeekdayLabel }}</span>
+                <span class="entry-picker__time">{{ String(ui.entryHourUtc).padStart(2,'0') }}:00</span>
+              </div>
+              <div class="hour-grid">
+                <button
+                  v-for="h in 24"
+                  :key="h-1"
+                  :class="{ active: ui.entryHourUtc === h-1 }"
+                  @click="ui.entryHourUtc = h-1; openMenu = null"
+                >
+                  {{ String(h-1).padStart(2, '0') }}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -720,7 +800,7 @@ onMounted(loadBacktest);
         <div
           class="segment"
           :class="{ active: mode === 'sweep' }"
-          @click="mode = 'sweep'"
+          @click="switchToSweep"
         >
           Sweep
         </div>
@@ -728,8 +808,8 @@ onMounted(loadBacktest);
     </div>
 
     <div class="main">
-      <!-- Left metrics column -->
-      <div class="metricsColumn">
+      <!-- Left metrics column (only in single mode) -->
+      <div v-if="mode === 'single'" class="metricsColumn">
         <div class="metric">
           <div class="metricValue">{{ finalPnlValue }}</div>
           <div class="metricLabel">FINAL PNL</div>
@@ -744,17 +824,82 @@ onMounted(loadBacktest);
         </div>
       </div>
 
-      <!-- Chart area -->
+      <!-- Chart area or Sweep panel -->
       <div class="chartColumn">
-        <div class="chartHeader">
-          <div class="chartTitle">{{ chartTitle }}</div>
-          <div class="chartSubtitle">{{ chartSubtitle }}</div>
-        </div>
+        <template v-if="mode === 'single'">
+          <div class="chartHeader">
+            <div class="chartTitleRow">
+              <div class="chartTitle">{{ chartTitle }}</div>
+              <button class="saveButton" type="button" @click="handleSavePng">Save PNG</button>
+            </div>
+            <div class="chartSubtitle">{{ chartSubtitle }}</div>
+            <div class="chartSourceSubtitle">{{ chartSourceSubtitle }}</div>
+          </div>
 
-        <WeeklyBacktestChart
-          :rows="chartRows"
-          :design-spec="true"
-        />
+          <WeeklyBacktestChart
+            v-if="chartMode === 'weekly'"
+            ref="chartRef"
+            :rows="chartRows"
+            :design-spec="true"
+          />
+          <HedgePerformanceChart
+            v-else
+            ref="chartRef"
+            :rows="hedgePerformanceRows"
+          />
+
+          <div v-if="ui.hedgeEnabled" class="chartModeToggle" role="group" aria-label="Chart view">
+            <button
+              type="button"
+              :class="{ active: chartMode === 'weekly' }"
+              :aria-pressed="chartMode === 'weekly'"
+              @click="chartMode = 'weekly'"
+            >
+              PnL by week
+            </button>
+            <button
+              type="button"
+              :class="{ active: chartMode === 'hedge' }"
+              :aria-pressed="chartMode === 'hedge'"
+              @click="chartMode = 'hedge'"
+            >
+              Hedge perf
+            </button>
+          </div>
+        </template>
+
+        <div v-else class="sweepPanel">
+          <div class="sweepToolbar">
+            <select v-model="sweepDimension" class="sweepSelect" :disabled="sweepRunning">
+              <option v-for="opt in SWEEP_DIMENSION_OPTIONS" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <button
+                class="saveButton"
+                type="button"
+                @click="runSweep"
+                :disabled="sweepRunning || sweepConfigs.length === 0"
+              >
+                {{ sweepRunning ? sweepProgress || 'Running...' : 'Run Sweep' }}
+              </button>
+              <div v-if="sweepResults.length" class="sweepAnnotation">
+                {{ sweepResults.length }} results
+              </div>
+            </div>
+          </div>
+
+          <SweepResultsChart
+            v-if="sweepResults.length"
+            :rows="sweepResults"
+            @select="applySweepResult"
+          />
+
+          <div v-else class="sweepEmpty">
+            {{ sweepRunning ? (sweepProgress || 'Running sweep...') : 'Select a dimension and run the sweep to explore variations.' }}
+          </div>
+        </div>
       </div>
     </div>
   </main>
@@ -804,6 +949,26 @@ onMounted(loadBacktest);
   width: 1px;
   height: 20px;
   background: rgba(255,255,255,0.08);
+}
+
+.loading-dots {
+  margin-left: 3px;
+  color: #7dd3fc;
+  font-size: 12px;
+  font-weight: normal;
+  vertical-align: middle;
+  display: inline-block;
+}
+
+.loading-dots::after {
+  content: '.';
+  animation: loading-dots 1.2s steps(1, end) infinite;
+}
+
+@keyframes loading-dots {
+  0% { content: '.'; }
+  33% { content: '..'; }
+  66% { content: '...'; }
 }
 
 .configPills {
@@ -917,39 +1082,80 @@ onMounted(loadBacktest);
 
 /* Base dropdown selects are styled via the .dropdown select rule above */
 
+.entry-dropdown {
+  min-width: 340px;
+  background: #0f0f12;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 18px;
+  padding: 10px;
+  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.8),
+              0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.entry-picker {
+  margin-top: 10px;
+  background: transparent;
+}
+
+.entry-picker__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: #131316;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  margin: 2px 2px 8px;
+}
+
+.entry-picker__day {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e7e7ea;
+}
+
+.entry-picker__time {
+  font-size: 12px;
+  font-weight: 500;
+  color: #71717a;
+  font-variant-numeric: tabular-nums;
+}
+
 .hour-grid {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
-  margin-top: 10px;
+  padding: 4px 2px 2px;
 }
 
 .hour-grid button {
-  padding: 14px 2px;
-  font-size: 16px;
-  background: #111114;
-  color: #e8eaed;
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 4px;
-  cursor: pointer;
-  text-align: center;
-  transition: all 0.1s;
-  min-height: 42px;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 16px 0;
+  background: #131316;
+  color: #e7e7ea;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 11px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.12s, border-color 0.12s;
 }
 
 .hour-grid button:hover {
-  background: #222;
-  border-color: rgba(255,255,255,0.3);
+  background: #1a1a1f;
+  border-color: rgba(255, 255, 255, 0.16);
 }
 
 .hour-grid button.active {
-  background: #7dd3fc;
-  color: #000;
-  border-color: #7dd3fc;
-  font-weight: 600;
+  background: #f4f4f5;
+  color: #0a0a0b;
+  border-color: #f4f4f5;
+  font-weight: 700;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
 }
 
 .inst-field {
@@ -1285,7 +1491,7 @@ onMounted(loadBacktest);
   display: flex;
   align-items: stretch;
   gap: 8px;
-  padding: 20px 36px 20px 28px;
+  padding: 10px 36px 16px 28px;
   min-height: 0;
   height: 0; /* allow flex child to grow */
 }
@@ -1509,7 +1715,7 @@ onMounted(loadBacktest);
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
   min-height: 0;
 }
 
@@ -1517,11 +1723,13 @@ onMounted(loadBacktest);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
+  gap: 3px;
   flex: none;
 }
 
 .chartTitle {
+  width: 100%;
+  text-align: center;
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.1px;
@@ -1531,6 +1739,71 @@ onMounted(loadBacktest);
 .chartSubtitle {
   font-size: 12px;
   color: #70767d;
+}
+
+.chartSourceSubtitle {
+  font-size: 11px;
+  color: #565c63;
+}
+
+.chartTitleRow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 0 72px;
+}
+
+.chartTitleRow .saveButton {
+  position: absolute;
+  right: 0;
+}
+
+.chartModeToggle {
+  align-self: center;
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: rgba(255,255,255,0.05);
+}
+
+.chartModeToggle button {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #70767d;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.chartModeToggle button.active {
+  background: rgba(255,255,255,0.1);
+  color: #e8eaed;
+}
+
+.saveButton {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  background: transparent;
+  color: #70767d;
+  cursor: pointer;
+  transition: all 0.1s;
+}
+
+.saveButton:hover {
+  color: #7dd3fc;
+  border-color: rgba(125, 211, 252, 0.3);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .strategyHeader {
@@ -1629,51 +1902,6 @@ onMounted(loadBacktest);
 .sweepAnnotation strong {
   color: #f4f4f5;
   font-size: 18px;
-}
-
-.sweepGrid {
-  display: grid;
-  grid-template-columns: repeat(8, minmax(96px, 1fr));
-  gap: 8px;
-}
-
-.sweepGrid-delta_band {
-  grid-template-columns: repeat(3, minmax(140px, 1fr));
-}
-
-.sweepCell {
-  display: grid;
-  min-height: 92px;
-  align-content: center;
-  gap: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  border-radius: 8px;
-  color: #f4f4f5;
-  cursor: pointer;
-  padding: 12px;
-  text-align: left;
-}
-
-.sweepCell:hover {
-  border-color: rgba(255, 255, 255, 0.38);
-}
-
-.sweepCell span {
-  font-size: 13px;
-  font-weight: 750;
-}
-
-.sweepCell strong {
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.sweepCell em {
-  color: rgba(255, 255, 255, 0.78);
-  font-size: 12px;
-  font-style: normal;
-  font-weight: 650;
 }
 
 .sweepEmpty {
