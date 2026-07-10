@@ -1,7 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
-import SweepResultsChart from "./components/SweepResultsChart.vue";
 import WeeklyBacktestChart from "./components/WeeklyBacktestChart.vue";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
 import {
@@ -52,12 +51,6 @@ const HEDGE_FREQUENCY_OPTIONS = [
   { value: 8, label: "8h" },
   { value: 12, label: "12h" },
   { value: 24, label: "24h" },
-];
-
-const SWEEP_DIMENSION_OPTIONS = [
-  { value: "entry_hour", label: "Hour of day" },
-  { value: "hedge_frequency", label: "Hedge frequency" },
-  { value: "delta_band", label: "Delta band" },
 ];
 
 const ui = reactive({
@@ -149,11 +142,6 @@ const exitPct = computed(() => {
 });
 
 const activeRailGroup = ref("instrument");
-const mode = ref("single");
-const sweepDimension = ref("entry_hour");
-const sweepResults = ref([]);
-const sweepRunning = ref(false);
-const sweepProgress = ref("");
 
 const state = reactive({
   loading: true,
@@ -214,40 +202,6 @@ const maxDrawdown = computed(() => {
     drawdown = Math.min(drawdown, equity - peak);
   }
   return drawdown;
-});
-
-const sweepConfigs = computed(() => {
-  if (sweepDimension.value === "entry_hour") {
-    return HOUR_OPTIONS.map((hour) => ({
-      key: `hour-${hour.value}`,
-      label: hour.label,
-      overrides: {
-        entryHourUtc: hour.value,
-        hourlyOffset: hour.value,
-      },
-    }));
-  }
-
-  if (sweepDimension.value === "hedge_frequency") {
-    return HEDGE_FREQUENCY_OPTIONS.map((frequency) => ({
-      key: `hedge-${frequency.value}`,
-      label: frequency.label,
-      overrides: {
-        hedgeEnabled: true,
-        hedgeIntervalHours: frequency.value,
-      },
-    }));
-  }
-
-  if (ui.structure === "straddle") return [];
-
-  return DELTA_OPTIONS.map((delta) => ({
-    key: `delta-${delta.value}`,
-    label: delta.label,
-    overrides: {
-      targetDelta: delta.value,
-    },
-  }));
 });
 
 const railGroups = computed(() => {
@@ -427,79 +381,12 @@ const buildConfig = (overrides = {}) => {
 };
 
 const runCurrent = () => {
-  if (mode.value === "sweep") {
-    runSweep();
-    return;
-  }
   if (!preparedData.value) return;
   const config = buildConfig();
   result.value = runWeeklyStraddleBacktest({
     preparedData: preparedData.value,
     config,
   });
-};
-
-const applySweepResult = (cell) => {
-  if (sweepDimension.value === "entry_hour") {
-    ui.entryHourUtc = cell.config.entryHourUtc;
-  } else if (sweepDimension.value === "hedge_frequency") {
-    ui.hedgeEnabled = true;
-    ui.hedgeIntervalHours = cell.config.hedgeIntervalHours;
-  } else if (sweepDimension.value === "delta_band") {
-    ui.targetDelta = cell.config.targetDelta;
-  }
-  mode.value = "single";
-  // Let the ui watcher + handleMaturityChange trigger the correct load + run
-  // based on whether hours changed for the selected config.
-};
-
-const runSingleConfigForSweep = async (cell, index, total) => {
-  const config = buildConfig(cell.overrides);
-  sweepProgress.value = `${cell.label} (${index + 1}/${total})`;
-  const loaded = await loadThalexHistory({
-    start: config.start,
-    end: config.end,
-    hourlyOffsets: hoursFor(config.entryHourUtc, config.hedgeEnabled, config.hedgeIntervalHours),
-  });
-  const sweepPrepared = prepareBacktestData({
-    indexRows: loaded.indexRows,
-    markRows: loaded.markRows,
-    config,
-  });
-  const run = runWeeklyStraddleBacktest({
-    preparedData: sweepPrepared,
-    config,
-  });
-  return {
-    ...cell,
-    config,
-    sharpe: run.summary.sharpeRatio,
-    pnl: run.summary.finalEquityUsd,
-    cycles: run.counts.closedCycles,
-    returnOnNotional: run.summary.cumulativeReturnOnNotional,
-  };
-};
-
-const runSweep = async () => {
-  if (sweepRunning.value) return;
-  sweepRunning.value = true;
-  state.loading = true;
-  state.error = "";
-  sweepResults.value = [];
-  try {
-    const cells = sweepConfigs.value;
-    const nextResults = [];
-    for (const [index, cell] of cells.entries()) {
-      nextResults.push(await runSingleConfigForSweep(cell, index, cells.length));
-      sweepResults.value = [...nextResults];
-    }
-    sweepProgress.value = "";
-  } catch (error) {
-    state.error = error?.message || "Sweep failed";
-  } finally {
-    sweepRunning.value = false;
-    state.loading = false;
-  }
 };
 
 const loadBacktest = async () => {
@@ -537,10 +424,6 @@ const loadBacktest = async () => {
 
 const handleMaturityChange = () => {
   state.error = "";
-  if (mode.value === 'sweep') {
-    // Sweep mode is manual; changing config doesn't auto re-sweep
-    return;
-  }
   clearTimeout(runDebounce);
   state.loading = true;
   runDebounce = setTimeout(() => {
@@ -579,34 +462,7 @@ watch(() => ui.hedgeEnabled, (enabled) => {
   if (!enabled) chartMode.value = "weekly";
 });
 
-watch(
-  () => ui.structure,
-  () => {
-    if (ui.structure === "straddle" && sweepDimension.value === "delta_band") {
-      sweepDimension.value = "entry_hour";
-    }
-  },
-);
 
-watch(
-  () => [
-    sweepDimension.value,
-    ui.maturityDays,
-    ui.structure,
-    ui.targetDelta,
-    ui.entryWeekday,
-    ui.entryHourUtc,
-    ui.hedgeEnabled,
-    ui.hedgeIntervalHours,
-    ui.holdToExpiry,
-    ui.exitHoldDays,
-    ui.longOption,
-  ],
-  () => {
-    sweepResults.value = [];
-    sweepProgress.value = "";
-  },
-);
 
 function handleSavePng() {
   if (!chartRef.value) return;
@@ -621,13 +477,6 @@ function handleSavePng() {
     subtitle: chartSubtitle.value,
     source: chartSourceSubtitle.value,
   });
-}
-
-function switchToSweep() {
-  mode.value = 'sweep';
-  if (!sweepResults.value.length && !sweepRunning.value) {
-    runSweep();
-  }
 }
 
 onMounted(loadBacktest);
@@ -815,25 +664,16 @@ onMounted(loadBacktest);
 
       <div class="segmented">
         <div
-          class="segment"
-          :class="{ active: mode === 'single' }"
-          @click="mode = 'single'"
+          class="segment active"
         >
           Single run
-        </div>
-        <div
-          class="segment"
-          :class="{ active: mode === 'sweep' }"
-          @click="switchToSweep"
-        >
-          Sweep
         </div>
       </div>
     </div>
 
     <div class="main">
-      <!-- Left metrics column (only in single mode) -->
-      <div v-if="mode === 'single'" class="metricsColumn">
+      <!-- Left metrics column -->
+      <div class="metricsColumn">
         <div class="metric">
           <div class="metricValue">{{ finalPnlValue }}</div>
           <div class="metricLabel">FINAL PNL</div>
@@ -848,81 +688,46 @@ onMounted(loadBacktest);
         </div>
       </div>
 
-      <!-- Chart area or Sweep panel -->
+      <!-- Chart area -->
       <div class="chartColumn">
-        <template v-if="mode === 'single'">
-          <div class="chartHeader">
-            <div class="chartTitleRow">
-              <div class="chartTitle">{{ chartTitle }}</div>
-              <button class="saveButton" type="button" @click="handleSavePng">Save PNG</button>
-            </div>
-            <div class="chartSubtitle">{{ chartSubtitle }}</div>
-            <div class="chartSourceSubtitle">{{ chartSourceSubtitle }}</div>
+        <div class="chartHeader">
+          <div class="chartTitleRow">
+            <div class="chartTitle">{{ chartTitle }}</div>
+            <button class="saveButton" type="button" @click="handleSavePng">Save PNG</button>
           </div>
+          <div class="chartSubtitle">{{ chartSubtitle }}</div>
+          <div class="chartSourceSubtitle">{{ chartSourceSubtitle }}</div>
+        </div>
 
-          <WeeklyBacktestChart
-            v-if="chartMode === 'weekly'"
-            ref="chartRef"
-            :rows="chartRows"
-            :design-spec="true"
-          />
-          <HedgePerformanceChart
-            v-else
-            ref="chartRef"
-            :rows="hedgePerformanceRows"
-          />
+        <WeeklyBacktestChart
+          v-if="chartMode === 'weekly'"
+          ref="chartRef"
+          :rows="chartRows"
+          :design-spec="true"
+        />
+        <HedgePerformanceChart
+          v-else
+          ref="chartRef"
+          :rows="hedgePerformanceRows"
+        />
 
-          <div v-if="ui.hedgeEnabled" class="chartModeToggle" role="group" aria-label="Chart view">
-            <button
-              type="button"
-              :class="{ active: chartMode === 'weekly' }"
-              :aria-pressed="chartMode === 'weekly'"
-              @click="chartMode = 'weekly'"
-            >
-              PnL by cycle
-            </button>
-            <button
-              type="button"
-              :class="{ active: chartMode === 'hedge' }"
-              :aria-pressed="chartMode === 'hedge'"
-              @click="chartMode = 'hedge'"
-            >
-              Hedge perf
-            </button>
-          </div>
-        </template>
-
-        <div v-else class="sweepPanel">
-          <div class="sweepToolbar">
-            <select v-model="sweepDimension" class="sweepSelect" :disabled="sweepRunning">
-              <option v-for="opt in SWEEP_DIMENSION_OPTIONS" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
-            <div style="display: flex; align-items: center; gap: 12px;">
-              <button
-                class="saveButton"
-                type="button"
-                @click="runSweep"
-                :disabled="sweepRunning || sweepConfigs.length === 0"
-              >
-                {{ sweepRunning ? sweepProgress || 'Running...' : 'Run Sweep' }}
-              </button>
-              <div v-if="sweepResults.length" class="sweepAnnotation">
-                {{ sweepResults.length }} results
-              </div>
-            </div>
-          </div>
-
-          <SweepResultsChart
-            v-if="sweepResults.length"
-            :rows="sweepResults"
-            @select="applySweepResult"
-          />
-
-          <div v-else class="sweepEmpty">
-            {{ sweepRunning ? (sweepProgress || 'Running sweep...') : 'Select a dimension and run the sweep to explore variations.' }}
-          </div>
+        <div v-if="ui.hedgeEnabled" class="chartModeToggle" role="group" aria-label="Chart view">
+          <button
+            type="button"
+            :class="{ active: chartMode === 'weekly' }"
+            :aria-pressed="chartMode === 'weekly'"
+            @click="chartMode = 'weekly'"
+          >
+            PnL by cycle
+          </button>
+          <button
+            type="button"
+            :class="{ active: chartMode === 'hedge' }"
+            :aria-pressed="chartMode === 'hedge'"
+            @click="chartMode = 'hedge'"
+          >
+            Hedge perf
+          </button>
         </div>
       </div>
     </div>
@@ -1161,23 +966,23 @@ onMounted(loadBacktest);
 
 .hour-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-  padding: 4px 2px 2px;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  padding: 1px 1px 1px;
 }
 
 .hour-grid button {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px 0;
+  padding: 6px 0;
   background: #131316;
   color: #e7e7ea;
   border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 11px;
+  border-radius: 4px;
   cursor: pointer;
   font: inherit;
-  font-size: 18px;
+  font-size: 12px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   transition: background 0.12s, border-color 0.12s;
@@ -1966,49 +1771,6 @@ onMounted(loadBacktest);
 
 .status.error strong {
   color: #ff6b7a;
-}
-
-.sweepPanel {
-  display: grid;
-  min-height: 520px;
-  align-content: start;
-  gap: 20px;
-  padding: 24px;
-}
-
-.sweepToolbar {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.sweepSelect {
-  width: min(280px, 100%);
-}
-
-.sweepAnnotation {
-  display: flex;
-  align-items: baseline;
-  justify-content: flex-end;
-  gap: 16px;
-  color: #9fa0aa;
-  text-align: right;
-}
-
-.sweepAnnotation strong {
-  color: #f4f4f5;
-  font-size: 18px;
-}
-
-.sweepEmpty {
-  display: grid;
-  min-height: 260px;
-  place-items: center;
-  border: 1px solid #29292d;
-  border-radius: 8px;
-  color: #9fa0aa;
-  background: #101014;
 }
 
 .runFacts {
