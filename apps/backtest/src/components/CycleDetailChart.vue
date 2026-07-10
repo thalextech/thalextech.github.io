@@ -6,7 +6,6 @@ import { exportTitledChart } from "../lib/exportTitledChart.js";
 const props = defineProps({
   rows: { type: Array, default: () => [] },
   breakEvens: { type: Object, default: null },
-  strikes: { type: Object, default: null },
 });
 
 const chartRef = ref(null);
@@ -19,7 +18,6 @@ const BUY = "#63a67b";
 const SELL = "#c96f6f";
 const INDEX = "rgba(255,255,255,0.42)";
 const BREAK_EVEN = "rgba(255, 255, 255, 0.65)";
-const BREAK_EVEN_FILL = "rgba(156, 163, 175, 0.05)";
 
 const styleAxis = (group) => {
   group.selectAll("line").remove();
@@ -138,19 +136,6 @@ const draw = () => {
         .text(labelText);
     };
 
-    // Draw a light fill between lower and upper if both present (profitable region for typical short structures)
-    if (Number.isFinite(be.lower) && Number.isFinite(be.upper) && be.upper > be.lower) {
-      const y1 = indexY(be.upper);
-      const y2 = indexY(be.lower);
-      price.append("rect")
-        .attr("x", 0)
-        .attr("y", Math.min(y1, y2))
-        .attr("width", innerWidth)
-        .attr("height", Math.abs(y2 - y1))
-        .attr("fill", BREAK_EVEN_FILL)
-        .attr("stroke", "none");
-    }
-
     // When both exist, label one "low" and one "high" to the right of the price
     if (Number.isFinite(be.lower) && Number.isFinite(be.upper)) {
       drawBE(be.lower, "low");
@@ -159,38 +144,6 @@ const draw = () => {
       drawBE(be.lower);
     } else if (Number.isFinite(be.upper)) {
       drawBE(be.upper);
-    }
-  }
-
-  // Tasteful green fill within the strike range (between option strikes),
-  // opacity varies with current total payoff (higher positive = stronger green)
-  if (props.strikes && Number.isFinite(props.strikes.lower) && Number.isFinite(props.strikes.upper)) {
-    const sLo = Math.min(props.strikes.lower, props.strikes.upper);
-    const sHi = Math.max(props.strikes.lower, props.strikes.upper);
-    const yTop = indexY(sHi);
-    const yBot = indexY(sLo);
-    const bandH = yBot - yTop;
-    if (bandH > 1) {
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        const pnl = row.totalPnlUsd;
-        if (!Number.isFinite(pnl)) continue;
-        const x0 = x(new Date(row.dateTime));
-        const x1 = i < rows.length - 1
-          ? x(new Date(rows[i + 1].dateTime))
-          : x0 + 2;
-        const w = Math.max(0.5, x1 - x0);
-        const alpha = pnl > 0
-          ? Math.min(0.28, Math.max(0.05, pnl / 6000))
-          : 0.02;
-        price.append("rect")
-          .attr("x", x0)
-          .attr("y", yTop)
-          .attr("width", w)
-          .attr("height", bandH)
-          .attr("fill", `rgba(16, 185, 129, ${alpha})`)
-          .attr("stroke", "none");
-      }
     }
   }
 
@@ -295,7 +248,6 @@ onMounted(() => {
 onUnmounted(() => resizeObserver?.disconnect());
 watch(() => props.rows, draw);
 watch(() => props.breakEvens, draw, { deep: true });
-watch(() => props.strikes, draw, { deep: true });
 
 function exportPng({ filename = "cycle-detail.png", scale = 3, padding = 24, title = "", subtitle = "", source = "", metrics = [] } = {}) {
   const svgEl = chartRef.value?.querySelector("svg");

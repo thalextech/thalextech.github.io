@@ -47,7 +47,7 @@ const draw = () => {
     .attr("role", "img")
     .attr(
       "aria-label",
-      "PnL decomposition over entry time comparing straddle, hedge, and total PnL",
+      "PnL decomposition over entry time comparing option, hedge, and total PnL",
     );
 
   if (!rows.length) {
@@ -62,7 +62,7 @@ const draw = () => {
   }
 
   const series = [
-    { key: "shortOptionPnlUsd", label: "Straddle PnL" },
+    { key: "shortOptionPnlUsd", label: "Option PnL" },
     { key: "hedgePnlUsd", label: "Hedge PnL" },
     { key: "cyclePnlUsd", label: "Total PnL" },
   ];
@@ -103,7 +103,7 @@ const draw = () => {
       .append("title")
       .text((row) => [
         instrumentName(row),
-        `Straddle PnL: ${formatUsd(valueFor(row, "shortOptionPnlUsd"))}`,
+        `Option PnL: ${formatUsd(valueFor(row, "shortOptionPnlUsd"))}`,
         `Hedge PnL: ${formatUsd(valueFor(row, "hedgePnlUsd"))}`,
         `Total PnL: ${formatUsd(valueFor(row, "cyclePnlUsd"))}`,
       ].join("\n"));

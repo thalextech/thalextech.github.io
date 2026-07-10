@@ -326,17 +326,6 @@ const chartMode = ref("weekly");
 const selectedCycle = ref(null);
 const cycleDetailRows = ref([]);
 const cycleBreakEvens = ref(null);
-const cycleStrikes = computed(() => {
-  if (!selectedCycle.value?.legs?.length) return null;
-  const strikes = selectedCycle.value.legs
-    .map(leg => leg.strike)
-    .filter(Number.isFinite);
-  if (!strikes.length) return null;
-  return {
-    lower: Math.min(...strikes),
-    upper: Math.max(...strikes)
-  };
-});
 const cycleDetailLoading = ref(false);
 const cycleDetailError = ref("");
 const cycleDetailCache = new Map();
@@ -392,7 +381,8 @@ const chartSubtitle = computed(() => {
   const exit = ui.holdToExpiry
     ? "Held to expiry"
     : `Rolled after ${ui.exitHoldDays}D`;
-  return `Entered ${weekday.label} at ${entryTime} · ${exit}`;
+  const sizing = ui.investmentMode === "btc" ? "1 BTC per leg" : "$100k notional";
+  return `Entered ${weekday.label} at ${entryTime} · ${exit} · ${sizing}`;
 });
 
 const chartSourceSubtitle = computed(() => {
@@ -793,6 +783,9 @@ onMounted(loadBacktest);
           Single run
         </div>
       </div>
+      <button class="saveButton topSaveButton" type="button" :disabled="cycleDetailLoading" @click="handleSavePng">
+        Save PNG
+      </button>
     </div>
 
     <div class="main">
@@ -828,10 +821,7 @@ onMounted(loadBacktest);
               </svg>
             </button>
             <div class="chartTitle">
-              <span v-if="selectedCycle">{{ chartTitle }}</span>
-            </div>
-            <div class="chartHeaderActions">
-              <button class="saveButton" type="button" :disabled="cycleDetailLoading" @click="handleSavePng">Save PNG</button>
+              <span>{{ chartTitle }}</span>
             </div>
           </div>
           <div class="chartSubtitle">{{ chartSubtitle }}</div>
@@ -857,7 +847,6 @@ onMounted(loadBacktest);
           ref="chartRef"
           :rows="cycleDetailRows"
           :break-evens="cycleBreakEvens"
-          :strikes="cycleStrikes"
         />
 
         <div v-if="ui.hedgeEnabled && !selectedCycle" class="chartModeToggle" role="group" aria-label="Chart view">
@@ -1836,11 +1825,6 @@ onMounted(loadBacktest);
   color: #e8eaed;
 }
 
-/* In base view we hide the title text (it only appears in the saved PNG) */
-.chartTitle:empty {
-  display: none;
-}
-
 .chartSubtitle {
   font-size: 12px;
   color: #70767d;
@@ -1857,14 +1841,7 @@ onMounted(loadBacktest);
   align-items: center;
   justify-content: center;
   width: 100%;
-  padding: 0 72px 0 36px;
-}
-
-.chartHeaderActions {
-  position: absolute;
-  right: 0;
-  display: flex;
-  gap: 6px;
+  padding: 0 36px;
 }
 
 .backButton {
@@ -1934,6 +1911,11 @@ onMounted(loadBacktest);
   color: #7dd3fc;
   border-color: rgba(125, 211, 252, 0.3);
   background: rgba(255, 255, 255, 0.03);
+}
+
+.topSaveButton {
+  padding: 6px 12px;
+  border-radius: 6px;
 }
 
 .saveButton:disabled {
