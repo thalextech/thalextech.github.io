@@ -6,6 +6,7 @@ import { exportTitledChart } from "../lib/exportTitledChart.js";
 const props = defineProps({
   rows: { type: Array, default: () => [] },
   breakEvens: { type: Object, default: null },
+  strikes: { type: Object, default: null },
 });
 
 const chartRef = ref(null);
@@ -66,7 +67,7 @@ const draw = () => {
   const height = Math.max(520, bounds.height || 620);
   const margin = { top: 34, right: 110, bottom: 42, left: 64 };
   const gap = 54;
-  const priceHeight = Math.round((height - margin.top - margin.bottom - gap) * 0.58);
+  const priceHeight = Math.round((height - margin.top - margin.bottom - gap) * 0.52);
   const pnlHeight = height - margin.top - margin.bottom - gap - priceHeight;
   const innerWidth = width - margin.left - margin.right;
 
@@ -161,16 +162,79 @@ const draw = () => {
     }
   }
 
-  // Index prices shown as scatter squares (colored on hedge trades).
-  price.selectAll("rect.index-point").data(rows).join("rect")
+  // Tasteful green fill within the strike range (between option strikes),
+  // opacity varies with current total payoff (higher positive = stronger green)
+  if (props.strikes && Number.isFinite(props.strikes.lower) && Number.isFinite(props.strikes.upper)) {
+    const sLo = Math.min(props.strikes.lower, props.strikes.upper);
+    const sHi = Math.max(props.strikes.lower, props.strikes.upper);
+    const yTop = indexY(sHi);
+    const yBot = indexY(sLo);
+    const bandH = yBot - yTop;
+    if (bandH > 1) {
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const pnl = row.totalPnlUsd;
+        if (!Number.isFinite(pnl)) continue;
+        const x0 = x(new Date(row.dateTime));
+        const x1 = i < rows.length - 1
+          ? x(new Date(rows[i + 1].dateTime))
+          : x0 + 2;
+        const w = Math.max(0.5, x1 - x0);
+        const alpha = pnl > 0
+          ? Math.min(0.28, Math.max(0.05, pnl / 6000))
+          : 0.02;
+        price.append("rect")
+          .attr("x", x0)
+          .attr("y", yTop)
+          .attr("width", w)
+          .attr("height", bandH)
+          .attr("fill", `rgba(16, 185, 129, ${alpha})`)
+          .attr("stroke", "none");
+      }
+    }
+  }
+
+  // Stepline for the index price (to match the stepped PnL lines)
+  const indexLine = d3.line()
+    .defined((row) => Number.isFinite(row.indexPrice))
+    .x((row) => x(new Date(row.dateTime)))
+    .y((row) => indexY(row.indexPrice))
+    .curve(d3.curveStepBefore);
+
+  price.append("path")
+    .datum(rows)
+    .attr("d", indexLine)
+    .attr("fill", "none")
+    .attr("stroke", "rgba(255,255,255,0.75)")
+    .attr("stroke-width", 1.25)
+    .attr("stroke-linejoin", "round")
+    .attr("stroke-linecap", "round");
+
+  // Small markers for regular index points
+  price.selectAll("rect.index-point")
+    .data(rows.filter(d => !d.hedgeTrade))
+    .join("rect")
     .attr("class", "index-point")
-    .attr("x", (row) => x(new Date(row.dateTime)) - 1.75)
-    .attr("y", (row) => indexY(row.indexPrice) - 1.75)
-    .attr("width", 3.5)
-    .attr("height", 3.5)
-    .attr("fill", (row) => row.hedgeTrade ? (row.hedgeTrade.side === "buy" ? BUY : SELL) : "none")
-    .attr("stroke", (row) => row.hedgeTrade ? (row.hedgeTrade.side === "buy" ? BUY : SELL) : INDEX)
-    .attr("stroke-width", 0.6)
+    .attr("x", (row) => x(new Date(row.dateTime)) - 1.25)
+    .attr("y", (row) => indexY(row.indexPrice) - 1.25)
+    .attr("width", 2.5)
+    .attr("height", 2.5)
+    .attr("fill", "rgba(255,255,255,0.35)")
+    .attr("stroke", "none")
+    .append("title")
+    .text((row) => `${formatTime(new Date(row.dateTime))}\nIndex ${formatUsd(row.indexPrice)}`);
+
+  // Hedge trade markers as circles (larger, colored)
+  price.selectAll("circle.hedge-trade")
+    .data(rows.filter(d => d.hedgeTrade))
+    .join("circle")
+    .attr("class", "hedge-trade")
+    .attr("cx", (row) => x(new Date(row.dateTime)))
+    .attr("cy", (row) => indexY(row.indexPrice))
+    .attr("r", 3.5)
+    .attr("fill", (row) => row.hedgeTrade.side === "buy" ? BUY : SELL)
+    .attr("stroke", (row) => row.hedgeTrade.side === "buy" ? BUY : SELL)
+    .attr("stroke-width", 0.8)
     .append("title")
     .text((row) => {
       const trade = row.hedgeTrade
@@ -181,7 +245,7 @@ const draw = () => {
 
   const legend = price.append("g").attr("transform", "translate(0,-18)");
   // No more "Combined option mark" — replaced by break-even lines per request
-  addLegendItem(legend, 0, "Index", INDEX, "square");
+  addLegendItem(legend, 0, "Index", "rgba(255,255,255,0.75)");
   addLegendItem(legend, 80, "Hedge buy", BUY, "square");
   addLegendItem(legend, 170, "Hedge sell", SELL, "square");
   if (be && (Number.isFinite(be.lower) || Number.isFinite(be.upper))) {
@@ -200,7 +264,7 @@ const draw = () => {
 
   const pnlTop = margin.top + priceHeight + gap;
   const pnl = svg.append("g").attr("transform", `translate(${margin.left},${pnlTop})`);
-  pnl.append("g").call(d3.axisLeft(pnlY).ticks(4).tickFormat(d3.format("$,.0f")).tickPadding(10)).call(styleAxis);
+  pnl.append("g").call(d3.axisLeft(pnlY).ticks(5).tickFormat(d3.format("$,.0f")).tickPadding(10)).call(styleAxis);
   const pnlSeries = [
     { key: "optionPnlUsd", label: "Option PnL", color: "#7dd3fc" },
     { key: "hedgePnlUsd", label: "Hedge PnL", color: "#fbbf24" },
@@ -214,7 +278,7 @@ const draw = () => {
       .curve(d3.curveStepBefore);
     pnl.append("path").datum(rows).attr("d", line)
       .attr("fill", "none").attr("stroke", series.color)
-      .attr("stroke-width", series.key === "totalPnlUsd" ? 2 : 1.3);
+      .attr("stroke-width", 1.25);
   });
   const pnlLegend = pnl.append("g").attr("transform", "translate(0,-17)");
   pnlSeries.forEach((series, index) => addLegendItem(pnlLegend, index * 95, series.label, series.color));
@@ -231,6 +295,7 @@ onMounted(() => {
 onUnmounted(() => resizeObserver?.disconnect());
 watch(() => props.rows, draw);
 watch(() => props.breakEvens, draw, { deep: true });
+watch(() => props.strikes, draw, { deep: true });
 
 function exportPng({ filename = "cycle-detail.png", scale = 3, padding = 24, title = "", subtitle = "", source = "", metrics = [] } = {}) {
   const svgEl = chartRef.value?.querySelector("svg");

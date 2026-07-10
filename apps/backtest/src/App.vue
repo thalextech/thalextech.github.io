@@ -326,6 +326,17 @@ const chartMode = ref("weekly");
 const selectedCycle = ref(null);
 const cycleDetailRows = ref([]);
 const cycleBreakEvens = ref(null);
+const cycleStrikes = computed(() => {
+  if (!selectedCycle.value?.legs?.length) return null;
+  const strikes = selectedCycle.value.legs
+    .map(leg => leg.strike)
+    .filter(Number.isFinite);
+  if (!strikes.length) return null;
+  return {
+    lower: Math.min(...strikes),
+    upper: Math.max(...strikes)
+  };
+});
 const cycleDetailLoading = ref(false);
 const cycleDetailError = ref("");
 const cycleDetailCache = new Map();
@@ -816,7 +827,9 @@ onMounted(loadBacktest);
                 <path d="M15 18l-6-6 6-6" />
               </svg>
             </button>
-            <div class="chartTitle">{{ chartTitle }}</div>
+            <div class="chartTitle">
+              <span v-if="selectedCycle">{{ chartTitle }}</span>
+            </div>
             <div class="chartHeaderActions">
               <button class="saveButton" type="button" :disabled="cycleDetailLoading" @click="handleSavePng">Save PNG</button>
             </div>
@@ -844,6 +857,7 @@ onMounted(loadBacktest);
           ref="chartRef"
           :rows="cycleDetailRows"
           :break-evens="cycleBreakEvens"
+          :strikes="cycleStrikes"
         />
 
         <div v-if="ui.hedgeEnabled && !selectedCycle" class="chartModeToggle" role="group" aria-label="Chart view">
@@ -1820,6 +1834,11 @@ onMounted(loadBacktest);
   font-weight: 600;
   letter-spacing: -0.1px;
   color: #e8eaed;
+}
+
+/* In base view we hide the title text (it only appears in the saved PNG) */
+.chartTitle:empty {
+  display: none;
 }
 
 .chartSubtitle {
