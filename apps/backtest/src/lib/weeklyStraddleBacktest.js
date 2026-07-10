@@ -275,7 +275,13 @@ const buildEntryPlan = ({ quotes, entryExpirations, config }) => {
   }
 
   const plans = [];
+  let positionAvailableAtMs = Number.NEGATIVE_INFINITY;
   for (const entry of entryExpirations) {
+    // This is a single-position strategy. Skip candidate entries while the
+    // previously accepted trade is still open. A same-timestamp close/reopen
+    // is allowed.
+    if (entry.entryTime.getTime() < positionAvailableAtMs) continue;
+
     const group = quotesByEntryExpiry.get(`${entry.entryTs}|${entry.expirationTs}`);
     if (!group) continue;
     const entryIndexPrice =
@@ -331,6 +337,7 @@ const buildEntryPlan = ({ quotes, entryExpirations, config }) => {
         entryOptionCashflowUsd,
         selectionMetric: selected.selectionMetric,
       });
+      positionAvailableAtMs = exitTime.getTime();
     }
   }
 
@@ -475,26 +482,42 @@ export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, c
       cumulativeDeltaHedgedPnl: row.endingEquityUsd,
     }));
 
-  const weeklyReturns = cycleSummary
-    .filter((row) => row.closed)
+  const closedCycles = cycleSummary.filter((row) => row.closed);
+  const cycleReturns = closedCycles
     .map((row) => row.cycleReturnOnNotional)
     .filter(Number.isFinite);
   const entryDtes = cycleSummary
     .map((row) => row.dteDays)
     .filter(Number.isFinite);
-  const weeklyMeanReturn = mean(weeklyReturns);
-  const weeklyReturnVol = sampleStdDev(weeklyReturns);
+  const cycleMeanReturn = mean(cycleReturns);
+  const cycleReturnVol = sampleStdDev(cycleReturns);
+  const firstEntryMs = closedCycles[0]?.entryTime?.getTime();
+  const lastExitMs = closedCycles.at(-1)?.exitTime?.getTime();
+  const observedYears =
+    Number.isFinite(firstEntryMs) && Number.isFinite(lastExitMs) && lastExitMs > firstEntryMs
+      ? (lastExitMs - firstEntryMs) / (365 * 86_400_000)
+      : Number.NaN;
+  const annualizedCyclesPerYear =
+    Number.isFinite(observedYears) && observedYears > 0
+      ? cycleReturns.length / observedYears
+      : Number.NaN;
   const finalEquityUsd = cycleSummary.at(-1)?.endingEquityUsd ?? Number.NaN;
 
   return {
     dataEnd,
-    counts: { closedCycles: cycleSummary.filter(r => r.closed).length },
+    counts: { closedCycles: closedCycles.length },
     cycleSummary,
     weeklyChartData,
     summary: {
       finalEquityUsd,
       cumulativeReturnOnNotional: finalEquityUsd / config.notionalUsd,
-      sharpeRatio: weeklyReturns.length > 1 && weeklyReturnVol > 0 ? (weeklyMeanReturn / weeklyReturnVol) * Math.sqrt(52) : NaN,
+      sharpeRatio:
+        cycleReturns.length > 1 &&
+        cycleReturnVol > 0 &&
+        Number.isFinite(annualizedCyclesPerYear)
+          ? (cycleMeanReturn / cycleReturnVol) * Math.sqrt(annualizedCyclesPerYear)
+          : Number.NaN,
+      annualizedCyclesPerYear,
       meanEntryDteDays: mean(entryDtes),
       notionalUsdPerCycle: config.notionalUsd,
     },

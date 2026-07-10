@@ -855,7 +855,7 @@ onMounted(loadBacktest);
               :aria-pressed="chartMode === 'weekly'"
               @click="chartMode = 'weekly'"
             >
-              PnL by week
+              PnL by cycle
             </button>
             <button
               type="button"

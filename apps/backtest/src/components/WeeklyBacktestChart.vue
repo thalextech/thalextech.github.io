@@ -44,7 +44,7 @@ const draw = () => {
     .attr("height", "100%")
     .attr("font-family", CHART_FONT_FAMILY)
     .attr("role", "img")
-    .attr("aria-label", "Weekly delta hedged straddle backtest chart");
+    .attr("aria-label", "Per-cycle delta hedged straddle backtest chart");
 
   if (!rows.length) {
     svg.append("text")
@@ -68,21 +68,26 @@ const draw = () => {
   if (dataMax < 0) dataMax = 0;
 
   const y = d3.scaleLinear()
-    .domain([dataMax, dataMin])
-    .range([plotTop, plotBottom]);
+    .domain([dataMin, dataMax])
+    .range([plotBottom, plotTop])
+    .nice(7);
 
+  // Reserve half a bar-slot of padding at each edge so first/last bars stay
+  // inside [X0, X1] instead of overflowing (only visible with wide bars, e.g. 30D).
+  const slot = (X1 - X0) / Math.max(1, rows.length);
   const x = d3.scaleLinear()
-    .domain([0, rows.length - 1])
-    .range([X0, X1]);
+    .domain([0, Math.max(1, rows.length - 1)])
+    .range([X0 + slot / 2, X1 - slot / 2]);
 
   const zeroY = y(0);
 
   // Grid lines at nice values (aim for ~7, ensure 0 is included)
+  const [yLo, yHi] = y.domain();
   let ticks = y.ticks(7);
-  if (!ticks.includes(0) && dataMin <= 0 && dataMax >= 0) {
+  if (!ticks.includes(0) && yLo <= 0 && yHi >= 0) {
     ticks.push(0);
   }
-  ticks = ticks.filter(v => v >= dataMin && v <= dataMax).sort((a, b) => a - b);
+  ticks = ticks.filter(v => v >= yLo && v <= yHi).sort((a, b) => a - b);
   ticks.forEach(v => {
     const gy = y(v);
     svg.append("line")
@@ -100,7 +105,7 @@ const draw = () => {
       .text(formatUsd(v));
   });
 
-  const bw = Math.max(2, (X1 - X0) / (rows.length - 1) - 1);
+  const bw = Math.max(2, slot - 1);
 
   // Proper diverging red/blue color scale for weekly PnL bars
   const barValues = rows.map(r => r.deltaHedgedShortPnl || 0);
