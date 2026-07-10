@@ -7,3 +7,6 @@ apps_deployment
 dist
 node_modules
 .vite/
+
+# Generated backtest runtime shards; rebuild from the tracked Parquet source.
+/apps/backtest/public/data/thalex/prepared_1h_h*utc.json

@@ -19,6 +19,9 @@ for app in $(find . -mindepth 1 -maxdepth 1 -type d); do
     cd "${app}"
     echo "Building ${app}"
     npm ci
+    if [ "${app}" = "./backtest" ]; then
+        npm run build:data
+    fi
     VITE_BASE_PATH=/$app/ npm run build
     cp -r dist "${APPS_DEPLOY_DIR}/${app}"
     cd -

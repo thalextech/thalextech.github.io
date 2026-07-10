@@ -2,7 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { asyncBufferFromFile, parquetReadObjects } from "hyparquet";
 
-const DATA_DIR = path.resolve("public/data/thalex");
+const SOURCE_DATA_DIR = path.resolve("data/thalex");
+const RUNTIME_DATA_DIR = path.resolve("public/data/thalex");
 const hours = Array.from({ length: 24 }, (_, hour) => hour);
 const preparedFilename = (hour) =>
   `prepared_1h_h${String(hour).padStart(2, "0")}utc.json`;
@@ -14,11 +15,11 @@ const asNumber = (value) => {
 };
 
 const readParquet = async (filename, columns) => {
-  const file = await asyncBufferFromFile(path.join(DATA_DIR, filename));
+  const file = await asyncBufferFromFile(path.join(SOURCE_DATA_DIR, filename));
   return parquetReadObjects({ file, columns });
 };
 
-const filenames = (await fs.readdir(DATA_DIR)).filter((name) =>
+const filenames = (await fs.readdir(SOURCE_DATA_DIR)).filter((name) =>
   name.endsWith(".parquet"),
 );
 const indexFiles = filenames
@@ -27,6 +28,12 @@ const indexFiles = filenames
 const markFiles = filenames
   .filter((name) => /^OBTCUSD_marks_1h_\d{6}\.parquet$/.test(name))
   .sort();
+
+if (!indexFiles.length || !markFiles.length) {
+  throw new Error(`No source Parquet history found in ${SOURCE_DATA_DIR}`);
+}
+
+await fs.mkdir(RUNTIME_DATA_DIR, { recursive: true });
 
 const indexByHour = new Map(hours.map((hour) => [hour, []]));
 for (const filename of indexFiles) {
@@ -77,14 +84,13 @@ for (const hour of hours) {
   );
 
   const payload = {
-    generatedAt: new Date().toISOString(),
     underlying: "BTC",
     resolution: "1h",
     hourlyOffset: hour,
     index,
     marks,
   };
-  const outPath = path.join(DATA_DIR, preparedFilename(hour));
+  const outPath = path.join(RUNTIME_DATA_DIR, preparedFilename(hour));
   await fs.writeFile(outPath, JSON.stringify(payload));
   console.log(
     `wrote ${outPath}: ${index.length.toLocaleString()} index rows, ${marks.length.toLocaleString()} mark rows`,
