@@ -12,6 +12,7 @@ let resizeObserver;
 
 const CHART_FONT_FAMILY = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
 const formatUsd = d3.format("$,.2f");
+const formatEntryDate = d3.utcFormat("%d %b %y");
 const valueFor = (row, key) => Number(row[key]) || 0;
 const instrumentName = (row) =>
   (row.callInstrument || `Cycle ${row.cycle || ""}`).replace(/-[CP]$/, "-S");
@@ -23,15 +24,15 @@ const draw = () => {
 
   const rows = [...(props.rows || [])]
     .filter((row) => row.closed !== false)
-    .sort((a, b) => valueFor(a, "shortOptionPnlUsd") - valueFor(b, "shortOptionPnlUsd"));
+    .sort((a, b) => new Date(a.entryTime) - new Date(b.entryTime));
 
   const bounds = element.getBoundingClientRect();
-  const width = Math.max(900, bounds.width || 1360, rows.length * 26 + 110);
+  const width = Math.max(900, bounds.width || 1360, rows.length * 22 + 110);
   const allocatedHeight = Math.max(300, bounds.height || 470);
   const height = Math.max(660, allocatedHeight * 0.95);
-  const margin = { top: 18, right: 24, bottom: 116, left: 78 };
-  const facetGap = 34;
-  const facetHeight = (height - margin.top - margin.bottom - facetGap * 2) / 3;
+  const margin = { top: 18, right: 24, bottom: 58, left: 64 };
+  const panelGap = 34;
+  const panelHeight = (height - margin.top - margin.bottom - panelGap * 2) / 3;
   const plotWidth = width - margin.left - margin.right;
 
   const svg = d3
@@ -44,7 +45,7 @@ const draw = () => {
     .attr("role", "img")
     .attr(
       "aria-label",
-      "Per-instrument PnL decomposition comparing straddle, hedge, and total PnL",
+      "PnL decomposition over entry time comparing straddle, hedge, and total PnL",
     );
 
   if (!rows.length) {
@@ -66,41 +67,33 @@ const draw = () => {
   const xBound = d3.max(rows, (row) =>
     d3.max(series, ({ key }) => Math.abs(valueFor(row, key))),
   ) || 1;
+  const entryTimes = rows.map((row) => new Date(row.entryTime).getTime());
   const x = d3
     .scaleBand()
-    .domain(rows.map(instrumentName))
+    .domain(entryTimes)
     .range([0, plotWidth])
     .padding(0.18);
   const y = d3
     .scaleLinear()
     .domain([-xBound, xBound])
-    .range([facetHeight, 0])
+    .range([panelHeight, 0])
     .nice();
   const color = d3
     .scaleDiverging(d3.interpolateRdBu)
     .domain([-xBound, 0, xBound]);
-  const tickValues = y.ticks(5);
+  const yTickValues = y.ticks(5);
 
-  series.forEach(({ key, label }, facetIndex) => {
-    const facetY = margin.top + facetIndex * (facetHeight + facetGap);
+  series.forEach(({ key, label }, panelIndex) => {
+    const panelY = margin.top + panelIndex * (panelHeight + panelGap);
     const group = svg
       .append("g")
-      .attr("transform", `translate(${margin.left},${facetY})`);
-
-    tickValues.forEach((tick) => {
-      group.append("line")
-        .attr("x1", 0)
-        .attr("x2", plotWidth)
-        .attr("y1", y(tick))
-        .attr("y2", y(tick))
-        .attr("stroke", tick === 0 ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.05)");
-    });
+      .attr("transform", `translate(${margin.left},${panelY})`);
 
     group.selectAll(`rect.${key}`)
       .data(rows)
       .join("rect")
       .attr("class", key)
-      .attr("x", (row) => x(instrumentName(row)))
+      .attr("x", (row) => x(new Date(row.entryTime).getTime()))
       .attr("y", (row) => y(Math.max(0, valueFor(row, key))))
       .attr("width", x.bandwidth())
       .attr("height", (row) => Math.max(1, Math.abs(y(valueFor(row, key)) - y(0))))
@@ -114,7 +107,7 @@ const draw = () => {
       ].join("\n"));
 
     const axis = d3.axisLeft(y)
-      .tickValues(tickValues)
+      .tickValues(yTickValues)
       .tickFormat(d3.format("~s"))
       .tickSize(0)
       .tickPadding(8);
@@ -135,29 +128,29 @@ const draw = () => {
       .text(label);
   });
 
-  const xAxisY = margin.top + 3 * facetHeight + 2 * facetGap;
-  const xAxis = d3.axisBottom(x).tickSize(0).tickPadding(10);
-  const xAxisGroup = svg
-    .append("g")
-    .attr("transform", `translate(${margin.left},${xAxisY})`)
+  const labelStep = Math.max(1, Math.ceil(entryTimes.length / 12));
+  const entryTickValues = entryTimes.filter((_, index) => index % labelStep === 0);
+  const xAxis = d3.axisBottom(x)
+    .tickValues(entryTickValues)
+    .tickFormat((timestamp) => formatEntryDate(new Date(timestamp)))
+    .tickSize(0)
+    .tickPadding(10);
+  const xAxisGroup = svg.append("g")
+    .attr("transform", `translate(${margin.left},${height - margin.bottom})`)
     .call(xAxis);
   xAxisGroup.attr("font-family", CHART_FONT_FAMILY);
   xAxisGroup.select(".domain").remove();
   xAxisGroup.selectAll("text")
     .attr("fill", "rgba(255,255,255,0.62)")
-    .attr("font-size", 10)
-    .attr("text-anchor", "end")
-    .attr("transform", "rotate(-55)")
-    .attr("dx", "-0.7em")
-    .attr("dy", "0.2em");
+    .attr("font-size", 10);
 
   svg.append("text")
     .attr("x", margin.left + plotWidth / 2)
-    .attr("y", height - 8)
+    .attr("y", height - 6)
     .attr("text-anchor", "middle")
     .attr("fill", "rgba(255,255,255,0.58)")
     .attr("font-size", 12)
-    .text("Instrument");
+    .text("Entry time");
 };
 
 onMounted(() => {
@@ -177,6 +170,7 @@ function exportPng({
   title = "",
   subtitle = "",
   source = "",
+  metrics = [],
 } = {}) {
   const svgEl = chartRef.value?.querySelector("svg");
   if (!svgEl) return;
@@ -185,6 +179,7 @@ function exportPng({
     title,
     subtitle,
     source,
+    metrics,
     filename,
     scale,
     padding,

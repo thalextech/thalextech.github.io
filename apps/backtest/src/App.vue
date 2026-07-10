@@ -476,6 +476,11 @@ function handleSavePng() {
     title: chartTitle.value,
     subtitle: chartSubtitle.value,
     source: chartSourceSubtitle.value,
+    metrics: [
+      { label: "FINAL PNL", value: finalPnlValue.value },
+      { label: "SHARPE", value: sharpeValue.value },
+      { label: "MAX DRAWDOWN", value: maxDdValue.value, muted: true },
+    ],
   });
 }
 
@@ -540,14 +545,14 @@ onMounted(loadBacktest);
                 </div>
               </div>
             </div>
-            <div class="inst-field">
+            <div v-if="ui.structure !== 'straddle'" class="inst-field">
               <label class="inst-label">Delta</label>
               <div class="inst-choices delta-choices">
                 <div
                   v-for="d in DELTA_OPTIONS"
                   :key="d.value"
-                  :class="['inst-choice', { active: Number(ui.targetDelta) === d.value, 'is-disabled': ui.structure === 'straddle' }]"
-                  @click="ui.structure !== 'straddle' && (ui.targetDelta = d.value)"
+                  :class="['inst-choice', { active: Number(ui.targetDelta) === d.value }]"
+                  @click="ui.targetDelta = d.value"
                 >
                   {{ d.label }}
                 </div>
@@ -903,9 +908,10 @@ onMounted(loadBacktest);
 }
 
 .instrument-dropdown {
-  min-width: 0;
+  width: min(460px, calc(100vw - 20px));
+  min-width: min(460px, calc(100vw - 20px));
   left: -1px;
-  right: -1px;
+  right: auto;
 }
 
 /* Make the content inside instrument dropdown scale horizontally to the new width */
@@ -1070,6 +1076,12 @@ onMounted(loadBacktest);
 .maturity-choices .inst-choice {
   flex: 1;
   border-radius: 0;
+}
+.structure-choices .inst-choice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.15;
 }
 .structure-choices .inst-choice:first-child,
 .maturity-choices .inst-choice:first-child {

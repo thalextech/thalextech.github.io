@@ -179,6 +179,7 @@ function exportPng({
   title = "",
   subtitle = "",
   source = "",
+  metrics = [],
 } = {}) {
   const container = chartRef.value;
   const svgEl = container ? container.querySelector("svg") : null;
@@ -188,6 +189,7 @@ function exportPng({
     title,
     subtitle,
     source,
+    metrics,
     filename,
     scale,
     padding,

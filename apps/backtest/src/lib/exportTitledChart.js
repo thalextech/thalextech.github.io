@@ -21,6 +21,7 @@ export function exportTitledChart({
   title,
   subtitle,
   source,
+  metrics = [],
   filename,
   scale = 3,
   padding = 24,
@@ -35,16 +36,17 @@ export function exportTitledChart({
 
   const [minX, minY, width, height] = viewBox;
   const headerHeight = 76;
+  const metricsWidth = metrics.length ? 170 : 0;
   const exportSvg = svgEl.cloneNode(true);
   const chartGroup = document.createElementNS(SVG_NS, "g");
   while (exportSvg.firstChild) chartGroup.appendChild(exportSvg.firstChild);
-  chartGroup.setAttribute("transform", `translate(0,${headerHeight})`);
+  chartGroup.setAttribute("transform", `translate(${metricsWidth},${headerHeight})`);
   exportSvg.appendChild(chartGroup);
-  exportSvg.setAttribute("viewBox", `${minX} ${minY} ${width} ${height + headerHeight}`);
-  exportSvg.setAttribute("width", String(width));
+  exportSvg.setAttribute("viewBox", `${minX} ${minY} ${width + metricsWidth} ${height + headerHeight}`);
+  exportSvg.setAttribute("width", String(width + metricsWidth));
   exportSvg.setAttribute("height", String(height + headerHeight));
 
-  const centerX = minX + width / 2;
+  const centerX = minX + metricsWidth + width / 2;
   addText(exportSvg, {
     text: title,
     x: centerX,
@@ -66,6 +68,33 @@ export function exportTitledChart({
     y: minY + 60,
     size: 12,
     color: "#70767d",
+  });
+
+  metrics.forEach((metric, index) => {
+    const x = minX + 8;
+    const y = minY + headerHeight + 47 + index * 67;
+    const valueNode = document.createElementNS(SVG_NS, "text");
+    valueNode.setAttribute("x", String(x));
+    valueNode.setAttribute("y", String(y));
+    valueNode.setAttribute("text-anchor", "start");
+    valueNode.setAttribute("fill", metric.muted ? "#9aa0a6" : "#e8eaed");
+    valueNode.setAttribute("font-family", '"Helvetica Neue", Helvetica, -apple-system, sans-serif');
+    valueNode.setAttribute("font-size", "22");
+    valueNode.setAttribute("font-weight", "300");
+    valueNode.setAttribute("letter-spacing", "-0.3");
+    valueNode.textContent = metric.value;
+    exportSvg.appendChild(valueNode);
+
+    const labelNode = document.createElementNS(SVG_NS, "text");
+    labelNode.setAttribute("x", String(x));
+    labelNode.setAttribute("y", String(y + 18));
+    labelNode.setAttribute("text-anchor", "start");
+    labelNode.setAttribute("fill", "#70767d");
+    labelNode.setAttribute("font-family", '"Helvetica Neue", Helvetica, -apple-system, sans-serif');
+    labelNode.setAttribute("font-size", "10");
+    labelNode.setAttribute("letter-spacing", "1.2");
+    labelNode.textContent = metric.label;
+    exportSvg.appendChild(labelNode);
   });
 
   exportChartToPng({
