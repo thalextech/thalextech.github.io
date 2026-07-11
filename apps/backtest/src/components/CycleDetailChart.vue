@@ -2,13 +2,17 @@
 import * as d3 from "d3";
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import { exportTitledChart } from "../lib/exportTitledChart.js";
+import { buildContourPolylines } from "../lib/zeroMtmContours.js";
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
   breakEvens: { type: Object, default: null },
+  zeroMtmContours: { type: Object, default: null },
 });
 
 const chartRef = ref(null);
+const breakEvenMode = ref("cones");
+const hiddenSeries = ref(new Set());
 let resizeObserver;
 
 const FONT = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
@@ -18,6 +22,27 @@ const BUY = "#63a67b";
 const SELL = "#c96f6f";
 const INDEX = "rgba(255,255,255,0.42)";
 const BREAK_EVEN = "rgba(255, 255, 255, 0.65)";
+const SERIES_STROKE_WIDTH = 1.25;
+const PNL_SERIES_OPACITY = 0.8;
+const CONTOUR_COLORS = {
+  base: "rgba(255,255,255,0.78)",
+  skew_up: "rgba(125,211,252,0.62)",
+  skew_down: "rgba(240,138,126,0.62)",
+};
+const LEGEND_TOOLTIPS = {
+  index: "Observed BTC index price at each hourly bar. This is the underlying spot path used for option repricing, hedge P&L, Greek attribution, and break-even comparisons.",
+  hedge_buy: "Green markers show delta-hedge purchases. A buy increases the signed BTC hedge position. Executing the hedge changes exposure but creates no immediate P&L before fees; subsequent spot movement creates hedge MTM.",
+  hedge_sell: "Red markers show delta-hedge sales. A sell reduces or reverses the signed BTC hedge position. The marker is execution direction, not whether that hedge ultimately made money.",
+  break_even_lines: "Terminal break-even levels. At expiry, intrinsic value of all option legs equals the position's signed entry premium. These horizontal lines ignore remaining time value and IV, so they are payoff break-evens—not today's mark-to-market break-evens.",
+  contour_base: "Base zero-MTM contour. At every timestamp it solves for every spot S where the option structure, repriced on the frozen entry IV surface, has exactly its entry value: V(S,t)=V₀. Hedges do not reset this contour because they change account P&L, not the option structure's entry variance budget.",
+  contour_skew_up: "Skew +2.5v scenario. ATM IV stays fixed while the 25-delta put-minus-call risk reversal increases by 2.5 volatility points: put-wing IV rises 1.25 points and call-wing IV falls 1.25. The dashed contour shows how skew repricing alone moves the zero-MTM boundary.",
+  contour_skew_down: "Skew −2.5v scenario. ATM IV stays fixed while the 25-delta put-minus-call risk reversal decreases by 2.5 volatility points: put-wing IV falls 1.25 points and call-wing IV rises 1.25. This is a frozen-surface sensitivity scenario, not observed future IV.",
+  gamma_theta: "Cumulative gamma–theta attribution: Σ[θ·dt + ½Γ(dS)²] across all signed option legs. For a short-vol position, theta is usually earned and gamma is usually paid. Their net indicates whether realized spot variation compensated the entry time decay under this discrete approximation.",
+  net_delta: "Cumulative net-delta mark-to-market: Σ[(option delta + signed hedge position)·dS]. When hedged, it measures first-order directional P&L left after imperfect or discrete hedging; when unhedged, it is option delta P&L. During the cycle it mixes realized and unrealized MTM; at final closure it is realized.",
+  vega: "Cumulative first-order vega attribution: Σ[vega·dσ] across the signed option legs. It isolates P&L from implied-volatility repricing. It is an approximation; large vol moves, skew changes, and vol/spot cross-effects can spill into residual.",
+  residual: "Cumulative unexplained remainder after subtracting net delta, gamma–theta, and vega attribution from total hedged P&L. It contains higher-order Greeks, vanna/volga, discrete-sampling error, surface-model mismatch, expiry effects, and any missing quote effects.",
+  total: "Cumulative total strategy P&L: option mark-to-market plus hedge P&L. This is the accounting result the Greek tracks reconcile to; unlike the attribution tracks, it is not a local Taylor approximation.",
+};
 
 const styleAxis = (group) => {
   group.selectAll("line").remove();
@@ -36,8 +61,32 @@ const paddedDomain = (values, ratio = 0.08) => {
   return [lo - padding, hi + padding];
 };
 
-const addLegendItem = (legend, x, label, color, shape = "line") => {
-  const item = legend.append("g").attr("transform", `translate(${x},0)`);
+const isHidden = (key) => hiddenSeries.value.has(key);
+const toggleSeries = (key) => {
+  const next = new Set(hiddenSeries.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  hiddenSeries.value = next;
+  draw();
+};
+
+const addLegendItem = (legend, x, label, color, shape = "line", key = null, tooltip = "") => {
+  const item = legend.append("g")
+    .attr("transform", `translate(${x},0)`)
+    .attr("opacity", key && isHidden(key) ? 0.3 : 1);
+  if (key) {
+    item.attr("role", "button")
+      .attr("tabindex", 0)
+      .attr("aria-label", `${isHidden(key) ? "Show" : "Hide"} ${label}`)
+      .style("cursor", "pointer")
+      .on("click", () => toggleSeries(key))
+      .on("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggleSeries(key);
+        }
+      });
+  }
   if (shape === "square") {
     item.append("rect")
       .attr("x", 0).attr("y", -5).attr("width", 9).attr("height", 9)
@@ -51,6 +100,7 @@ const addLegendItem = (legend, x, label, color, shape = "line") => {
     .attr("x", shape === "square" ? 15 : 24).attr("y", 4)
     .attr("fill", "rgba(255,255,255,0.72)")
     .attr("font-size", 10).text(label);
+  if (tooltip) item.append("title").text(`${tooltip}\n\nClick to ${key && isHidden(key) ? "show" : "hide"} this series.`);
 };
 
 const draw = () => {
@@ -87,11 +137,18 @@ const draw = () => {
     .domain(d3.extent(rows, (row) => new Date(row.dateTime)))
     .range([0, innerWidth]);
 
-  // Include break-even levels in the domain so the reference lines are visible even if
-  // the week's observed prices never reached them.
+  const contourRows = props.zeroMtmContours?.contours || [];
+  const baseContourRows = contourRows.filter((row) => row.scenario === "base");
+  const showContourOverlay = breakEvenMode.value === "cones" && baseContourRows.length > 0;
+  // Include zero-MTM topology in the domain even when spot never reaches it.
   const be = props.breakEvens || null;
   const indexValues = rows.map((row) => row.indexPrice).filter(Number.isFinite);
-  if (be) {
+  if (showContourOverlay) {
+    contourRows.forEach((row) => {
+      indexValues.push(...row.roots);
+      row.bands.forEach((band) => indexValues.push(...band));
+    });
+  } else if (be) {
     if (Number.isFinite(be.lower)) indexValues.push(be.lower);
     if (Number.isFinite(be.upper)) indexValues.push(be.upper);
   }
@@ -111,12 +168,36 @@ const draw = () => {
 
   const price = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
+  const clipId = `price-clip-${Math.random().toString(36).slice(2)}`;
+  price.append("clipPath").attr("id", clipId).append("rect")
+    .attr("width", innerWidth).attr("height", priceHeight);
+  const overlay = price.append("g").attr("clip-path", `url(#${clipId})`);
+
+  if (showContourOverlay) {
+    Object.keys(CONTOUR_COLORS).forEach((scenario) => {
+      const seriesKey = scenario === "base" ? "contour_base" : `contour_${scenario}`;
+      if (isHidden(seriesKey)) return;
+      buildContourPolylines(contourRows, scenario).forEach((segment) => {
+        const contourLine = d3.line()
+          .x((point) => x(new Date(point.t * 1000)))
+          .y((point) => indexY(point.spot));
+        overlay.append("path")
+          .datum(segment)
+          .attr("d", contourLine)
+          .attr("fill", "none")
+          .attr("stroke", CONTOUR_COLORS[scenario])
+          .attr("stroke-width", SERIES_STROKE_WIDTH)
+          .attr("stroke-dasharray", scenario === "base" ? null : "4 3");
+      });
+    });
+  }
+
   // Index price axis on the left (primary now that we focus on spot vs break-evens)
   price.append("g").call(d3.axisLeft(indexY).ticks(6).tickFormat(d3.format("$,.0f")).tickPadding(10)).call(styleAxis);
 
-  // Break-even levels as white lines across the index scatter (fill between is neutral grey).
+  // Break-even levels as white lines across the index scatter.
   const formatBe = d3.format(",.0f");  // no $ to keep labels short next to lines; axis provides scale
-  if (be) {
+  if (!showContourOverlay && be && !isHidden("break_even_lines")) {
     const drawBE = (level, suffix) => {
       if (!Number.isFinite(level)) return;
       const y = indexY(level);
@@ -127,7 +208,7 @@ const draw = () => {
         .attr("y1", y)
         .attr("y2", y)
         .attr("stroke", BREAK_EVEN)
-        .attr("stroke-width", 1)
+        .attr("stroke-width", SERIES_STROKE_WIDTH)
         .attr("opacity", 0.9);
       // Label on the right
       const labelText = suffix
@@ -160,18 +241,20 @@ const draw = () => {
     .y((row) => indexY(row.indexPrice))
     .curve(d3.curveStepBefore);
 
-  price.append("path")
-    .datum(rows)
-    .attr("d", indexLine)
-    .attr("fill", "none")
-    .attr("stroke", "rgba(255,255,255,0.75)")
-    .attr("stroke-width", 1.25)
-    .attr("stroke-linejoin", "round")
-    .attr("stroke-linecap", "round");
+  if (!isHidden("index")) {
+    price.append("path")
+      .datum(rows)
+      .attr("d", indexLine)
+      .attr("fill", "none")
+      .attr("stroke", "rgba(255,255,255,0.75)")
+      .attr("stroke-width", SERIES_STROKE_WIDTH)
+      .attr("stroke-linejoin", "round")
+      .attr("stroke-linecap", "round");
+  }
 
   // Small markers for regular index points
   price.selectAll("rect.index-point")
-    .data(rows.filter(d => !d.hedgeTrade))
+    .data(isHidden("index") ? [] : rows.filter(d => !d.hedgeTrade))
     .join("rect")
     .attr("class", "index-point")
     .attr("x", (row) => x(new Date(row.dateTime)) - 1.25)
@@ -185,7 +268,7 @@ const draw = () => {
 
   // Hedge trade markers as circles (larger, colored)
   price.selectAll("circle.hedge-trade")
-    .data(rows.filter(d => d.hedgeTrade))
+    .data(rows.filter((row) => row.hedgeTrade && !isHidden(`hedge_${row.hedgeTrade.side}`)))
     .join("circle")
     .attr("class", "hedge-trade")
     .attr("cx", (row) => x(new Date(row.dateTime)))
@@ -204,21 +287,20 @@ const draw = () => {
 
   const legend = price.append("g").attr("transform", "translate(0,-18)");
   // No more "Combined option mark" — replaced by break-even lines per request
-  addLegendItem(legend, 0, "Index", "rgba(255,255,255,0.75)");
-  addLegendItem(legend, 80, "Hedge buy", BUY, "square");
-  addLegendItem(legend, 170, "Hedge sell", SELL, "square");
-  if (be && (Number.isFinite(be.lower) || Number.isFinite(be.upper))) {
-    // Small indicator for BE in legend area (positioned after the hedge items)
-    legend.append("line")
-      .attr("x1", 255).attr("x2", 273)
-      .attr("y1", 0).attr("y2", 0)
-      .attr("stroke", BREAK_EVEN)
-      .attr("stroke-width", 1);
+  addLegendItem(legend, 0, "Index", "rgba(255,255,255,0.75)", "line", "index", LEGEND_TOOLTIPS.index);
+  addLegendItem(legend, 80, "Hedge buy", BUY, "square", "hedge_buy", LEGEND_TOOLTIPS.hedge_buy);
+  addLegendItem(legend, 170, "Hedge sell", SELL, "square", "hedge_sell", LEGEND_TOOLTIPS.hedge_sell);
+  if (showContourOverlay) {
+    addLegendItem(legend, 255, "Zero MTM", CONTOUR_COLORS.base, "line", "contour_base", LEGEND_TOOLTIPS.contour_base);
+    addLegendItem(legend, 345, "Skew +2.5v", CONTOUR_COLORS.skew_up, "line", "contour_skew_up", LEGEND_TOOLTIPS.contour_skew_up);
+    addLegendItem(legend, 455, "Skew −2.5v", CONTOUR_COLORS.skew_down, "line", "contour_skew_down", LEGEND_TOOLTIPS.contour_skew_down);
     legend.append("text")
-      .attr("x", 277).attr("y", 4)
-      .attr("fill", "rgba(255,255,255,0.72)")
-      .attr("font-size", 10)
-      .text("Break-evens");
+      .attr("x", 570).attr("y", 4)
+      .attr("fill", "rgba(255,255,255,0.42)")
+      .attr("font-size", 9)
+      .text(props.zeroMtmContours.metadata.surface_mode.replace("_", " "));
+  } else if (be && (Number.isFinite(be.lower) || Number.isFinite(be.upper))) {
+    addLegendItem(legend, 255, "Break-evens", BREAK_EVEN, "line", "break_even_lines", LEGEND_TOOLTIPS.break_even_lines);
   }
 
   const pnlTop = margin.top + priceHeight + gap;
@@ -229,13 +311,14 @@ const draw = () => {
     cumulativeGammaThetaPnlUsd: row.cumulativeThetaPnlUsd + row.cumulativeGammaPnlUsd,
   }));
   const pnlSeries = [
-    { key: "cumulativeGammaThetaPnlUsd", label: "Gamma–theta", color: "#7dd3fc", legendX: 0 },
-    { key: "cumulativeNetDeltaMtmUsd", label: "Net delta MTM", color: "#6ee7b7", legendX: 120 },
-    { key: "cumulativeVegaPnlUsd", label: "Vega MTM", color: "#a78bfa", legendX: 245 },
-    { key: "cumulativeResidualPnlUsd", label: "Residual", color: "#fbbf24", legendX: 340 },
-    { key: "totalPnlUsd", label: "Total PnL", color: "#f4f4f5", legendX: 425, strokeWidth: 1.75 },
+    { key: "cumulativeGammaThetaPnlUsd", id: "gamma_theta", label: "Gamma–theta", color: "#7dd3fc", legendX: 0 },
+    { key: "cumulativeNetDeltaMtmUsd", id: "net_delta", label: "Net delta MTM", color: "#6ee7b7", legendX: 120 },
+    { key: "cumulativeVegaPnlUsd", id: "vega", label: "Vega MTM", color: "#a78bfa", legendX: 245 },
+    { key: "cumulativeResidualPnlUsd", id: "residual", label: "Residual", color: "#fbbf24", legendX: 340 },
+    { key: "totalPnlUsd", id: "total", label: "Total PnL", color: "#f4f4f5", legendX: 425 },
   ];
   pnlSeries.forEach((series) => {
+    if (isHidden(series.id)) return;
     const line = d3.line()
       .defined((row) => Number.isFinite(row[series.key]))
       .x((row) => x(new Date(row.dateTime)))
@@ -243,10 +326,19 @@ const draw = () => {
       .curve(d3.curveStepBefore);
     pnl.append("path").datum(gammaThetaRows).attr("d", line)
       .attr("fill", "none").attr("stroke", series.color)
-      .attr("stroke-width", series.strokeWidth ?? 1.25);
+      .attr("stroke-width", SERIES_STROKE_WIDTH)
+      .attr("opacity", PNL_SERIES_OPACITY);
   });
   const pnlLegend = pnl.append("g").attr("transform", "translate(0,-17)");
-  pnlSeries.forEach((series) => addLegendItem(pnlLegend, series.legendX, series.label, series.color));
+  pnlSeries.forEach((series) => addLegendItem(
+    pnlLegend,
+    series.legendX,
+    series.label,
+    series.color,
+    "line",
+    series.id,
+    LEGEND_TOOLTIPS[series.id],
+  ));
 
   const xAxis = d3.axisBottom(x).ticks(8).tickFormat(d3.utcFormat("%d %b %H:%M")).tickPadding(10);
   pnl.append("g").attr("transform", `translate(0,${pnlHeight})`).call(xAxis).call(styleAxis);
@@ -260,6 +352,8 @@ onMounted(() => {
 onUnmounted(() => resizeObserver?.disconnect());
 watch(() => props.rows, draw);
 watch(() => props.breakEvens, draw, { deep: true });
+watch(() => props.zeroMtmContours, draw, { deep: true });
+watch(breakEvenMode, draw);
 
 function exportPng({ filename = "cycle-detail.png", scale = 3, padding = 24, title = "", subtitle = "", source = "", metrics = [] } = {}) {
   const svgEl = chartRef.value?.querySelector("svg");
@@ -270,19 +364,71 @@ defineExpose({ exportPng });
 </script>
 
 <template>
-  <div ref="chartRef" class="chart"></div>
+  <div class="chart">
+    <div ref="chartRef" class="chartCanvas"></div>
+    <div class="breakEvenToggle" role="group" aria-label="Break-even display">
+      <button
+        type="button"
+        title="Show terminal payoff break-even levels. These are fixed horizontal lines based on intrinsic value at expiry and the signed entry premium; they do not include remaining time value or IV."
+        :class="{ active: breakEvenMode === 'lines' }"
+        :aria-pressed="breakEvenMode === 'lines'"
+        @click="breakEvenMode = 'lines'"
+      >BE Lines</button>
+      <button
+        type="button"
+        title="Show time-dependent zero-MTM contours. Each cone point solves V(S,t)=V₀ using the frozen entry IV surface; dashed lines show ±2.5-vol-point 25-delta skew scenarios with ATM IV held fixed."
+        :class="{ active: breakEvenMode === 'cones' }"
+        :aria-pressed="breakEvenMode === 'cones'"
+        @click="breakEvenMode = 'cones'"
+      >BE Cones</button>
+    </div>
+  </div>
 </template>
 
 <style scoped>
 .chart {
   flex: 1;
   min-height: 0;
+  position: relative;
   background: #0a0b0e;
   display: flex;
 }
-.chart :deep(svg) {
+.chartCanvas {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+.chartCanvas :deep(svg) {
   display: block;
   width: 100%;
   height: 100%;
+}
+.breakEvenToggle {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  z-index: 2;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 5px;
+  background: #0a0b0e;
+}
+.breakEvenToggle button {
+  border: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 5px 9px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.45);
+  font: 500 10px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  cursor: pointer;
+}
+.breakEvenToggle button:last-child {
+  border-right: 0;
+}
+.breakEvenToggle button.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.88);
 }
 </style>

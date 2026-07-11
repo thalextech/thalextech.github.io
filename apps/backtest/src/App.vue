@@ -4,6 +4,8 @@ import CycleDetailChart from "./components/CycleDetailChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
 import WeeklyBacktestChart from "./components/WeeklyBacktestChart.vue";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
+import { blackScholesPrice } from "./lib/optionPricing.js";
+import { computeZeroMtmContours } from "./lib/zeroMtmContours.js";
 import {
   DEFAULT_BACKTEST_CONFIG,
   buildCycleDetail,
@@ -332,6 +334,7 @@ const chartMode = ref("weekly");
 const selectedCycle = ref(null);
 const cycleDetailRows = ref([]);
 const cycleBreakEvens = ref(null);
+const cycleContours = ref(null);
 const cycleDetailLoading = ref(false);
 const cycleDetailError = ref("");
 const cycleDetailCache = new Map();
@@ -435,6 +438,7 @@ const runCurrent = () => {
   selectedCycle.value = null;
   cycleDetailRows.value = [];
   cycleBreakEvens.value = null;
+  cycleContours.value = null;
   cycleDetailCache.clear();
   const config = buildConfig();
   result.value = runWeeklyStraddleBacktest({
@@ -447,6 +451,7 @@ const closeCycleDetail = () => {
   selectedCycle.value = null;
   cycleDetailRows.value = [];
   cycleBreakEvens.value = null;
+  cycleContours.value = null;
   cycleDetailError.value = "";
 };
 
@@ -457,7 +462,9 @@ const handleCycleSelect = async (cycle) => {
   cycleDetailError.value = "";
   const cacheKey = `${cycle.entryTs}|${cycle.exitTs}|${ui.hedgeIntervalHours}|${ui.hedgeEnabled}`;
   if (cycleDetailCache.has(cacheKey)) {
-    cycleDetailRows.value = cycleDetailCache.get(cacheKey);
+    const cached = cycleDetailCache.get(cacheKey);
+    cycleDetailRows.value = cached.rows;
+    cycleContours.value = cached.contours;
     return;
   }
 
@@ -476,8 +483,16 @@ const handleCycleSelect = async (cycle) => {
       config,
     });
     const rows = buildCycleDetail({ plan: cycle, preparedData: detailData, config });
-    cycleDetailCache.set(cacheKey, rows);
+    const contours = computeZeroMtmContours({
+      plan: cycle,
+      preparedData: detailData,
+      timestamps: rows.map((row) => row.ts),
+      price: blackScholesPrice,
+      surfaceMode: "sticky_strike",
+    });
+    cycleDetailCache.set(cacheKey, { rows, contours });
     cycleDetailRows.value = rows;
+    cycleContours.value = contours;
   } catch (error) {
     cycleDetailError.value = error?.message || "Unable to load hourly cycle detail";
   } finally {
@@ -853,6 +868,7 @@ onMounted(loadBacktest);
           ref="chartRef"
           :rows="cycleDetailRows"
           :break-evens="cycleBreakEvens"
+          :zero-mtm-contours="cycleContours"
         />
 
         <div v-if="ui.hedgeEnabled && !selectedCycle" class="chartModeToggle" role="group" aria-label="Chart view">
