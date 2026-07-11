@@ -100,7 +100,13 @@ const draw = () => {
     .range([priceHeight, 0]);
 
   const pnlY = d3.scaleLinear()
-    .domain(paddedDomain(rows.flatMap((row) => [row.optionPnlUsd, row.hedgePnlUsd, row.totalPnlUsd]))).nice()
+    .domain(paddedDomain(rows.flatMap((row) => [
+      row.cumulativeThetaPnlUsd + row.cumulativeGammaPnlUsd,
+      row.cumulativeNetDeltaMtmUsd,
+      row.cumulativeVegaPnlUsd,
+      row.cumulativeResidualPnlUsd,
+      row.totalPnlUsd,
+    ]))).nice()
     .range([pnlHeight, 0]);
 
   const price = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
@@ -218,10 +224,16 @@ const draw = () => {
   const pnlTop = margin.top + priceHeight + gap;
   const pnl = svg.append("g").attr("transform", `translate(${margin.left},${pnlTop})`);
   pnl.append("g").call(d3.axisLeft(pnlY).ticks(6).tickFormat(d3.format("$,.0f")).tickPadding(10)).call(styleAxis);
+  const gammaThetaRows = rows.map((row) => ({
+    ...row,
+    cumulativeGammaThetaPnlUsd: row.cumulativeThetaPnlUsd + row.cumulativeGammaPnlUsd,
+  }));
   const pnlSeries = [
-    { key: "optionPnlUsd", label: "Option PnL", color: "#7dd3fc" },
-    { key: "hedgePnlUsd", label: "Hedge PnL", color: "#fbbf24" },
-    { key: "totalPnlUsd", label: "Total PnL", color: "#f4f4f5" },
+    { key: "cumulativeGammaThetaPnlUsd", label: "Gamma–theta", color: "#7dd3fc", legendX: 0 },
+    { key: "cumulativeNetDeltaMtmUsd", label: "Net delta MTM", color: "#6ee7b7", legendX: 120 },
+    { key: "cumulativeVegaPnlUsd", label: "Vega MTM", color: "#a78bfa", legendX: 245 },
+    { key: "cumulativeResidualPnlUsd", label: "Residual", color: "#fbbf24", legendX: 340 },
+    { key: "totalPnlUsd", label: "Total PnL", color: "#f4f4f5", legendX: 425, strokeWidth: 1.75 },
   ];
   pnlSeries.forEach((series) => {
     const line = d3.line()
@@ -229,12 +241,12 @@ const draw = () => {
       .x((row) => x(new Date(row.dateTime)))
       .y((row) => pnlY(row[series.key]))
       .curve(d3.curveStepBefore);
-    pnl.append("path").datum(rows).attr("d", line)
+    pnl.append("path").datum(gammaThetaRows).attr("d", line)
       .attr("fill", "none").attr("stroke", series.color)
-      .attr("stroke-width", 1.25);
+      .attr("stroke-width", series.strokeWidth ?? 1.25);
   });
   const pnlLegend = pnl.append("g").attr("transform", "translate(0,-17)");
-  pnlSeries.forEach((series, index) => addLegendItem(pnlLegend, index * 95, series.label, series.color));
+  pnlSeries.forEach((series) => addLegendItem(pnlLegend, series.legendX, series.label, series.color));
 
   const xAxis = d3.axisBottom(x).ticks(8).tickFormat(d3.utcFormat("%d %b %H:%M")).tickPadding(10);
   pnl.append("g").attr("transform", `translate(0,${pnlHeight})`).call(xAxis).call(styleAxis);

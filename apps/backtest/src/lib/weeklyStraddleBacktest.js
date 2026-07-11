@@ -64,14 +64,17 @@ const parseInstrumentName = (instrumentName) => {
   };
 };
 
-const blackScholesDelta = ({
+const normalizeVol = (impliedVol) => impliedVol > 3 ? impliedVol / 100 : impliedVol;
+const normalPdf = (value) => Math.exp(-0.5 * value ** 2) / Math.sqrt(2 * Math.PI);
+
+const blackScholesGreeks = ({
   spot,
   strike,
   yearsToExpiry,
   impliedVol,
   optionType,
 }) => {
-  const sigma = impliedVol > 3 ? impliedVol / 100 : impliedVol;
+  const sigma = normalizeVol(impliedVol);
   if (
     spot <= 0 ||
     strike <= 0 ||
@@ -79,13 +82,20 @@ const blackScholesDelta = ({
     yearsToExpiry <= 0 ||
     !Number.isFinite(spot + strike + sigma + yearsToExpiry)
   ) {
-    return Number.NaN;
+    return { delta: Number.NaN, gamma: Number.NaN, vega: Number.NaN, theta: Number.NaN, sigma };
   }
   const d1 =
     (Math.log(spot / strike) + 0.5 * sigma ** 2 * yearsToExpiry) /
     (sigma * Math.sqrt(yearsToExpiry));
   const callDelta = normCdf(d1);
-  return optionType === "C" ? callDelta : callDelta - 1;
+  const density = normalPdf(d1);
+  return {
+    delta: optionType === "C" ? callDelta : callDelta - 1,
+    gamma: density / (spot * sigma * Math.sqrt(yearsToExpiry)),
+    vega: spot * density * Math.sqrt(yearsToExpiry),
+    theta: -(spot * density * sigma) / (2 * Math.sqrt(yearsToExpiry)),
+    sigma,
+  };
 };
 
 const dedupeByKey = (rows, makeKey) => {
@@ -105,14 +115,14 @@ const buildOptions = ({ markRows, indexRows, config }) => {
       if (!index || !parsed) return null;
       const dteDays = (parsed.expiration.getTime() - mark.dateTime.getTime()) / 86_400_000;
       const yearsToExpiry = dteDays / config.daysPerYear;
-      const delta = blackScholesDelta({
+      const greeks = blackScholesGreeks({
         spot: index.indexPrice,
         strike: parsed.strike,
         yearsToExpiry,
         impliedVol: mark.iv,
         optionType: parsed.optionType,
       });
-      if (!Number.isFinite(delta)) return null;
+      if (!Number.isFinite(greeks.delta)) return null;
       return {
         ...mark,
         ...parsed,
@@ -120,7 +130,11 @@ const buildOptions = ({ markRows, indexRows, config }) => {
         indexPrice: index.indexPrice,
         dteDays,
         yearsToExpiry,
-        delta,
+        delta: greeks.delta,
+        gamma: greeks.gamma,
+        vega: greeks.vega,
+        theta: greeks.theta,
+        impliedVol: greeks.sigma,
       };
     })
     .filter(Boolean)
@@ -467,7 +481,15 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
 
   let hedgeQuantity = 0;
   let previousIndexPrice = null;
+  let previousTs = null;
+  let previousLegQuotes = null;
+  let previousTotalPnlUsd = null;
   let hedgePnlUsd = 0;
+  let cumulativeThetaPnlUsd = 0;
+  let cumulativeGammaPnlUsd = 0;
+  let cumulativeVegaPnlUsd = 0;
+  let cumulativeNetDeltaMtmUsd = 0;
+  let cumulativeResidualPnlUsd = 0;
 
   return indexRows.map((indexRow) => {
     const isExit = indexRow.ts === plan.exitTs;
@@ -475,19 +497,25 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
       leg,
       quote: quoteByTimeInstrument.get(`${indexRow.ts}|${leg.instrumentName}`),
     }));
+    const intervalHedgeQuantity = hedgeQuantity;
 
     if (previousIndexPrice != null && Number.isFinite(indexRow.indexPrice)) {
       hedgePnlUsd += hedgeQuantity * (indexRow.indexPrice - previousIndexPrice);
     }
 
     let hedgeTrade = null;
-    if (config.hedgeEnabled && decisionTimes.has(indexRow.ts)) {
-      const hasDeltas = isExit || legQuotes.every(({ quote }) => Number.isFinite(quote?.delta));
-      const targetQuantity = hasDeltas
-        ? (isExit ? 0 : -legQuotes.reduce(
+    const optionDeltaBtc = isExit
+      ? 0
+      : legQuotes.every(({ quote }) => Number.isFinite(quote?.delta))
+        ? legQuotes.reduce(
             (delta, { leg, quote }) => delta + leg.quantity * quote.delta,
             0,
-          ))
+          )
+        : Number.NaN;
+    if (config.hedgeEnabled && decisionTimes.has(indexRow.ts)) {
+      const hasDeltas = isExit || Number.isFinite(optionDeltaBtc);
+      const targetQuantity = hasDeltas
+        ? (isExit ? 0 : -optionDeltaBtc)
         : hedgeQuantity;
       const tradeQuantity = targetQuantity - hedgeQuantity;
       if (Math.abs(tradeQuantity) > 1e-10) {
@@ -517,7 +545,57 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
         )
       : Number.NaN;
 
+    const totalPnlUsd = Number.isFinite(optionPnlUsd) ? optionPnlUsd + hedgePnlUsd : Number.NaN;
+    let thetaPnlIncrementUsd = 0;
+    let gammaPnlIncrementUsd = 0;
+    let vegaPnlIncrementUsd = 0;
+    let deltaPnlIncrementUsd = 0;
+    if (
+      previousIndexPrice != null &&
+      previousTs != null &&
+      previousLegQuotes?.length === plan.legs.length
+    ) {
+      const dS = indexRow.indexPrice - previousIndexPrice;
+      const dtYears = (indexRow.ts - previousTs) / (config.daysPerYear * 86_400);
+      const hasPreviousDeltas = previousLegQuotes.every((quote) => Number.isFinite(quote?.delta));
+      if (hasPreviousDeltas) {
+        const previousOptionDeltaBtc = plan.legs.reduce(
+          (delta, leg, index) => delta + leg.quantity * previousLegQuotes[index].delta,
+          0,
+        );
+        deltaPnlIncrementUsd = (previousOptionDeltaBtc + intervalHedgeQuantity) * dS;
+      }
+      plan.legs.forEach((leg, index) => {
+        const previousQuote = previousLegQuotes[index];
+        const currentQuote = legQuotes[index]?.quote;
+        if (Number.isFinite(previousQuote?.theta)) {
+          thetaPnlIncrementUsd += leg.quantity * previousQuote.theta * dtYears;
+        }
+        if (Number.isFinite(previousQuote?.gamma)) {
+          gammaPnlIncrementUsd += leg.quantity * 0.5 * previousQuote.gamma * dS ** 2;
+        }
+        const previousVol = previousQuote?.impliedVol;
+        const currentVol = currentQuote?.impliedVol;
+        if (Number.isFinite(previousQuote?.vega) && Number.isFinite(previousVol) && Number.isFinite(currentVol)) {
+          vegaPnlIncrementUsd += leg.quantity * previousQuote.vega * (currentVol - previousVol);
+        }
+      });
+      cumulativeThetaPnlUsd += thetaPnlIncrementUsd;
+      cumulativeGammaPnlUsd += gammaPnlIncrementUsd;
+      cumulativeVegaPnlUsd += vegaPnlIncrementUsd;
+      cumulativeNetDeltaMtmUsd += deltaPnlIncrementUsd;
+      if (Number.isFinite(previousTotalPnlUsd) && Number.isFinite(totalPnlUsd)) {
+        cumulativeResidualPnlUsd +=
+          totalPnlUsd - previousTotalPnlUsd -
+          deltaPnlIncrementUsd - thetaPnlIncrementUsd -
+          gammaPnlIncrementUsd - vegaPnlIncrementUsd;
+      }
+    }
+
     previousIndexPrice = indexRow.indexPrice;
+    previousTs = indexRow.ts;
+    previousLegQuotes = legQuotes.map(({ quote }) => quote);
+    previousTotalPnlUsd = totalPnlUsd;
     return {
       ts: indexRow.ts,
       dateTime: indexRow.dateTime,
@@ -526,7 +604,12 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
       combinedMark: hasMarks ? legMarks.reduce((total, { mark }) => total + mark, 0) : Number.NaN,
       optionPnlUsd,
       hedgePnlUsd,
-      totalPnlUsd: Number.isFinite(optionPnlUsd) ? optionPnlUsd + hedgePnlUsd : Number.NaN,
+      totalPnlUsd,
+      cumulativeThetaPnlUsd,
+      cumulativeGammaPnlUsd,
+      cumulativeVegaPnlUsd,
+      cumulativeNetDeltaMtmUsd,
+      cumulativeResidualPnlUsd,
       hedgeQuantity,
       hedgeTrade,
     };
