@@ -217,7 +217,7 @@ const draw = () => {
 
   const pnlTop = margin.top + priceHeight + gap;
   const pnl = svg.append("g").attr("transform", `translate(${margin.left},${pnlTop})`);
-  pnl.append("g").call(d3.axisLeft(pnlY).ticks(5).tickFormat(d3.format("$,.0f")).tickPadding(10)).call(styleAxis);
+  pnl.append("g").call(d3.axisLeft(pnlY).ticks(6).tickFormat(d3.format("$,.0f")).tickPadding(10)).call(styleAxis);
   const pnlSeries = [
     { key: "optionPnlUsd", label: "Option PnL", color: "#7dd3fc" },
     { key: "hedgePnlUsd", label: "Hedge PnL", color: "#fbbf24" },

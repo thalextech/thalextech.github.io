@@ -25,6 +25,12 @@ const CALENDAR_MATURITY_OPTIONS = [
   { value: "7-14", label: "7–14D", nearDays: 7, farDays: 14, minDteDays: 5, maxDteDays: 10 },
   { value: "7-30", label: "7–30D", nearDays: 7, farDays: 30, minDteDays: 5, maxDteDays: 10 },
   { value: "14-30", label: "14–30D", nearDays: 14, farDays: 30, minDteDays: 7, maxDteDays: 28 },
+  { value: "30-60", label: "30–60D", nearDays: 30, farDays: 60, minDteDays: 14, maxDteDays: 60 },
+  { value: "30-90", label: "30–90D", nearDays: 30, farDays: 90, minDteDays: 14, maxDteDays: 60 },
+  { value: "30-180", label: "30–180D", nearDays: 30, farDays: 180, minDteDays: 14, maxDteDays: 60 },
+  { value: "60-90", label: "60–90D", nearDays: 60, farDays: 90, minDteDays: 45, maxDteDays: 75 },
+  { value: "60-180", label: "60–180D", nearDays: 60, farDays: 180, minDteDays: 45, maxDteDays: 75 },
+  { value: "90-180", label: "90–180D", nearDays: 90, farDays: 180, minDteDays: 75, maxDteDays: 135 },
 ];
 
 const STRUCTURE_OPTIONS = [
@@ -70,14 +76,14 @@ const HEDGE_FREQUENCY_OPTIONS = [
 
 const ui = reactive({
   structure: "straddle",
-  maturityDays: 30,
+  maturityDays: 7,
   targetDelta: 0.25,
   entryWeekday: 5,
   entryHourUtc: 8,
   hedgeEnabled: true,
   hedgeIntervalHours: 24,
   holdToExpiry: false,
-  exitHoldDays: 30,
+  exitHoldDays: 7,
   longOption: false,
   investmentMode: "notional",
 });
@@ -94,7 +100,7 @@ const currentMaturity = computed(() =>
 );
 const showDelta = computed(() => !["straddle", "calendar_spread"].includes(ui.structure));
 const rollDayOptions = computed(() =>
-  [1, 2, 3, 4, 5, 6, 7, 14, 30]
+  [1, 2, 3, 4, 5, 6, 7, 14, 30, 60, 90, 180]
     .filter((days) => days <= maxExitHoldDays.value),
 );
 
@@ -595,7 +601,7 @@ onMounted(loadBacktest);
 
       <div class="configPills">
         <!-- Instrument -->
-        <div class="pill" style="position: relative;" @click="toggleMenu('instrument')">
+        <div class="pill instrumentPill" style="position: relative;" @click="toggleMenu('instrument')">
           <span class="pillLabel">Instrument</span>
           <span class="pillValue">{{ instrumentPill }}</span>
           <div v-if="openMenu === 'instrument'" class="dropdown instrument-dropdown" @click.stop>
@@ -676,7 +682,7 @@ onMounted(loadBacktest);
         </div>
 
         <!-- Entry -->
-        <div class="pill" style="position: relative;" @click="toggleMenu('entry')">
+        <div class="pill entryPill" style="position: relative;" @click="toggleMenu('entry')">
           <span class="pillLabel">Entry</span>
           <span class="pillValue">{{ entryPill }}</span>
           <div v-if="openMenu === 'entry'" class="dropdown entry-dropdown" @click.stop>
@@ -711,7 +717,7 @@ onMounted(loadBacktest);
         </div>
 
         <!-- Hedge -->
-        <div class="pill" style="position: relative;" @click="toggleMenu('hedge')">
+        <div class="pill hedgePill" style="position: relative;" @click="toggleMenu('hedge')">
           <span class="pillLabel">Hedge</span>
           <span class="pillValue">{{ hedgePill }}</span>
           <div v-if="openMenu === 'hedge'" class="dropdown" @click.stop>
@@ -745,7 +751,7 @@ onMounted(loadBacktest);
         </div>
 
         <!-- Exit -->
-        <div class="pill" style="position: relative;" @click="toggleMenu('exit')">
+        <div class="pill exitPill" style="position: relative;" @click="toggleMenu('exit')">
           <span class="pillLabel">Exit</span>
           <span class="pillValue">{{ exitPill }}</span>
           <div v-if="openMenu === 'exit'" class="dropdown" @click.stop>
@@ -922,6 +928,11 @@ onMounted(loadBacktest);
   display: flex;
   gap: 8px;
 }
+
+.instrumentPill { order: 0; }
+.hedgePill { order: 1; }
+.entryPill { order: 2; }
+.exitPill { order: 3; }
 
 .pill {
   display: flex;

@@ -72,7 +72,7 @@ export function exportTitledChart({
 
   metrics.forEach((metric, index) => {
     const x = minX + 8;
-    const y = minY + headerHeight + 47 + index * 67;
+    const y = minY + headerHeight + 29 + index * 67;
     const valueNode = document.createElementNS(SVG_NS, "text");
     valueNode.setAttribute("x", String(x));
     valueNode.setAttribute("y", String(y));

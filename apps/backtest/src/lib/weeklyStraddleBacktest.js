@@ -26,7 +26,7 @@ export const DEFAULT_BACKTEST_CONFIG = {
   hedgeEnabled: true,
   hedgeIntervalHours: 24,
   holdToExpiry: false,
-  exitHoldDays: 30,
+  exitHoldDays: 7,
   longOption: false,
   targetDteDays: 7,
   farTargetDteDays: 14,
