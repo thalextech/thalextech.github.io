@@ -108,7 +108,13 @@ test("skew scenarios are emitted separately and move an asymmetric structure", (
   const put = makeLeg({ strike: 90, optionType: "P", quantity: 1, entryPrice: 3 });
   const call = makeLeg({ strike: 110, optionType: "C", quantity: -1, entryPrice: 3 });
   const plan = makePlan([put, call]);
-  const result = run(plan, [quoteFor(put), quoteFor(call)], [entryTs + DAY]);
+  const result = computeZeroMtmContours({
+    plan,
+    preparedData: { quotes: [quoteFor(put), quoteFor(call)] },
+    timestamps: [entryTs + DAY],
+    price: blackScholesPrice,
+    includeSkewScenarios: true,
+  });
   assert.deepEqual(new Set(result.contours.map((row) => row.scenario)), new Set(["base", "skew_up", "skew_down"]));
   const roots = Object.fromEntries(result.contours.map((row) => [row.scenario, row.roots]));
   assert.ok(roots.base.length && roots.skew_up.length && roots.skew_down.length);

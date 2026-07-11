@@ -26,8 +26,6 @@ const SERIES_STROKE_WIDTH = 1.25;
 const PNL_SERIES_OPACITY = 0.8;
 const CONTOUR_COLORS = {
   base: "rgba(255,255,255,0.78)",
-  skew_up: "rgba(125,211,252,0.62)",
-  skew_down: "rgba(240,138,126,0.62)",
 };
 const LEGEND_TOOLTIPS = {
   index: "Observed BTC index price at each hourly bar. This is the underlying spot path used for option repricing, hedge P&L, Greek attribution, and break-even comparisons.",
@@ -35,8 +33,6 @@ const LEGEND_TOOLTIPS = {
   hedge_sell: "Red markers show delta-hedge sales. A sell reduces or reverses the signed BTC hedge position. The marker is execution direction, not whether that hedge ultimately made money.",
   break_even_lines: "Terminal break-even levels. At expiry, intrinsic value of all option legs equals the position's signed entry premium. These horizontal lines ignore remaining time value and IV, so they are payoff break-evens—not today's mark-to-market break-evens.",
   contour_base: "Base zero-MTM contour. At every timestamp it solves for every spot S where the option structure, repriced on the frozen entry IV surface, has exactly its entry value: V(S,t)=V₀. Hedges do not reset this contour because they change account P&L, not the option structure's entry variance budget.",
-  contour_skew_up: "Skew +2.5v scenario. ATM IV stays fixed while the 25-delta put-minus-call risk reversal increases by 2.5 volatility points: put-wing IV rises 1.25 points and call-wing IV falls 1.25. The dashed contour shows how skew repricing alone moves the zero-MTM boundary.",
-  contour_skew_down: "Skew −2.5v scenario. ATM IV stays fixed while the 25-delta put-minus-call risk reversal decreases by 2.5 volatility points: put-wing IV falls 1.25 points and call-wing IV rises 1.25. This is a frozen-surface sensitivity scenario, not observed future IV.",
   gamma_theta: "Cumulative gamma–theta attribution: Σ[θ·dt + ½Γ(dS)²] across all signed option legs. For a short-vol position, theta is usually earned and gamma is usually paid. Their net indicates whether realized spot variation compensated the entry time decay under this discrete approximation.",
   net_delta: "Cumulative net-delta mark-to-market: Σ[(option delta + signed hedge position)·dS]. When hedged, it measures first-order directional P&L left after imperfect or discrete hedging; when unhedged, it is option delta P&L. During the cycle it mixes realized and unrealized MTM; at final closure it is realized.",
   vega: "Cumulative first-order vega attribution: Σ[vega·dσ] across the signed option legs. It isolates P&L from implied-volatility repricing. It is an approximation; large vol moves, skew changes, and vol/spot cross-effects can spill into residual.",
@@ -174,10 +170,8 @@ const draw = () => {
   const overlay = price.append("g").attr("clip-path", `url(#${clipId})`);
 
   if (showContourOverlay) {
-    Object.keys(CONTOUR_COLORS).forEach((scenario) => {
-      const seriesKey = scenario === "base" ? "contour_base" : `contour_${scenario}`;
-      if (isHidden(seriesKey)) return;
-      buildContourPolylines(contourRows, scenario).forEach((segment) => {
+    if (!isHidden("contour_base")) {
+      buildContourPolylines(contourRows, "base").forEach((segment) => {
         const contourLine = d3.line()
           .x((point) => x(new Date(point.t * 1000)))
           .y((point) => indexY(point.spot));
@@ -185,11 +179,11 @@ const draw = () => {
           .datum(segment)
           .attr("d", contourLine)
           .attr("fill", "none")
-          .attr("stroke", CONTOUR_COLORS[scenario])
+          .attr("stroke", CONTOUR_COLORS.base)
           .attr("stroke-width", SERIES_STROKE_WIDTH)
-          .attr("stroke-dasharray", scenario === "base" ? null : "4 3");
+          .attr("stroke-dasharray", null);
       });
-    });
+    }
   }
 
   // Index price axis on the left (primary now that we focus on spot vs break-evens)
@@ -292,10 +286,8 @@ const draw = () => {
   addLegendItem(legend, 170, "Hedge sell", SELL, "square", "hedge_sell", LEGEND_TOOLTIPS.hedge_sell);
   if (showContourOverlay) {
     addLegendItem(legend, 255, "Zero MTM", CONTOUR_COLORS.base, "line", "contour_base", LEGEND_TOOLTIPS.contour_base);
-    addLegendItem(legend, 345, "Skew +2.5v", CONTOUR_COLORS.skew_up, "line", "contour_skew_up", LEGEND_TOOLTIPS.contour_skew_up);
-    addLegendItem(legend, 455, "Skew −2.5v", CONTOUR_COLORS.skew_down, "line", "contour_skew_down", LEGEND_TOOLTIPS.contour_skew_down);
     legend.append("text")
-      .attr("x", 570).attr("y", 4)
+      .attr("x", 345).attr("y", 4)
       .attr("fill", "rgba(255,255,255,0.42)")
       .attr("font-size", 9)
       .text(props.zeroMtmContours.metadata.surface_mode.replace("_", " "));
@@ -376,7 +368,7 @@ defineExpose({ exportPng });
       >BE Lines</button>
       <button
         type="button"
-        title="Show time-dependent zero-MTM contours. Each cone point solves V(S,t)=V₀ using the frozen entry IV surface; dashed lines show ±2.5-vol-point 25-delta skew scenarios with ATM IV held fixed."
+        title="Show time-dependent zero-MTM contours. Each cone point solves V(S,t)=V₀ using the frozen entry IV surface."
         :class="{ active: breakEvenMode === 'cones' }"
         :aria-pressed="breakEvenMode === 'cones'"
         @click="breakEvenMode = 'cones'"

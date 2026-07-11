@@ -212,6 +212,7 @@ export const computeZeroMtmContours = ({
   price,
   surfaceMode = "sticky_strike",
   skewVolPoints = 2.5,
+  includeSkewScenarios = false,
   contractMultiplier = 1,
   gridPoints = 201,
 }) => {
@@ -225,7 +226,8 @@ export const computeZeroMtmContours = ({
   const barSeconds = grid.length > 1 ? Math.min(...grid.slice(1).map((ts, index) => ts - grid[index]).filter((dt) => dt > 0)) : 3600;
   const domain = [0.5 * plan.entryIndexPrice, 2 * plan.entryIndexPrice];
   const contours = [];
-  for (const scenario of SCENARIOS) {
+  const scenarios = includeSkewScenarios ? SCENARIOS : ["base"];
+  for (const scenario of scenarios) {
     for (const t of grid) {
       const activeLegs = plan.legs.filter((leg) => t <= leg.expirationTs);
       const fn = (spot) => activeLegs.reduce((value, leg) => {
@@ -250,6 +252,7 @@ export const computeZeroMtmContours = ({
       expiry_ts: frontExpiryTs,
       lifecycle_end_ts: endTs,
       skew_vol_points: skewVolPoints,
+      skew_scenarios_included: includeSkewScenarios,
       skew_convention: "25d put-minus-call risk reversal; ATM fixed; shift split evenly across wings",
       spot_domain: domain,
       legs: plan.legs.map(({ instrumentName, optionType, strike, expirationTs, quantity, entryPrice }) => ({
