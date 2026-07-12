@@ -5,6 +5,7 @@ import { exportTitledChart } from "../lib/exportTitledChart.js";
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
+  dimensionLabel: { type: String, default: "Sweep setting" },
 });
 
 const emit = defineEmits(["select"]);
@@ -32,7 +33,13 @@ const draw = () => {
   const rankedRowsY = rankedColumnsY + 18;
   const rankedRowHeight = 25;
   const rankedBottom = rankedRowsY + rows.length * rankedRowHeight;
-  const distributionHeaderY = rankedBottom + 50;
+  const responseHeaderY = rankedBottom + 50;
+  const responsePlotTop = responseHeaderY + 46;
+  const responsePlotHeight = 190;
+  const responsePlotBottom = responsePlotTop + responsePlotHeight;
+  const responseAxisY = responsePlotBottom + 8;
+  const responseBottom = responseAxisY + 28;
+  const distributionHeaderY = responseBottom + 50;
   const distributionAxisY = distributionHeaderY + 39;
   const distributionRowsY = distributionAxisY + 16;
   const distributionRowHeight = 26;
@@ -55,7 +62,7 @@ const draw = () => {
     .attr("height", height)
     .attr("font-family", CHART_FONT_FAMILY)
     .attr("role", "img")
-    .attr("aria-label", "Ranked sweep outlier analysis with weekly PnL distribution strips");
+    .attr("aria-label", "Ranked sweep analysis with parameter response curves and weekly PnL distributions");
 
   const sum = (values) => d3.sum(values);
   const analyzedRows = rows.map((row) => {
@@ -64,6 +71,7 @@ const draw = () => {
       .filter(Number.isFinite);
     const total = Number.isFinite(Number(row.pnl)) ? Number(row.pnl) : sum(weeks);
     const bestWeek = d3.max(weeks) ?? 0;
+    const worstWeek = d3.min(weeks) ?? 0;
     const bestIndex = weeks.indexOf(bestWeek);
     const sorted = [...weeks].sort((a, b) => b - a);
     const positive = sum(weeks.filter((value) => value > 0));
@@ -75,6 +83,8 @@ const draw = () => {
       weeks,
       total,
       robustPnl: total - bestWeek,
+      trimmedPnl: total - bestWeek - worstWeek,
+      trimmedThreePnl: total - sum(sorted.slice(0, 3)) - sum(sorted.slice(-3)),
       winRate: weeks.length ? weeks.filter((value) => value > 0).length / weeks.length : 0,
       profitFactor: negative ? positive / negative : 0,
       cvar: d3.mean(sorted.slice(-3)) ?? 0,
@@ -128,6 +138,88 @@ const draw = () => {
     lines.forEach((line, index) => text.append("tspan")
       .attr("x", 9).attr("dy", index === 0 ? 0 : 13).text(line));
   };
+
+  svg.append("line")
+    .attr("x1", margin.left).attr("x2", margin.left + contentWidth)
+    .attr("y1", responseHeaderY - 24).attr("y2", responseHeaderY - 24)
+    .attr("stroke", "rgba(255,255,255,0.12)");
+  svg.append("text")
+    .attr("x", margin.left).attr("y", responseHeaderY)
+    .attr("fill", "rgba(255,255,255,0.64)").attr("font-size", 10).attr("font-weight", 500)
+    .text(`RESPONSE CURVE · ${props.dimensionLabel.toUpperCase()}`);
+  svg.append("text")
+    .attr("x", margin.left).attr("y", responseHeaderY + 16)
+    .attr("fill", "rgba(255,255,255,0.36)").attr("font-size", 8)
+    .text("PARAMETER ORDER · TOTAL PNL COMPARED AFTER TRIMMING ONE OR THREE WEEKS FROM EACH TAIL");
+
+  const responsePlotLeft = margin.left + 58;
+  const responsePlotRight = margin.left + contentWidth - 8;
+  const responseValues = analyzedRows.flatMap((row) => [row.total, row.trimmedPnl, row.trimmedThreePnl]);
+  const [responseMin = -1, responseMax = 1] = d3.extent(responseValues);
+  const responseSpan = responseMax - responseMin || Math.max(Math.abs(responseMin), 1);
+  const responseX = d3.scalePoint()
+    .domain(analyzedRows.map((row) => row.key))
+    .range([responsePlotLeft, responsePlotRight])
+    .padding(0.35);
+  const responseY = d3.scaleLinear()
+    .domain([responseMin - responseSpan * 0.08, responseMax + responseSpan * 0.08])
+    .nice()
+    .range([responsePlotBottom, responsePlotTop]);
+  const responseYAxis = svg.append("g")
+    .attr("transform", `translate(${responsePlotLeft},0)`)
+    .call(d3.axisLeft(responseY).ticks(5).tickSize(-(responsePlotRight - responsePlotLeft)).tickPadding(8).tickFormat(formatCompactUsd));
+  responseYAxis.select(".domain").remove();
+  responseYAxis.selectAll(".tick line").attr("stroke", "rgba(255,255,255,0.07)");
+  responseYAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 8);
+  if (responseY.domain()[0] <= 0 && responseY.domain()[1] >= 0) {
+    svg.append("line")
+      .attr("x1", responsePlotLeft).attr("x2", responsePlotRight)
+      .attr("y1", responseY(0)).attr("y2", responseY(0))
+      .attr("stroke", "rgba(255,255,255,0.28)");
+  }
+  const responseXAxis = svg.append("g")
+    .attr("transform", `translate(0,${responseAxisY})`)
+    .call(d3.axisBottom(responseX).tickSize(0).tickPadding(7).tickFormat((key) => analyzedRows.find((row) => row.key === key)?.label || key));
+  responseXAxis.select(".domain").attr("stroke", "rgba(255,255,255,0.14)");
+  responseXAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.46)").attr("font-size", 7.5);
+
+  const responseSeries = [
+    { label: "Total PnL", field: "total", color: "#78aadc", dash: null },
+    { label: "Ex best + worst", field: "trimmedPnl", color: "rgba(255,255,255,0.72)", dash: "4 3" },
+    { label: "Ex top + bottom 3", field: "trimmedThreePnl", color: "#c9a66b", dash: "2 3" },
+  ];
+  const responseLine = (field) => d3.line()
+    .x((row) => responseX(row.key))
+    .y((row) => responseY(row[field]));
+  responseSeries.forEach((series) => {
+    svg.append("path")
+      .datum(analyzedRows)
+      .attr("d", responseLine(series.field))
+      .attr("fill", "none").attr("stroke", series.color).attr("stroke-width", 1.5)
+      .attr("stroke-dasharray", series.dash);
+    const points = svg.selectAll(`circle.response-${series.field}`)
+      .data(analyzedRows, (row) => row.key)
+      .join("circle")
+      .attr("class", `response-${series.field}`)
+      .attr("cx", (row) => responseX(row.key)).attr("cy", (row) => responseY(row[series.field]))
+      .attr("r", series.field === "total" ? 2.4 : 1.9)
+      .attr("fill", series.color)
+      .style("cursor", "pointer")
+      .on("click", (_, row) => emit("select", row));
+    points.append("title").text((row) => `${row.label} · ${series.label}\n${formatUsd(row[series.field])}`);
+  });
+  let legendX = responsePlotRight;
+  [...responseSeries].reverse().forEach((series) => {
+    const labelWidth = series.label.length * 5.4 + 31;
+    legendX -= labelWidth;
+    svg.append("line")
+      .attr("x1", legendX).attr("x2", legendX + 20).attr("y1", responseHeaderY).attr("y2", responseHeaderY)
+      .attr("stroke", series.color).attr("stroke-width", 1.5).attr("stroke-dasharray", series.dash);
+    svg.append("text")
+      .attr("x", legendX + 25).attr("y", responseHeaderY).attr("dy", "0.32em")
+      .attr("fill", "rgba(255,255,255,0.52)").attr("font-size", 8)
+      .text(series.label);
+  });
 
   svg.append("text")
     .attr("x", margin.left).attr("y", distributionHeaderY)
@@ -238,12 +330,12 @@ const draw = () => {
     setting: margin.left,
     spark: margin.left + contentWidth * 0.07,
     pnl: margin.left + contentWidth * 0.25,
-    pnlValue: margin.left + contentWidth * 0.57,
+    pnlValue: margin.left + contentWidth * 0.56,
     sharpe: margin.left + contentWidth * 0.64,
-    drawdown: margin.left + contentWidth * 0.73,
-    win: margin.left + contentWidth * 0.81,
-    profitFactor: margin.left + contentWidth * 0.89,
-    cvar: margin.left + contentWidth,
+    drawdown: margin.left + contentWidth * 0.72,
+    win: margin.left + contentWidth * 0.79,
+    profitFactor: margin.left + contentWidth * 0.86,
+    cvar: margin.left + contentWidth * 0.93,
   };
   const headers = [
     { label: "SETTING", x: columnX.setting, anchor: "start", tooltip: "The sweep parameter value used for this backtest variant." },

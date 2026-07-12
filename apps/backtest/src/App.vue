@@ -188,6 +188,9 @@ const SWEEP_DIMENSIONS = [
 const availableSweepDimensions = computed(() =>
   SWEEP_DIMENSIONS.filter((dimension) => dimension.value !== "delta_band" || showDelta.value),
 );
+const sweepDimensionLabel = computed(() =>
+  SWEEP_DIMENSIONS.find((dimension) => dimension.value === sweepDimension.value)?.label || sweepDimension.value,
+);
 
 const formatUsd = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -870,13 +873,9 @@ function handleSavePng() {
 
   if (mode.value === 'sweep') {
     if (!sweepChartRef.value) return;
-    const dimLabel = sweepDimension.value === 'entry_hour' ? 'Entry Hour' :
-                     sweepDimension.value === 'entry_weekday' ? 'Day of Week' :
-                     sweepDimension.value === 'hedge_frequency' ? 'Hedge Frequency' :
-                     sweepDimension.value === 'delta_band' ? 'Delta' : sweepDimension.value;
     const filename = `sweep-${sweepDimension.value}-${date}.png`;
     sweepChartRef.value.exportPng({
-      title: `Parameter Sweep: ${dimLabel}`,
+      title: `Parameter Sweep: ${sweepDimensionLabel.value}`,
       subtitle: chartSubtitle.value,
       source: chartSourceSubtitle.value,
       metrics: sweepInsights.value ? [
@@ -1234,6 +1233,7 @@ onMounted(loadBacktest);
             ref="sweepChartRef"
             class="sweepHistogram"
             :rows="sweepResults"
+            :dimension-label="sweepDimensionLabel"
             @select="applySweepResult"
           />
           <div v-else class="sweepEmpty">Choose a dimension, then run the sweep. Results include PnL, Sharpe, drawdown, and sample size.</div>
