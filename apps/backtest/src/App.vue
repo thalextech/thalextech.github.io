@@ -180,6 +180,7 @@ const preparedData = ref(null);
 
 const SWEEP_DIMENSIONS = [
   { value: "entry_hour", label: "Entry hour" },
+  { value: "entry_weekday", label: "Day of week" },
   { value: "hedge_frequency", label: "Hedge frequency" },
   { value: "delta_band", label: "Strike delta" },
 ];
@@ -246,6 +247,13 @@ const sweepConfigs = computed(() => {
       key: `hour-${hour.value}`,
       label: hour.label,
       overrides: { entryHourUtc: hour.value, hourlyOffset: hour.value },
+    }));
+  }
+  if (sweepDimension.value === "entry_weekday") {
+    return WEEKDAY_OPTIONS.map((weekday) => ({
+      key: `weekday-${weekday.value}`,
+      label: weekday.label,
+      overrides: { entryWeekday: weekday.value },
     }));
   }
   if (sweepDimension.value === "hedge_frequency") {
@@ -674,6 +682,8 @@ const runSweep = async () => {
 const applySweepResult = (cell) => {
   if (sweepDimension.value === "entry_hour") {
     ui.entryHourUtc = cell.config.entryHourUtc;
+  } else if (sweepDimension.value === "entry_weekday") {
+    ui.entryWeekday = cell.config.entryWeekday;
   } else if (sweepDimension.value === "hedge_frequency") {
     ui.hedgeEnabled = true;
     ui.hedgeIntervalHours = cell.config.hedgeIntervalHours;
@@ -861,6 +871,7 @@ function handleSavePng() {
   if (mode.value === 'sweep') {
     if (!sweepChartRef.value) return;
     const dimLabel = sweepDimension.value === 'entry_hour' ? 'Entry Hour' :
+                     sweepDimension.value === 'entry_weekday' ? 'Day of Week' :
                      sweepDimension.value === 'hedge_frequency' ? 'Hedge Frequency' :
                      sweepDimension.value === 'delta_band' ? 'Delta' : sweepDimension.value;
     const filename = `sweep-${sweepDimension.value}-${date}.png`;

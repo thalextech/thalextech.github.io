@@ -813,9 +813,16 @@ export const prepareBacktestData = ({ indexRows, markRows, config: inc = {} }) =
 
 export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, config: inc = {} }) => {
   const c = { ...DEFAULT_BACKTEST_CONFIG, ...inc };
-  c.entryHourUtc = Number(c.entryHourUtc) || Number(c.hourlyOffset) || 8;
+  const entryHour = Number(c.entryHourUtc);
+  const hourlyOffset = Number(c.hourlyOffset);
+  c.entryHourUtc = Number.isFinite(entryHour)
+    ? entryHour
+    : Number.isFinite(hourlyOffset) ? hourlyOffset : 8;
   c.hourlyOffset = c.entryHourUtc;
-  c.entryWeekday = Number(c.entryWeekday) || 5;
+  const entryWeekday = Number(c.entryWeekday);
+  c.entryWeekday = Number.isInteger(entryWeekday) && entryWeekday >= 0 && entryWeekday <= 6
+    ? entryWeekday
+    : 5;
   c.hedgeEnabled = c.hedgeEnabled !== false;
   c.hedgeIntervalHours = Math.max(1, Math.min(24, Math.round(Number(c.hedgeIntervalHours) || 24)));
   c.holdToExpiry = c.holdToExpiry !== false;
