@@ -1153,7 +1153,7 @@ onMounted(loadBacktest);
           </div>
           <div class="metric">
             <div class="metricValue">{{ sweepInsights.profitable }}/{{ sweepInsights.total }}</div>
-            <div class="metricLabel">PROFITABLE · MEDIAN {{ formatUsd.format(sweepInsights.medianPnl) }}</div>
+            <div class="metricLabel">PROFIT · {{ formatUsd.format(sweepInsights.medianPnl) }}</div>
           </div>
         </template>
       </div>

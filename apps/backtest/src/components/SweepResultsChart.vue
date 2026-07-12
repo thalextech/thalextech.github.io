@@ -33,13 +33,12 @@ const draw = () => {
   const rankedRowsY = rankedColumnsY + 18;
   const rankedRowHeight = 25;
   const rankedBottom = rankedRowsY + rows.length * rankedRowHeight;
-  const responseHeaderY = rankedBottom + 50;
-  const responsePlotTop = responseHeaderY + 46;
-  const responsePlotHeight = 190;
-  const responsePlotBottom = responsePlotTop + responsePlotHeight;
-  const responseAxisY = responsePlotBottom + 8;
-  const responseBottom = responseAxisY + 28;
-  const distributionHeaderY = responseBottom + 50;
+  const boxHeaderY = rankedBottom + 50;
+  const boxPlotTop = boxHeaderY + 46;
+  const boxPlotBottom = boxPlotTop + 280;
+  const boxAxisY = boxPlotBottom + 8;
+  const boxBottom = boxAxisY + 28;
+  const distributionHeaderY = boxBottom + 50;
   const distributionAxisY = distributionHeaderY + 39;
   const distributionRowsY = distributionAxisY + 16;
   const distributionRowHeight = 26;
@@ -62,7 +61,7 @@ const draw = () => {
     .attr("height", height)
     .attr("font-family", CHART_FONT_FAMILY)
     .attr("role", "img")
-    .attr("aria-label", "Ranked sweep analysis with parameter response curves and weekly PnL distributions");
+    .attr("aria-label", "Ranked sweep analysis with bootstrap box plots and weekly PnL distributions");
 
   const sum = (values) => d3.sum(values);
   const analyzedRows = rows.map((row) => {
@@ -71,7 +70,6 @@ const draw = () => {
       .filter(Number.isFinite);
     const total = Number.isFinite(Number(row.pnl)) ? Number(row.pnl) : sum(weeks);
     const bestWeek = d3.max(weeks) ?? 0;
-    const worstWeek = d3.min(weeks) ?? 0;
     const bestIndex = weeks.indexOf(bestWeek);
     const sorted = [...weeks].sort((a, b) => b - a);
     const positive = sum(weeks.filter((value) => value > 0));
@@ -83,8 +81,6 @@ const draw = () => {
       weeks,
       total,
       robustPnl: total - bestWeek,
-      trimmedPnl: total - bestWeek - worstWeek,
-      trimmedThreePnl: total - sum(sorted.slice(0, 3)) - sum(sorted.slice(-3)),
       winRate: weeks.length ? weeks.filter((value) => value > 0).length / weeks.length : 0,
       profitFactor: negative ? positive / negative : 0,
       cvar: d3.mean(sorted.slice(-3)) ?? 0,
@@ -92,13 +88,37 @@ const draw = () => {
       bestIndex,
     };
   });
-  const cvarValues = analyzedRows.map((row) => row.cvar).filter(Number.isFinite);
-  const cvarMin = d3.min(cvarValues) ?? 0;
-  const cvarMax = d3.max(cvarValues) ?? 0;
-  const cvarMid = d3.median(cvarValues) ?? (cvarMin + cvarMax) / 2;
-  const cvarColor = cvarMin === cvarMax
+  const bootstrapCount = 400;
+  const sharedWeekCount = d3.min(analyzedRows.map((row) => row.weeks.length)) ?? 0;
+  let randomState = 0x5f3759df;
+  const nextRandom = () => {
+    randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0;
+    return randomState / 4294967296;
+  };
+  const bootstrapIndices = Array.from({ length: bootstrapCount }, () =>
+    Array.from({ length: sharedWeekCount }, () => Math.floor(nextRandom() * sharedWeekCount)),
+  );
+  const bootstrapRows = analyzedRows.map((row) => {
+    const samples = bootstrapIndices
+      .map((indices) => sum(indices.map((index) => row.weeks[index])))
+      .sort((a, b) => a - b);
+    return {
+      ...row,
+      bootstrapSamples: samples,
+      bootstrapQ05: d3.quantileSorted(samples, 0.05) ?? 0,
+      bootstrapQ25: d3.quantileSorted(samples, 0.25) ?? 0,
+      bootstrapMedian: d3.quantileSorted(samples, 0.5) ?? 0,
+      bootstrapQ75: d3.quantileSorted(samples, 0.75) ?? 0,
+      bootstrapQ95: d3.quantileSorted(samples, 0.95) ?? 0,
+    };
+  });
+  const drawdownValues = analyzedRows.map((row) => Number(row.maxDrawdown)).filter(Number.isFinite);
+  const drawdownMin = d3.min(drawdownValues) ?? 0;
+  const drawdownMax = d3.max(drawdownValues) ?? 0;
+  const drawdownMid = d3.median(drawdownValues) ?? (drawdownMin + drawdownMax) / 2;
+  const drawdownColor = drawdownMin === drawdownMax
     ? () => d3.interpolateRdBu(0.5)
-    : d3.scaleDiverging(d3.interpolateRdBu).domain([cvarMin, cvarMid, cvarMax]).clamp(true);
+    : d3.scaleDiverging(d3.interpolateRdBu).domain([drawdownMin, drawdownMid, drawdownMax]).clamp(true);
   const rankedRows = [...analyzedRows].sort((a, b) => b.total - a.total);
   const formatCompactUsd = (value) => {
     const numeric = Number(value) || 0;
@@ -146,86 +166,100 @@ const draw = () => {
       .attr("x", 9).attr("dy", index === 0 ? 0 : 13).text(line));
   };
 
+  const bootstrapPlotLeft = margin.left + 58;
+  const bootstrapPlotRight = margin.left + contentWidth - 8;
+  const bootstrapValues = bootstrapRows.flatMap((row) => [...row.bootstrapSamples, row.total]);
+  const [bootstrapMin = -1, bootstrapMax = 1] = d3.extent(bootstrapValues);
+  const bootstrapSpan = bootstrapMax - bootstrapMin || Math.max(Math.abs(bootstrapMin), 1);
+  const bootstrapDomain = [bootstrapMin - bootstrapSpan * 0.06, bootstrapMax + bootstrapSpan * 0.06];
+  const drawBootstrapAxes = (plotTop, plotBottom, axisY) => {
+    const x = d3.scalePoint()
+      .domain(bootstrapRows.map((row) => row.key))
+      .range([bootstrapPlotLeft, bootstrapPlotRight])
+      .padding(0.45);
+    const y = d3.scaleLinear().domain(bootstrapDomain).nice().range([plotBottom, plotTop]);
+    const yAxis = svg.append("g")
+      .attr("transform", `translate(${bootstrapPlotLeft},0)`)
+      .call(d3.axisLeft(y).ticks(5).tickSize(-(bootstrapPlotRight - bootstrapPlotLeft)).tickPadding(8).tickFormat(formatCompactUsd));
+    yAxis.select(".domain").remove();
+    yAxis.selectAll(".tick line").attr("stroke", "rgba(255,255,255,0.07)");
+    yAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 8);
+    const xAxis = svg.append("g")
+      .attr("transform", `translate(0,${axisY})`)
+      .call(d3.axisBottom(x).tickSize(0).tickPadding(7).tickFormat((key) => bootstrapRows.find((row) => row.key === key)?.label || key));
+    xAxis.select(".domain").attr("stroke", "rgba(255,255,255,0.14)");
+    xAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.46)").attr("font-size", 7.5);
+    return { x, y };
+  };
+
   svg.append("line")
     .attr("x1", margin.left).attr("x2", margin.left + contentWidth)
-    .attr("y1", responseHeaderY - 24).attr("y2", responseHeaderY - 24)
+    .attr("y1", boxHeaderY - 24).attr("y2", boxHeaderY - 24)
     .attr("stroke", "rgba(255,255,255,0.12)");
   svg.append("text")
-    .attr("x", margin.left).attr("y", responseHeaderY)
+    .attr("x", margin.left).attr("y", boxHeaderY)
     .attr("fill", "rgba(255,255,255,0.64)").attr("font-size", 10).attr("font-weight", 500)
-    .text(`RESPONSE CURVE · ${props.dimensionLabel.toUpperCase()}`);
+    .text(`RESAMPLED TOTAL PNL · ${props.dimensionLabel.toUpperCase()}`);
   svg.append("text")
-    .attr("x", margin.left).attr("y", responseHeaderY + 16)
+    .attr("x", margin.left).attr("y", boxHeaderY + 16)
     .attr("fill", "rgba(255,255,255,0.36)").attr("font-size", 8)
-    .text("PARAMETER ORDER · TOTAL PNL COMPARED AFTER TRIMMING ONE OR THREE WEEKS FROM EACH TAIL");
-
-  const responsePlotLeft = margin.left + 58;
-  const responsePlotRight = margin.left + contentWidth - 8;
-  const responseValues = analyzedRows.flatMap((row) => [row.total, row.trimmedPnl, row.trimmedThreePnl]);
-  const [responseMin = -1, responseMax = 1] = d3.extent(responseValues);
-  const responseSpan = responseMax - responseMin || Math.max(Math.abs(responseMin), 1);
-  const responseX = d3.scalePoint()
-    .domain(analyzedRows.map((row) => row.key))
-    .range([responsePlotLeft, responsePlotRight])
-    .padding(0.35);
-  const responseY = d3.scaleLinear()
-    .domain([responseMin - responseSpan * 0.08, responseMax + responseSpan * 0.08])
-    .nice()
-    .range([responsePlotBottom, responsePlotTop]);
-  const responseYAxis = svg.append("g")
-    .attr("transform", `translate(${responsePlotLeft},0)`)
-    .call(d3.axisLeft(responseY).ticks(5).tickSize(-(responsePlotRight - responsePlotLeft)).tickPadding(8).tickFormat(formatCompactUsd));
-  responseYAxis.select(".domain").remove();
-  responseYAxis.selectAll(".tick line").attr("stroke", "rgba(255,255,255,0.07)");
-  responseYAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 8);
-  if (responseY.domain()[0] <= 0 && responseY.domain()[1] >= 0) {
-    svg.append("line")
-      .attr("x1", responsePlotLeft).attr("x2", responsePlotRight)
-      .attr("y1", responseY(0)).attr("y2", responseY(0))
-      .attr("stroke", "rgba(255,255,255,0.28)");
-  }
-  const responseXAxis = svg.append("g")
-    .attr("transform", `translate(0,${responseAxisY})`)
-    .call(d3.axisBottom(responseX).tickSize(0).tickPadding(7).tickFormat((key) => analyzedRows.find((row) => row.key === key)?.label || key));
-  responseXAxis.select(".domain").attr("stroke", "rgba(255,255,255,0.14)");
-  responseXAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.46)").attr("font-size", 7.5);
-
-  const responseSeries = [
-    { label: "Total PnL", field: "total", color: "#78aadc", dash: null },
-    { label: "Ex best + worst", field: "trimmedPnl", color: "rgba(255,255,255,0.72)", dash: "4 3" },
-    { label: "Ex top + bottom 3", field: "trimmedThreePnl", color: "#c9a66b", dash: "2 3" },
-  ];
-  const responseLine = (field) => d3.line()
-    .x((row) => responseX(row.key))
-    .y((row) => responseY(row[field]));
-  responseSeries.forEach((series) => {
-    svg.append("path")
-      .datum(analyzedRows)
-      .attr("d", responseLine(series.field))
-      .attr("fill", "none").attr("stroke", series.color).attr("stroke-width", 1.5)
-      .attr("stroke-dasharray", series.dash);
-    const points = svg.selectAll(`circle.response-${series.field}`)
-      .data(analyzedRows, (row) => row.key)
-      .join("circle")
-      .attr("class", `response-${series.field}`)
-      .attr("cx", (row) => responseX(row.key)).attr("cy", (row) => responseY(row[series.field]))
-      .attr("r", series.field === "total" ? 2.4 : 1.9)
-      .attr("fill", series.color)
-      .style("cursor", "pointer")
-      .on("click", (_, row) => emit("select", row));
-    points.append("title").text((row) => `${row.label} · ${series.label}\n${formatUsd(row[series.field])}`);
-  });
-  let legendX = responsePlotRight;
-  [...responseSeries].reverse().forEach((series) => {
-    const labelWidth = series.label.length * 5.4 + 31;
-    legendX -= labelWidth;
-    svg.append("line")
-      .attr("x1", legendX).attr("x2", legendX + 20).attr("y1", responseHeaderY).attr("y2", responseHeaderY)
-      .attr("stroke", series.color).attr("stroke-width", 1.5).attr("stroke-dasharray", series.dash);
+    .text("400 ALIGNED BOOTSTRAPS · WHISKER = 5–95% · BOX = 25–75% · LINE = MEDIAN · DOT = ACTUAL · BAND = WINNER 25–75%");
+  const boxScales = drawBootstrapAxes(boxPlotTop, boxPlotBottom, boxAxisY);
+  const boxWidth = Math.min(18, Math.max(8, (boxScales.x.step?.() || 30) * 0.5));
+  const champion = d3.greatest(bootstrapRows, (row) => row.total);
+  if (champion) {
+    svg.append("rect")
+      .attr("x", bootstrapPlotLeft)
+      .attr("y", boxScales.y(champion.bootstrapQ75))
+      .attr("width", bootstrapPlotRight - bootstrapPlotLeft)
+      .attr("height", Math.max(1, boxScales.y(champion.bootstrapQ25) - boxScales.y(champion.bootstrapQ75)))
+      .attr("fill", "#78aadc").attr("fill-opacity", 0.08);
+    [champion.bootstrapQ25, champion.bootstrapQ75].forEach((value) => svg.append("line")
+      .attr("x1", bootstrapPlotLeft).attr("x2", bootstrapPlotRight)
+      .attr("y1", boxScales.y(value)).attr("y2", boxScales.y(value))
+      .attr("stroke", "#78aadc").attr("stroke-opacity", 0.24).attr("stroke-width", 0.8));
     svg.append("text")
-      .attr("x", legendX + 25).attr("y", responseHeaderY).attr("dy", "0.32em")
-      .attr("fill", "rgba(255,255,255,0.52)").attr("font-size", 8)
-      .text(series.label);
+      .attr("x", bootstrapPlotRight).attr("y", boxScales.y(champion.bootstrapQ75) - 5)
+      .attr("text-anchor", "end").attr("fill", "rgba(120,170,220,0.72)").attr("font-size", 8)
+      .text(`WINNER IQR · ${champion.label}`);
+  }
+  svg.append("path")
+    .datum(bootstrapRows)
+    .attr("d", d3.line()
+      .x((row) => boxScales.x(row.key))
+      .y((row) => boxScales.y(row.bootstrapMedian)))
+    .attr("fill", "none").attr("stroke", "rgba(255,255,255,0.24)").attr("stroke-width", 1.1);
+  const boxGroups = svg.selectAll("g.bootstrap-box")
+    .data(bootstrapRows, (row) => row.key)
+    .join("g")
+    .attr("class", "bootstrap-box")
+    .style("cursor", "pointer")
+    .on("click", (_, row) => emit("select", row));
+  boxGroups.each(function (row) {
+    const group = d3.select(this);
+    const center = boxScales.x(row.key);
+    const color = sharpeColor(Number(row.sharpe) || 0);
+    group.append("line")
+      .attr("x1", center).attr("x2", center)
+      .attr("y1", boxScales.y(row.bootstrapQ95)).attr("y2", boxScales.y(row.bootstrapQ05))
+      .attr("stroke", "rgba(255,255,255,0.45)");
+    [row.bootstrapQ05, row.bootstrapQ95].forEach((value) => group.append("line")
+      .attr("x1", center - boxWidth * 0.3).attr("x2", center + boxWidth * 0.3)
+      .attr("y1", boxScales.y(value)).attr("y2", boxScales.y(value))
+      .attr("stroke", "rgba(255,255,255,0.45)"));
+    group.append("rect")
+      .attr("x", center - boxWidth / 2).attr("width", boxWidth)
+      .attr("y", boxScales.y(row.bootstrapQ75))
+      .attr("height", Math.max(1, boxScales.y(row.bootstrapQ25) - boxScales.y(row.bootstrapQ75)))
+      .attr("rx", 1.5).attr("fill", color).attr("fill-opacity", 0.55);
+    group.append("line")
+      .attr("x1", center - boxWidth / 2).attr("x2", center + boxWidth / 2)
+      .attr("y1", boxScales.y(row.bootstrapMedian)).attr("y2", boxScales.y(row.bootstrapMedian))
+      .attr("stroke", "#ffffff").attr("stroke-width", 1.2);
+    group.append("circle")
+      .attr("cx", center).attr("cy", boxScales.y(row.total)).attr("r", 2.2)
+      .attr("fill", "#c9a66b");
+    group.append("title").text(`${row.label}\n5–95%: ${formatUsd(row.bootstrapQ05)} to ${formatUsd(row.bootstrapQ95)}\n25–75%: ${formatUsd(row.bootstrapQ25)} to ${formatUsd(row.bootstrapQ75)}\nMedian: ${formatUsd(row.bootstrapMedian)}\nActual: ${formatUsd(row.total)}`);
   });
 
   svg.append("text")
@@ -238,9 +272,10 @@ const draw = () => {
     .text("ROWS RANKED BY TOTAL PNL · SHARED WEEKLY SCALE · BLUE = UP · RED = DOWN · LINE = MEDIAN · WHITE BORDER = BEST WEEK");
 
   const distributionPlotLeft = margin.left + 62;
-  const distributionSummaryWidth = 300;
+  const distributionSummaryWidth = 260;
   const distributionPlotRight = margin.left + contentWidth - distributionSummaryWidth;
   const distributionSummaryX = distributionPlotRight + 22;
+  const distributionSummaryRight = margin.left + contentWidth;
   const allDistributionValues = analyzedRows.flatMap((row) => row.weeks);
   const [distributionMin = -1, distributionMax = 1] = d3.extent(allDistributionValues);
   const distributionSpan = distributionMax - distributionMin || 1;
@@ -255,13 +290,21 @@ const draw = () => {
     .call(d3.axisTop(distributionX).ticks(7).tickSize(0).tickPadding(6).tickFormat(formatCompactUsd));
   distributionAxis.select(".domain").attr("stroke", "rgba(255,255,255,0.16)");
   distributionAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.42)").attr("font-size", 8);
-  const distributionSummaryHeader = svg.append("text")
-    .attr("x", distributionSummaryX).attr("y", distributionAxisY - 7)
-    .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 8)
-    .text("MAX · MIN · AVG · MEDIAN");
-  distributionSummaryHeader
-    .on("mouseenter", () => showHeaderTooltip(distributionSummaryX, distributionAxisY - 7, "Maximum, minimum, average, and median weekly PnL for each sweep setting."))
-    .on("mouseleave", hideHeaderTooltip);
+  const distributionSummaryColumns = [
+    { label: "MAX", x: distributionSummaryX, anchor: "start", value: (weeks) => d3.max(weeks) ?? 0, tooltip: "Largest weekly PnL for this sweep setting." },
+    { label: "MIN", x: distributionSummaryX + (distributionSummaryRight - distributionSummaryX) / 3, anchor: "middle", value: (weeks) => d3.min(weeks) ?? 0, tooltip: "Smallest weekly PnL for this sweep setting." },
+    { label: "MEAN", x: distributionSummaryX + (distributionSummaryRight - distributionSummaryX) * 2 / 3, anchor: "middle", value: (weeks) => d3.mean(weeks) ?? 0, tooltip: "Mean weekly PnL for this sweep setting." },
+    { label: "MEDIAN", x: distributionSummaryRight, anchor: "end", value: (weeks) => d3.median(weeks) ?? 0, tooltip: "Median weekly PnL for this sweep setting." },
+  ];
+  distributionSummaryColumns.forEach((column) => {
+    const header = svg.append("text")
+      .attr("x", column.x).attr("y", distributionAxisY - 7).attr("text-anchor", column.anchor)
+      .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 8)
+      .text(column.label);
+    header
+      .on("mouseenter", () => showHeaderTooltip(column.x, distributionAxisY - 7, column.tooltip, column.anchor === "end" ? "end" : "start"))
+      .on("mouseleave", hideHeaderTooltip);
+  });
   svg.append("line")
     .attr("x1", distributionX(0)).attr("x2", distributionX(0))
     .attr("y1", distributionAxisY).attr("y2", distributionBottom)
@@ -308,10 +351,10 @@ const draw = () => {
       .attr("x1", distributionX(median)).attr("x2", distributionX(median))
       .attr("y1", center - 8).attr("y2", center + 8)
       .attr("stroke", "rgba(255,255,255,0.9)").attr("stroke-width", 1.2);
-    group.append("text")
-      .attr("x", distributionSummaryX).attr("y", center).attr("dy", "0.32em")
+    distributionSummaryColumns.forEach((column) => group.append("text")
+      .attr("x", column.x).attr("y", center).attr("dy", "0.32em").attr("text-anchor", column.anchor)
       .attr("fill", "rgba(255,255,255,0.72)").attr("font-size", 8.5)
-      .text(`${formatCompactUsd(d3.max(row.weeks) ?? 0)} · ${formatCompactUsd(d3.min(row.weeks) ?? 0)} · ${formatCompactUsd(d3.mean(row.weeks) ?? 0)} · ${formatCompactUsd(median)}`);
+      .text(formatCompactUsd(column.value(row.weeks))));
   });
 
   svg.append("line")
@@ -412,10 +455,10 @@ const draw = () => {
       .attr("x", x).attr("y", center).attr("dy", "0.32em").attr("text-anchor", "end")
       .attr("fill", color).attr("font-size", 8.5).text(value);
     addValue(columnX.sharpe, formatSharpe(Number(row.sharpe) || 0), sharpeColor(Number(row.sharpe) || 0));
-    addValue(columnX.drawdown, formatCompactUsd(Number(row.maxDrawdown) || 0));
+    addValue(columnX.drawdown, formatCompactUsd(Number(row.maxDrawdown) || 0), drawdownColor(Number(row.maxDrawdown) || 0));
     addValue(columnX.win, d3.format(".0%")(row.winRate));
     addValue(columnX.profitFactor, d3.format(".2f")(row.profitFactor));
-    addValue(columnX.cvar, formatCompactUsd(row.cvar), cvarColor(row.cvar));
+    addValue(columnX.cvar, formatCompactUsd(row.cvar));
   });
 
   const setHoveredRow = (key) => {
