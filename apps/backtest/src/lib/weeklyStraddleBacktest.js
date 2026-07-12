@@ -159,9 +159,9 @@ const buildQuotes = ({ options, config }) =>
     return a.optionType.localeCompare(b.optionType);
   });
 
-const buildEntryExpirations = ({ quotes, dataEnd, config }) => {
+const buildEntryExpirations = ({ quotes, entryCandidates, dataEnd, config }) => {
   const bestByEntryTs = new Map();
-  for (const quote of quotes) {
+  for (const quote of entryCandidates || quotes) {
     if (
       quote.dateTime < config.start ||
       quote.dateTime > dataEnd ||
@@ -325,7 +325,7 @@ const selectCalendarLegs = ({ nearGroup, farGroup, entryIndexPrice, config }) =>
   };
 };
 
-const buildEntryPlan = ({ quotes, entryExpirations, config }) => {
+const buildQuoteGroups = (quotes) => {
   const quotesByEntryExpiry = new Map();
   const expiryGroupsByEntry = new Map();
   for (const quote of quotes) {
@@ -349,6 +349,15 @@ const buildEntryPlan = ({ quotes, entryExpirations, config }) => {
       group.putsByStrike.set(quote.strike, quote);
     }
   }
+  const entryCandidates = [...quotesByEntryExpiry.values()].map((group) => {
+    const quote = group.calls[0] || group.putsByStrike.values().next().value;
+    return quote;
+  }).filter(Boolean);
+  return { quotesByEntryExpiry, expiryGroupsByEntry, entryCandidates };
+};
+
+const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
+  const { quotesByEntryExpiry, expiryGroupsByEntry } = quoteGroups || buildQuoteGroups(quotes);
 
   const plans = [];
   let positionAvailableAtMs = Number.NEGATIVE_INFINITY;
@@ -704,12 +713,12 @@ export function computeBreakEvens(plan) {
   return { lower, upper };
 }
 
-const buildHedgePnlByCycle = ({ entryPlan, quotes, indexRows, config }) => {
+const buildHedgePnlByCycle = ({ entryPlan, quotes, indexRows, config, indexByTs, quoteByTimeInstrument }) => {
   const hedgePnlByCycle = new Map(entryPlan.map(p => [p.cycle, 0]));
   if (!config.hedgeEnabled) return { hedgePnlByCycle };
 
-  const indexByTs = new Map(indexRows.map(r => [r.ts, r]));
-  const qmap = new Map(quotes.map(q => [`${q.ts}|${q.instrumentName}`, q]));
+  const indexMap = indexByTs || new Map(indexRows.map(r => [r.ts, r]));
+  const qmap = quoteByTimeInstrument || new Map(quotes.map(q => [`${q.ts}|${q.instrumentName}`, q]));
 
   for (const plan of entryPlan) {
     const decisions = buildDecisionTimes(plan, config);
@@ -717,7 +726,7 @@ const buildHedgePnlByCycle = ({ entryPlan, quotes, indexRows, config }) => {
     for (const ht of decisions) {
       const ts = ht.getTime() / 1000;
       const isExit = ts === plan.exitTs;
-      const idx = indexByTs.get(ts);
+      const idx = indexMap.get(ts);
       const legQuotes = plan.legs.map((leg) => ({
         leg,
         quote: qmap.get(`${ts}|${leg.instrumentName}`),
@@ -742,20 +751,20 @@ const buildHedgePnlByCycle = ({ entryPlan, quotes, indexRows, config }) => {
   return { hedgePnlByCycle };
 };
 
-const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, indexRows, quotes, config }) => {
-  const indexByTs = new Map(indexRows.map((row) => [row.ts, row]));
-  const quoteByTimeInstrument = new Map(
+const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, indexRows, quotes, config, indexByTs, quoteByTimeInstrument }) => {
+  const indexMap = indexByTs || new Map(indexRows.map((row) => [row.ts, row]));
+  const quoteMap = quoteByTimeInstrument || new Map(
     quotes.map((quote) => [`${quote.ts}|${quote.instrumentName}`, quote]),
   );
   let endingEquityUsd = 0;
   return [...entryPlan].sort((a, b) => a.entryTs - b.entryTs).map((plan) => {
-    const settlementIndexPrice = indexByTs.get(plan.exitTs)?.indexPrice ?? Number.NaN;
+    const settlementIndexPrice = indexMap.get(plan.exitTs)?.indexPrice ?? Number.NaN;
     const legExitValues = plan.legs.map((leg) => {
       const expiresAtExit = leg.expirationTs === plan.exitTs;
       const payoff = leg.optionType === "C"
         ? Math.max(settlementIndexPrice - leg.strike, 0)
         : Math.max(leg.strike - settlementIndexPrice, 0);
-      const quote = quoteByTimeInstrument.get(`${plan.exitTs}|${leg.instrumentName}`);
+      const quote = quoteMap.get(`${plan.exitTs}|${leg.instrumentName}`);
       return expiresAtExit ? payoff : quote?.markPrice ?? Number.NaN;
     });
     const optionSettlementValueUsd = plan.legs.reduce(
@@ -777,6 +786,18 @@ const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, indexRows, quotes, conf
       closed: Number.isFinite(settlementIndexPrice) && legExitValues.every(Number.isFinite),
     };
   });
+};
+
+export const buildBacktestIndexes = (preparedData) => {
+  const indexRows = preparedData?.indexRows || [];
+  const quotes = preparedData?.quotes || [];
+  return {
+    indexByTs: new Map(indexRows.map((row) => [row.ts, row])),
+    quoteByTimeInstrument: new Map(
+      quotes.map((quote) => [`${quote.ts}|${quote.instrumentName}`, quote]),
+    ),
+    quoteGroups: buildQuoteGroups(quotes),
+  };
 };
 
 export const prepareBacktestData = ({ indexRows, markRows, config: inc = {} }) => {
@@ -806,11 +827,37 @@ export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, c
   const config = c;
   const p = preparedData || prepareBacktestData({ indexRows, markRows, config });
   const { indexRows: pi = [], markRows: pm = [], options, quotes, dataEnd } = p;
+  const indexes = p.indexes || buildBacktestIndexes(p);
 
-  const entryExpirations = buildEntryExpirations({ quotes, dataEnd, config: c });
-  const entryPlan = buildEntryPlan({ quotes, entryExpirations, config: c }).sort((a, b) => a.entryTs - b.entryTs);
-  const { hedgePnlByCycle } = buildHedgePnlByCycle({ entryPlan, quotes, indexRows: pi, config: c });
-  const cycleSummary = buildCycleSummary({ entryPlan, hedgePnlByCycle, indexRows: pi, quotes, config: c });
+  const entryExpirations = buildEntryExpirations({
+    quotes,
+    entryCandidates: indexes.quoteGroups.entryCandidates,
+    dataEnd,
+    config: c,
+  });
+  const entryPlan = buildEntryPlan({
+    quotes,
+    entryExpirations,
+    config: c,
+    quoteGroups: indexes.quoteGroups,
+  }).sort((a, b) => a.entryTs - b.entryTs);
+  const { hedgePnlByCycle } = buildHedgePnlByCycle({
+    entryPlan,
+    quotes,
+    indexRows: pi,
+    config: c,
+    indexByTs: indexes.indexByTs,
+    quoteByTimeInstrument: indexes.quoteByTimeInstrument,
+  });
+  const cycleSummary = buildCycleSummary({
+    entryPlan,
+    hedgePnlByCycle,
+    indexRows: pi,
+    quotes,
+    config: c,
+    indexByTs: indexes.indexByTs,
+    quoteByTimeInstrument: indexes.quoteByTimeInstrument,
+  });
   const weeklyChartData = [...cycleSummary]
     .sort((a, b) => a.entryTs - b.entryTs)
     .map((row) => ({
@@ -867,4 +914,12 @@ export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, c
       btcQuantity: config.btcQuantity,
     },
   };
+};
+
+export const runWeeklyStraddleBacktestBatch = ({ preparedData, runs }) => {
+  const indexes = preparedData.indexes || buildBacktestIndexes(preparedData);
+  return runs.map(({ preparedData: runPreparedData, config }) => runWeeklyStraddleBacktest({
+    preparedData: { ...(runPreparedData || preparedData), indexes },
+    config,
+  }));
 };

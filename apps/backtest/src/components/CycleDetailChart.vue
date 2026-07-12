@@ -267,10 +267,10 @@ const draw = () => {
     .attr("class", "hedge-trade")
     .attr("cx", (row) => x(new Date(row.dateTime)))
     .attr("cy", (row) => indexY(row.indexPrice))
-    .attr("r", 3.5)
+    .attr("r", 6)
     .attr("fill", (row) => row.hedgeTrade.side === "buy" ? BUY : SELL)
     .attr("stroke", (row) => row.hedgeTrade.side === "buy" ? BUY : SELL)
-    .attr("stroke-width", 0.8)
+    .attr("stroke-width", 1)
     .append("title")
     .text((row) => {
       const trade = row.hedgeTrade

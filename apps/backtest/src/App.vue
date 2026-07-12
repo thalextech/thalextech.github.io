@@ -1,17 +1,21 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
+import * as d3 from "d3";
 import CycleDetailChart from "./components/CycleDetailChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
+import SweepResultsChart from "./components/SweepResultsChart.vue";
 import WeeklyBacktestChart from "./components/WeeklyBacktestChart.vue";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
 import { blackScholesPrice } from "./lib/optionPricing.js";
 import { computeZeroMtmContours } from "./lib/zeroMtmContours.js";
 import {
   DEFAULT_BACKTEST_CONFIG,
+  buildBacktestIndexes,
   buildCycleDetail,
   computeBreakEvens,
   prepareBacktestData,
   runWeeklyStraddleBacktest,
+  runWeeklyStraddleBacktestBatch,
 } from "./lib/weeklyStraddleBacktest.js";
 
 const MATURITY_OPTIONS = [
@@ -157,6 +161,14 @@ const hedgePct = computed(() => {
 });
 
 const activeRailGroup = ref("instrument");
+const mode = ref("single");
+const sweepDimension = ref("entry_hour");
+const sweepResults = ref([]);
+const sweepRunning = ref(false);
+const sweepProgress = ref("");
+const sweepTiming = ref(null);
+let sweepDataCache = null;
+
 
 const state = reactive({
   error: "",
@@ -165,6 +177,16 @@ const state = reactive({
 
 const result = ref(null);
 const preparedData = ref(null);
+
+const SWEEP_DIMENSIONS = [
+  { value: "entry_hour", label: "Entry hour" },
+  { value: "hedge_frequency", label: "Hedge frequency" },
+  { value: "delta_band", label: "Strike delta" },
+];
+
+const availableSweepDimensions = computed(() =>
+  SWEEP_DIMENSIONS.filter((dimension) => dimension.value !== "delta_band" || showDelta.value),
+);
 
 const formatUsd = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -216,6 +238,49 @@ const maxDrawdown = computed(() => {
     drawdown = Math.min(drawdown, equity - peak);
   }
   return drawdown;
+});
+
+const sweepConfigs = computed(() => {
+  if (sweepDimension.value === "entry_hour") {
+    return HOUR_OPTIONS.map((hour) => ({
+      key: `hour-${hour.value}`,
+      label: hour.label,
+      overrides: { entryHourUtc: hour.value, hourlyOffset: hour.value },
+    }));
+  }
+  if (sweepDimension.value === "hedge_frequency") {
+    return HEDGE_FREQUENCY_OPTIONS.map((frequency) => ({
+      key: `hedge-${frequency.value}`,
+      label: frequency.label,
+      overrides: { hedgeEnabled: true, hedgeIntervalHours: frequency.value },
+    }));
+  }
+  if (!showDelta.value) return [];
+  return DELTA_OPTIONS.map((delta) => ({
+    key: `delta-${delta.value}`,
+    label: delta.label,
+    overrides: { targetDelta: delta.value },
+  }));
+});
+
+const sweepInsights = computed(() => {
+  const rows = sweepResults.value.filter((row) => Number.isFinite(row.pnl));
+  if (!rows.length) return null;
+  const bestPnl = [...rows].sort((a, b) => b.pnl - a.pnl)[0];
+  const sharpeRows = rows.filter((row) => Number.isFinite(row.sharpe));
+  const bestSharpe = [...sharpeRows].sort((a, b) => b.sharpe - a.sharpe)[0] || null;
+  const sortedPnl = rows.map((row) => row.pnl).sort((a, b) => a - b);
+  const middle = Math.floor(sortedPnl.length / 2);
+  const medianPnl = sortedPnl.length % 2
+    ? sortedPnl[middle]
+    : (sortedPnl[middle - 1] + sortedPnl[middle]) / 2;
+  return {
+    bestPnl,
+    bestSharpe,
+    medianPnl,
+    profitable: rows.filter((row) => row.pnl > 0).length,
+    total: rows.length,
+  };
 });
 
 const railGroups = computed(() => {
@@ -330,6 +395,7 @@ const maxDdValue = computed(() => {
 
 // Chart data and titles
 const chartRef = ref(null);
+const sweepChartRef = ref(null);
 const chartMode = ref("weekly");
 const selectedCycle = ref(null);
 const cycleDetailRows = ref([]);
@@ -433,6 +499,199 @@ const buildConfig = (overrides = {}) => {
   };
 };
 
+const sweepMaxDrawdown = (run) => {
+  let peak = 0;
+  let drawdown = 0;
+  for (const row of run.weeklyChartData || []) {
+    peak = Math.max(peak, row.cumulativeDeltaHedgedPnl);
+    drawdown = Math.min(drawdown, row.cumulativeDeltaHedgedPnl - peak);
+  }
+  return drawdown;
+};
+
+const bucketRowsByHour = (rows) => {
+  const buckets = Array.from({ length: 24 }, () => []);
+  for (const row of rows) {
+    const hour = row.dateTime?.getUTCHours();
+    if (Number.isInteger(hour)) buckets[hour].push(row);
+  }
+  return buckets;
+};
+
+const mergeSortedRows = (left, right) => {
+  const merged = new Array(left.length + right.length);
+  let leftIndex = 0;
+  let rightIndex = 0;
+  let outputIndex = 0;
+  while (leftIndex < left.length && rightIndex < right.length) {
+    if (left[leftIndex].ts <= right[rightIndex].ts) merged[outputIndex++] = left[leftIndex++];
+    else merged[outputIndex++] = right[rightIndex++];
+  }
+  while (leftIndex < left.length) merged[outputIndex++] = left[leftIndex++];
+  while (rightIndex < right.length) merged[outputIndex++] = right[rightIndex++];
+  return merged;
+};
+
+const mergeHourBuckets = (buckets, hours, allRows) => {
+  const selectedHours = [...new Set(hours.map(Number))].sort((a, b) => a - b);
+  if (selectedHours.length === 24) return allRows;
+  let groups = selectedHours.map((hour) => buckets[hour] || []);
+  while (groups.length > 1) {
+    const next = [];
+    for (let index = 0; index < groups.length; index += 2) {
+      next.push(index + 1 < groups.length ? mergeSortedRows(groups[index], groups[index + 1]) : groups[index]);
+    }
+    groups = next;
+  }
+  return groups[0] || [];
+};
+
+const indexPreparedByHour = (prepared) => ({
+  prepared,
+  indexBuckets: bucketRowsByHour(prepared.indexRows),
+  quoteBuckets: bucketRowsByHour(prepared.quotes),
+  backtestIndexes: buildBacktestIndexes(prepared),
+});
+
+const preparedViewForHours = (hourIndex, hours) => {
+  const { prepared, indexBuckets, quoteBuckets } = hourIndex;
+  return {
+    indexRows: mergeHourBuckets(indexBuckets, hours, prepared.indexRows),
+    markRows: [],
+    options: [],
+    quotes: mergeHourBuckets(quoteBuckets, hours, prepared.quotes),
+    dataEnd: prepared.dataEnd,
+  };
+};
+
+const runSweep = async () => {
+  if (sweepRunning.value || !sweepConfigs.value.length) return;
+  sweepRunning.value = true;
+  sweepResults.value = [];
+  sweepTiming.value = null;
+  state.error = "";
+  // Let the running state paint before data preparation and synchronous simulations begin.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const cells = sweepConfigs.value;
+  const configs = cells.map((cell) => buildConfig(cell.overrides));
+  const sweepHours = [...new Set(configs.flatMap((config) =>
+    hoursFor(config.entryHourUtc, config.hedgeEnabled, config.hedgeIntervalHours),
+  ))].sort((a, b) => a - b);
+  const sweepHoursKey = sweepHours.join(",");
+  const startedAt = performance.now();
+  let loadMs = 0;
+  let prepareMs = 0;
+  let runMs = 0;
+  try {
+    let sweepPrepared = preparedData.value;
+    let preparedHourIndex = null;
+    if (loadedHoursKey === sweepHoursKey && sweepPrepared) {
+      preparedHourIndex = indexPreparedByHour(sweepPrepared);
+    } else if (sweepDataCache?.key === sweepHoursKey) {
+      sweepPrepared = sweepDataCache.prepared;
+      preparedHourIndex = sweepDataCache.hourIndex;
+    } else {
+      sweepProgress.value = `Loading ${sweepHours.length} hourly data shards`;
+      const loadStartedAt = performance.now();
+      const loaded = await loadThalexHistory({
+        start: configs[0].start,
+        end: configs[0].end,
+        hourlyOffsets: sweepHours,
+        onProgress: ({ current, total }) => {
+          sweepProgress.value = `Loading data ${current}/${total}`;
+        },
+      });
+      loadMs = performance.now() - loadStartedAt;
+      sweepProgress.value = "Preparing shared quote universe";
+      const prepareStartedAt = performance.now();
+      sweepPrepared = prepareBacktestData({
+        indexRows: loaded.indexRows,
+        markRows: loaded.markRows,
+        config: configs[0],
+      });
+      prepareMs = performance.now() - prepareStartedAt;
+      preparedHourIndex = indexPreparedByHour(sweepPrepared);
+      sweepDataCache = { key: sweepHoursKey, prepared: sweepPrepared, hourIndex: preparedHourIndex };
+    }
+
+    preparedHourIndex ||= indexPreparedByHour(sweepPrepared);
+    const runStartedAt = performance.now();
+    sweepProgress.value = `Running ${cells.length} configurations`;
+    const batchRuns = cells.map((cell, index) => {
+      const cellHours = hoursFor(
+        configs[index].entryHourUtc,
+        configs[index].hedgeEnabled,
+        configs[index].hedgeIntervalHours,
+      );
+      const cellPrepared = cellHours.length === sweepHours.length
+        ? sweepPrepared
+        : preparedViewForHours(preparedHourIndex, cellHours);
+      return { preparedData: cellPrepared, config: configs[index] };
+    });
+    const batchOutputs = runWeeklyStraddleBacktestBatch({
+      preparedData: { ...sweepPrepared, indexes: preparedHourIndex.backtestIndexes },
+      runs: batchRuns,
+    });
+
+    const nextResults = batchOutputs.map((run, index) => {
+      const cell = cells[index];
+      const thisConfig = configs[index];
+
+      return {
+        ...cell,
+        config: thisConfig,
+        sharpe: run.summary.sharpeRatio,
+        pnl: run.summary.finalEquityUsd,
+        maxDrawdown: sweepMaxDrawdown(run),
+        cycles: run.counts.closedCycles,
+        returnOnNotional: run.summary.cumulativeReturnOnNotional,
+        weeklyReturns: (run.weeklyChartData || []).map(r => ({
+          pnl: r.deltaHedgedShortPnl || 0,
+          hour: thisConfig.entryHourUtc,
+          entryDate: r.entryTime,
+        })),
+      };
+    });
+
+    runMs = performance.now() - runStartedAt;
+    sweepResults.value = nextResults;
+    sweepTiming.value = {
+      loadMs,
+      prepareMs,
+      runMs,
+      totalMs: performance.now() - startedAt,
+      reusedPreparedData: loadMs === 0,
+      cells: cells.length,
+    };
+    sweepProgress.value = "";
+  } catch (error) {
+    state.error = error?.message || "Sweep failed";
+  } finally {
+    sweepRunning.value = false;
+  }
+};
+
+const applySweepResult = (cell) => {
+  if (sweepDimension.value === "entry_hour") {
+    ui.entryHourUtc = cell.config.entryHourUtc;
+  } else if (sweepDimension.value === "hedge_frequency") {
+    ui.hedgeEnabled = true;
+    ui.hedgeIntervalHours = cell.config.hedgeIntervalHours;
+  } else {
+    ui.targetDelta = cell.config.targetDelta;
+  }
+  mode.value = "single";
+};
+
+const switchMode = (nextMode) => {
+  mode.value = nextMode;
+  selectedCycle.value = null;
+  if (nextMode === "single") {
+    sweepDataCache = null;
+    handleMaturityChange();
+  }
+};
+
 const runCurrent = () => {
   if (!preparedData.value) return;
   selectedCycle.value = null;
@@ -533,6 +792,11 @@ const loadBacktest = async () => {
 const handleMaturityChange = () => {
   state.error = "";
   clearTimeout(runDebounce);
+  if (mode.value === "sweep") {
+    sweepResults.value = [];
+    sweepTiming.value = null;
+    return;
+  }
   runDebounce = setTimeout(() => {
     if (!preparedData.value || requiredHoursKey.value !== loadedHoursKey) {
       loadBacktest();
@@ -574,6 +838,15 @@ watch(() => ui.structure, (structure) => {
   } else if (structure !== "calendar_spread" && isCalendarMaturity) {
     ui.maturityDays = MATURITY_OPTIONS[0].value;
   }
+  if (!showDelta.value && sweepDimension.value === "delta_band") {
+    sweepDimension.value = "entry_hour";
+  }
+});
+
+watch(sweepDimension, () => {
+  sweepResults.value = [];
+  sweepTiming.value = null;
+  sweepProgress.value = "";
 });
 
 watch(() => ui.hedgeEnabled, (enabled) => {
@@ -583,8 +856,32 @@ watch(() => ui.hedgeEnabled, (enabled) => {
 
 
 function handleSavePng() {
-  if (!chartRef.value) return;
   const date = new Date().toISOString().slice(0, 10);
+
+  if (mode.value === 'sweep') {
+    if (!sweepChartRef.value) return;
+    const dimLabel = sweepDimension.value === 'entry_hour' ? 'Entry Hour' :
+                     sweepDimension.value === 'hedge_frequency' ? 'Hedge Frequency' :
+                     sweepDimension.value === 'delta_band' ? 'Delta' : sweepDimension.value;
+    const filename = `sweep-${sweepDimension.value}-${date}.png`;
+    sweepChartRef.value.exportPng({
+      title: `Parameter Sweep: ${dimLabel}`,
+      subtitle: chartSubtitle.value,
+      source: chartSourceSubtitle.value,
+      metrics: sweepInsights.value ? [
+        { label: "BEST PNL", value: `${sweepInsights.value.bestPnl.label} ${formatUsd.format(sweepInsights.value.bestPnl.pnl)}` },
+        { label: "BEST SHARPE", value: sweepInsights.value.bestSharpe ? `${sweepInsights.value.bestSharpe.label} ${formatNumber.format(sweepInsights.value.bestSharpe.sharpe)}` : '—' },
+        { label: "RUNS", value: String(sweepResults.value.length) },
+      ] : [],
+      filename,
+      scale: 3,
+      padding: 24,
+    });
+    return;
+  }
+
+  if (!chartRef.value) return;
+
   const filename = selectedCycle.value
     ? `cycle-detail-${date}.png`
     : chartMode.value === "hedge"
@@ -798,13 +1095,22 @@ onMounted(loadBacktest);
       <div class="spacer"></div>
 
       <div class="segmented">
-        <div
-          class="segment active"
+        <button
+          type="button"
+          :class="['segment', { active: mode === 'single' }]"
+          @click="switchMode('single')"
         >
           Single run
-        </div>
+        </button>
+        <button
+          type="button"
+          :class="['segment', { active: mode === 'sweep' }]"
+          @click="switchMode('sweep')"
+        >
+          Sweep
+        </button>
       </div>
-      <button class="saveButton topSaveButton" type="button" :disabled="cycleDetailLoading" @click="handleSavePng">
+      <button class="saveButton topSaveButton" type="button" :disabled="mode === 'single' ? cycleDetailLoading : (sweepRunning || !sweepResults.length)" @click="handleSavePng">
         Save PNG
       </button>
     </div>
@@ -812,6 +1118,7 @@ onMounted(loadBacktest);
     <div class="main">
       <!-- Left metrics column -->
       <div class="metricsColumn">
+        <template v-if="mode === 'single'">
         <div class="metric">
           <div class="metricValue">{{ finalPnlValue }}</div>
           <div class="metricLabel">FINAL PNL</div>
@@ -824,11 +1131,26 @@ onMounted(loadBacktest);
           <div class="metricValue maxdd">{{ maxDdValue }}</div>
           <div class="metricLabel">MAX DRAWDOWN</div>
         </div>
+        </template>
+        <template v-else-if="sweepInsights">
+          <div class="metric">
+            <div class="metricValue">{{ sweepInsights.bestPnl.label }}</div>
+            <div class="metricLabel">BEST PNL · {{ formatUsd.format(sweepInsights.bestPnl.pnl) }}</div>
+          </div>
+          <div class="metric">
+            <div class="metricValue">{{ sweepInsights.bestSharpe?.label || '—' }}</div>
+            <div class="metricLabel">BEST SHARPE · {{ sweepInsights.bestSharpe ? formatNumber.format(sweepInsights.bestSharpe.sharpe) : '—' }}</div>
+          </div>
+          <div class="metric">
+            <div class="metricValue">{{ sweepInsights.profitable }}/{{ sweepInsights.total }}</div>
+            <div class="metricLabel">PROFITABLE · MEDIAN {{ formatUsd.format(sweepInsights.medianPnl) }}</div>
+          </div>
+        </template>
       </div>
 
       <!-- Chart area -->
       <div class="chartColumn">
-        <div class="chartHeader">
+        <div v-if="mode === 'single'" class="chartHeader">
           <div class="chartTitleRow">
             <button
               v-if="selectedCycle"
@@ -849,29 +1171,69 @@ onMounted(loadBacktest);
           <div class="chartSourceSubtitle">{{ chartSourceSubtitle }}</div>
         </div>
 
+        <div v-else class="sweepHeader">
+          <div>
+            <div class="chartTitle">Parameter sweep</div>
+            <div class="chartSubtitle">Compare one dimension while holding the current strategy settings fixed. Click a result to apply it.</div>
+          </div>
+          <div class="sweepControls">
+            <div class="sweepDimensionControl" role="group" aria-label="Sweep dimension">
+              <button
+                v-for="dimension in availableSweepDimensions"
+                :key="dimension.value"
+                type="button"
+                :class="{ active: sweepDimension === dimension.value }"
+                :disabled="sweepRunning"
+                @click="sweepDimension = dimension.value"
+              >{{ dimension.label }}</button>
+            </div>
+            <button class="runSweepButton" type="button" :disabled="sweepRunning" @click="runSweep">
+              {{ sweepRunning ? sweepProgress || 'Running…' : sweepResults.length ? 'Run' : 'Run sweep' }}
+            </button>
+          </div>
+        </div>
+
         <WeeklyBacktestChart
-          v-if="!selectedCycle && chartMode === 'weekly'"
+          v-if="mode === 'single' && !selectedCycle && chartMode === 'weekly'"
           ref="chartRef"
           :rows="chartRows"
           :design-spec="true"
           @select="handleCycleSelect"
         />
         <HedgePerformanceChart
-          v-else-if="!selectedCycle"
+          v-else-if="mode === 'single' && !selectedCycle"
           ref="chartRef"
           :rows="hedgePerformanceRows"
         />
-        <div v-else-if="cycleDetailLoading" class="cycleDetailState">Loading hourly detail…</div>
-        <div v-else-if="cycleDetailError" class="cycleDetailState error">{{ cycleDetailError }}</div>
+        <div v-else-if="mode === 'single' && cycleDetailLoading" class="cycleDetailState">Loading hourly detail…</div>
+        <div v-else-if="mode === 'single' && cycleDetailError" class="cycleDetailState error">{{ cycleDetailError }}</div>
         <CycleDetailChart
-          v-else
+          v-else-if="mode === 'single'"
           ref="chartRef"
           :rows="cycleDetailRows"
           :break-evens="cycleBreakEvens"
           :zero-mtm-contours="cycleContours"
         />
 
-        <div v-if="ui.hedgeEnabled && !selectedCycle" class="chartModeToggle" role="group" aria-label="Chart view">
+        <div v-else class="sweepPanel">
+          <div v-if="sweepRunning && !sweepResults.length" class="sweepEmpty">{{ sweepProgress || 'Preparing sweep…' }}</div>
+
+          <SweepResultsChart
+            v-else-if="sweepResults.length"
+            ref="sweepChartRef"
+            class="sweepHistogram"
+            :rows="sweepResults"
+            @select="applySweepResult"
+          />
+          <div v-else class="sweepEmpty">Choose a dimension, then run the sweep. Results include PnL, Sharpe, drawdown, and sample size.</div>
+          <div v-if="sweepTiming" class="sweepPerformance">
+            {{ sweepTiming.cells }} runs in {{ (sweepTiming.totalMs / 1000).toFixed(2) }}s
+            · strategy {{ (sweepTiming.runMs / 1000).toFixed(2) }}s
+            · {{ sweepTiming.reusedPreparedData ? 'reused loaded data' : `load ${(sweepTiming.loadMs / 1000).toFixed(2)}s · prepare ${(sweepTiming.prepareMs / 1000).toFixed(2)}s` }}
+          </div>
+        </div>
+
+        <div v-if="mode === 'single' && ui.hedgeEnabled && !selectedCycle" class="chartModeToggle" role="group" aria-label="Chart view">
           <button
             type="button"
             :class="{ active: chartMode === 'weekly' }"
@@ -1545,6 +1907,9 @@ onMounted(loadBacktest);
 }
 
 .segment {
+  border: 0;
+  background: transparent;
+  font-family: inherit;
   font-size: 12px;
   font-weight: 500;
   color: #70767d;
@@ -1556,6 +1921,112 @@ onMounted(loadBacktest);
 .segment.active {
   background: rgba(255,255,255,0.1);
   color: #e8eaed;
+}
+
+.sweepHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 44px;
+  padding: 0 4px 5px;
+}
+
+.sweepHeader .chartTitle,
+.sweepHeader .chartSubtitle {
+  text-align: left;
+}
+
+.sweepControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sweepDimensionControl {
+  display: flex;
+  padding: 2px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 7px;
+  background: #0d0e11;
+}
+
+.sweepDimensionControl button,
+.runSweepButton {
+  border: 0;
+  border-radius: 5px;
+  padding: 7px 11px;
+  background: transparent;
+  color: #747a82;
+  font: 500 11px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.sweepDimensionControl button:hover:not(:disabled) {
+  color: #d8dadd;
+  background: rgba(255,255,255,0.045);
+}
+
+.sweepDimensionControl button.active {
+  color: #f0f1f2;
+  background: rgba(255,255,255,0.1);
+}
+
+.runSweepButton {
+  min-width: 88px;
+  border: 1px solid rgba(125,211,252,0.28);
+  color: #7dd3fc;
+  background: rgba(125,211,252,0.07);
+}
+
+.runSweepButton:hover:not(:disabled) {
+  background: rgba(125,211,252,0.13);
+  border-color: rgba(125,211,252,0.42);
+}
+
+.sweepDimensionControl button:disabled,
+.runSweepButton:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.sweepPanel {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.055);
+  border-radius: 8px;
+  background: #090a0d;
+}
+
+.sweepHistogram {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.sweepEmpty {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: #666c73;
+  font-size: 12px;
+}
+
+.sweepPerformance {
+  position: absolute;
+  right: 12px;
+  bottom: 8px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: rgba(10,11,14,0.88);
+  color: #626870;
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
 
 .configCluster {
