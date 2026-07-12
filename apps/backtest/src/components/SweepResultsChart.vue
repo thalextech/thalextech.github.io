@@ -92,6 +92,13 @@ const draw = () => {
       bestIndex,
     };
   });
+  const cvarValues = analyzedRows.map((row) => row.cvar).filter(Number.isFinite);
+  const cvarMin = d3.min(cvarValues) ?? 0;
+  const cvarMax = d3.max(cvarValues) ?? 0;
+  const cvarMid = d3.median(cvarValues) ?? (cvarMin + cvarMax) / 2;
+  const cvarColor = cvarMin === cvarMax
+    ? () => d3.interpolateRdBu(0.5)
+    : d3.scaleDiverging(d3.interpolateRdBu).domain([cvarMin, cvarMid, cvarMax]).clamp(true);
   const rankedRows = [...analyzedRows].sort((a, b) => b.total - a.total);
   const formatCompactUsd = (value) => {
     const numeric = Number(value) || 0;
@@ -231,7 +238,7 @@ const draw = () => {
     .text("ROWS RANKED BY TOTAL PNL · SHARED WEEKLY SCALE · BLUE = UP · RED = DOWN · LINE = MEDIAN · WHITE BORDER = BEST WEEK");
 
   const distributionPlotLeft = margin.left + 62;
-  const distributionSummaryWidth = 210;
+  const distributionSummaryWidth = 300;
   const distributionPlotRight = margin.left + contentWidth - distributionSummaryWidth;
   const distributionSummaryX = distributionPlotRight + 22;
   const allDistributionValues = analyzedRows.flatMap((row) => row.weeks);
@@ -251,9 +258,9 @@ const draw = () => {
   const distributionSummaryHeader = svg.append("text")
     .attr("x", distributionSummaryX).attr("y", distributionAxisY - 7)
     .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 8)
-    .text("TOTAL → EX BEST · SHARPE");
+    .text("MAX · MIN · AVG · MEDIAN");
   distributionSummaryHeader
-    .on("mouseenter", () => showHeaderTooltip(distributionSummaryX, distributionAxisY - 7, "Total PnL, PnL after subtracting the single best week, and annualized weekly Sharpe."))
+    .on("mouseenter", () => showHeaderTooltip(distributionSummaryX, distributionAxisY - 7, "Maximum, minimum, average, and median weekly PnL for each sweep setting."))
     .on("mouseleave", hideHeaderTooltip);
   svg.append("line")
     .attr("x1", distributionX(0)).attr("x2", distributionX(0))
@@ -266,7 +273,7 @@ const draw = () => {
     .attr("class", "distribution-row")
     .attr("role", "button")
     .attr("tabindex", 0)
-    .attr("aria-label", (row) => `${row.label}: weekly PnL distribution, median ${formatUsd(d3.median(row.weeks) || 0)}, best week ${formatUsd(d3.max(row.weeks) || 0)}`)
+    .attr("aria-label", (row) => `${row.label}: maximum ${formatUsd(d3.max(row.weeks) ?? 0)}, minimum ${formatUsd(d3.min(row.weeks) ?? 0)}, average ${formatUsd(d3.mean(row.weeks) ?? 0)}, median ${formatUsd(d3.median(row.weeks) ?? 0)}`)
     .style("cursor", "pointer")
     .on("click", (_, row) => emit("select", row));
 
@@ -304,7 +311,7 @@ const draw = () => {
     group.append("text")
       .attr("x", distributionSummaryX).attr("y", center).attr("dy", "0.32em")
       .attr("fill", "rgba(255,255,255,0.72)").attr("font-size", 8.5)
-      .text(`${formatCompactUsd(row.total)} → ${formatCompactUsd(row.robustPnl)} · S ${formatSharpe(Number(row.sharpe) || 0)}`);
+      .text(`${formatCompactUsd(d3.max(row.weeks) ?? 0)} · ${formatCompactUsd(d3.min(row.weeks) ?? 0)} · ${formatCompactUsd(d3.mean(row.weeks) ?? 0)} · ${formatCompactUsd(median)}`);
   });
 
   svg.append("line")
@@ -408,7 +415,7 @@ const draw = () => {
     addValue(columnX.drawdown, formatCompactUsd(Number(row.maxDrawdown) || 0));
     addValue(columnX.win, d3.format(".0%")(row.winRate));
     addValue(columnX.profitFactor, d3.format(".2f")(row.profitFactor));
-    addValue(columnX.cvar, formatCompactUsd(row.cvar), "#d98274");
+    addValue(columnX.cvar, formatCompactUsd(row.cvar), cvarColor(row.cvar));
   });
 
   const setHoveredRow = (key) => {

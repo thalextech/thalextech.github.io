@@ -30,7 +30,7 @@ export const DEFAULT_BACKTEST_CONFIG = {
   longOption: false,
   targetDteDays: 7,
   farTargetDteDays: 14,
-  minWeeklyDteDays: 5,
+  minWeeklyDteDays: 4,
   maxWeeklyDteDays: 10,
   maxHedgeDays: 12,
   daysPerYear: 365,

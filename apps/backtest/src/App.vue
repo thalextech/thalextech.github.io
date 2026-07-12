@@ -19,7 +19,7 @@ import {
 } from "./lib/weeklyStraddleBacktest.js";
 
 const MATURITY_OPTIONS = [
-  { value: 7, label: "7D", minDteDays: 5, maxDteDays: 10 },
+  { value: 7, label: "7D", minDteDays: 4, maxDteDays: 10 },
   { value: 14, label: "14D", minDteDays: 7, maxDteDays: 28 },
   { value: 30, label: "30D", minDteDays: 14, maxDteDays: 60 },
   { value: 60, label: "60D", minDteDays: 45, maxDteDays: 75 },
@@ -1184,7 +1184,7 @@ onMounted(loadBacktest);
         <div v-else class="sweepHeader">
           <div>
             <div class="chartTitle">Parameter sweep</div>
-            <div class="chartSubtitle">Compare one dimension while holding the current strategy settings fixed. Click a result to apply it.</div>
+            <div v-if="!sweepResults.length && !sweepRunning" class="chartSubtitle">Compare one dimension while holding the current strategy settings fixed. Click a result to apply it.</div>
           </div>
           <div class="sweepControls">
             <div class="sweepDimensionControl" role="group" aria-label="Sweep dimension">
