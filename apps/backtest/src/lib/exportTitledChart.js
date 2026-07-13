@@ -105,3 +105,30 @@ export function exportTitledChart({
     background,
   });
 }
+
+export function exportChartRegionToPng({
+  svgEl,
+  region,
+  filename,
+  scale = 3,
+  padding = 18,
+  background = "#0a0b0e",
+} = {}) {
+  if (!svgEl || !region) return;
+  const { x = 0, y = 0, width, height } = region;
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    return;
+  }
+
+  const exportSvg = svgEl.cloneNode(true);
+  exportSvg.setAttribute("viewBox", `${x} ${y} ${width} ${height}`);
+  exportSvg.setAttribute("width", String(width));
+  exportSvg.setAttribute("height", String(height));
+  exportChartToPng({
+    element: exportSvg,
+    filename,
+    scale,
+    padding,
+    background,
+  });
+}

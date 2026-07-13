@@ -1,7 +1,10 @@
 <script setup>
 import * as d3 from "d3";
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { exportTitledChart } from "../lib/exportTitledChart.js";
+import {
+  exportChartRegionToPng,
+  exportTitledChart,
+} from "../lib/exportTitledChart.js";
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
@@ -10,6 +13,7 @@ const props = defineProps({
 
 const emit = defineEmits(["select"]);
 const chartRef = ref(null);
+const panelRegions = ref([]);
 let resizeObserver;
 
 const CHART_FONT_FAMILY = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
@@ -20,6 +24,7 @@ const draw = () => {
   const element = chartRef.value;
   if (!element) return;
   element.innerHTML = "";
+  panelRegions.value = [];
 
   const rows = props.rows || [];
   if (!rows.length) return;
@@ -46,14 +51,44 @@ const draw = () => {
   const distributionBottom = distributionRowsY + rows.length * distributionRowHeight;
   const width = Math.max(availableWidth, margin.left + contentWidth + margin.right);
   const height = distributionBottom + 36;
+  panelRegions.value = [
+    {
+      key: "ranked-sweep",
+      label: "Ranked sweep",
+      buttonTop: 6,
+      region: { x: 0, y: 0, width, height: boxHeaderY - 24 },
+    },
+    {
+      key: "weekly-boxplots",
+      label: "Weekly PnL boxplots",
+      buttonTop: boxHeaderY - 17,
+      region: {
+        x: 0,
+        y: boxHeaderY - 24,
+        width,
+        height: distributionHeaderY - boxHeaderY,
+      },
+    },
+    {
+      key: "weekly-observations",
+      label: "Weekly PnL observations",
+      buttonTop: distributionHeaderY - 17,
+      region: {
+        x: 0,
+        y: distributionHeaderY - 24,
+        width,
+        height: height - distributionHeaderY + 24,
+      },
+    },
+  ];
 
   const shVals = rows.map((r) => Number(r.sharpe)).filter(Number.isFinite);
   const sharpeMin = d3.min(shVals) ?? 0;
   const sharpeMax = d3.max(shVals) ?? 1;
-  const sharpeMid = d3.median(shVals) ?? (sharpeMin + sharpeMax) / 2;
+  const readableBlue = (t) => d3.interpolateBlues(0.38 + t * 0.3);
   const sharpeColor = sharpeMin === sharpeMax
-    ? () => d3.interpolateRdBu(0.5)
-    : d3.scaleDiverging(d3.interpolateRdBu).domain([sharpeMin, sharpeMid, sharpeMax]).clamp(true);
+    ? () => readableBlue(0.5)
+    : d3.scaleSequential(readableBlue).domain([sharpeMin, sharpeMax]).clamp(true);
 
   const svg = d3.select(element)
     .append("svg")
@@ -107,10 +142,10 @@ const draw = () => {
   const drawdownValues = analyzedRows.map((row) => Number(row.maxDrawdown)).filter(Number.isFinite);
   const drawdownMin = d3.min(drawdownValues) ?? 0;
   const drawdownMax = d3.max(drawdownValues) ?? 0;
-  const drawdownMid = d3.median(drawdownValues) ?? (drawdownMin + drawdownMax) / 2;
+  const readableRed = (t) => d3.interpolateReds(0.36 + t * 0.28);
   const drawdownColor = drawdownMin === drawdownMax
-    ? () => d3.interpolateRdBu(0.5)
-    : d3.scaleDiverging(d3.interpolateRdBu).domain([drawdownMin, drawdownMid, drawdownMax]).clamp(true);
+    ? () => readableRed(0.5)
+    : d3.scaleSequential(readableRed).domain([drawdownMax, drawdownMin]).clamp(true);
   const rankedRows = [...analyzedRows].sort((a, b) => b.total - a.total);
   const formatCompactUsd = (value) => {
     const numeric = Number(value) || 0;
@@ -499,33 +534,105 @@ function exportPng({
   });
 }
 
+function exportPanel(panel) {
+  const svgEl = chartRef.value?.querySelector("svg");
+  if (!svgEl || !panel?.region) return;
+  const date = new Date().toISOString().slice(0, 10);
+  exportChartRegionToPng({
+    svgEl,
+    region: panel.region,
+    filename: `sweep-${panel.key}-${date}.png`,
+    scale: 3,
+    padding: 18,
+  });
+}
+
 defineExpose({ exportPng });
 </script>
 
 <template>
-  <div ref="chartRef" class="chart"></div>
+  <div class="chartViewport">
+    <div class="chartSurface">
+      <div ref="chartRef" class="chartCanvas"></div>
+      <button
+        v-for="panel in panelRegions"
+        :key="panel.key"
+        class="panelExportButton"
+        type="button"
+        :style="{ top: `${panel.buttonTop}px` }"
+        :title="`Save ${panel.label} as PNG`"
+        :aria-label="`Save ${panel.label} as PNG`"
+        @click="exportPanel(panel)"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7.5 7.5 9 5.25h6l1.5 2.25H19A2 2 0 0 1 21 9.5v7A2 2 0 0 1 19 18.5H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h2.5Z" />
+          <circle cx="12" cy="13" r="3.25" />
+        </svg>
+      </button>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.chart {
+.chartViewport {
   width: 100%;
   min-height: 280px;
   max-height: calc(100vh - 210px);
   overflow: auto;
 }
 
-.chart :deep(svg) {
+.chartSurface {
+  position: relative;
+  min-width: 1080px;
+}
+
+.chartCanvas :deep(svg) {
   display: block;
   max-width: none;
 }
 
-.chart :deep(.rank-row:focus),
-.chart :deep(.distribution-row:focus) {
+.panelExportButton {
+  position: absolute;
+  right: 24px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  width: 24px;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(10, 11, 14, 0.72);
+  color: rgba(255, 255, 255, 0.38);
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.panelExportButton svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.panelExportButton:hover,
+.panelExportButton:focus-visible {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(23, 25, 30, 0.92);
+  color: rgba(255, 255, 255, 0.82);
   outline: none;
 }
 
-.chart :deep(.rank-row:focus > .rank-hit-area),
-.chart :deep(.distribution-row:focus > .distribution-hit-area) {
+.chartCanvas :deep(.rank-row:focus),
+.chartCanvas :deep(.distribution-row:focus) {
+  outline: none;
+}
+
+.chartCanvas :deep(.rank-row:focus > .rank-hit-area),
+.chartCanvas :deep(.distribution-row:focus > .distribution-hit-area) {
   fill: rgba(125, 211, 252, 0.08);
 }
 </style>
