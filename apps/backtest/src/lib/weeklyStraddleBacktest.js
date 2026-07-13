@@ -41,6 +41,55 @@ export const DEFAULT_BACKTEST_CONFIG = {
   targetDelta: 0.25,
 };
 
+export const normalizeBacktestConfig = (input = {}) => {
+  const config = { ...DEFAULT_BACKTEST_CONFIG, ...input };
+  const entryHour = Number(config.entryHourUtc);
+  const hourlyOffset = Number(config.hourlyOffset);
+  config.entryHourUtc = Number.isFinite(entryHour)
+    ? entryHour
+    : Number.isFinite(hourlyOffset)
+      ? hourlyOffset
+      : DEFAULT_BACKTEST_CONFIG.entryHourUtc;
+  config.hourlyOffset = config.entryHourUtc;
+
+  const entryWeekday = Number(config.entryWeekday);
+  config.entryWeekday =
+    Number.isInteger(entryWeekday) && entryWeekday >= 0 && entryWeekday <= 6
+      ? entryWeekday
+      : DEFAULT_BACKTEST_CONFIG.entryWeekday;
+  config.hedgeEnabled = config.hedgeEnabled !== false;
+  config.hedgeIntervalHours = Math.max(
+    1,
+    Math.min(24, Math.round(Number(config.hedgeIntervalHours) || 24)),
+  );
+  config.holdToExpiry = config.holdToExpiry !== false;
+  config.exitHoldDays = Math.max(
+    1,
+    Math.round(Number(config.exitHoldDays) || DEFAULT_BACKTEST_CONFIG.exitHoldDays),
+  );
+  config.longOption = Boolean(config.longOption);
+  config.sizingMode = config.sizingMode === "btc" ? "btc" : "notional";
+  config.btcQuantity = Math.max(
+    0,
+    Number(config.btcQuantity) || DEFAULT_BACKTEST_CONFIG.btcQuantity,
+  );
+  config.targetDelta = Math.abs(
+    Number(config.targetDelta) || DEFAULT_BACKTEST_CONFIG.targetDelta,
+  );
+  return config;
+};
+
+export const computeMaxDrawdown = (rows = []) => {
+  let peak = 0;
+  let drawdown = 0;
+  for (const row of rows) {
+    const equity = row.cumulativeDeltaHedgedPnl;
+    peak = Math.max(peak, equity);
+    drawdown = Math.min(drawdown, equity - peak);
+  }
+  return drawdown;
+};
+
 const parseInstrumentName = (instrumentName) => {
   const match = /^([^-]+)-(\d{2}[A-Z]{3}\d{2})-(\d+(?:\.\d+)?)-([CP])$/.exec(
     instrumentName,
@@ -474,7 +523,7 @@ const buildDecisionTimes = (plan, config) => {
 
 export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
   if (!plan || !preparedData) return [];
-  const config = { ...DEFAULT_BACKTEST_CONFIG, ...inc };
+  const config = normalizeBacktestConfig(inc);
   const indexRows = (preparedData.indexRows || [])
     .filter((row) => row.ts >= plan.entryTs && row.ts <= plan.exitTs)
     .sort((a, b) => a.ts - b.ts);
@@ -801,7 +850,7 @@ export const buildBacktestIndexes = (preparedData) => {
 };
 
 export const prepareBacktestData = ({ indexRows, markRows, config: inc = {} }) => {
-  const config = { ...DEFAULT_BACKTEST_CONFIG, ...inc };
+  const config = normalizeBacktestConfig(inc);
   let maxT = 0;
   for (const r of indexRows) maxT = Math.max(maxT, r.dateTime?.getTime() || 0);
   for (const r of markRows) maxT = Math.max(maxT, r.dateTime?.getTime() || 0);
@@ -812,26 +861,8 @@ export const prepareBacktestData = ({ indexRows, markRows, config: inc = {} }) =
 };
 
 export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, config: inc = {} }) => {
-  const c = { ...DEFAULT_BACKTEST_CONFIG, ...inc };
-  const entryHour = Number(c.entryHourUtc);
-  const hourlyOffset = Number(c.hourlyOffset);
-  c.entryHourUtc = Number.isFinite(entryHour)
-    ? entryHour
-    : Number.isFinite(hourlyOffset) ? hourlyOffset : 8;
-  c.hourlyOffset = c.entryHourUtc;
-  const entryWeekday = Number(c.entryWeekday);
-  c.entryWeekday = Number.isInteger(entryWeekday) && entryWeekday >= 0 && entryWeekday <= 6
-    ? entryWeekday
-    : 5;
-  c.hedgeEnabled = c.hedgeEnabled !== false;
-  c.hedgeIntervalHours = Math.max(1, Math.min(24, Math.round(Number(c.hedgeIntervalHours) || 24)));
-  c.holdToExpiry = c.holdToExpiry !== false;
-  c.exitHoldDays = Math.max(1, Math.round(Number(c.exitHoldDays) || 30));
-  c.longOption = !!c.longOption;
-  c.sizingMode = c.sizingMode === "btc" ? "btc" : "notional";
-  c.btcQuantity = Math.max(0, Number(c.btcQuantity) || 1);
-  c.targetDelta = Math.abs(Number(c.targetDelta) || 0.25);
-  const config = c;
+  const config = normalizeBacktestConfig(inc);
+  const c = config;
   const p = preparedData || prepareBacktestData({ indexRows, markRows, config });
   const { indexRows: pi = [], markRows: pm = [], options, quotes, dataEnd } = p;
   const indexes = p.indexes || buildBacktestIndexes(p);

@@ -12,7 +12,9 @@ import {
   DEFAULT_BACKTEST_CONFIG,
   buildBacktestIndexes,
   buildCycleDetail,
+  computeMaxDrawdown,
   computeBreakEvens,
+  normalizeBacktestConfig,
   prepareBacktestData,
   runWeeklyStraddleBacktest,
   runWeeklyStraddleBacktestBatch,
@@ -231,14 +233,7 @@ const metrics = computed(() => {
 });
 
 const maxDrawdown = computed(() => {
-  let peak = 0;
-  let drawdown = 0;
-  for (const row of result.value?.weeklyChartData || []) {
-    const equity = row.cumulativeDeltaHedgedPnl;
-    peak = Math.max(peak, equity);
-    drawdown = Math.min(drawdown, equity - peak);
-  }
-  return drawdown;
+  return computeMaxDrawdown(result.value?.weeklyChartData);
 });
 
 const sweepConfigs = computed(() => {
@@ -414,8 +409,7 @@ const chartSourceSubtitle = computed(() => {
 
 const buildConfig = (overrides = {}) => {
   const m = currentMaturity.value;
-  return {
-    ...DEFAULT_BACKTEST_CONFIG,
+  return normalizeBacktestConfig({
     end: new Date(),
     targetDteDays: m.nearDays ?? m.value,
     farTargetDteDays: m.farDays,
@@ -435,17 +429,7 @@ const buildConfig = (overrides = {}) => {
     sizingMode: ui.investmentMode,
     btcQuantity: 1,
     ...overrides,
-  };
-};
-
-const sweepMaxDrawdown = (run) => {
-  let peak = 0;
-  let drawdown = 0;
-  for (const row of run.weeklyChartData || []) {
-    peak = Math.max(peak, row.cumulativeDeltaHedgedPnl);
-    drawdown = Math.min(drawdown, row.cumulativeDeltaHedgedPnl - peak);
-  }
-  return drawdown;
+  });
 };
 
 const bucketRowsByHour = (rows) => {
@@ -581,7 +565,7 @@ const runSweep = async () => {
         config: thisConfig,
         sharpe: run.summary.sharpeRatio,
         pnl: run.summary.finalEquityUsd,
-        maxDrawdown: sweepMaxDrawdown(run),
+        maxDrawdown: computeMaxDrawdown(run.weeklyChartData),
         cycles: run.counts.closedCycles,
         returnOnNotional: run.summary.cumulativeReturnOnNotional,
         weeklyReturns: (run.weeklyChartData || []).map(r => ({
