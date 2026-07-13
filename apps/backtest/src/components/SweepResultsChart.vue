@@ -85,10 +85,16 @@ const draw = () => {
   const shVals = rows.map((r) => Number(r.sharpe)).filter(Number.isFinite);
   const sharpeMin = d3.min(shVals) ?? 0;
   const sharpeMax = d3.max(shVals) ?? 1;
+  const sharpeMid = d3.median(shVals) ?? (sharpeMin + sharpeMax) / 2;
   const readableBlue = (t) => d3.interpolateBlues(0.38 + t * 0.3);
-  const sharpeColor = sharpeMin === sharpeMax
+  const sharpeTextColor = sharpeMin === sharpeMax
     ? () => readableBlue(0.5)
     : d3.scaleSequential(readableBlue).domain([sharpeMin, sharpeMax]).clamp(true);
+  const performanceColor = sharpeMin === sharpeMax
+    ? () => d3.interpolateRdBu(0.5)
+    : d3.scaleDiverging(d3.interpolateRdBu)
+        .domain([sharpeMin, sharpeMid, sharpeMax])
+        .clamp(true);
 
   const svg = d3.select(element)
     .append("svg")
@@ -101,9 +107,14 @@ const draw = () => {
 
   const sum = (values) => d3.sum(values);
   const analyzedRows = rows.map((row) => {
-    const weeks = (row.weeklyReturns || [])
-      .map((point) => Number(point.pnl))
-      .filter(Number.isFinite);
+    const weeklyPoints = (row.weeklyReturns || [])
+      .map((point, sourceIndex) => ({
+        value: Number(point.pnl),
+        entryDate: point.entryDate,
+        sourceIndex,
+      }))
+      .filter((point) => Number.isFinite(point.value));
+    const weeks = weeklyPoints.map((point) => point.value);
     const total = Number.isFinite(Number(row.pnl)) ? Number(row.pnl) : sum(weeks);
     const bestWeek = d3.max(weeks) ?? 0;
     const bestIndex = weeks.indexOf(bestWeek);
@@ -117,6 +128,7 @@ const draw = () => {
     return {
       ...row,
       weeks,
+      weeklyPoints,
       total,
       robustPnl: total - bestWeek,
       winRate: weeks.length ? weeks.filter((value) => value > 0).length / weeks.length : 0,
@@ -130,13 +142,32 @@ const draw = () => {
   });
   const weeklyBoxRows = analyzedRows.map((row) => {
     const [weeklyMin = 0, weeklyMax = 0] = d3.extent(row.sortedWeeks);
+    const weeklyQ25 = d3.quantileSorted(row.sortedWeeks, 0.25) ?? 0;
+    const weeklyMedian = d3.quantileSorted(row.sortedWeeks, 0.5) ?? 0;
+    const weeklyQ75 = d3.quantileSorted(row.sortedWeeks, 0.75) ?? 0;
+    const iqr = weeklyQ75 - weeklyQ25;
+    const lowerFence = weeklyQ25 - 1.5 * iqr;
+    const upperFence = weeklyQ75 + 1.5 * iqr;
+    const weeklyWhiskerMin = row.sortedWeeks.find((value) => value >= lowerFence) ?? weeklyMin;
+    let weeklyWhiskerMax = weeklyMax;
+    for (let index = row.sortedWeeks.length - 1; index >= 0; index -= 1) {
+      if (row.sortedWeeks[index] <= upperFence) {
+        weeklyWhiskerMax = row.sortedWeeks[index];
+        break;
+      }
+    }
     return {
       ...row,
       weeklyMin,
-      weeklyQ25: d3.quantileSorted(row.sortedWeeks, 0.25) ?? 0,
-      weeklyMedian: d3.quantileSorted(row.sortedWeeks, 0.5) ?? 0,
-      weeklyQ75: d3.quantileSorted(row.sortedWeeks, 0.75) ?? 0,
+      weeklyQ25,
+      weeklyMedian,
+      weeklyQ75,
       weeklyMax,
+      weeklyWhiskerMin,
+      weeklyWhiskerMax,
+      weeklyOutliers: row.weeklyPoints.filter(
+        (point) => point.value < weeklyWhiskerMin || point.value > weeklyWhiskerMax,
+      ),
     };
   });
   const drawdownValues = analyzedRows.map((row) => Number(row.maxDrawdown)).filter(Number.isFinite);
@@ -192,6 +223,42 @@ const draw = () => {
     lines.forEach((line, index) => text.append("tspan")
       .attr("x", 9).attr("dy", index === 0 ? 0 : 13).text(line));
   };
+  const hideOutlierTooltip = () => svg.selectAll("g.outlier-tooltip").remove();
+  const showOutlierTooltip = (event, row, point) => {
+    hideOutlierTooltip();
+    const [pointerX, pointerY] = d3.pointer(event, svg.node());
+    const date = point.entryDate
+      ? d3.utcFormat("%d %b %Y")(new Date(point.entryDate))
+      : `Week ${point.sourceIndex + 1}`;
+    const fence = point.value < row.weeklyWhiskerMin ? "BELOW LOWER FENCE" : "ABOVE UPPER FENCE";
+    const tooltipWidth = 150;
+    const tooltipHeight = 49;
+    const tooltipX = Math.max(
+      margin.left,
+      Math.min(pointerX + 9, margin.left + contentWidth - tooltipWidth),
+    );
+    const preferredY = pointerY - tooltipHeight - 8;
+    const tooltipY = preferredY > boxPlotTop ? preferredY : pointerY + 8;
+    const tooltip = svg.append("g")
+      .attr("class", "outlier-tooltip")
+      .attr("transform", `translate(${tooltipX},${tooltipY})`)
+      .attr("pointer-events", "none");
+    tooltip.append("rect")
+      .attr("width", tooltipWidth).attr("height", tooltipHeight).attr("rx", 4)
+      .attr("fill", "#17191e").attr("stroke", "rgba(255,255,255,0.18)");
+    tooltip.append("text")
+      .attr("x", 9).attr("y", 14)
+      .attr("fill", "rgba(255,255,255,0.58)").attr("font-size", 8)
+      .text(`${row.label} · ${date}`);
+    tooltip.append("text")
+      .attr("x", 9).attr("y", 29)
+      .attr("fill", "rgba(255,255,255,0.9)").attr("font-size", 9).attr("font-weight", 500)
+      .text(`Weekly PnL  ${formatUsd(point.value)}`);
+    tooltip.append("text")
+      .attr("x", 9).attr("y", 42)
+      .attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 7.5)
+      .text(fence);
+  };
 
   const boxPlotLeft = margin.left + 58;
   const boxPlotRight = margin.left + contentWidth - 8;
@@ -236,7 +303,7 @@ const draw = () => {
   svg.append("text")
     .attr("x", margin.left).attr("y", boxHeaderY + 16)
     .attr("fill", "rgba(255,255,255,0.36)").attr("font-size", 8)
-    .text("OBSERVED WEEKS · WHISKER = MIN–MAX · BOX = 25–75% · LINE = MEDIAN");
+    .text("OBSERVED WEEKS · WHISKER = 1.5× IQR · BOX = 25–75% · LINE = MEDIAN · DOT = OUTLIER");
   const boxScales = drawBoxPlotAxes(boxPlotTop, boxPlotBottom, boxAxisY);
   const boxWidth = Math.min(18, Math.max(8, (boxScales.x.step?.() || 30) * 0.5));
   svg.append("path")
@@ -254,16 +321,16 @@ const draw = () => {
   boxGroups.each(function (row) {
     const group = d3.select(this);
     const center = boxScales.x(row.key);
-    const color = sharpeColor(Number(row.sharpe) || 0);
+    const color = performanceColor(Number(row.sharpe) || 0);
     group.append("line")
       .attr("x1", center).attr("x2", center)
-      .attr("y1", boxScales.y(row.weeklyMax)).attr("y2", boxScales.y(row.weeklyMin))
-      .attr("stroke", "rgba(255,255,255,0.45)");
-    [row.weeklyMin, row.weeklyMax].forEach((value) => group.append("line")
+      .attr("y1", boxScales.y(row.weeklyWhiskerMax)).attr("y2", boxScales.y(row.weeklyWhiskerMin))
+      .attr("stroke", "rgba(255,255,255,0.32)");
+    [row.weeklyWhiskerMin, row.weeklyWhiskerMax].forEach((value) => group.append("line")
       .attr("x1", center - boxWidth * 0.3).attr("x2", center + boxWidth * 0.3)
       .attr("y1", boxScales.y(value)).attr("y2", boxScales.y(value))
-      .attr("stroke", "rgba(255,255,255,0.45)"));
-    group.append("rect")
+      .attr("stroke", "rgba(255,255,255,0.38)"));
+    const box = group.append("rect")
       .attr("x", center - boxWidth / 2).attr("width", boxWidth)
       .attr("y", boxScales.y(row.weeklyQ75))
       .attr("height", Math.max(1, boxScales.y(row.weeklyQ25) - boxScales.y(row.weeklyQ75)))
@@ -272,7 +339,32 @@ const draw = () => {
       .attr("x1", center - boxWidth / 2).attr("x2", center + boxWidth / 2)
       .attr("y1", boxScales.y(row.weeklyMedian)).attr("y2", boxScales.y(row.weeklyMedian))
       .attr("stroke", "#ffffff").attr("stroke-width", 1.2);
-    group.append("title").text(`${row.label}\nRange: ${formatUsd(row.weeklyMin)} to ${formatUsd(row.weeklyMax)}\n25–75%: ${formatUsd(row.weeklyQ25)} to ${formatUsd(row.weeklyQ75)}\nMedian: ${formatUsd(row.weeklyMedian)}`);
+    const jitterOffsets = [0, -2.2, 2.2, -4.4, 4.4];
+    group.selectAll("circle.weekly-outlier")
+      .data(row.weeklyOutliers)
+      .join("circle")
+      .attr("class", "weekly-outlier")
+      .attr("cx", (_, index) => center + jitterOffsets[index % jitterOffsets.length])
+      .attr("cy", (point) => boxScales.y(point.value))
+      .attr("r", 2.15)
+      .attr("fill", "#9ca2aa")
+      .attr("fill-opacity", 0.82)
+      .attr("stroke", "#0a0b0e")
+      .attr("stroke-width", 0.7)
+      .style("cursor", "help")
+      .on("mouseenter", function (event, point) {
+        d3.select(this).attr("fill", "#d1d4d8").attr("fill-opacity", 1);
+        showOutlierTooltip(event, row, point);
+      })
+      .on("mousemove", (event, point) => showOutlierTooltip(event, row, point))
+      .on("mouseleave", function () {
+        d3.select(this).attr("fill", "#9ca2aa").attr("fill-opacity", 0.82);
+        hideOutlierTooltip();
+      });
+    const outlierSummary = row.weeklyOutliers.length
+      ? `\nOutliers (${row.weeklyOutliers.length}): ${row.weeklyOutliers.map((point) => formatUsd(point.value)).join(", ")}`
+      : "\nOutliers: none";
+    box.append("title").text(`${row.label}\nWhiskers: ${formatUsd(row.weeklyWhiskerMin)} to ${formatUsd(row.weeklyWhiskerMax)}\n25–75%: ${formatUsd(row.weeklyQ25)} to ${formatUsd(row.weeklyQ75)}\nMedian: ${formatUsd(row.weeklyMedian)}${outlierSummary}`);
   });
 
   svg.append("text")
@@ -454,7 +546,7 @@ const draw = () => {
       .attr("y1", sparkY(0)).attr("y2", sparkY(0)).attr("stroke", "rgba(255,255,255,0.1)");
     group.append("path").datum(row.cumulative)
       .attr("d", d3.line().x((_, i) => sparkX(i)).y((value) => sparkY(value)))
-      .attr("fill", "none").attr("stroke", sharpeColor(Number(row.sharpe) || 0)).attr("stroke-width", 1.2);
+      .attr("fill", "none").attr("stroke", performanceColor(Number(row.sharpe) || 0)).attr("stroke-width", 1.2);
     group.append("circle").attr("cx", sparkX(row.bestIndex + 1)).attr("cy", sparkY(row.cumulative[row.bestIndex + 1] ?? 0))
       .attr("r", 2.2).attr("fill", "#ffffff");
 
@@ -469,7 +561,7 @@ const draw = () => {
     const addValue = (x, value, color = "rgba(255,255,255,0.7)") => group.append("text")
       .attr("x", x).attr("y", center).attr("dy", "0.32em").attr("text-anchor", "end")
       .attr("fill", color).attr("font-size", 8.5).text(value);
-    addValue(columnX.sharpe, formatSharpe(Number(row.sharpe) || 0), sharpeColor(Number(row.sharpe) || 0));
+    addValue(columnX.sharpe, formatSharpe(Number(row.sharpe) || 0), sharpeTextColor(Number(row.sharpe) || 0));
     addValue(columnX.drawdown, formatCompactUsd(Number(row.maxDrawdown) || 0), drawdownColor(Number(row.maxDrawdown) || 0));
     addValue(columnX.calmar, Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "—");
     addValue(columnX.win, d3.format(".0%")(row.winRate));
