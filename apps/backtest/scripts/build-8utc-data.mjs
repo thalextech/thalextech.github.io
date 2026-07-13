@@ -82,6 +82,15 @@ for (const hour of hours) {
   marks.sort((a, b) =>
     a[1] === b[1] ? a[0] - b[0] : a[1].localeCompare(b[1]),
   );
+  for (let index = 1; index < marks.length; index += 1) {
+    const previous = marks[index - 1];
+    const current = marks[index];
+    if (previous[0] === current[0] && previous[1] === current[1]) {
+      throw new Error(
+        `Duplicate mark for ${current[1]} at ${current[0]} in hour ${hour}`,
+      );
+    }
+  }
 
   const payload = {
     underlying: "BTC",

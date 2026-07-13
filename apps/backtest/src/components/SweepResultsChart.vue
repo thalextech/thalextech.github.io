@@ -34,8 +34,9 @@ const draw = () => {
   const rankedRowHeight = 25;
   const rankedBottom = rankedRowsY + rows.length * rankedRowHeight;
   const boxHeaderY = rankedBottom + 50;
-  const boxPlotTop = boxHeaderY + 46;
-  const boxPlotBottom = boxPlotTop + 280;
+  const boxPlotTop = boxHeaderY + 24;
+  const boxPlotHeight = 382;
+  const boxPlotBottom = boxPlotTop + boxPlotHeight;
   const boxAxisY = boxPlotBottom + 8;
   const boxBottom = boxAxisY + 28;
   const distributionHeaderY = boxBottom + 50;

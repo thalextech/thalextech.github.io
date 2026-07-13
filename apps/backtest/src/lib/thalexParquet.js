@@ -25,14 +25,12 @@ export async function loadThalexHistory({
     const p = await res.json();
     for (const [ts, price] of p.index || []) {
       const t = asNumber(ts);
-      if (t >= startTs && t <= endTs) indexRows.push({ ts: t, dateTime: new Date(t * 1000), indexPrice: asNumber(price) });
+      if (t >= startTs && t <= endTs) indexRows.push({ ts: t, indexPrice: asNumber(price) });
     }
     for (const [ts, name, mp, iv] of p.marks || []) {
       const t = asNumber(ts);
-      if (t >= startTs && t <= endTs) markRows.push({ ts: t, dateTime: new Date(t * 1000), instrumentName: String(name || ""), markPrice: asNumber(mp), iv: asNumber(iv) });
+      if (t >= startTs && t <= endTs) markRows.push({ ts: t, instrumentName: String(name || ""), markPrice: asNumber(mp), iv: asNumber(iv) });
     }
   }
-  indexRows.sort((a, b) => a.ts - b.ts);
-  markRows.sort((a, b) => (a.instrumentName === b.instrumentName ? a.ts - b.ts : a.instrumentName.localeCompare(b.instrumentName)));
   return { indexRows, markRows };
 }

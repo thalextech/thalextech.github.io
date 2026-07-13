@@ -1,6 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from "vue";
-import * as d3 from "d3";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import CycleDetailChart from "./components/CycleDetailChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
 import SweepResultsChart from "./components/SweepResultsChart.vue";
@@ -10,12 +9,12 @@ import { blackScholesPrice } from "./lib/optionPricing.js";
 import { computeZeroMtmContours } from "./lib/zeroMtmContours.js";
 import {
   DEFAULT_BACKTEST_CONFIG,
-  buildBacktestIndexes,
   buildCycleDetail,
   computeMaxDrawdown,
   computeBreakEvens,
   normalizeBacktestConfig,
   prepareBacktestData,
+  prepareCycleDetailData,
   runWeeklyStraddleBacktest,
   runWeeklyStraddleBacktestBatch,
 } from "./lib/weeklyStraddleBacktest.js";
@@ -185,17 +184,9 @@ const formatUsd = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
 
-const formatPct = new Intl.NumberFormat("en-US", {
-  style: "percent",
-  maximumFractionDigits: 1,
-});
-
 const formatNumber = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
-
-const formatDte = (value) =>
-  Number.isFinite(value) ? `${formatNumber.format(value)}D` : "n/a";
 
 const hoursFor = (hour, enabled, interval) => {
   const hs = new Set([Number(hour), 8]);
@@ -341,8 +332,7 @@ const cycleContours = ref(null);
 const cycleDetailLoading = ref(false);
 const cycleDetailError = ref("");
 const cycleDetailCache = new Map();
-const chartRows = computed(() => result.value?.cycleSummary || []);
-const hedgePerformanceRows = computed(() => result.value?.cycleSummary || []);
+const cycleRows = computed(() => result.value?.cycleSummary || []);
 
 const chartTitle = computed(() => {
   if (selectedCycle.value) {
@@ -402,7 +392,6 @@ const buildConfig = (overrides = {}) => {
     farTargetDteDays: m.farDays,
     minWeeklyDteDays: m.minDteDays,
     maxWeeklyDteDays: m.maxDteDays,
-    maxHedgeDays: m.maxDteDays + 2,
     structure: ui.structure,
     targetDelta: Number(ui.targetDelta),
     entryWeekday: Number(ui.entryWeekday),
@@ -417,61 +406,6 @@ const buildConfig = (overrides = {}) => {
     btcQuantity: 1,
     ...overrides,
   });
-};
-
-const bucketRowsByHour = (rows) => {
-  const buckets = Array.from({ length: 24 }, () => []);
-  for (const row of rows) {
-    const hour = row.dateTime?.getUTCHours();
-    if (Number.isInteger(hour)) buckets[hour].push(row);
-  }
-  return buckets;
-};
-
-const mergeSortedRows = (left, right) => {
-  const merged = new Array(left.length + right.length);
-  let leftIndex = 0;
-  let rightIndex = 0;
-  let outputIndex = 0;
-  while (leftIndex < left.length && rightIndex < right.length) {
-    if (left[leftIndex].ts <= right[rightIndex].ts) merged[outputIndex++] = left[leftIndex++];
-    else merged[outputIndex++] = right[rightIndex++];
-  }
-  while (leftIndex < left.length) merged[outputIndex++] = left[leftIndex++];
-  while (rightIndex < right.length) merged[outputIndex++] = right[rightIndex++];
-  return merged;
-};
-
-const mergeHourBuckets = (buckets, hours, allRows) => {
-  const selectedHours = [...new Set(hours.map(Number))].sort((a, b) => a - b);
-  if (selectedHours.length === 24) return allRows;
-  let groups = selectedHours.map((hour) => buckets[hour] || []);
-  while (groups.length > 1) {
-    const next = [];
-    for (let index = 0; index < groups.length; index += 2) {
-      next.push(index + 1 < groups.length ? mergeSortedRows(groups[index], groups[index + 1]) : groups[index]);
-    }
-    groups = next;
-  }
-  return groups[0] || [];
-};
-
-const indexPreparedByHour = (prepared) => ({
-  prepared,
-  indexBuckets: bucketRowsByHour(prepared.indexRows),
-  quoteBuckets: bucketRowsByHour(prepared.quotes),
-  backtestIndexes: prepared.indexes || buildBacktestIndexes(prepared),
-});
-
-const preparedViewForHours = (hourIndex, hours) => {
-  const { prepared, indexBuckets, quoteBuckets } = hourIndex;
-  return {
-    indexRows: mergeHourBuckets(indexBuckets, hours, prepared.indexRows),
-    markRows: [],
-    options: [],
-    quotes: mergeHourBuckets(quoteBuckets, hours, prepared.quotes),
-    dataEnd: prepared.dataEnd,
-  };
 };
 
 const runSweep = async () => {
@@ -497,16 +431,12 @@ const runSweep = async () => {
   let runMs = 0;
   try {
     let sweepPrepared = preparedData.value;
-    let preparedHourIndex = null;
     if (sweepDataCache?.key === sweepHoursKey) {
       sweepPrepared = sweepDataCache.prepared;
-      preparedHourIndex = sweepDataCache.hourIndex;
     } else if (loadedHoursKey === sweepHoursKey && sweepPrepared) {
-      preparedHourIndex = indexPreparedByHour(sweepPrepared);
       sweepDataCache = {
         key: sweepHoursKey,
         prepared: sweepPrepared,
-        hourIndex: preparedHourIndex,
       };
     } else {
       sweepProgress.value = `Loading ${sweepHours.length} hourly data shards`;
@@ -528,25 +458,14 @@ const runSweep = async () => {
         config: configs[0],
       });
       prepareMs = performance.now() - prepareStartedAt;
-      preparedHourIndex = indexPreparedByHour(sweepPrepared);
-      sweepDataCache = { key: sweepHoursKey, prepared: sweepPrepared, hourIndex: preparedHourIndex };
+      sweepDataCache = { key: sweepHoursKey, prepared: sweepPrepared };
     }
 
     const runStartedAt = performance.now();
     sweepProgress.value = `Running ${cells.length} configurations`;
-    const batchRuns = cells.map((cell, index) => {
-      const cellHours = hoursFor(
-        configs[index].entryHourUtc,
-        configs[index].hedgeEnabled,
-        configs[index].hedgeIntervalHours,
-      );
-      const cellPrepared = cellHours.length === sweepHours.length
-        ? sweepPrepared
-        : preparedViewForHours(preparedHourIndex, cellHours);
-      return { preparedData: cellPrepared, config: configs[index] };
-    });
+    const batchRuns = configs.map((config) => ({ config }));
     const batchOutputs = runWeeklyStraddleBacktestBatch({
-      preparedData: { ...sweepPrepared, indexes: preparedHourIndex.backtestIndexes },
+      preparedData: sweepPrepared,
       runs: batchRuns,
     });
 
@@ -654,7 +573,7 @@ const handleCycleSelect = async (cycle) => {
       end: config.end,
       hourlyOffsets: Array.from({ length: 24 }, (_, hour) => hour),
     });
-    const detailData = prepareBacktestData({
+    const detailData = prepareCycleDetailData({
       indexRows: loaded.indexRows,
       markRows: loaded.markRows,
       config,
@@ -1118,14 +1037,14 @@ onMounted(loadBacktest);
         <WeeklyBacktestChart
           v-if="mode === 'single' && !selectedCycle && chartMode === 'weekly'"
           ref="chartRef"
-          :rows="chartRows"
+          :rows="cycleRows"
           :design-spec="true"
           @select="handleCycleSelect"
         />
         <HedgePerformanceChart
           v-else-if="mode === 'single' && !selectedCycle"
           ref="chartRef"
-          :rows="hedgePerformanceRows"
+          :rows="cycleRows"
           @select="handleCycleSelect"
         />
         <div v-else-if="mode === 'single' && cycleDetailLoading" class="cycleDetailState">Loading hourly detail…</div>

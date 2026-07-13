@@ -16,8 +16,6 @@ const MONTHS = {
 };
 
 export const DEFAULT_BACKTEST_CONFIG = {
-  underlying: "BTC",
-  resolution: "1h",
   start: new Date("2025-06-01T00:00:00Z"),
   end: new Date(),
   hourlyOffset: 8,
@@ -32,7 +30,6 @@ export const DEFAULT_BACKTEST_CONFIG = {
   farTargetDteDays: 14,
   minWeeklyDteDays: 4,
   maxWeeklyDteDays: 10,
-  maxHedgeDays: 12,
   daysPerYear: 365,
   notionalUsd: 100_000,
   sizingMode: "notional",
@@ -90,38 +87,47 @@ export const computeMaxDrawdown = (rows = []) => {
   return drawdown;
 };
 
+const instrumentMetadataCache = new Map();
+
 const parseInstrumentName = (instrumentName) => {
+  if (instrumentMetadataCache.has(instrumentName)) {
+    return instrumentMetadataCache.get(instrumentName);
+  }
   const match = /^([^-]+)-(\d{2}[A-Z]{3}\d{2})-(\d+(?:\.\d+)?)-([CP])$/.exec(
     instrumentName,
   );
-  if (!match) return null;
+  if (!match) {
+    instrumentMetadataCache.set(instrumentName, null);
+    return null;
+  }
 
-  const [, underlying, expiryToken, strikeRaw, optionType] = match;
+  const [, , expiryToken, strikeRaw, optionType] = match;
   const day = Number(expiryToken.slice(0, 2));
   const month = MONTHS[expiryToken.slice(2, 5)];
   const year = 2000 + Number(expiryToken.slice(5));
 
   if (!Number.isFinite(day) || month == null || !Number.isFinite(year)) {
+    instrumentMetadataCache.set(instrumentName, null);
     return null;
   }
 
-  return {
-    underlying,
-    expiration: new Date(Date.UTC(year, month, day, 8, 0, 0)),
+  const metadata = {
+    expirationTs: Date.UTC(year, month, day, 8, 0, 0) / 1000,
     strike: Number(strikeRaw),
     optionType,
   };
+  instrumentMetadataCache.set(instrumentName, metadata);
+  return metadata;
 };
 
 const normalizeVol = (impliedVol) => impliedVol > 3 ? impliedVol / 100 : impliedVol;
 const normalPdf = (value) => Math.exp(-0.5 * value ** 2) / Math.sqrt(2 * Math.PI);
 
-const blackScholesGreeks = ({
+const blackScholesInputs = ({
   spot,
   strike,
   yearsToExpiry,
   impliedVol,
-  optionType,
 }) => {
   const sigma = normalizeVol(impliedVol);
   if (
@@ -131,90 +137,91 @@ const blackScholesGreeks = ({
     yearsToExpiry <= 0 ||
     !Number.isFinite(spot + strike + sigma + yearsToExpiry)
   ) {
-    return { delta: Number.NaN, gamma: Number.NaN, vega: Number.NaN, theta: Number.NaN, sigma };
+    return null;
   }
+  const rootT = Math.sqrt(yearsToExpiry);
   const d1 =
     (Math.log(spot / strike) + 0.5 * sigma ** 2 * yearsToExpiry) /
-    (sigma * Math.sqrt(yearsToExpiry));
-  const callDelta = normCdf(d1);
-  const density = normalPdf(d1);
+    (sigma * rootT);
+  return { sigma, rootT, d1 };
+};
+
+const blackScholesDelta = (args) => {
+  const inputs = blackScholesInputs(args);
+  if (!inputs) return { delta: Number.NaN };
+  const callDelta = normCdf(inputs.d1);
   return {
-    delta: optionType === "C" ? callDelta : callDelta - 1,
-    gamma: density / (spot * sigma * Math.sqrt(yearsToExpiry)),
-    vega: spot * density * Math.sqrt(yearsToExpiry),
-    theta: -(spot * density * sigma) / (2 * Math.sqrt(yearsToExpiry)),
-    sigma,
+    delta: args.optionType === "C" ? callDelta : callDelta - 1,
   };
 };
 
-const dedupeByKey = (rows, makeKey) => {
-  const byKey = new Map();
-  for (const row of rows) {
-    byKey.set(makeKey(row), row);
+const blackScholesGreeks = (args) => {
+  const inputs = blackScholesInputs(args);
+  if (!inputs) {
+    return {
+      delta: Number.NaN,
+      gamma: Number.NaN,
+      vega: Number.NaN,
+      theta: Number.NaN,
+      impliedVol: normalizeVol(args.impliedVol),
+    };
   }
-  return [...byKey.values()];
+  const { sigma, rootT, d1 } = inputs;
+  const callDelta = normCdf(d1);
+  const density = normalPdf(d1);
+  return {
+    delta: args.optionType === "C" ? callDelta : callDelta - 1,
+    gamma: density / (args.spot * sigma * rootT),
+    vega: args.spot * density * rootT,
+    theta: -(args.spot * density * sigma) / (2 * rootT),
+    impliedVol: sigma,
+  };
 };
 
-const buildOptions = ({ markRows, indexByTs, config }) => {
-  return markRows
-    .map((mark) => {
-      const index = indexByTs.get(mark.ts);
-      const parsed = parseInstrumentName(mark.instrumentName);
-      if (!index || !parsed) return null;
-      const dteDays = (parsed.expiration.getTime() - mark.dateTime.getTime()) / 86_400_000;
-      const yearsToExpiry = dteDays / config.daysPerYear;
-      const greeks = blackScholesGreeks({
-        spot: index.indexPrice,
-        strike: parsed.strike,
-        yearsToExpiry,
-        impliedVol: mark.iv,
-        optionType: parsed.optionType,
-      });
-      if (!Number.isFinite(greeks.delta)) return null;
-      return {
-        ...mark,
-        ...parsed,
-        expirationTs: parsed.expiration.getTime() / 1000,
-        indexPrice: index.indexPrice,
-        dteDays,
-        yearsToExpiry,
-        delta: greeks.delta,
-        gamma: greeks.gamma,
-        vega: greeks.vega,
-        theta: greeks.theta,
-        impliedVol: greeks.sigma,
-      };
-    })
-    .filter(Boolean)
-    .sort((a, b) => {
-      if (a.ts !== b.ts) return a.ts - b.ts;
-      if (a.expirationTs !== b.expirationTs) return a.expirationTs - b.expirationTs;
-      if (a.strike !== b.strike) return a.strike - b.strike;
-      return a.optionType.localeCompare(b.optionType);
+const buildQuotes = ({ markRows, indexByTs, config, calculateRisk }) => {
+  const quotes = [];
+  for (const mark of markRows) {
+    const index = indexByTs.get(mark.ts);
+    const instrument = parseInstrumentName(mark.instrumentName);
+    if (!index || !instrument) continue;
+    const dteDays = (instrument.expirationTs - mark.ts) / 86_400;
+    if (dteDays <= 0) continue;
+    const yearsToExpiry = dteDays / config.daysPerYear;
+    const risk = calculateRisk({
+      spot: index.indexPrice,
+      strike: instrument.strike,
+      yearsToExpiry,
+      impliedVol: mark.iv,
+      optionType: instrument.optionType,
     });
+    if (!Number.isFinite(risk.delta)) continue;
+    quotes.push({
+      ts: mark.ts,
+      instrumentName: mark.instrumentName,
+      markPrice: mark.markPrice,
+      ...instrument,
+      indexPrice: index.indexPrice,
+      dteDays,
+      ...risk,
+    });
+  }
+  return quotes;
 };
-
-// buildOptions guarantees this order. Filtering and Map-based deduplication
-// preserve insertion order, so quotes retain the same ordering without a sort.
-const buildQuotes = ({ options }) =>
-  dedupeByKey(
-    options.filter(
-      (row) => row.dteDays > 0,
-    ),
-    (row) => `${row.ts}|${row.instrumentName}`,
-  );
 
 const buildEntryExpirations = ({ entryCandidates, dataEnd, config }) => {
   const bestByEntryTs = new Map();
+  const startTs = config.start.getTime() / 1000;
+  const dataEndTs = dataEnd.getTime() / 1000;
   for (const quote of entryCandidates) {
+    const entryTime = new Date(quote.ts * 1000);
     if (
-      quote.dateTime < config.start ||
-      quote.dateTime > dataEnd ||
-      quote.dateTime.getUTCDay() !== config.entryWeekday ||
-      quote.dateTime.getUTCHours() !== config.entryHourUtc ||
+      quote.ts < startTs ||
+      quote.ts > dataEndTs ||
+      entryTime.getUTCDay() !== config.entryWeekday ||
+      entryTime.getUTCHours() !== config.entryHourUtc ||
       quote.dteDays < config.minWeeklyDteDays ||
       quote.dteDays > config.maxWeeklyDteDays ||
-      quote.expiration > dataEnd
+      quote.expirationTs > dataEndTs
     ) {
       continue;
     }
@@ -228,8 +235,6 @@ const buildEntryExpirations = ({ entryCandidates, dataEnd, config }) => {
     ) {
       bestByEntryTs.set(quote.ts, {
         entryTs: quote.ts,
-        entryTime: quote.dateTime,
-        expiration: quote.expiration,
         expirationTs: quote.expirationTs,
         entryDteDays: quote.dteDays,
         dteDistance,
@@ -379,7 +384,6 @@ const buildQuoteGroups = (quotes) => {
       const group = {
         calls: [],
         putsByStrike: new Map(),
-        expiration: quote.expiration,
         expirationTs: quote.expirationTs,
         dteDays: quote.dteDays,
       };
@@ -408,10 +412,12 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
   const plans = [];
   let positionAvailableAtMs = Number.NEGATIVE_INFINITY;
   for (const entry of entryExpirations) {
+    const entryTimeMs = entry.entryTs * 1000;
+    const expirationMs = entry.expirationTs * 1000;
     // This is a single-position strategy. Skip candidate entries while the
     // previously accepted trade is still open. A same-timestamp close/reopen
     // is allowed.
-    if (entry.entryTime.getTime() < positionAvailableAtMs) continue;
+    if (entryTimeMs < positionAvailableAtMs) continue;
 
     const group = quotesByEntryExpiry.get(`${entry.entryTs}|${entry.expirationTs}`);
     if (!group) continue;
@@ -436,7 +442,7 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
         instrumentName: quote.instrumentName,
         optionType: quote.optionType,
         strike: quote.strike,
-        expiration: quote.expiration,
+        expiration: new Date(quote.expirationTs * 1000),
         expirationTs: quote.expirationTs,
         entryPrice: quote.markPrice,
         entryDelta: quote.delta,
@@ -446,16 +452,14 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
         (cashflow, leg) => cashflow + leg.quantity * leg.entryPrice,
         0,
       );
-      const requestedExitTime = config.holdToExpiry
-        ? entry.expiration
-        : new Date(
-            entry.entryTime.getTime() +
-              Math.max(1, Math.round(config.exitHoldDays)) * 86_400_000,
-          );
-      const exitTime =
-        requestedExitTime.getTime() >= entry.expiration.getTime()
-          ? entry.expiration
-          : requestedExitTime;
+      const requestedExitMs = config.holdToExpiry
+        ? expirationMs
+        : entryTimeMs +
+          Math.max(1, Math.round(config.exitHoldDays)) * 86_400_000;
+      const exitMs = Math.min(requestedExitMs, expirationMs);
+      const entryTime = new Date(entryTimeMs);
+      const expiration = new Date(expirationMs);
+      const exitTime = new Date(exitMs);
       plans.push({
         hourlyOffset: config.hourlyOffset,
         entryHourUtc: config.entryHourUtc,
@@ -466,13 +470,13 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
         exitHoldDays: config.exitHoldDays,
         structure: config.structure,
         targetDelta: config.targetDelta,
-        entryTime: entry.entryTime,
+        entryTime,
         entryTs: entry.entryTs,
-        expiration: entry.expiration,
+        expiration,
         expirationTs: entry.expirationTs,
         exitTime,
-        exitTs: exitTime.getTime() / 1000,
-        exitAtExpiry: exitTime.getTime() === entry.expiration.getTime(),
+        exitTs: exitMs / 1000,
+        exitAtExpiry: exitMs === expirationMs,
         dteDays: entry.entryDteDays,
         strike: selected.sizingStrike,
         legs,
@@ -487,7 +491,7 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
         entryOptionCashflowUsd,
         selectionMetric: selected.selectionMetric,
       });
-      positionAvailableAtMs = exitTime.getTime();
+      positionAvailableAtMs = exitMs;
     }
   }
 
@@ -677,7 +681,7 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
     previousTotalPnlUsd = totalPnlUsd;
     return {
       ts: indexRow.ts,
-      dateTime: indexRow.dateTime,
+      dateTime: new Date(indexRow.ts * 1000),
       indexPrice: indexRow.indexPrice,
       legMarks: legMarks.map(({ leg, mark }) => ({ instrumentName: leg.instrumentName, mark })),
       combinedMark: hasMarks ? legMarks.reduce((total, { mark }) => total + mark, 0) : Number.NaN,
@@ -869,25 +873,31 @@ export const buildBacktestIndexes = (preparedData, indexByTs) => {
   };
 };
 
-export const prepareBacktestData = ({ indexRows, markRows, config: inc = {} }) => {
+const prepareData = ({ indexRows, markRows, config: inc = {}, calculateRisk }) => {
   const config = normalizeBacktestConfig(inc);
-  let maxT = 0;
-  for (const r of indexRows) maxT = Math.max(maxT, r.dateTime?.getTime() || 0);
-  for (const r of markRows) maxT = Math.max(maxT, r.dateTime?.getTime() || 0);
-  const dataEnd = new Date(Math.min(config.end.getTime(), maxT || config.end.getTime()));
+  let maxTs = 0;
+  for (const row of indexRows) maxTs = Math.max(maxTs, row.ts || 0);
+  for (const row of markRows) maxTs = Math.max(maxTs, row.ts || 0);
+  const configuredEndTs = config.end.getTime() / 1000;
+  const dataEnd = new Date(Math.min(configuredEndTs, maxTs || configuredEndTs) * 1000);
   const indexByTs = new Map(indexRows.map((row) => [row.ts, row]));
-  const options = buildOptions({ markRows, indexByTs, config });
-  const quotes = buildQuotes({ options });
-  const preparedData = { indexRows, markRows, options, quotes, dataEnd };
+  const quotes = buildQuotes({ markRows, indexByTs, config, calculateRisk });
+  const preparedData = { indexRows, quotes, dataEnd };
   preparedData.indexes = buildBacktestIndexes(preparedData, indexByTs);
   return preparedData;
 };
+
+export const prepareBacktestData = (args) =>
+  prepareData({ ...args, calculateRisk: blackScholesDelta });
+
+export const prepareCycleDetailData = (args) =>
+  prepareData({ ...args, calculateRisk: blackScholesGreeks });
 
 export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, config: inc = {} }) => {
   const config = normalizeBacktestConfig(inc);
   const c = config;
   const p = preparedData || prepareBacktestData({ indexRows, markRows, config });
-  const { indexRows: pi = [], markRows: pm = [], options, quotes, dataEnd } = p;
+  const { indexRows: pi = [], quotes, dataEnd } = p;
   const indexes = p.indexes || buildBacktestIndexes(p);
 
   const entryExpirations = buildEntryExpirations({
@@ -963,8 +973,9 @@ export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, c
 
 export const runWeeklyStraddleBacktestBatch = ({ preparedData, runs }) => {
   const indexes = preparedData.indexes || buildBacktestIndexes(preparedData);
-  return runs.map(({ preparedData: runPreparedData, config }) => runWeeklyStraddleBacktest({
-    preparedData: { ...(runPreparedData || preparedData), indexes },
+  const sharedPreparedData = { ...preparedData, indexes };
+  return runs.map(({ config }) => runWeeklyStraddleBacktest({
+    preparedData: sharedPreparedData,
     config,
   }));
 };
