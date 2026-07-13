@@ -8,6 +8,7 @@ import {
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
+  dimension: { type: String, default: "entry_hour" },
   dimensionLabel: { type: String, default: "Sweep setting" },
 });
 
@@ -34,7 +35,12 @@ const draw = () => {
   const availableWidth = Math.max(1080, bounds.width || 1100);
   const margin = { right: 24, left: 64 };
   const contentWidth = availableWidth - margin.left - margin.right;
-  const rankedHeaderY = 15;
+  const mapHeaderY = 15;
+  const mapPlotTop = mapHeaderY + 34;
+  const mapPlotHeight = 410;
+  const mapPlotBottom = mapPlotTop + mapPlotHeight;
+  const mapBottom = mapPlotBottom + 34;
+  const rankedHeaderY = mapBottom + 42;
   const rankedColumnsY = rankedHeaderY + 28;
   const rankedRowsY = rankedColumnsY + 18;
   const rankedRowHeight = 25;
@@ -54,10 +60,21 @@ const draw = () => {
   const height = distributionBottom + 36;
   panelRegions.value = [
     {
+      key: "comparison",
+      label: "Comparison",
+      buttonTop: 6,
+      region: { x: 0, y: 0, width, height: rankedHeaderY - 24 },
+    },
+    {
       key: "ranked-sweep",
       label: "Ranked sweep",
-      buttonTop: 6,
-      region: { x: 0, y: 0, width, height: boxHeaderY - 24 },
+      buttonTop: rankedHeaderY - 17,
+      region: {
+        x: 0,
+        y: rankedHeaderY - 24,
+        width,
+        height: boxHeaderY - rankedHeaderY,
+      },
     },
     {
       key: "weekly-boxplots",
@@ -104,7 +121,7 @@ const draw = () => {
     .attr("height", height)
     .attr("font-family", CHART_FONT_FAMILY)
     .attr("role", "img")
-    .attr("aria-label", "Ranked sweep analysis with weekly PnL box plots and observed weekly returns");
+    .attr("aria-label", "Sweep comparison, ranked sweep analysis, weekly PnL box plots, and observed weekly returns");
 
   const sum = (values) => d3.sum(values);
   const analyzedRows = rows.map((row) => {
@@ -283,6 +300,141 @@ const draw = () => {
       .attr("font-weight", 400)
       .text(subtitle);
   };
+
+  const mapPnlValues = analyzedRows.map((row) => row.total);
+  const mapPnlMin = d3.min(mapPnlValues) ?? 0;
+  const mapPnlMax = d3.max(mapPnlValues) ?? 1;
+  const mapPnlMid = d3.median(mapPnlValues) ?? (mapPnlMin + mapPnlMax) / 2;
+  const readableMapPnl = (t) => d3.interpolateRdBu(0.12 + t * 0.76);
+  const mapPnlColor = mapPnlMin === mapPnlMax
+    ? () => readableMapPnl(0.5)
+    : d3.scaleDiverging(readableMapPnl)
+        .domain([mapPnlMin, mapPnlMid, mapPnlMax])
+        .clamp(true);
+  const sweepMapRows = analyzedRows.map((row) => ({
+    ...row,
+    mapColor: mapPnlColor(row.total),
+    weeklyMean: d3.mean(row.weeks) ?? 0,
+    weeklySigma: d3.deviation(row.weeks) ?? 0,
+  }));
+  const mapPlotLeft = margin.left + 58;
+  const mapPlotRight = margin.left + contentWidth - 48;
+  let mapPointGroups = svg.selectAll("g.sweep-map-point");
+
+  appendPanelHeading({
+    y: mapHeaderY,
+    title: "COMPARISON ·",
+    subtitle: "SHARPE SCATTER · X = WEEKLY PNL σ · Y = MEAN WEEKLY PNL · COLOR = CUMULATIVE PNL",
+  });
+
+  const [minWeeklySigma = 0, maxWeeklySigma = 1] = d3.extent(
+    sweepMapRows,
+    (row) => row.weeklySigma,
+  );
+  const weeklySigmaSpan = maxWeeklySigma - minWeeklySigma;
+  const weeklySigmaPadding = weeklySigmaSpan > 0
+    ? weeklySigmaSpan * 0.08
+    : Math.max(Math.abs(maxWeeklySigma) * 0.05, 1);
+  const meanExtent = d3.extent(sweepMapRows, (row) => row.weeklyMean);
+  let mapMeanMin = Math.min(0, meanExtent[0] ?? 0);
+  let mapMeanMax = Math.max(0, meanExtent[1] ?? 0);
+  if (mapMeanMin === mapMeanMax) {
+    mapMeanMin = -1;
+    mapMeanMax = 1;
+  } else {
+    const meanPadding = (mapMeanMax - mapMeanMin) * 0.1;
+    mapMeanMin -= meanPadding;
+    mapMeanMax += meanPadding;
+  }
+  const mapX = d3.scaleLinear()
+    .domain([
+      Math.max(0, minWeeklySigma - weeklySigmaPadding),
+      maxWeeklySigma + weeklySigmaPadding,
+    ])
+    .range([mapPlotLeft, mapPlotRight])
+    .nice(6);
+  const mapY = d3.scaleLinear()
+    .domain([mapMeanMin, mapMeanMax])
+    .range([mapPlotBottom, mapPlotTop])
+    .nice(6);
+  const mapXTicks = mapX.ticks(6);
+  let mapYTicks = mapY.ticks(6);
+  if (!mapYTicks.includes(0)) mapYTicks = [...mapYTicks, 0].sort((a, b) => a - b);
+
+  mapXTicks.forEach((tick) => svg.append("line")
+    .attr("x1", mapX(tick)).attr("x2", mapX(tick))
+    .attr("y1", mapPlotTop).attr("y2", mapPlotBottom)
+    .attr("stroke", "rgba(255,255,255,0.045)"));
+  mapYTicks.forEach((tick) => svg.append("line")
+    .attr("x1", mapPlotLeft).attr("x2", mapPlotRight)
+    .attr("y1", mapY(tick)).attr("y2", mapY(tick))
+    .attr("stroke", tick === 0 ? "rgba(255,255,255,0.13)" : "rgba(255,255,255,0.055)"));
+
+  const annualization = Math.sqrt(52);
+  [1, 2, 3].forEach((sharpe) => {
+    const slope = sharpe / annualization;
+    const startSigma = Math.max(mapX.domain()[0], mapY.domain()[0] / slope, 0);
+    const endSigma = Math.min(mapX.domain()[1], mapY.domain()[1] / slope);
+    if (!(endSigma > startSigma)) return;
+    const startMean = slope * startSigma;
+    const endMean = sharpe * endSigma / annualization;
+    svg.append("line")
+      .attr("x1", mapX(startSigma)).attr("y1", mapY(startMean))
+      .attr("x2", mapX(endSigma)).attr("y2", mapY(endMean))
+      .attr("stroke", "rgba(255,255,255,0.2)")
+      .attr("stroke-width", 0.9)
+      .attr("stroke-dasharray", "3 3");
+    const labelX = mapPlotLeft + 9;
+    const labelSigma = mapX.invert(labelX);
+    const labelMean = slope * labelSigma;
+    svg.append("text")
+      .attr("x", labelX).attr("y", mapY(labelMean) - 5)
+      .attr("text-anchor", "start")
+      .attr("fill", "rgba(255,255,255,0.42)")
+      .attr("font-size", 8.5)
+      .text(`S ${sharpe}`);
+  });
+
+  const mapXAxis = svg.append("g")
+    .attr("transform", `translate(0,${mapPlotBottom})`)
+    .call(d3.axisBottom(mapX).tickValues(mapXTicks).tickSize(0).tickPadding(7).tickFormat(formatCompactUsd));
+  mapXAxis.select(".domain").remove();
+  mapXAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 9);
+  const mapYAxis = svg.append("g")
+    .attr("transform", `translate(${mapPlotLeft},0)`)
+    .call(d3.axisLeft(mapY).tickValues(mapYTicks).tickSize(0).tickPadding(14).tickFormat(formatCompactUsd));
+  mapYAxis.select(".domain").remove();
+  mapYAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 9);
+  svg.append("text")
+    .attr("x", (mapPlotLeft + mapPlotRight) / 2).attr("y", mapPlotBottom + 29)
+    .attr("text-anchor", "middle")
+    .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 9)
+    .text("WEEKLY PNL σ");
+
+  mapPointGroups = svg.selectAll("g.sweep-map-point")
+    .data(sweepMapRows, (row) => row.key)
+    .join("g")
+    .attr("class", "sweep-map-point")
+    .attr("role", "button")
+    .attr("tabindex", 0)
+    .style("cursor", "pointer")
+    .on("click", (_, row) => emit("select", row));
+  mapPointGroups.append("circle")
+    .attr("class", "comparison-scatter-dot")
+    .attr("cx", (row) => mapX(row.weeklySigma))
+    .attr("cy", (row) => mapY(row.weeklyMean))
+    .attr("r", 4.5)
+    .attr("fill", (row) => row.mapColor)
+    .attr("stroke", "rgba(255,255,255,0.92)")
+    .attr("stroke-width", 0.8);
+  mapPointGroups.append("text")
+    .attr("x", (row) => mapX(row.weeklySigma) + 6)
+    .attr("y", (row) => mapY(row.weeklyMean) - 5)
+    .attr("fill", "rgba(255,255,255,0.58)")
+    .attr("font-size", 8.5)
+    .text((row) => row.label);
+  mapPointGroups.append("title")
+    .text((row) => `${row.label}\nCumulative PnL: ${formatUsd(row.total)}\nMean weekly PnL: ${formatUsd(row.weeklyMean)}\nWeekly PnL σ: ${formatUsd(row.weeklySigma)}\nSharpe: ${formatSharpe(Number(row.sharpe) || 0)}`);
 
   const boxPlotLeft = margin.left + 58;
   const boxPlotRight = margin.left + contentWidth - 8;
@@ -485,6 +637,11 @@ const draw = () => {
     .attr("y1", distributionHeaderY - 24).attr("y2", distributionHeaderY - 24)
     .attr("stroke", "rgba(255,255,255,0.12)");
 
+  svg.append("line")
+    .attr("x1", margin.left).attr("x2", margin.left + contentWidth)
+    .attr("y1", rankedHeaderY - 24).attr("y2", rankedHeaderY - 24)
+    .attr("stroke", "rgba(255,255,255,0.12)");
+
   appendPanelHeading({
     y: rankedHeaderY,
     title: "RANKED SWEEP · OUTLIER LENS",
@@ -577,6 +734,9 @@ const draw = () => {
   });
 
   const setHoveredRow = (key) => {
+    mapPointGroups.select(".comparison-scatter-dot")
+      .attr("stroke", "rgba(255,255,255,0.92)")
+      .attr("stroke-width", (row) => row.key === key ? 1.4 : 0.8);
     distributionGroups.select(".distribution-hit-area").attr("fill", (row) => row.key === key ? "rgba(255,255,255,0.055)" : "transparent");
     rankGroups.select(".rank-hit-area").attr("fill", (row) => row.key === key ? "rgba(255,255,255,0.055)" : "transparent");
   };
@@ -586,7 +746,7 @@ const draw = () => {
     .on("keydown", (event, row) => {
       if (event.key === "Enter" || event.key === " ") { event.preventDefault(); emit("select", row); }
     });
-  [distributionGroups, rankGroups].forEach(bindHover);
+  [mapPointGroups, distributionGroups, rankGroups].forEach(bindHover);
 };
 
 onMounted(async () => {
@@ -601,7 +761,7 @@ onMounted(async () => {
 onBeforeUnmount(() => resizeObserver?.disconnect());
 
 watch(
-  () => props.rows,
+  () => [props.rows, props.dimension, props.dimensionLabel],
   async () => {
     await nextTick();
     draw();
@@ -725,6 +885,7 @@ defineExpose({ exportPng });
   outline: none;
 }
 
+.chartCanvas :deep(.sweep-map-point:focus),
 .chartCanvas :deep(.rank-row:focus),
 .chartCanvas :deep(.distribution-row:focus) {
   outline: none;

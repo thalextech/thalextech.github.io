@@ -486,6 +486,11 @@ const runSweep = async () => {
     const nextResults = batchOutputs.map((run, index) => {
       const cell = cells[index];
       const thisConfig = configs[index];
+      const weeklyReturns = (run.cycleSummary || []).map((cycle) => ({
+        pnl: Number(cycle.cyclePnlUsd) || 0,
+        hour: thisConfig.entryHourUtc,
+        entryDate: cycle.entryTime,
+      }));
 
       return {
         ...cell,
@@ -498,13 +503,9 @@ const runSweep = async () => {
         maxDrawdown: computeMaxDrawdown(run.cycleSummary),
         cycles: run.counts.closedCycles,
         returnOnNotional: run.summary.cumulativeReturnOnNotional,
-        weeklyReturns: (run.cycleSummary || []).map(r => ({
-          pnl: r.cyclePnlUsd || 0,
-          hour: thisConfig.entryHourUtc,
-          entryDate: r.entryTime,
-        })),
+        weeklyReturns,
       };
-    });
+    }).filter((row) => row.weeklyReturns.some(({ pnl }) => pnl !== 0));
 
     runMs = performance.now() - runStartedAt;
     sweepResults.value = nextResults;
@@ -1087,6 +1088,7 @@ onMounted(loadBacktest);
             ref="sweepChartRef"
             class="sweepHistogram"
             :rows="sweepResults"
+            :dimension="sweepDimension"
             :dimension-label="sweepDimensionLabel"
             @select="applySweepResult"
           />
