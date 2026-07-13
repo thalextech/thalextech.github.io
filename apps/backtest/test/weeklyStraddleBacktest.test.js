@@ -197,6 +197,28 @@ test("batch runs match independent runs across entry hours", () => {
   ));
 
   const selectedPlan = batch[0].cycleSummary[0];
+  const sampledPrices = Array.from({ length: 8 }, (_, day) => 100_008 + day * 500);
+  const sampledVariance = sampledPrices.slice(1).reduce((variance, price, index) => {
+    const sampledReturn = Math.log(price / sampledPrices[index]);
+    return variance + sampledReturn ** 2;
+  }, 0);
+  const expectedSampledVol = Math.sqrt(sampledVariance / (7 / 365));
+  const expectedEndpointVol = Math.abs(Math.log(sampledPrices.at(-1) / sampledPrices[0])) /
+    Math.sqrt(7 / 365);
+  assert.ok(Math.abs(selectedPlan.sampledRealizedVol - expectedSampledVol) < 1e-12);
+  assert.ok(Math.abs(batch[0].summary.meanSampledRealizedVol - expectedSampledVol) < 1e-12);
+
+  const unhedged = runWeeklyStraddleBacktest({
+    preparedData,
+    config: { ...configs[0], hedgeEnabled: false },
+  });
+  assert.ok(
+    Math.abs(
+      unhedged.cycleSummary[0].sampledRealizedVol -
+      expectedEndpointVol,
+    ) < 1e-12,
+  );
+
   const detailPrepared = prepareCycleDetailData({
     indexRows,
     quoteSnapshots,

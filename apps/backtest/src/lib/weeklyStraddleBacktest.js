@@ -746,20 +746,39 @@ export function computeBreakEvens(plan) {
   return { lower, upper };
 }
 
-const buildHedgePnlByCycle = ({ entryPlan, quotes, indexRows, config, indexByTs, quoteByTimeInstrument }) => {
+const buildPathMetricsByCycle = ({ entryPlan, quotes, indexRows, config, indexByTs, quoteByTimeInstrument }) => {
   const hedgePnlByCycle = new Map(entryPlan.map(p => [p.cycle, 0]));
-  if (!config.hedgeEnabled) return { hedgePnlByCycle };
+  const realizedMetricsByCycle = new Map();
 
   const indexMap = indexByTs || new Map(indexRows.map(r => [r.ts, r]));
-  const qmap = quoteByTimeInstrument || new Map(quotes.map(q => [`${q.ts}|${q.instrumentName}`, q]));
+  const qmap = config.hedgeEnabled
+    ? quoteByTimeInstrument || new Map(quotes.map(q => [`${q.ts}|${q.instrumentName}`, q]))
+    : null;
 
   for (const plan of entryPlan) {
-    const decisions = buildDecisionTimes(plan, config);
+    const decisions = config.hedgeEnabled
+      ? buildDecisionTimes(plan, config)
+      : [plan.entryTime, plan.exitTime];
     let hedgeState = { quantity: 0, previousPrice: null, pnlUsd: 0 };
+    let previousSamplePrice = null;
+    let sampledRealizedVariance = 0;
+    let sampledReturnCount = 0;
     for (const ht of decisions) {
       const ts = ht.getTime() / 1000;
       const isExit = ts === plan.exitTs;
       const idx = indexMap.get(ts);
+      const indexPrice = idx?.indexPrice;
+      if (Number.isFinite(indexPrice) && indexPrice > 0) {
+        if (Number.isFinite(previousSamplePrice) && previousSamplePrice > 0) {
+          const sampledReturn = Math.log(indexPrice / previousSamplePrice);
+          sampledRealizedVariance += sampledReturn ** 2;
+          sampledReturnCount += 1;
+        }
+        previousSamplePrice = indexPrice;
+      } else {
+        previousSamplePrice = null;
+      }
+      if (!config.hedgeEnabled) continue;
       const legQuotes = plan.legs.map((leg) => ({
         leg,
         quote: qmap.get(`${ts}|${leg.instrumentName}`),
@@ -774,16 +793,26 @@ const buildHedgePnlByCycle = ({ entryPlan, quotes, indexRows, config, indexByTs,
       const targetQuantity = has ? -od : hedgeState.quantity;
       hedgeState = advanceHedgePosition({
         ...hedgeState,
-        indexPrice: idx?.indexPrice,
+        indexPrice,
         targetQuantity,
       });
     }
+    const holdingYears = (plan.exitTime.getTime() - plan.entryTime.getTime()) /
+      (365 * 86_400_000);
+    realizedMetricsByCycle.set(plan.cycle, {
+      sampledRealizedVariance,
+      sampledRealizedVol:
+        sampledReturnCount > 0 && holdingYears > 0
+          ? Math.sqrt(sampledRealizedVariance / holdingYears)
+          : Number.NaN,
+      sampledReturnCount,
+    });
     hedgePnlByCycle.set(plan.cycle, hedgeState.pnlUsd);
   }
-  return { hedgePnlByCycle };
+  return { hedgePnlByCycle, realizedMetricsByCycle };
 };
 
-const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, indexRows, quotes, config, indexByTs, quoteByTimeInstrument }) => {
+const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, realizedMetricsByCycle, indexRows, quotes, config, indexByTs, quoteByTimeInstrument }) => {
   const indexMap = indexByTs || new Map(indexRows.map((row) => [row.ts, row]));
   const quoteMap = quoteByTimeInstrument || new Map(
     quotes.map((quote) => [`${quote.ts}|${quote.instrumentName}`, quote]),
@@ -806,12 +835,14 @@ const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, indexRows, quotes, conf
     const shortOptionPnlUsd =
       plan.entryOptionCashflowUsd + optionSettlementValueUsd;
     const hedgePnlUsd = hedgePnlByCycle.get(plan.cycle) ?? 0;
+    const realizedMetrics = realizedMetricsByCycle.get(plan.cycle) || {};
     const cyclePnlUsd = shortOptionPnlUsd + hedgePnlUsd;
     endingEquityUsd += cyclePnlUsd;
     return {
       ...plan,
       shortOptionPnlUsd,
       hedgePnlUsd,
+      ...realizedMetrics,
       cyclePnlUsd,
       cycleReturnOnNotional: cyclePnlUsd / plan.investmentUsd,
       endingEquityUsd,
@@ -916,7 +947,7 @@ export const runWeeklyStraddleBacktest = ({
     config: c,
     quoteGroups: indexes.quoteGroups,
   });
-  const { hedgePnlByCycle } = buildHedgePnlByCycle({
+  const { hedgePnlByCycle, realizedMetricsByCycle } = buildPathMetricsByCycle({
     entryPlan,
     quotes,
     indexRows: pi,
@@ -927,6 +958,7 @@ export const runWeeklyStraddleBacktest = ({
   const cycleSummary = buildCycleSummary({
     entryPlan,
     hedgePnlByCycle,
+    realizedMetricsByCycle,
     indexRows: pi,
     quotes,
     config: c,
@@ -937,12 +969,16 @@ export const runWeeklyStraddleBacktest = ({
   let cumulativeOptionPnlUsd = 0;
   let cumulativeHedgePnlUsd = 0;
   const entryImpliedVols = [];
+  const sampledRealizedVols = [];
   for (const cycle of closedCycles) {
     if (Number.isFinite(cycle.shortOptionPnlUsd)) {
       cumulativeOptionPnlUsd += cycle.shortOptionPnlUsd;
     }
     if (Number.isFinite(cycle.hedgePnlUsd)) {
       cumulativeHedgePnlUsd += cycle.hedgePnlUsd;
+    }
+    if (Number.isFinite(cycle.sampledRealizedVol)) {
+      sampledRealizedVols.push(cycle.sampledRealizedVol);
     }
     for (const leg of cycle.legs) {
       if (Number.isFinite(leg.entryImpliedVol)) entryImpliedVols.push(leg.entryImpliedVol);
@@ -983,6 +1019,7 @@ export const runWeeklyStraddleBacktest = ({
           : Number.NaN,
       annualizedCyclesPerYear,
       meanEntryDteDays: mean(entryDtes),
+      meanSampledRealizedVol: mean(sampledRealizedVols),
       cumulativeOptionPnlUsd,
       cumulativeHedgePnlUsd,
       meanEntryImpliedVol: mean(entryImpliedVols),

@@ -45,7 +45,13 @@ const draw = () => {
   const rankedRowsY = rankedColumnsY + 18;
   const rankedRowHeight = 25;
   const rankedBottom = rankedRowsY + rows.length * rankedRowHeight;
-  const boxHeaderY = rankedBottom + 50;
+  const realizedHeaderY = rankedBottom + 50;
+  const realizedPlotTop = realizedHeaderY + 34;
+  const realizedPlotHeight = 250;
+  const realizedPlotBottom = realizedPlotTop + realizedPlotHeight;
+  const realizedAxisY = realizedPlotBottom + 8;
+  const realizedBottom = realizedAxisY + 28;
+  const boxHeaderY = realizedBottom + 50;
   const boxPlotTop = boxHeaderY + 24;
   const boxPlotHeight = 382;
   const boxPlotBottom = boxPlotTop + boxPlotHeight;
@@ -73,7 +79,18 @@ const draw = () => {
         x: 0,
         y: rankedHeaderY - 24,
         width,
-        height: boxHeaderY - rankedHeaderY,
+        height: realizedHeaderY - rankedHeaderY,
+      },
+    },
+    {
+      key: "realized-vol",
+      label: "Realized volatility",
+      buttonTop: realizedHeaderY - 17,
+      region: {
+        x: 0,
+        y: realizedHeaderY - 24,
+        width,
+        height: boxHeaderY - realizedHeaderY,
       },
     },
     {
@@ -320,6 +337,7 @@ const draw = () => {
   const mapPlotLeft = margin.left + 58;
   const mapPlotRight = margin.left + contentWidth - 48;
   let mapPointGroups = svg.selectAll("g.sweep-map-point");
+  let realizedGroups = svg.selectAll("g.realized-vol-setting");
 
   appendPanelHeading({
     y: mapHeaderY,
@@ -435,6 +453,119 @@ const draw = () => {
     .text((row) => row.label);
   mapPointGroups.append("title")
     .text((row) => `${row.label}\nCumulative PnL: ${formatUsd(row.total)}\nMean weekly PnL: ${formatUsd(row.weeklyMean)}\nWeekly PnL σ: ${formatUsd(row.weeklySigma)}\nSharpe: ${formatSharpe(Number(row.sharpe) || 0)}`);
+
+  svg.append("line")
+    .attr("x1", margin.left).attr("x2", margin.left + contentWidth)
+    .attr("y1", realizedHeaderY - 24).attr("y2", realizedHeaderY - 24)
+    .attr("stroke", "rgba(255,255,255,0.12)");
+  appendPanelHeading({
+    y: realizedHeaderY,
+    title: `REALIZED VOL · ${props.dimensionLabel.toUpperCase()}`,
+    subtitle: "ANNUALIZED · BLUE = HEDGE-SAMPLED RV · WHITE = ENTRY IV · CONNECTOR = VOL GAP",
+  });
+
+  const realizedRows = sweepMapRows.filter((row) => [
+    row.averageSampledRealizedVol,
+    row.averageEntryIv,
+  ].some((value) => Number.isFinite(Number(value))));
+  const realizedValues = realizedRows.flatMap((row) => [
+    Number(row.averageSampledRealizedVol),
+    Number(row.averageEntryIv),
+  ].filter(Number.isFinite));
+  if (realizedRows.length && realizedValues.length) {
+    const [realizedMin = 0, realizedMax = 1] = d3.extent(realizedValues);
+    const realizedSpan = realizedMax - realizedMin;
+    const realizedPadding = realizedSpan > 0
+      ? realizedSpan * 0.08
+      : Math.max(Math.abs(realizedMax) * 0.05, 0.01);
+    const realizedX = d3.scalePoint()
+      .domain(realizedRows.map((row) => row.key))
+      .range([mapPlotLeft, mapPlotRight])
+      .padding(0.5);
+    const realizedY = d3.scaleLinear()
+      .domain([
+        Math.max(0, realizedMin - realizedPadding),
+        realizedMax + realizedPadding,
+      ])
+      .range([realizedPlotBottom, realizedPlotTop])
+      .nice(5);
+    const realizedYTicks = realizedY.ticks(5);
+    realizedYTicks.forEach((tick) => svg.append("line")
+      .attr("x1", mapPlotLeft).attr("x2", mapPlotRight)
+      .attr("y1", realizedY(tick)).attr("y2", realizedY(tick))
+      .attr("stroke", "rgba(255,255,255,0.055)"));
+    const realizedYAxis = svg.append("g")
+      .attr("transform", `translate(${mapPlotLeft},0)`)
+      .call(d3.axisLeft(realizedY)
+        .tickValues(realizedYTicks)
+        .tickSize(0)
+        .tickPadding(14)
+        .tickFormat(d3.format(".0%")));
+    realizedYAxis.select(".domain").remove();
+    realizedYAxis.selectAll("text")
+      .attr("fill", "rgba(255,255,255,0.4)")
+      .attr("font-size", 9);
+    const realizedXAxis = svg.append("g")
+      .attr("transform", `translate(0,${realizedAxisY})`)
+      .call(d3.axisBottom(realizedX)
+        .tickSize(0)
+        .tickPadding(7)
+        .tickFormat((key) => realizedRows.find((row) => row.key === key)?.label || key));
+    realizedXAxis.select(".domain").attr("stroke", "rgba(255,255,255,0.14)");
+    realizedXAxis.selectAll("text")
+      .attr("fill", "rgba(255,255,255,0.46)")
+      .attr("font-size", 8.5);
+
+    realizedGroups = svg.selectAll("g.realized-vol-setting")
+      .data(realizedRows, (row) => row.key)
+      .join("g")
+      .attr("class", "realized-vol-setting")
+      .attr("role", "button")
+      .attr("tabindex", 0)
+      .style("cursor", "pointer")
+      .on("click", (_, row) => emit("select", row));
+    realizedGroups.each(function (row) {
+      const group = d3.select(this);
+      const x = realizedX(row.key);
+      const sampledVol = Number(row.averageSampledRealizedVol);
+      const entryIv = Number(row.averageEntryIv);
+      if (Number.isFinite(sampledVol) && Number.isFinite(entryIv)) {
+        group.append("line")
+          .attr("x1", x).attr("x2", x)
+          .attr("y1", realizedY(entryIv)).attr("y2", realizedY(sampledVol))
+          .attr("stroke", sampledVol > entryIv ? "#cf6a5a" : "#6ea3d8")
+          .attr("stroke-opacity", 0.5)
+          .attr("stroke-width", 1.1);
+      }
+      if (Number.isFinite(entryIv)) {
+        group.append("circle")
+          .attr("cx", x).attr("cy", realizedY(entryIv)).attr("r", 3.15)
+          .attr("fill", "#0a0b0e")
+          .attr("stroke", "rgba(255,255,255,0.82)")
+          .attr("stroke-width", 0.9);
+      }
+      if (Number.isFinite(sampledVol)) {
+        group.append("circle")
+          .attr("cx", x).attr("cy", realizedY(sampledVol)).attr("r", 2.7)
+          .attr("fill", "#6ea3d8")
+          .attr("stroke", "#0a0b0e")
+          .attr("stroke-width", 0.6);
+      }
+      const spread = sampledVol - entryIv;
+      group.append("title").text([
+        row.label,
+        `Hedge-sampled RV: ${Number.isFinite(sampledVol) ? d3.format(".1%")(sampledVol) : "—"}`,
+        `Entry IV: ${Number.isFinite(entryIv) ? d3.format(".1%")(entryIv) : "—"}`,
+        `RV − IV: ${Number.isFinite(spread) ? d3.format("+.1%")(spread) : "—"}`,
+      ].join("\n"));
+    });
+  } else {
+    svg.append("text")
+      .attr("x", mapPlotLeft).attr("y", realizedPlotTop + 24)
+      .attr("fill", "rgba(255,255,255,0.38)")
+      .attr("font-size", 9)
+      .text("NO REALIZED-VOL METRICS AVAILABLE");
+  }
 
   const boxPlotLeft = margin.left + 58;
   const boxPlotRight = margin.left + contentWidth - 8;
@@ -737,6 +868,7 @@ const draw = () => {
     mapPointGroups.select(".comparison-scatter-dot")
       .attr("stroke", "rgba(255,255,255,0.92)")
       .attr("stroke-width", (row) => row.key === key ? 1.4 : 0.8);
+    realizedGroups.attr("opacity", (row) => !key || row.key === key ? 1 : 0.3);
     distributionGroups.select(".distribution-hit-area").attr("fill", (row) => row.key === key ? "rgba(255,255,255,0.055)" : "transparent");
     rankGroups.select(".rank-hit-area").attr("fill", (row) => row.key === key ? "rgba(255,255,255,0.055)" : "transparent");
   };
@@ -746,7 +878,7 @@ const draw = () => {
     .on("keydown", (event, row) => {
       if (event.key === "Enter" || event.key === " ") { event.preventDefault(); emit("select", row); }
     });
-  [mapPointGroups, distributionGroups, rankGroups].forEach(bindHover);
+  [mapPointGroups, realizedGroups, distributionGroups, rankGroups].forEach(bindHover);
 };
 
 onMounted(async () => {
@@ -886,6 +1018,7 @@ defineExpose({ exportPng });
 }
 
 .chartCanvas :deep(.sweep-map-point:focus),
+.chartCanvas :deep(.realized-vol-setting:focus),
 .chartCanvas :deep(.rank-row:focus),
 .chartCanvas :deep(.distribution-row:focus) {
   outline: none;
