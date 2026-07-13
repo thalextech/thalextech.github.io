@@ -173,14 +173,20 @@ const draw = () => {
   const bootstrapPlotRight = margin.left + contentWidth - 8;
   const bootstrapValues = bootstrapRows.flatMap((row) => [...row.bootstrapSamples, row.total]);
   const [bootstrapMin = -1, bootstrapMax = 1] = d3.extent(bootstrapValues);
-  const bootstrapSpan = bootstrapMax - bootstrapMin || Math.max(Math.abs(bootstrapMin), 1);
-  const bootstrapDomain = [bootstrapMin - bootstrapSpan * 0.06, bootstrapMax + bootstrapSpan * 0.06];
+  const bootstrapSpan = bootstrapMax - bootstrapMin;
+  const bootstrapPadding = bootstrapSpan > 0
+    ? bootstrapSpan * 0.025
+    : Math.max(Math.abs(bootstrapMin) * 0.025, 1);
+  const bootstrapDomain = [
+    bootstrapMin - bootstrapPadding,
+    bootstrapMax + bootstrapPadding,
+  ];
   const drawBootstrapAxes = (plotTop, plotBottom, axisY) => {
     const x = d3.scalePoint()
       .domain(bootstrapRows.map((row) => row.key))
       .range([bootstrapPlotLeft, bootstrapPlotRight])
       .padding(0.45);
-    const y = d3.scaleLinear().domain(bootstrapDomain).nice().range([plotBottom, plotTop]);
+    const y = d3.scaleLinear().domain(bootstrapDomain).range([plotBottom, plotTop]);
     const yAxis = svg.append("g")
       .attr("transform", `translate(${bootstrapPlotLeft},0)`)
       .call(d3.axisLeft(y).ticks(5).tickSize(-(bootstrapPlotRight - bootstrapPlotLeft)).tickPadding(8).tickFormat(formatCompactUsd));
@@ -291,7 +297,7 @@ const draw = () => {
   const distributionAxis = svg.append("g")
     .attr("transform", `translate(0,${distributionAxisY})`)
     .call(d3.axisTop(distributionX).ticks(7).tickSize(0).tickPadding(6).tickFormat(formatCompactUsd));
-  distributionAxis.select(".domain").attr("stroke", "rgba(255,255,255,0.16)");
+  distributionAxis.select(".domain").remove();
   distributionAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.42)").attr("font-size", 8);
   const distributionSummaryColumns = [
     { label: "MAX", x: distributionSummaryX, anchor: "start", value: (weeks) => d3.max(weeks) ?? 0, tooltip: "Largest weekly PnL for this sweep setting." },

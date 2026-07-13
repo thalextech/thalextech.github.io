@@ -247,10 +247,19 @@ const sweepConfigs = computed(() => {
 const sweepInsights = computed(() => {
   const rows = sweepResults.value.filter((row) => Number.isFinite(row.pnl));
   if (!rows.length) return null;
-  const bestPnl = [...rows].sort((a, b) => b.pnl - a.pnl)[0];
-  const sharpeRows = rows.filter((row) => Number.isFinite(row.sharpe));
-  const bestSharpe = [...sharpeRows].sort((a, b) => b.sharpe - a.sharpe)[0] || null;
-  const sortedPnl = rows.map((row) => row.pnl).sort((a, b) => a - b);
+  let bestPnl = rows[0];
+  let bestSharpe = null;
+  let profitable = 0;
+  const pnlValues = [];
+  for (const row of rows) {
+    if (row.pnl > bestPnl.pnl) bestPnl = row;
+    if (Number.isFinite(row.sharpe) && (!bestSharpe || row.sharpe > bestSharpe.sharpe)) {
+      bestSharpe = row;
+    }
+    if (row.pnl > 0) profitable += 1;
+    pnlValues.push(row.pnl);
+  }
+  const sortedPnl = pnlValues.sort((a, b) => a - b);
   const middle = Math.floor(sortedPnl.length / 2);
   const medianPnl = sortedPnl.length % 2
     ? sortedPnl[middle]
@@ -259,7 +268,7 @@ const sweepInsights = computed(() => {
     bestPnl,
     bestSharpe,
     medianPnl,
-    profitable: rows.filter((row) => row.pnl > 0).length,
+    profitable,
     total: rows.length,
   };
 });
@@ -474,7 +483,10 @@ const runSweep = async () => {
   // Let the running state paint before data preparation and synchronous simulations begin.
   await new Promise((resolve) => setTimeout(resolve, 0));
   const cells = sweepConfigs.value;
-  const configs = cells.map((cell) => buildConfig(cell.overrides));
+  const sweepEnd = new Date();
+  const configs = cells.map((cell) =>
+    buildConfig({ ...cell.overrides, end: sweepEnd }),
+  );
   const sweepHours = [...new Set(configs.flatMap((config) =>
     hoursFor(config.entryHourUtc, config.hedgeEnabled, config.hedgeIntervalHours),
   ))].sort((a, b) => a - b);
@@ -486,11 +498,16 @@ const runSweep = async () => {
   try {
     let sweepPrepared = preparedData.value;
     let preparedHourIndex = null;
-    if (loadedHoursKey === sweepHoursKey && sweepPrepared) {
-      preparedHourIndex = indexPreparedByHour(sweepPrepared);
-    } else if (sweepDataCache?.key === sweepHoursKey) {
+    if (sweepDataCache?.key === sweepHoursKey) {
       sweepPrepared = sweepDataCache.prepared;
       preparedHourIndex = sweepDataCache.hourIndex;
+    } else if (loadedHoursKey === sweepHoursKey && sweepPrepared) {
+      preparedHourIndex = indexPreparedByHour(sweepPrepared);
+      sweepDataCache = {
+        key: sweepHoursKey,
+        prepared: sweepPrepared,
+        hourIndex: preparedHourIndex,
+      };
     } else {
       sweepProgress.value = `Loading ${sweepHours.length} hourly data shards`;
       const loadStartedAt = performance.now();
@@ -515,7 +532,6 @@ const runSweep = async () => {
       sweepDataCache = { key: sweepHoursKey, prepared: sweepPrepared, hourIndex: preparedHourIndex };
     }
 
-    preparedHourIndex ||= indexPreparedByHour(sweepPrepared);
     const runStartedAt = performance.now();
     sweepProgress.value = `Running ${cells.length} configurations`;
     const batchRuns = cells.map((cell, index) => {
@@ -590,7 +606,6 @@ const switchMode = (nextMode) => {
   mode.value = nextMode;
   selectedCycle.value = null;
   if (nextMode === "single") {
-    sweepDataCache = null;
     scheduleBacktest();
   }
 };

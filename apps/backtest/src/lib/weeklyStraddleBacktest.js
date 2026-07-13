@@ -204,9 +204,9 @@ const buildQuotes = ({ options }) =>
     (row) => `${row.ts}|${row.instrumentName}`,
   );
 
-const buildEntryExpirations = ({ quotes, entryCandidates, dataEnd, config }) => {
+const buildEntryExpirations = ({ entryCandidates, dataEnd, config }) => {
   const bestByEntryTs = new Map();
-  for (const quote of entryCandidates || quotes) {
+  for (const quote of entryCandidates) {
     if (
       quote.dateTime < config.start ||
       quote.dateTime > dataEnd ||
@@ -891,7 +891,6 @@ export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, c
   const indexes = p.indexes || buildBacktestIndexes(p);
 
   const entryExpirations = buildEntryExpirations({
-    quotes,
     entryCandidates: indexes.quoteGroups.entryCandidates,
     dataEnd,
     config: c,
