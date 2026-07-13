@@ -454,7 +454,8 @@ const runSweep = async () => {
       const prepareStartedAt = performance.now();
       sweepPrepared = prepareBacktestData({
         indexRows: loaded.indexRows,
-        markRows: loaded.markRows,
+        quoteSnapshots: loaded.quoteSnapshots,
+        instruments: loaded.artifact.instruments,
         config: configs[0],
       });
       prepareMs = performance.now() - prepareStartedAt;
@@ -575,7 +576,8 @@ const handleCycleSelect = async (cycle) => {
     });
     const detailData = prepareCycleDetailData({
       indexRows: loaded.indexRows,
-      markRows: loaded.markRows,
+      quoteSnapshots: loaded.quoteSnapshots,
+      instruments: loaded.artifact.instruments,
       config,
     });
     const rows = buildCycleDetail({ plan: cycle, preparedData: detailData, config });
@@ -612,7 +614,8 @@ const loadBacktest = async () => {
     state.progress = "Preparing quotes";
     const nextPreparedData = prepareBacktestData({
       indexRows: loaded.indexRows,
-      markRows: loaded.markRows,
+      quoteSnapshots: loaded.quoteSnapshots,
+      instruments: loaded.artifact.instruments,
       config,
     });
     preparedData.value = nextPreparedData;

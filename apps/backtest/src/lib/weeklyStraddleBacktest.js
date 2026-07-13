@@ -1,19 +1,9 @@
-import { mean, normCdf, sampleStdDev } from "./statistics.js";
-
-const MONTHS = {
-  JAN: 0,
-  FEB: 1,
-  MAR: 2,
-  APR: 3,
-  MAY: 4,
-  JUN: 5,
-  JUL: 6,
-  AUG: 7,
-  SEP: 8,
-  OCT: 9,
-  NOV: 10,
-  DEC: 11,
-};
+import {
+  blackScholesGreeks,
+  OPTION_PRICING_DAYS_PER_YEAR,
+  PRECOMPUTED_DELTA_SCALE,
+} from "./optionRisk.js";
+import { mean, sampleStdDev } from "./statistics.js";
 
 export const DEFAULT_BACKTEST_CONFIG = {
   start: new Date("2025-06-01T00:00:00Z"),
@@ -30,7 +20,6 @@ export const DEFAULT_BACKTEST_CONFIG = {
   farTargetDteDays: 14,
   minWeeklyDteDays: 4,
   maxWeeklyDteDays: 10,
-  daysPerYear: 365,
   notionalUsd: 100_000,
   sizingMode: "notional",
   btcQuantity: 1,
@@ -87,123 +76,39 @@ export const computeMaxDrawdown = (rows = []) => {
   return drawdown;
 };
 
-const instrumentMetadataCache = new Map();
-
-const parseInstrumentName = (instrumentName) => {
-  if (instrumentMetadataCache.has(instrumentName)) {
-    return instrumentMetadataCache.get(instrumentName);
-  }
-  const match = /^([^-]+)-(\d{2}[A-Z]{3}\d{2})-(\d+(?:\.\d+)?)-([CP])$/.exec(
-    instrumentName,
-  );
-  if (!match) {
-    instrumentMetadataCache.set(instrumentName, null);
-    return null;
-  }
-
-  const [, , expiryToken, strikeRaw, optionType] = match;
-  const day = Number(expiryToken.slice(0, 2));
-  const month = MONTHS[expiryToken.slice(2, 5)];
-  const year = 2000 + Number(expiryToken.slice(5));
-
-  if (!Number.isFinite(day) || month == null || !Number.isFinite(year)) {
-    instrumentMetadataCache.set(instrumentName, null);
-    return null;
-  }
-
-  const metadata = {
-    expirationTs: Date.UTC(year, month, day, 8, 0, 0) / 1000,
-    strike: Number(strikeRaw),
-    optionType,
-  };
-  instrumentMetadataCache.set(instrumentName, metadata);
-  return metadata;
-};
-
-const normalizeVol = (impliedVol) => impliedVol > 3 ? impliedVol / 100 : impliedVol;
-const normalPdf = (value) => Math.exp(-0.5 * value ** 2) / Math.sqrt(2 * Math.PI);
-
-const blackScholesInputs = ({
-  spot,
-  strike,
-  yearsToExpiry,
-  impliedVol,
-}) => {
-  const sigma = normalizeVol(impliedVol);
-  if (
-    spot <= 0 ||
-    strike <= 0 ||
-    sigma <= 0 ||
-    yearsToExpiry <= 0 ||
-    !Number.isFinite(spot + strike + sigma + yearsToExpiry)
-  ) {
-    return null;
-  }
-  const rootT = Math.sqrt(yearsToExpiry);
-  const d1 =
-    (Math.log(spot / strike) + 0.5 * sigma ** 2 * yearsToExpiry) /
-    (sigma * rootT);
-  return { sigma, rootT, d1 };
-};
-
-const blackScholesDelta = (args) => {
-  const inputs = blackScholesInputs(args);
-  if (!inputs) return { delta: Number.NaN };
-  const callDelta = normCdf(inputs.d1);
-  return {
-    delta: args.optionType === "C" ? callDelta : callDelta - 1,
-  };
-};
-
-const blackScholesGreeks = (args) => {
-  const inputs = blackScholesInputs(args);
-  if (!inputs) {
-    return {
-      delta: Number.NaN,
-      gamma: Number.NaN,
-      vega: Number.NaN,
-      theta: Number.NaN,
-      impliedVol: normalizeVol(args.impliedVol),
-    };
-  }
-  const { sigma, rootT, d1 } = inputs;
-  const callDelta = normCdf(d1);
-  const density = normalPdf(d1);
-  return {
-    delta: args.optionType === "C" ? callDelta : callDelta - 1,
-    gamma: density / (args.spot * sigma * rootT),
-    vega: args.spot * density * rootT,
-    theta: -(args.spot * density * sigma) / (2 * rootT),
-    impliedVol: sigma,
-  };
-};
-
-const buildQuotes = ({ markRows, indexByTs, config, calculateRisk }) => {
+const buildQuotes = ({ quoteSnapshots, instruments, indexByTs, config, calculateRisk }) => {
   const quotes = [];
-  for (const mark of markRows) {
-    const index = indexByTs.get(mark.ts);
-    const instrument = parseInstrumentName(mark.instrumentName);
-    if (!index || !instrument) continue;
-    const dteDays = (instrument.expirationTs - mark.ts) / 86_400;
-    if (dteDays <= 0) continue;
-    const yearsToExpiry = dteDays / config.daysPerYear;
-    const risk = calculateRisk({
-      spot: index.indexPrice,
-      strike: instrument.strike,
-      yearsToExpiry,
-      impliedVol: mark.iv,
-      optionType: instrument.optionType,
-    });
-    if (!Number.isFinite(risk.delta)) continue;
-    quotes.push({
-      ts: mark.ts,
-      instrumentName: mark.instrumentName,
-      markPrice: mark.markPrice,
-      ...instrument,
-      indexPrice: index.indexPrice,
-      dteDays,
-      ...risk,
-    });
+  for (const [ts, entries] of quoteSnapshots) {
+    const index = indexByTs.get(ts);
+    if (!index) continue;
+    for (const [instrumentId, markPrice, iv, deltaScaled] of entries) {
+      const instrument = instruments[instrumentId];
+      if (!instrument) continue;
+      const dteDays = (instrument.expirationTs - ts) / 86_400;
+      if (dteDays <= 0) continue;
+      const risk = calculateRisk
+        ? calculateRisk({
+            spot: index.indexPrice,
+            strike: instrument.strike,
+            yearsToExpiry: dteDays / OPTION_PRICING_DAYS_PER_YEAR,
+            impliedVol: iv,
+            optionType: instrument.optionType,
+          })
+        : { delta: deltaScaled / PRECOMPUTED_DELTA_SCALE };
+      if (!Number.isFinite(risk.delta)) continue;
+      quotes.push({
+        ts,
+        instrumentId,
+        instrumentName: instrument.name,
+        markPrice,
+        expirationTs: instrument.expirationTs,
+        strike: instrument.strike,
+        optionType: instrument.optionType,
+        indexPrice: index.indexPrice,
+        dteDays,
+        ...risk,
+      });
+    }
   }
   return quotes;
 };
@@ -213,12 +118,9 @@ const buildEntryExpirations = ({ entryCandidates, dataEnd, config }) => {
   const startTs = config.start.getTime() / 1000;
   const dataEndTs = dataEnd.getTime() / 1000;
   for (const quote of entryCandidates) {
-    const entryTime = new Date(quote.ts * 1000);
     if (
       quote.ts < startTs ||
       quote.ts > dataEndTs ||
-      entryTime.getUTCDay() !== config.entryWeekday ||
-      entryTime.getUTCHours() !== config.entryHourUtc ||
       quote.dteDays < config.minWeeklyDteDays ||
       quote.dteDays > config.maxWeeklyDteDays ||
       quote.expirationTs > dataEndTs
@@ -402,7 +304,25 @@ const buildQuoteGroups = (quotes) => {
     const quote = group.calls[0] || group.putsByStrike.values().next().value;
     return quote;
   }).filter(Boolean);
-  return { quotesByEntryExpiry, expiryGroupsByEntry, entryCandidates };
+  const scheduleKeyByTs = new Map();
+  const entryCandidatesBySchedule = new Map();
+  for (const quote of entryCandidates) {
+    let scheduleKey = scheduleKeyByTs.get(quote.ts);
+    if (!scheduleKey) {
+      const date = new Date(quote.ts * 1000);
+      scheduleKey = `${date.getUTCDay()}|${date.getUTCHours()}`;
+      scheduleKeyByTs.set(quote.ts, scheduleKey);
+    }
+    if (!entryCandidatesBySchedule.has(scheduleKey)) {
+      entryCandidatesBySchedule.set(scheduleKey, []);
+    }
+    entryCandidatesBySchedule.get(scheduleKey).push(quote);
+  }
+  return {
+    quotesByEntryExpiry,
+    expiryGroupsByEntry,
+    entryCandidatesBySchedule,
+  };
 };
 
 const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
@@ -639,7 +559,9 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
       previousLegQuotes?.length === plan.legs.length
     ) {
       const dS = indexRow.indexPrice - previousIndexPrice;
-      const dtYears = (indexRow.ts - previousTs) / (config.daysPerYear * 86_400);
+      const dtYears =
+        (indexRow.ts - previousTs) /
+        (OPTION_PRICING_DAYS_PER_YEAR * 86_400);
       const hasPreviousDeltas = previousLegQuotes.every((quote) => Number.isFinite(quote?.delta));
       if (hasPreviousDeltas) {
         const previousOptionDeltaBtc = plan.legs.reduce(
@@ -873,35 +795,60 @@ export const buildBacktestIndexes = (preparedData, indexByTs) => {
   };
 };
 
-const prepareData = ({ indexRows, markRows, config: inc = {}, calculateRisk }) => {
+const prepareData = ({
+  indexRows = [],
+  quoteSnapshots = [],
+  instruments = [],
+  config: inc = {},
+  calculateRisk,
+}) => {
   const config = normalizeBacktestConfig(inc);
   let maxTs = 0;
   for (const row of indexRows) maxTs = Math.max(maxTs, row.ts || 0);
-  for (const row of markRows) maxTs = Math.max(maxTs, row.ts || 0);
+  for (const [ts] of quoteSnapshots) maxTs = Math.max(maxTs, ts || 0);
   const configuredEndTs = config.end.getTime() / 1000;
   const dataEnd = new Date(Math.min(configuredEndTs, maxTs || configuredEndTs) * 1000);
   const indexByTs = new Map(indexRows.map((row) => [row.ts, row]));
-  const quotes = buildQuotes({ markRows, indexByTs, config, calculateRisk });
+  const quotes = buildQuotes({
+    quoteSnapshots,
+    instruments,
+    indexByTs,
+    config,
+    calculateRisk,
+  });
   const preparedData = { indexRows, quotes, dataEnd };
   preparedData.indexes = buildBacktestIndexes(preparedData, indexByTs);
   return preparedData;
 };
 
 export const prepareBacktestData = (args) =>
-  prepareData({ ...args, calculateRisk: blackScholesDelta });
+  prepareData({ ...args, calculateRisk: null });
 
 export const prepareCycleDetailData = (args) =>
   prepareData({ ...args, calculateRisk: blackScholesGreeks });
 
-export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, config: inc = {} }) => {
+export const runWeeklyStraddleBacktest = ({
+  indexRows,
+  quoteSnapshots,
+  instruments,
+  preparedData,
+  config: inc = {},
+}) => {
   const config = normalizeBacktestConfig(inc);
   const c = config;
-  const p = preparedData || prepareBacktestData({ indexRows, markRows, config });
+  const p = preparedData || prepareBacktestData({
+    indexRows,
+    quoteSnapshots,
+    instruments,
+    config,
+  });
   const { indexRows: pi = [], quotes, dataEnd } = p;
   const indexes = p.indexes || buildBacktestIndexes(p);
+  const entryScheduleKey = `${c.entryWeekday}|${c.entryHourUtc}`;
 
   const entryExpirations = buildEntryExpirations({
-    entryCandidates: indexes.quoteGroups.entryCandidates,
+    entryCandidates:
+      indexes.quoteGroups.entryCandidatesBySchedule.get(entryScheduleKey) || [],
     dataEnd,
     config: c,
   });

@@ -8,6 +8,7 @@ import {
   runWeeklyStraddleBacktest,
   runWeeklyStraddleBacktestBatch,
 } from "../src/lib/weeklyStraddleBacktest.js";
+import { PRECOMPUTED_DELTA_SCALE } from "../src/lib/optionRisk.js";
 
 const DAY_SECONDS = 86_400;
 
@@ -15,25 +16,40 @@ const buildParityFixture = () => {
   const entryDayTs = Date.UTC(2025, 5, 6, 0) / 1000;
   const expirationTs = Date.UTC(2025, 5, 13, 8) / 1000;
   const instruments = [
-    "BTC-13JUN25-100000-C",
-    "BTC-13JUN25-100000-P",
+    {
+      instrumentId: 0,
+      name: "BTC-13JUN25-100000-C",
+      expirationTs,
+      strike: 100_000,
+      optionType: "C",
+    },
+    {
+      instrumentId: 1,
+      name: "BTC-13JUN25-100000-P",
+      expirationTs,
+      strike: 100_000,
+      optionType: "P",
+    },
   ];
   const indexRows = [];
-  const markRows = [];
+  const quoteSnapshots = [];
   for (let day = 0; day <= 7; day += 1) {
     for (const hour of [8, 9]) {
       const ts = entryDayTs + day * DAY_SECONDS + hour * 3_600;
       const indexPrice = 100_000 + day * 500 + hour;
       indexRows.push({ ts, indexPrice });
       if (ts >= expirationTs) continue;
-      for (const [instrumentIndex, instrumentName] of instruments.entries()) {
-        markRows.push({
-          ts,
-          instrumentName,
-          markPrice: 4_000 - day * 250 + instrumentIndex * 50,
-          iv: 0.55,
-        });
+      const entries = [];
+      for (const instrument of instruments) {
+        const delta = instrument.optionType === "C" ? 0.55 : -0.45;
+        entries.push([
+          instrument.instrumentId,
+          4_000 - day * 250 + instrument.instrumentId * 50,
+          0.55,
+          delta * PRECOMPUTED_DELTA_SCALE,
+        ]);
       }
+      quoteSnapshots.push([ts, entries]);
     }
   }
   const config = normalizeBacktestConfig({
@@ -49,7 +65,7 @@ const buildParityFixture = () => {
     minWeeklyDteDays: 4,
     maxWeeklyDteDays: 10,
   });
-  return { indexRows, markRows, config };
+  return { indexRows, quoteSnapshots, instruments, config };
 };
 
 test("normalizeBacktestConfig applies defaults and coerces external input once", () => {
@@ -87,29 +103,37 @@ test("prepareBacktestData retains the index lookup used during preparation", () 
   };
   const prepared = prepareBacktestData({
     indexRows: [indexRow],
-    markRows: [],
+    quoteSnapshots: [],
+    instruments: [],
     config: { end: new Date("2026-01-02T00:00:00Z") },
   });
 
   assert.equal(prepared.indexes.indexByTs.get(1), indexRow);
-  assert.equal("markRows" in prepared, false);
+  assert.equal("quoteSnapshots" in prepared, false);
   assert.equal("options" in prepared, false);
 });
 
 test("aggregate preparation omits detail Greeks while detail preparation retains them", () => {
   const ts = Date.UTC(2025, 5, 6, 8) / 1000;
+  const expirationTs = Date.UTC(2025, 5, 13, 8) / 1000;
   const indexRows = [{ ts, indexPrice: 100_000 }];
-  const markRows = [{
+  const instrument = {
+    instrumentId: 0,
+    name: "BTC-13JUN25-100000-C",
+    expirationTs,
+    strike: 100_000,
+    optionType: "C",
+  };
+  const quoteSnapshots = [[
     ts,
-    instrumentName: "BTC-13JUN25-100000-C",
-    markPrice: 4_000,
-    iv: 0.55,
-  }];
+    [[0, 4_000, 0.55, 0.55 * PRECOMPUTED_DELTA_SCALE]],
+  ]];
   const config = { end: new Date(Date.UTC(2025, 5, 13, 8)) };
-  const aggregate = prepareBacktestData({ indexRows, markRows, config });
-  const detail = prepareCycleDetailData({ indexRows, markRows, config });
+  const args = { indexRows, quoteSnapshots, instruments: [instrument], config };
+  const aggregate = prepareBacktestData(args);
+  const detail = prepareCycleDetailData(args);
 
-  assert.equal(Number.isFinite(aggregate.quotes[0].delta), true);
+  assert.equal(aggregate.quotes[0].delta, 0.55);
   assert.equal("gamma" in aggregate.quotes[0], false);
   assert.equal(Number.isFinite(detail.quotes[0].gamma), true);
   assert.equal(Number.isFinite(detail.quotes[0].vega), true);
@@ -118,8 +142,13 @@ test("aggregate preparation omits detail Greeks while detail preparation retains
 });
 
 test("batch runs match independent runs across entry hours", () => {
-  const { indexRows, markRows, config } = buildParityFixture();
-  const preparedData = prepareBacktestData({ indexRows, markRows, config });
+  const { indexRows, quoteSnapshots, instruments, config } = buildParityFixture();
+  const preparedData = prepareBacktestData({
+    indexRows,
+    quoteSnapshots,
+    instruments,
+    config,
+  });
   const configs = [8, 9].map((hour) => ({
     ...config,
     entryHourUtc: hour,

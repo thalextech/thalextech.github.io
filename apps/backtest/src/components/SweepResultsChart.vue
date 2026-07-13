@@ -62,7 +62,7 @@ const draw = () => {
     .attr("height", height)
     .attr("font-family", CHART_FONT_FAMILY)
     .attr("role", "img")
-    .attr("aria-label", "Ranked sweep analysis with bootstrap box plots and weekly PnL distributions");
+    .attr("aria-label", "Ranked sweep analysis with weekly PnL box plots and observed weekly returns");
 
   const sum = (values) => d3.sum(values);
   const analyzedRows = rows.map((row) => {
@@ -72,7 +72,7 @@ const draw = () => {
     const total = Number.isFinite(Number(row.pnl)) ? Number(row.pnl) : sum(weeks);
     const bestWeek = d3.max(weeks) ?? 0;
     const bestIndex = weeks.indexOf(bestWeek);
-    const sorted = [...weeks].sort((a, b) => b - a);
+    const sortedWeeks = [...weeks].sort((a, b) => a - b);
     const positive = sum(weeks.filter((value) => value > 0));
     const negative = Math.abs(sum(weeks.filter((value) => value < 0)));
     const maxDrawdown = Math.abs(Number(row.maxDrawdown) || 0);
@@ -87,33 +87,21 @@ const draw = () => {
       winRate: weeks.length ? weeks.filter((value) => value > 0).length / weeks.length : 0,
       profitFactor: negative ? positive / negative : 0,
       calmar: maxDrawdown ? annualizedPnl / maxDrawdown : Number.NaN,
-      cvar: d3.mean(sorted.slice(-3)) ?? 0,
+      cvar: d3.mean(sortedWeeks.slice(0, 3)) ?? 0,
       cumulative,
       bestIndex,
+      sortedWeeks,
     };
   });
-  const bootstrapCount = 400;
-  const sharedWeekCount = d3.min(analyzedRows.map((row) => row.weeks.length)) ?? 0;
-  let randomState = 0x5f3759df;
-  const nextRandom = () => {
-    randomState = (Math.imul(randomState, 1664525) + 1013904223) >>> 0;
-    return randomState / 4294967296;
-  };
-  const bootstrapIndices = Array.from({ length: bootstrapCount }, () =>
-    Array.from({ length: sharedWeekCount }, () => Math.floor(nextRandom() * sharedWeekCount)),
-  );
-  const bootstrapRows = analyzedRows.map((row) => {
-    const samples = bootstrapIndices
-      .map((indices) => sum(indices.map((index) => row.weeks[index])))
-      .sort((a, b) => a - b);
+  const weeklyBoxRows = analyzedRows.map((row) => {
+    const [weeklyMin = 0, weeklyMax = 0] = d3.extent(row.sortedWeeks);
     return {
       ...row,
-      bootstrapSamples: samples,
-      bootstrapQ05: d3.quantileSorted(samples, 0.05) ?? 0,
-      bootstrapQ25: d3.quantileSorted(samples, 0.25) ?? 0,
-      bootstrapMedian: d3.quantileSorted(samples, 0.5) ?? 0,
-      bootstrapQ75: d3.quantileSorted(samples, 0.75) ?? 0,
-      bootstrapQ95: d3.quantileSorted(samples, 0.95) ?? 0,
+      weeklyMin,
+      weeklyQ25: d3.quantileSorted(row.sortedWeeks, 0.25) ?? 0,
+      weeklyMedian: d3.quantileSorted(row.sortedWeeks, 0.5) ?? 0,
+      weeklyQ75: d3.quantileSorted(row.sortedWeeks, 0.75) ?? 0,
+      weeklyMax,
     };
   });
   const drawdownValues = analyzedRows.map((row) => Number(row.maxDrawdown)).filter(Number.isFinite);
@@ -170,33 +158,33 @@ const draw = () => {
       .attr("x", 9).attr("dy", index === 0 ? 0 : 13).text(line));
   };
 
-  const bootstrapPlotLeft = margin.left + 58;
-  const bootstrapPlotRight = margin.left + contentWidth - 8;
-  const bootstrapValues = bootstrapRows.flatMap((row) => [...row.bootstrapSamples, row.total]);
-  const [bootstrapMin = -1, bootstrapMax = 1] = d3.extent(bootstrapValues);
-  const bootstrapSpan = bootstrapMax - bootstrapMin;
-  const bootstrapPadding = bootstrapSpan > 0
-    ? bootstrapSpan * 0.025
-    : Math.max(Math.abs(bootstrapMin) * 0.025, 1);
-  const bootstrapDomain = [
-    bootstrapMin - bootstrapPadding,
-    bootstrapMax + bootstrapPadding,
+  const boxPlotLeft = margin.left + 58;
+  const boxPlotRight = margin.left + contentWidth - 8;
+  const weeklyValues = weeklyBoxRows.flatMap((row) => row.weeks);
+  const [weeklyMin = -1, weeklyMax = 1] = d3.extent(weeklyValues);
+  const weeklySpan = weeklyMax - weeklyMin;
+  const weeklyPadding = weeklySpan > 0
+    ? weeklySpan * 0.025
+    : Math.max(Math.abs(weeklyMin) * 0.025, 1);
+  const weeklyDomain = [
+    weeklyMin - weeklyPadding,
+    weeklyMax + weeklyPadding,
   ];
-  const drawBootstrapAxes = (plotTop, plotBottom, axisY) => {
+  const drawBoxPlotAxes = (plotTop, plotBottom, axisY) => {
     const x = d3.scalePoint()
-      .domain(bootstrapRows.map((row) => row.key))
-      .range([bootstrapPlotLeft, bootstrapPlotRight])
+      .domain(weeklyBoxRows.map((row) => row.key))
+      .range([boxPlotLeft, boxPlotRight])
       .padding(0.45);
-    const y = d3.scaleLinear().domain(bootstrapDomain).range([plotBottom, plotTop]);
+    const y = d3.scaleLinear().domain(weeklyDomain).range([plotBottom, plotTop]);
     const yAxis = svg.append("g")
-      .attr("transform", `translate(${bootstrapPlotLeft},0)`)
-      .call(d3.axisLeft(y).ticks(5).tickSize(-(bootstrapPlotRight - bootstrapPlotLeft)).tickPadding(8).tickFormat(formatCompactUsd));
+      .attr("transform", `translate(${boxPlotLeft},0)`)
+      .call(d3.axisLeft(y).ticks(5).tickSize(-(boxPlotRight - boxPlotLeft)).tickPadding(8).tickFormat(formatCompactUsd));
     yAxis.select(".domain").remove();
     yAxis.selectAll(".tick line").attr("stroke", "rgba(255,255,255,0.07)");
     yAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 8);
     const xAxis = svg.append("g")
       .attr("transform", `translate(0,${axisY})`)
-      .call(d3.axisBottom(x).tickSize(0).tickPadding(7).tickFormat((key) => bootstrapRows.find((row) => row.key === key)?.label || key));
+      .call(d3.axisBottom(x).tickSize(0).tickPadding(7).tickFormat((key) => weeklyBoxRows.find((row) => row.key === key)?.label || key));
     xAxis.select(".domain").attr("stroke", "rgba(255,255,255,0.14)");
     xAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.46)").attr("font-size", 7.5);
     return { x, y };
@@ -209,40 +197,23 @@ const draw = () => {
   svg.append("text")
     .attr("x", margin.left).attr("y", boxHeaderY)
     .attr("fill", "rgba(255,255,255,0.64)").attr("font-size", 10).attr("font-weight", 500)
-    .text(`RESAMPLED TOTAL PNL · ${props.dimensionLabel.toUpperCase()}`);
+    .text(`WEEKLY PNL BOXPLOTS · ${props.dimensionLabel.toUpperCase()}`);
   svg.append("text")
     .attr("x", margin.left).attr("y", boxHeaderY + 16)
     .attr("fill", "rgba(255,255,255,0.36)").attr("font-size", 8)
-    .text("400 ALIGNED BOOTSTRAPS · WHISKER = 5–95% · BOX = 25–75% · LINE = MEDIAN · DOT = ACTUAL · BAND = WINNER 25–75%");
-  const boxScales = drawBootstrapAxes(boxPlotTop, boxPlotBottom, boxAxisY);
+    .text("OBSERVED WEEKS · WHISKER = MIN–MAX · BOX = 25–75% · LINE = MEDIAN");
+  const boxScales = drawBoxPlotAxes(boxPlotTop, boxPlotBottom, boxAxisY);
   const boxWidth = Math.min(18, Math.max(8, (boxScales.x.step?.() || 30) * 0.5));
-  const champion = d3.greatest(bootstrapRows, (row) => row.total);
-  if (champion) {
-    svg.append("rect")
-      .attr("x", bootstrapPlotLeft)
-      .attr("y", boxScales.y(champion.bootstrapQ75))
-      .attr("width", bootstrapPlotRight - bootstrapPlotLeft)
-      .attr("height", Math.max(1, boxScales.y(champion.bootstrapQ25) - boxScales.y(champion.bootstrapQ75)))
-      .attr("fill", "#78aadc").attr("fill-opacity", 0.08);
-    [champion.bootstrapQ25, champion.bootstrapQ75].forEach((value) => svg.append("line")
-      .attr("x1", bootstrapPlotLeft).attr("x2", bootstrapPlotRight)
-      .attr("y1", boxScales.y(value)).attr("y2", boxScales.y(value))
-      .attr("stroke", "#78aadc").attr("stroke-opacity", 0.24).attr("stroke-width", 0.8));
-    svg.append("text")
-      .attr("x", bootstrapPlotRight).attr("y", boxScales.y(champion.bootstrapQ75) - 5)
-      .attr("text-anchor", "end").attr("fill", "rgba(120,170,220,0.72)").attr("font-size", 8)
-      .text(`WINNER IQR · ${champion.label}`);
-  }
   svg.append("path")
-    .datum(bootstrapRows)
+    .datum(weeklyBoxRows)
     .attr("d", d3.line()
       .x((row) => boxScales.x(row.key))
-      .y((row) => boxScales.y(row.bootstrapMedian)))
+      .y((row) => boxScales.y(row.weeklyMedian)))
     .attr("fill", "none").attr("stroke", "rgba(255,255,255,0.24)").attr("stroke-width", 1.1);
-  const boxGroups = svg.selectAll("g.bootstrap-box")
-    .data(bootstrapRows, (row) => row.key)
+  const boxGroups = svg.selectAll("g.weekly-box")
+    .data(weeklyBoxRows, (row) => row.key)
     .join("g")
-    .attr("class", "bootstrap-box")
+    .attr("class", "weekly-box")
     .style("cursor", "pointer")
     .on("click", (_, row) => emit("select", row));
   boxGroups.each(function (row) {
@@ -251,31 +222,28 @@ const draw = () => {
     const color = sharpeColor(Number(row.sharpe) || 0);
     group.append("line")
       .attr("x1", center).attr("x2", center)
-      .attr("y1", boxScales.y(row.bootstrapQ95)).attr("y2", boxScales.y(row.bootstrapQ05))
+      .attr("y1", boxScales.y(row.weeklyMax)).attr("y2", boxScales.y(row.weeklyMin))
       .attr("stroke", "rgba(255,255,255,0.45)");
-    [row.bootstrapQ05, row.bootstrapQ95].forEach((value) => group.append("line")
+    [row.weeklyMin, row.weeklyMax].forEach((value) => group.append("line")
       .attr("x1", center - boxWidth * 0.3).attr("x2", center + boxWidth * 0.3)
       .attr("y1", boxScales.y(value)).attr("y2", boxScales.y(value))
       .attr("stroke", "rgba(255,255,255,0.45)"));
     group.append("rect")
       .attr("x", center - boxWidth / 2).attr("width", boxWidth)
-      .attr("y", boxScales.y(row.bootstrapQ75))
-      .attr("height", Math.max(1, boxScales.y(row.bootstrapQ25) - boxScales.y(row.bootstrapQ75)))
+      .attr("y", boxScales.y(row.weeklyQ75))
+      .attr("height", Math.max(1, boxScales.y(row.weeklyQ25) - boxScales.y(row.weeklyQ75)))
       .attr("rx", 1.5).attr("fill", color).attr("fill-opacity", 0.55);
     group.append("line")
       .attr("x1", center - boxWidth / 2).attr("x2", center + boxWidth / 2)
-      .attr("y1", boxScales.y(row.bootstrapMedian)).attr("y2", boxScales.y(row.bootstrapMedian))
+      .attr("y1", boxScales.y(row.weeklyMedian)).attr("y2", boxScales.y(row.weeklyMedian))
       .attr("stroke", "#ffffff").attr("stroke-width", 1.2);
-    group.append("circle")
-      .attr("cx", center).attr("cy", boxScales.y(row.total)).attr("r", 2.2)
-      .attr("fill", "#c9a66b");
-    group.append("title").text(`${row.label}\n5–95%: ${formatUsd(row.bootstrapQ05)} to ${formatUsd(row.bootstrapQ95)}\n25–75%: ${formatUsd(row.bootstrapQ25)} to ${formatUsd(row.bootstrapQ75)}\nMedian: ${formatUsd(row.bootstrapMedian)}\nActual: ${formatUsd(row.total)}`);
+    group.append("title").text(`${row.label}\nRange: ${formatUsd(row.weeklyMin)} to ${formatUsd(row.weeklyMax)}\n25–75%: ${formatUsd(row.weeklyQ25)} to ${formatUsd(row.weeklyQ75)}\nMedian: ${formatUsd(row.weeklyMedian)}`);
   });
 
   svg.append("text")
     .attr("x", margin.left).attr("y", distributionHeaderY)
     .attr("fill", "rgba(255,255,255,0.64)").attr("font-size", 10).attr("font-weight", 500)
-    .text("WEEKLY PNL DISTRIBUTION");
+    .text("WEEKLY PNL OBSERVATIONS");
   svg.append("text")
     .attr("x", margin.left).attr("y", distributionHeaderY + 16)
     .attr("fill", "rgba(255,255,255,0.36)").attr("font-size", 8)
