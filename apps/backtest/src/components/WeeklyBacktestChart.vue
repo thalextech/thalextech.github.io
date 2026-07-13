@@ -153,11 +153,15 @@ const draw = () => {
     .attr("stroke", "#e8eaed")
     .attr("stroke-width", 1.5);
 
-  // X labels at bottom
-  const labels = ["Jun 25", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan 26", "Feb", "Mar", "Apr", "May", "Jun", "Jul"];
-  const step = Math.max(1, Math.floor((rows.length - 1) / (labels.length - 1)));
-  labels.forEach((lab, i) => {
-    const idx = Math.min(i * step, rows.length - 1);
+  // X labels follow the result dates so extending the dataset cannot leave a
+  // stale, hardcoded time range on the chart.
+  const tickCount = Math.min(14, rows.length);
+  const tickIndexes = [...new Set(Array.from(
+    { length: tickCount },
+    (_, index) => Math.round(index * (rows.length - 1) / Math.max(1, tickCount - 1)),
+  ))];
+  const formatAxisDate = d3.utcFormat("%b %y");
+  tickIndexes.forEach((idx) => {
     const lx = x(idx);
     svg.append("text")
       .attr("x", lx)
@@ -165,7 +169,7 @@ const draw = () => {
       .attr("text-anchor", "middle")
       .attr("fill", "rgba(255,255,255,0.28)")
       .attr("font-size", 10)
-      .text(lab);
+      .text(formatAxisDate(entryDate(rows[idx])));
   });
 };
 

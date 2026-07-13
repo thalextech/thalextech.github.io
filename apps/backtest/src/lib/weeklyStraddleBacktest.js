@@ -7,7 +7,7 @@ import {
 import { mean, sampleStdDev } from "./statistics.js";
 
 export const DEFAULT_BACKTEST_CONFIG = {
-  start: new Date("2025-06-01T00:00:00Z"),
+  start: new Date("2024-10-07T09:00:00Z"),
   end: new Date(),
   hourlyOffset: 8,
   entryHourUtc: 8,
