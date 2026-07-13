@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildCycleDetail,
   computeMaxDrawdown,
   normalizeBacktestConfig,
   prepareBacktestData,
@@ -113,29 +114,50 @@ test("prepareBacktestData retains the index lookup used during preparation", () 
   assert.equal("options" in prepared, false);
 });
 
-test("aggregate preparation omits detail Greeks while detail preparation retains them", () => {
+test("aggregate preparation keeps delta-only risk while detail preparation filters full Greeks by plan expiry", () => {
   const ts = Date.UTC(2025, 5, 6, 8) / 1000;
   const expirationTs = Date.UTC(2025, 5, 13, 8) / 1000;
+  const otherExpirationTs = Date.UTC(2025, 5, 20, 8) / 1000;
   const indexRows = [{ ts, indexPrice: 100_000 }];
-  const instrument = {
-    instrumentId: 0,
-    name: "BTC-13JUN25-100000-C",
-    expirationTs,
-    strike: 100_000,
-    optionType: "C",
-  };
+  const instruments = [
+    {
+      instrumentId: 0,
+      name: "BTC-13JUN25-100000-C",
+      expirationTs,
+      strike: 100_000,
+      optionType: "C",
+    },
+    {
+      instrumentId: 1,
+      name: "BTC-20JUN25-100000-C",
+      expirationTs: otherExpirationTs,
+      strike: 100_000,
+      optionType: "C",
+    },
+  ];
   const quoteSnapshots = [[
     ts,
-    [[0, 4_000, 0.55, 0.55 * PRECOMPUTED_DELTA_SCALE]],
+    [
+      [0, 4_000, 0.55, 0.55 * PRECOMPUTED_DELTA_SCALE],
+      [1, 5_000, 0.6, 0.58 * PRECOMPUTED_DELTA_SCALE],
+    ],
   ]];
   const config = { end: new Date(Date.UTC(2025, 5, 13, 8)) };
-  const args = { indexRows, quoteSnapshots, instruments: [instrument], config };
+  const args = { indexRows, quoteSnapshots, instruments, config };
   const aggregate = prepareBacktestData(args);
-  const detail = prepareCycleDetailData(args);
+  const detail = prepareCycleDetailData({
+    ...args,
+    plan: { legs: [{ expirationTs }] },
+  });
 
+  assert.equal(aggregate.quotes.length, 2);
   assert.equal(aggregate.quotes[0].delta, 0.55);
   assert.equal(aggregate.quotes[0].impliedVol, 0.55);
   assert.equal("gamma" in aggregate.quotes[0], false);
+  assert.equal("vega" in aggregate.quotes[0], false);
+  assert.equal("theta" in aggregate.quotes[0], false);
+  assert.equal(detail.quotes.length, 1);
+  assert.equal(detail.quotes[0].expirationTs, expirationTs);
   assert.equal(Number.isFinite(detail.quotes[0].gamma), true);
   assert.equal(Number.isFinite(detail.quotes[0].vega), true);
   assert.equal(Number.isFinite(detail.quotes[0].theta), true);
@@ -173,4 +195,21 @@ test("batch runs match independent runs across entry hours", () => {
       run.summary.finalEquityUsd
     ) < 1e-9
   ));
+
+  const selectedPlan = batch[0].cycleSummary[0];
+  const detailPrepared = prepareCycleDetailData({
+    indexRows,
+    quoteSnapshots,
+    instruments,
+    config: configs[0],
+    plan: selectedPlan,
+  });
+  const detailRows = buildCycleDetail({
+    plan: selectedPlan,
+    preparedData: detailPrepared,
+    config: configs[0],
+  });
+  assert.ok(
+    Math.abs(detailRows.at(-1).hedgePnlUsd - selectedPlan.hedgePnlUsd) < 1e-7,
+  );
 });

@@ -593,6 +593,7 @@ const handleCycleSelect = async (cycle) => {
       hourlyOffsets: Array.from({ length: 24 }, (_, hour) => hour),
     });
     const detailData = prepareCycleDetailData({
+      plan: cycle,
       indexRows: loaded.indexRows,
       quoteSnapshots: loaded.quoteSnapshots,
       instruments: loaded.artifact.instruments,

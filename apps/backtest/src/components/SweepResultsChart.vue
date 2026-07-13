@@ -355,19 +355,19 @@ const draw = () => {
       .attr("class", "weekly-outlier")
       .attr("cx", (_, index) => center + jitterOffsets[index % jitterOffsets.length])
       .attr("cy", (point) => boxScales.y(point.value))
-      .attr("r", 1.7)
-      .attr("fill", "#6f747b")
-      .attr("fill-opacity", 0.78)
+      .attr("r", 2)
+      .attr("fill", color)
+      .attr("fill-opacity", 0.72)
       .attr("stroke", "#0a0b0e")
       .attr("stroke-width", 0.7)
       .style("cursor", "help")
       .on("mouseenter", function (event, point) {
-        d3.select(this).attr("fill", "#a9adb3").attr("fill-opacity", 1);
+        d3.select(this).attr("fill-opacity", 1);
         showOutlierTooltip(event, row, point);
       })
       .on("mousemove", (event, point) => showOutlierTooltip(event, row, point))
       .on("mouseleave", function () {
-        d3.select(this).attr("fill", "#6f747b").attr("fill-opacity", 0.78);
+        d3.select(this).attr("fill-opacity", 0.72);
         hideOutlierTooltip();
       });
     const outlierSummary = row.weeklyOutliers.length

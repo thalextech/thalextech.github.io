@@ -32,9 +32,9 @@ const draw = () => {
   const bounds = element.getBoundingClientRect();
   const width = Math.max(900, bounds.width || 1360, rows.length * 22 + 110);
   const allocatedHeight = Math.max(300, bounds.height || 470);
-  const height = Math.max(660, allocatedHeight * 0.95);
-  const margin = { top: 18, right: 24, bottom: 58, left: 64 };
-  const panelGap = 34;
+  const height = Math.max(720, allocatedHeight * 0.98);
+  const margin = { top: 26, right: 24, bottom: 42, left: 64 };
+  const panelGap = 52;
   const panelHeight = (height - margin.top - margin.bottom - panelGap * 2) / 3;
   const plotWidth = width - margin.left - margin.right;
 
@@ -67,26 +67,44 @@ const draw = () => {
     { key: "hedgePnlUsd", label: "Hedge PnL" },
     { key: "cyclePnlUsd", label: "Total PnL" },
   ];
-  const xBound = d3.max(rows, (row) =>
-    d3.max(series, ({ key }) => Math.abs(valueFor(row, key))),
-  ) || 1;
   const entryTimes = rows.map((row) => new Date(row.entryTime).getTime());
   const x = d3
     .scaleBand()
     .domain(entryTimes)
     .range([0, plotWidth])
     .padding(0.18);
-  const y = d3
-    .scaleLinear()
-    .domain([-xBound, xBound])
-    .range([panelHeight, 0])
-    .nice();
-  const color = d3
-    .scaleDiverging(d3.interpolateRdBu)
-    .domain([-xBound, 0, xBound]);
-  const yTickValues = y.ticks(5);
+  const panels = series.map(({ key, label }) => {
+    const values = rows.map((row) => valueFor(row, key));
+    const [dataMin = 0, dataMax = 0] = d3.extent(values);
+    let domainMin = Math.min(0, dataMin);
+    let domainMax = Math.max(0, dataMax);
+    if (domainMin === domainMax) {
+      domainMin = -1;
+      domainMax = 1;
+    } else {
+      const padding = (domainMax - domainMin) * 0.08;
+      if (domainMin < 0) domainMin -= padding;
+      if (domainMax > 0) domainMax += padding;
+    }
+    const y = d3.scaleLinear()
+      .domain([domainMin, domainMax])
+      .range([panelHeight, 0])
+      .nice(5);
+    const color = d3.scaleDiverging(d3.interpolateRdBu)
+      .domain([
+        Math.min(dataMin, -Number.EPSILON),
+        0,
+        Math.max(dataMax, Number.EPSILON),
+      ]);
+    let yTickValues = y.ticks(5);
+    const [yMin, yMax] = y.domain();
+    if (!yTickValues.includes(0) && yMin <= 0 && yMax >= 0) {
+      yTickValues = [...yTickValues, 0].sort((a, b) => a - b);
+    }
+    return { key, label, y, color, yTickValues };
+  });
 
-  series.forEach(({ key, label }, panelIndex) => {
+  panels.forEach(({ key, label, y, color, yTickValues }, panelIndex) => {
     const panelY = margin.top + panelIndex * (panelHeight + panelGap);
     const group = svg
       .append("g")
@@ -132,8 +150,8 @@ const draw = () => {
     axisGroup.attr("font-family", CHART_FONT_FAMILY);
     axisGroup.select(".domain").remove();
     axisGroup.selectAll("text")
-      .attr("fill", "rgba(255,255,255,0.36)")
-      .attr("font-size", 10);
+      .attr("fill", "rgba(255,255,255,0.32)")
+      .attr("font-size", 11);
 
     group.append("text")
       .attr("x", 0)
@@ -158,16 +176,9 @@ const draw = () => {
   xAxisGroup.attr("font-family", CHART_FONT_FAMILY);
   xAxisGroup.select(".domain").remove();
   xAxisGroup.selectAll("text")
-    .attr("fill", "rgba(255,255,255,0.62)")
+    .attr("fill", "rgba(255,255,255,0.28)")
     .attr("font-size", 10);
 
-  svg.append("text")
-    .attr("x", margin.left + plotWidth / 2)
-    .attr("y", height - 6)
-    .attr("text-anchor", "middle")
-    .attr("fill", "rgba(255,255,255,0.58)")
-    .attr("font-size", 12)
-    .text("Entry time");
 };
 
 onMounted(() => {

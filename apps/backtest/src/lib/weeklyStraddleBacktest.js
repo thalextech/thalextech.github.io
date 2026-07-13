@@ -77,7 +77,7 @@ export const computeMaxDrawdown = (rows = []) => {
   return drawdown;
 };
 
-const buildQuotes = ({ quoteSnapshots, instruments, indexByTs, config, calculateRisk }) => {
+const buildAggregateQuotes = ({ quoteSnapshots, instruments, indexByTs }) => {
   const quotes = [];
   for (const [ts, entries] of quoteSnapshots) {
     const index = indexByTs.get(ts);
@@ -87,16 +87,8 @@ const buildQuotes = ({ quoteSnapshots, instruments, indexByTs, config, calculate
       if (!instrument) continue;
       const dteDays = (instrument.expirationTs - ts) / 86_400;
       if (dteDays <= 0) continue;
-      const risk = calculateRisk
-        ? calculateRisk({
-            spot: index.indexPrice,
-            strike: instrument.strike,
-            yearsToExpiry: dteDays / OPTION_PRICING_DAYS_PER_YEAR,
-            impliedVol: iv,
-            optionType: instrument.optionType,
-          })
-        : { delta: deltaScaled / PRECOMPUTED_DELTA_SCALE };
-      if (!Number.isFinite(risk.delta)) continue;
+      const delta = deltaScaled / PRECOMPUTED_DELTA_SCALE;
+      if (!Number.isFinite(delta)) continue;
       quotes.push({
         ts,
         instrumentId,
@@ -108,7 +100,49 @@ const buildQuotes = ({ quoteSnapshots, instruments, indexByTs, config, calculate
         indexPrice: index.indexPrice,
         dteDays,
         impliedVol: normalizeVol(iv),
+        delta,
+      });
+    }
+  }
+  return quotes;
+};
+
+const buildDetailQuotes = ({
+  quoteSnapshots,
+  instruments,
+  indexByTs,
+  selectedExpirationTs,
+}) => {
+  const quotes = [];
+  for (const [ts, entries] of quoteSnapshots) {
+    const index = indexByTs.get(ts);
+    if (!index) continue;
+    for (const [instrumentId, markPrice, iv, deltaScaled] of entries) {
+      const instrument = instruments[instrumentId];
+      if (!instrument || !selectedExpirationTs.has(instrument.expirationTs)) continue;
+      const dteDays = (instrument.expirationTs - ts) / 86_400;
+      if (dteDays <= 0) continue;
+      const risk = blackScholesGreeks({
+        spot: index.indexPrice,
+        strike: instrument.strike,
+        yearsToExpiry: dteDays / OPTION_PRICING_DAYS_PER_YEAR,
+        impliedVol: iv,
+        optionType: instrument.optionType,
+      });
+      const delta = deltaScaled / PRECOMPUTED_DELTA_SCALE;
+      if (!Number.isFinite(delta)) continue;
+      quotes.push({
+        ts,
+        instrumentId,
+        instrumentName: instrument.name,
+        markPrice,
+        expirationTs: instrument.expirationTs,
+        strike: instrument.strike,
+        optionType: instrument.optionType,
+        indexPrice: index.indexPrice,
+        dteDays,
         ...risk,
+        delta,
       });
     }
   }
@@ -798,12 +832,10 @@ export const buildBacktestIndexes = (preparedData, indexByTs) => {
   };
 };
 
-const prepareData = ({
+const prepareDataWindow = ({
   indexRows = [],
   quoteSnapshots = [],
-  instruments = [],
   config: inc = {},
-  calculateRisk,
 }) => {
   const config = normalizeBacktestConfig(inc);
   let maxTs = 0;
@@ -812,23 +844,46 @@ const prepareData = ({
   const configuredEndTs = config.end.getTime() / 1000;
   const dataEnd = new Date(Math.min(configuredEndTs, maxTs || configuredEndTs) * 1000);
   const indexByTs = new Map(indexRows.map((row) => [row.ts, row]));
-  const quotes = buildQuotes({
-    quoteSnapshots,
-    instruments,
-    indexByTs,
-    config,
-    calculateRisk,
-  });
+  return { dataEnd, indexByTs };
+};
+
+export const prepareBacktestData = ({
+  indexRows = [],
+  quoteSnapshots = [],
+  instruments = [],
+  config = {},
+}) => {
+  const { dataEnd, indexByTs } = prepareDataWindow({ indexRows, quoteSnapshots, config });
+  const quotes = buildAggregateQuotes({ quoteSnapshots, instruments, indexByTs });
   const preparedData = { indexRows, quotes, dataEnd };
   preparedData.indexes = buildBacktestIndexes(preparedData, indexByTs);
   return preparedData;
 };
 
-export const prepareBacktestData = (args) =>
-  prepareData({ ...args, calculateRisk: null });
-
-export const prepareCycleDetailData = (args) =>
-  prepareData({ ...args, calculateRisk: blackScholesGreeks });
+export const prepareCycleDetailData = ({
+  plan,
+  indexRows = [],
+  quoteSnapshots = [],
+  instruments = [],
+  config = {},
+}) => {
+  const selectedExpirationTs = new Set(
+    (plan?.legs || [])
+      .map((leg) => Number(leg.expirationTs))
+      .filter(Number.isFinite),
+  );
+  if (!selectedExpirationTs.size) {
+    throw new Error("Cycle detail preparation requires a selected plan with expirations");
+  }
+  const { dataEnd, indexByTs } = prepareDataWindow({ indexRows, quoteSnapshots, config });
+  const quotes = buildDetailQuotes({
+    quoteSnapshots,
+    instruments,
+    indexByTs,
+    selectedExpirationTs,
+  });
+  return { indexRows, quotes, dataEnd };
+};
 
 export const runWeeklyStraddleBacktest = ({
   indexRows,
