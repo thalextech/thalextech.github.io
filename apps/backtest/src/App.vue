@@ -167,6 +167,7 @@ const preparedData = ref(null);
 const SWEEP_DIMENSIONS = [
   { value: "entry_hour", label: "Entry hour" },
   { value: "entry_weekday", label: "Day of week" },
+  { value: "maturity", label: "Maturity" },
   { value: "hedge_frequency", label: "Hedge frequency" },
   { value: "delta_band", label: "Strike delta" },
 ];
@@ -205,6 +206,13 @@ const maxDrawdown = computed(() => {
   return computeMaxDrawdown(result.value?.cycleSummary);
 });
 
+const maturityConfigOverrides = (maturity) => ({
+  targetDteDays: maturity.nearDays ?? maturity.value,
+  farTargetDteDays: maturity.farDays,
+  minWeeklyDteDays: maturity.minDteDays,
+  maxWeeklyDteDays: maturity.maxDteDays,
+});
+
 const sweepConfigs = computed(() => {
   if (sweepDimension.value === "entry_hour") {
     return HOUR_OPTIONS.map((hour) => ({
@@ -218,6 +226,14 @@ const sweepConfigs = computed(() => {
       key: `weekday-${weekday.value}`,
       label: weekday.label,
       overrides: { entryWeekday: weekday.value },
+    }));
+  }
+  if (sweepDimension.value === "maturity") {
+    return maturityOptions.value.map((maturity) => ({
+      key: `maturity-${maturity.value}`,
+      label: maturity.label,
+      maturityValue: maturity.value,
+      overrides: maturityConfigOverrides(maturity),
     }));
   }
   if (sweepDimension.value === "hedge_frequency") {
@@ -388,10 +404,7 @@ const buildConfig = (overrides = {}) => {
   const m = currentMaturity.value;
   return normalizeBacktestConfig({
     end: new Date(),
-    targetDteDays: m.nearDays ?? m.value,
-    farTargetDteDays: m.farDays,
-    minWeeklyDteDays: m.minDteDays,
-    maxWeeklyDteDays: m.maxDteDays,
+    ...maturityConfigOverrides(m),
     structure: ui.structure,
     targetDelta: Number(ui.targetDelta),
     entryWeekday: Number(ui.entryWeekday),
@@ -479,6 +492,9 @@ const runSweep = async () => {
         config: thisConfig,
         sharpe: run.summary.sharpeRatio,
         pnl: run.summary.finalEquityUsd,
+        optionPnl: run.summary.cumulativeOptionPnlUsd,
+        hedgePnl: run.summary.cumulativeHedgePnlUsd,
+        averageEntryIv: run.summary.meanEntryImpliedVol,
         maxDrawdown: computeMaxDrawdown(run.cycleSummary),
         cycles: run.counts.closedCycles,
         returnOnNotional: run.summary.cumulativeReturnOnNotional,
@@ -513,10 +529,12 @@ const applySweepResult = (cell) => {
     ui.entryHourUtc = cell.config.entryHourUtc;
   } else if (sweepDimension.value === "entry_weekday") {
     ui.entryWeekday = cell.config.entryWeekday;
+  } else if (sweepDimension.value === "maturity") {
+    ui.maturityDays = cell.maturityValue;
   } else if (sweepDimension.value === "hedge_frequency") {
     ui.hedgeEnabled = true;
     ui.hedgeIntervalHours = cell.config.hedgeIntervalHours;
-  } else {
+  } else if (sweepDimension.value === "delta_band") {
     ui.targetDelta = cell.config.targetDelta;
   }
   mode.value = "single";

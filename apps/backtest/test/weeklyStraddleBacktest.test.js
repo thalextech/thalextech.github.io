@@ -134,6 +134,7 @@ test("aggregate preparation omits detail Greeks while detail preparation retains
   const detail = prepareCycleDetailData(args);
 
   assert.equal(aggregate.quotes[0].delta, 0.55);
+  assert.equal(aggregate.quotes[0].impliedVol, 0.55);
   assert.equal("gamma" in aggregate.quotes[0], false);
   assert.equal(Number.isFinite(detail.quotes[0].gamma), true);
   assert.equal(Number.isFinite(detail.quotes[0].vega), true);
@@ -164,4 +165,12 @@ test("batch runs match independent runs across entry hours", () => {
 
   assert.deepEqual(batch, independent);
   assert.ok(batch.every((run) => run.counts.closedCycles === 1));
+  assert.ok(batch.every((run) => run.summary.meanEntryImpliedVol === 0.55));
+  assert.ok(batch.every((run) =>
+    Math.abs(
+      run.summary.cumulativeOptionPnlUsd +
+      run.summary.cumulativeHedgePnlUsd -
+      run.summary.finalEquityUsd
+    ) < 1e-9
+  ));
 });

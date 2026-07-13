@@ -19,6 +19,7 @@ let resizeObserver;
 const CHART_FONT_FAMILY = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
 const formatUsd = d3.format("$,.0f");
 const formatSharpe = d3.format(".2f");
+const formatIv = d3.format(".1%");
 
 const draw = () => {
   const element = chartRef.value;
@@ -130,7 +131,6 @@ const draw = () => {
       weeks,
       weeklyPoints,
       total,
-      robustPnl: total - bestWeek,
       winRate: weeks.length ? weeks.filter((value) => value > 0).length / weeks.length : 0,
       profitFactor: negative ? positive / negative : 0,
       calmar: maxDrawdown ? annualizedPnl / maxDrawdown : Number.NaN,
@@ -177,6 +177,15 @@ const draw = () => {
   const drawdownColor = drawdownMin === drawdownMax
     ? () => readableRed(0.5)
     : d3.scaleSequential(readableRed).domain([drawdownMax, drawdownMin]).clamp(true);
+  const readableRedBlue = (t) => d3.interpolateRdBu(0.25 + t * 0.5);
+  const buildAttributionPnlColor = (key) => {
+    const maxAbs = d3.max(
+      analyzedRows.map((row) => Math.abs(Number(row[key]))).filter(Number.isFinite),
+    ) || 1;
+    return d3.scaleDiverging(readableRedBlue).domain([-maxAbs, 0, maxAbs]).clamp(true);
+  };
+  const optionPnlColor = buildAttributionPnlColor("optionPnl");
+  const hedgePnlColor = buildAttributionPnlColor("hedgePnl");
   const rankedRows = [...analyzedRows].sort((a, b) => b.total - a.total);
   const formatCompactUsd = (value) => {
     const numeric = Number(value) || 0;
@@ -346,19 +355,19 @@ const draw = () => {
       .attr("class", "weekly-outlier")
       .attr("cx", (_, index) => center + jitterOffsets[index % jitterOffsets.length])
       .attr("cy", (point) => boxScales.y(point.value))
-      .attr("r", 2.15)
-      .attr("fill", "#9ca2aa")
-      .attr("fill-opacity", 0.82)
+      .attr("r", 1.7)
+      .attr("fill", "#6f747b")
+      .attr("fill-opacity", 0.78)
       .attr("stroke", "#0a0b0e")
       .attr("stroke-width", 0.7)
       .style("cursor", "help")
       .on("mouseenter", function (event, point) {
-        d3.select(this).attr("fill", "#d1d4d8").attr("fill-opacity", 1);
+        d3.select(this).attr("fill", "#a9adb3").attr("fill-opacity", 1);
         showOutlierTooltip(event, row, point);
       })
       .on("mousemove", (event, point) => showOutlierTooltip(event, row, point))
       .on("mouseleave", function () {
-        d3.select(this).attr("fill", "#9ca2aa").attr("fill-opacity", 0.82);
+        d3.select(this).attr("fill", "#6f747b").attr("fill-opacity", 0.78);
         hideOutlierTooltip();
       });
     const outlierSummary = row.weeklyOutliers.length
@@ -479,24 +488,27 @@ const draw = () => {
     .attr("y", rankedHeaderY + 16)
     .attr("fill", "rgba(255,255,255,0.36)")
     .attr("font-size", 8)
-    .text("TOTAL PNL COMPARED WITH PNL AFTER REMOVING THE BEST WEEK · SORTED BY TOTAL PNL");
+    .text("PNL ATTRIBUTION AND ENTRY VOLATILITY · SORTED BY TOTAL PNL");
 
   const columnX = {
     setting: margin.left,
     spark: margin.left + contentWidth * 0.07,
-    pnl: margin.left + contentWidth * 0.25,
-    pnlValue: margin.left + contentWidth * 0.56,
-    sharpe: margin.left + contentWidth * 0.63,
-    drawdown: margin.left + contentWidth * 0.70,
-    calmar: margin.left + contentWidth * 0.77,
-    win: margin.left + contentWidth * 0.83,
-    profitFactor: margin.left + contentWidth * 0.89,
-    cvar: margin.left + contentWidth * 0.96,
+    optionPnl: margin.left + contentWidth * 0.36,
+    hedgePnl: margin.left + contentWidth * 0.46,
+    entryIv: margin.left + contentWidth * 0.56,
+    sharpe: margin.left + contentWidth * 0.64,
+    drawdown: margin.left + contentWidth * 0.71,
+    calmar: margin.left + contentWidth * 0.78,
+    win: margin.left + contentWidth * 0.84,
+    profitFactor: margin.left + contentWidth * 0.90,
+    cvar: margin.left + contentWidth * 0.97,
   };
   const headers = [
     { label: "SETTING", x: columnX.setting, anchor: "start", tooltip: "The sweep parameter value used for this backtest variant." },
     { label: "EQUITY", x: columnX.spark, anchor: "start", tooltip: "Cumulative weekly PnL. The white dot marks the best individual week." },
-    { label: "TOTAL → EX BEST", x: columnX.pnl, anchor: "start", tooltip: "Total PnL compared with total PnL after subtracting the single best week. A large gap indicates outlier dependence." },
+    { label: "OPTION PNL", x: columnX.optionPnl, anchor: "end", tooltip: "Cumulative option-leg PnL across completed cycles, before hedge PnL." },
+    { label: "HEDGE PNL", x: columnX.hedgePnl, anchor: "end", tooltip: "Cumulative perpetual-futures hedge PnL across completed cycles." },
+    { label: "AVG ENTRY IV", x: columnX.entryIv, anchor: "end", tooltip: "Mean normalized entry implied volatility across selected option legs in completed cycles." },
     { label: "SHARPE", x: columnX.sharpe, anchor: "end", tooltip: "Annualized weekly Sharpe: average weekly PnL divided by weekly PnL volatility, multiplied by √52." },
     { label: "MAX DD", x: columnX.drawdown, anchor: "end", tooltip: "Largest peak-to-trough loss in cumulative PnL during the backtest." },
     { label: "CALMAR", x: columnX.calmar, anchor: "end", tooltip: "Annualized weekly PnL divided by absolute maximum drawdown. Higher means more return per unit of peak-to-trough loss." },
@@ -513,9 +525,6 @@ const draw = () => {
       .on("mouseleave", hideHeaderTooltip);
   });
 
-  const maxAbsPnl = d3.max(analyzedRows.flatMap((row) => [Math.abs(row.total), Math.abs(row.robustPnl)])) || 1;
-  const pnlBarWidth = contentWidth * 0.18;
-  const pnlBarScale = d3.scaleLinear().domain([0, maxAbsPnl]).range([0, pnlBarWidth]);
   const sparkWidth = contentWidth * 0.145;
   const rankGroups = svg.selectAll("g.rank-row")
     .data(rankedRows, (row) => row.key)
@@ -523,7 +532,7 @@ const draw = () => {
     .attr("class", "rank-row")
     .attr("role", "button")
     .attr("tabindex", 0)
-    .attr("aria-label", (row) => `${row.label}: total PnL ${formatUsd(row.total)}, excluding best week ${formatUsd(row.robustPnl)}, Sharpe ${formatSharpe(Number(row.sharpe) || 0)}, Calmar ${Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "not available"}`)
+    .attr("aria-label", (row) => `${row.label}: option PnL ${formatUsd(Number(row.optionPnl) || 0)}, hedge PnL ${formatUsd(Number(row.hedgePnl) || 0)}, average entry IV ${Number.isFinite(Number(row.averageEntryIv)) ? formatIv(Number(row.averageEntryIv)) : "not available"}, Sharpe ${formatSharpe(Number(row.sharpe) || 0)}, Calmar ${Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "not available"}`)
     .style("cursor", "pointer")
     .on("click", (_, row) => emit("select", row));
 
@@ -550,17 +559,14 @@ const draw = () => {
     group.append("circle").attr("cx", sparkX(row.bestIndex + 1)).attr("cy", sparkY(row.cumulative[row.bestIndex + 1] ?? 0))
       .attr("r", 2.2).attr("fill", "#ffffff");
 
-    [[row.total, 0, 0.32], [row.robustPnl, 6, 0.9]].forEach(([value, offset, opacity]) => {
-      group.append("rect").attr("x", columnX.pnl).attr("y", center - 6 + offset)
-        .attr("width", pnlBarScale(Math.abs(value))).attr("height", 5).attr("rx", 1)
-        .attr("fill", value >= 0 ? "#78aadc" : "#cf6a5a").attr("fill-opacity", opacity);
-    });
-    group.append("text").attr("x", columnX.pnlValue).attr("y", center).attr("dy", "0.32em")
-      .attr("text-anchor", "end").attr("fill", "rgba(255,255,255,0.72)").attr("font-size", 8.5)
-      .text(`${formatCompactUsd(row.total)} → ${formatCompactUsd(row.robustPnl)}`);
     const addValue = (x, value, color = "rgba(255,255,255,0.7)") => group.append("text")
       .attr("x", x).attr("y", center).attr("dy", "0.32em").attr("text-anchor", "end")
       .attr("fill", color).attr("font-size", 8.5).text(value);
+    const optionPnl = Number(row.optionPnl) || 0;
+    const hedgePnl = Number(row.hedgePnl) || 0;
+    addValue(columnX.optionPnl, formatCompactUsd(optionPnl), optionPnlColor(optionPnl));
+    addValue(columnX.hedgePnl, formatCompactUsd(hedgePnl), hedgePnlColor(hedgePnl));
+    addValue(columnX.entryIv, Number.isFinite(Number(row.averageEntryIv)) ? formatIv(Number(row.averageEntryIv)) : "—");
     addValue(columnX.sharpe, formatSharpe(Number(row.sharpe) || 0), sharpeTextColor(Number(row.sharpe) || 0));
     addValue(columnX.drawdown, formatCompactUsd(Number(row.maxDrawdown) || 0), drawdownColor(Number(row.maxDrawdown) || 0));
     addValue(columnX.calmar, Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "—");

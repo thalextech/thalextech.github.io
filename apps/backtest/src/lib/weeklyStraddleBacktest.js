@@ -1,5 +1,6 @@
 import {
   blackScholesGreeks,
+  normalizeVol,
   OPTION_PRICING_DAYS_PER_YEAR,
   PRECOMPUTED_DELTA_SCALE,
 } from "./optionRisk.js";
@@ -106,6 +107,7 @@ const buildQuotes = ({ quoteSnapshots, instruments, indexByTs, config, calculate
         optionType: instrument.optionType,
         indexPrice: index.indexPrice,
         dteDays,
+        impliedVol: normalizeVol(iv),
         ...risk,
       });
     }
@@ -366,6 +368,7 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
         expirationTs: quote.expirationTs,
         entryPrice: quote.markPrice,
         entryDelta: quote.delta,
+        entryImpliedVol: quote.impliedVol,
         quantity: config.longOption ? -quantity : quantity,
       }));
       const entryOptionCashflowUsd = -legs.reduce(
@@ -876,6 +879,20 @@ export const runWeeklyStraddleBacktest = ({
     quoteByTimeInstrument: indexes.quoteByTimeInstrument,
   });
   const closedCycles = cycleSummary.filter((row) => row.closed);
+  let cumulativeOptionPnlUsd = 0;
+  let cumulativeHedgePnlUsd = 0;
+  const entryImpliedVols = [];
+  for (const cycle of closedCycles) {
+    if (Number.isFinite(cycle.shortOptionPnlUsd)) {
+      cumulativeOptionPnlUsd += cycle.shortOptionPnlUsd;
+    }
+    if (Number.isFinite(cycle.hedgePnlUsd)) {
+      cumulativeHedgePnlUsd += cycle.hedgePnlUsd;
+    }
+    for (const leg of cycle.legs) {
+      if (Number.isFinite(leg.entryImpliedVol)) entryImpliedVols.push(leg.entryImpliedVol);
+    }
+  }
   const cycleReturns = closedCycles
     .map((row) => row.cycleReturnOnNotional)
     .filter(Number.isFinite);
@@ -911,6 +928,9 @@ export const runWeeklyStraddleBacktest = ({
           : Number.NaN,
       annualizedCyclesPerYear,
       meanEntryDteDays: mean(entryDtes),
+      cumulativeOptionPnlUsd,
+      cumulativeHedgePnlUsd,
+      meanEntryImpliedVol: mean(entryImpliedVols),
       notionalUsdPerCycle: config.notionalUsd,
       sizingMode: config.sizingMode,
       btcQuantity: config.btcQuantity,
