@@ -30,13 +30,13 @@ const draw = () => {
     .sort((a, b) => new Date(a.entryTime) - new Date(b.entryTime));
 
   const bounds = element.getBoundingClientRect();
-  const width = Math.max(900, bounds.width || 1360, rows.length * 22 + 110);
+  const width = Math.max(1080, bounds.width || 1360);
   const allocatedHeight = Math.max(300, bounds.height || 470);
   const height = Math.max(720, allocatedHeight * 0.98);
-  const margin = { top: 26, right: 24, bottom: 42, left: 64 };
-  const panelGap = 52;
-  const panelHeight = (height - margin.top - margin.bottom - panelGap * 2) / 3;
-  const plotWidth = width - margin.left - margin.right;
+  const margin = { top: 54, right: 24, bottom: 20, left: 82 };
+  const panelGap = 36;
+  const plotHeight = height - margin.top - margin.bottom;
+  const panelWidth = (width - margin.left - margin.right - panelGap * 2) / 3;
 
   const svg = d3
     .select(element)
@@ -48,7 +48,7 @@ const draw = () => {
     .attr("role", "img")
     .attr(
       "aria-label",
-      "PnL decomposition over entry time comparing option, hedge, and total PnL",
+      "Three-column PnL decomposition with horizontal option, hedge, and total PnL bars",
     );
 
   if (!rows.length) {
@@ -68,10 +68,10 @@ const draw = () => {
     { key: "cyclePnlUsd", label: "Total PnL" },
   ];
   const entryTimes = rows.map((row) => new Date(row.entryTime).getTime());
-  const x = d3
+  const y = d3
     .scaleBand()
     .domain(entryTimes)
-    .range([0, plotWidth])
+    .range([0, plotHeight])
     .padding(0.18);
   const panels = series.map(({ key, label }) => {
     const values = rows.map((row) => valueFor(row, key));
@@ -86,9 +86,9 @@ const draw = () => {
       if (domainMin < 0) domainMin -= padding;
       if (domainMax > 0) domainMax += padding;
     }
-    const y = d3.scaleLinear()
+    const x = d3.scaleLinear()
       .domain([domainMin, domainMax])
-      .range([panelHeight, 0])
+      .range([0, panelWidth])
       .nice(5);
     const color = d3.scaleDiverging(d3.interpolateRdBu)
       .domain([
@@ -96,28 +96,40 @@ const draw = () => {
         0,
         Math.max(dataMax, Number.EPSILON),
       ]);
-    let yTickValues = y.ticks(5);
-    const [yMin, yMax] = y.domain();
-    if (!yTickValues.includes(0) && yMin <= 0 && yMax >= 0) {
-      yTickValues = [...yTickValues, 0].sort((a, b) => a - b);
+    let xTickValues = x.ticks(4);
+    const [xMin, xMax] = x.domain();
+    if (!xTickValues.includes(0) && xMin <= 0 && xMax >= 0) {
+      xTickValues = [...xTickValues, 0].sort((a, b) => a - b);
     }
-    return { key, label, y, color, yTickValues };
+    return { key, label, x, color, xTickValues };
   });
 
-  panels.forEach(({ key, label, y, color, yTickValues }, panelIndex) => {
-    const panelY = margin.top + panelIndex * (panelHeight + panelGap);
+  panels.forEach(({ key, label, x, color, xTickValues }, panelIndex) => {
+    const panelX = margin.left + panelIndex * (panelWidth + panelGap);
     const group = svg
       .append("g")
-      .attr("transform", `translate(${margin.left},${panelY})`);
+      .attr("transform", `translate(${panelX},${margin.top})`);
+
+    xTickValues.forEach((tick) => {
+      group.append("line")
+        .attr("x1", x(tick)).attr("x2", x(tick))
+        .attr("y1", 0).attr("y2", plotHeight)
+        .attr("stroke", "rgba(255,255,255,0.055)");
+    });
+
+    group.append("line")
+      .attr("x1", x(0)).attr("x2", x(0))
+      .attr("y1", 0).attr("y2", plotHeight)
+      .attr("stroke", "rgba(255,255,255,0.12)");
 
     const bars = group.selectAll(`rect.${key}`)
       .data(rows)
       .join("rect")
       .attr("class", key)
-      .attr("x", (row) => x(new Date(row.entryTime).getTime()))
-      .attr("y", (row) => y(Math.max(0, valueFor(row, key))))
-      .attr("width", x.bandwidth())
-      .attr("height", (row) => Math.max(1, Math.abs(y(valueFor(row, key)) - y(0))))
+      .attr("x", (row) => Math.min(x(0), x(valueFor(row, key))))
+      .attr("y", (row) => y(new Date(row.entryTime).getTime()))
+      .attr("width", (row) => Math.max(1, Math.abs(x(valueFor(row, key)) - x(0))))
+      .attr("height", y.bandwidth())
       .attr("fill", (row) => color(valueFor(row, key)))
       .attr("tabindex", 0)
       .attr("role", "button")
@@ -141,11 +153,11 @@ const draw = () => {
         "Click to open cycle detail",
       ].join("\n"));
 
-    const axis = d3.axisLeft(y)
-      .tickValues(yTickValues)
+    const axis = d3.axisTop(x)
+      .tickValues(xTickValues)
       .tickFormat(d3.format("~s"))
       .tickSize(0)
-      .tickPadding(8);
+      .tickPadding(7);
     const axisGroup = group.append("g").call(axis);
     axisGroup.attr("font-family", CHART_FONT_FAMILY);
     axisGroup.select(".domain").remove();
@@ -155,7 +167,7 @@ const draw = () => {
 
     group.append("text")
       .attr("x", 0)
-      .attr("y", -10)
+      .attr("y", -32)
       .attr("text-anchor", "start")
       .attr("fill", "rgba(255,255,255,0.68)")
       .attr("font-size", 12)
@@ -165,17 +177,17 @@ const draw = () => {
 
   const labelStep = Math.max(1, Math.ceil(entryTimes.length / 12));
   const entryTickValues = entryTimes.filter((_, index) => index % labelStep === 0);
-  const xAxis = d3.axisBottom(x)
+  const entryAxis = d3.axisLeft(y)
     .tickValues(entryTickValues)
     .tickFormat((timestamp) => formatEntryDate(new Date(timestamp)))
     .tickSize(0)
-    .tickPadding(10);
-  const xAxisGroup = svg.append("g")
-    .attr("transform", `translate(${margin.left},${height - margin.bottom})`)
-    .call(xAxis);
-  xAxisGroup.attr("font-family", CHART_FONT_FAMILY);
-  xAxisGroup.select(".domain").remove();
-  xAxisGroup.selectAll("text")
+    .tickPadding(7);
+  const entryAxisGroup = svg.append("g")
+    .attr("transform", `translate(${margin.left - 8},${margin.top})`)
+    .call(entryAxis);
+  entryAxisGroup.attr("font-family", CHART_FONT_FAMILY);
+  entryAxisGroup.select(".domain").remove();
+  entryAxisGroup.selectAll("text")
     .attr("fill", "rgba(255,255,255,0.28)")
     .attr("font-size", 10);
 
