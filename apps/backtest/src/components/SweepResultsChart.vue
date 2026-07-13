@@ -35,7 +35,7 @@ const draw = () => {
   const margin = { right: 24, left: 64 };
   const contentWidth = availableWidth - margin.left - margin.right;
   const rankedHeaderY = 15;
-  const rankedColumnsY = rankedHeaderY + 40;
+  const rankedColumnsY = rankedHeaderY + 28;
   const rankedRowsY = rankedColumnsY + 18;
   const rankedRowHeight = 25;
   const rankedBottom = rankedRowsY + rows.length * rankedRowHeight;
@@ -46,7 +46,7 @@ const draw = () => {
   const boxAxisY = boxPlotBottom + 8;
   const boxBottom = boxAxisY + 28;
   const distributionHeaderY = boxBottom + 50;
-  const distributionAxisY = distributionHeaderY + 39;
+  const distributionAxisY = distributionHeaderY + 25;
   const distributionRowsY = distributionAxisY + 16;
   const distributionRowHeight = 26;
   const distributionBottom = distributionRowsY + rows.length * distributionRowHeight;
@@ -215,8 +215,8 @@ const draw = () => {
   const showHeaderTooltip = (x, y, tooltip, anchor = "start") => {
     hideHeaderTooltip();
     const lines = wrapTooltip(tooltip);
-    const tooltipWidth = Math.min(430, Math.max(...lines.map((line) => line.length)) * 5.2 + 18);
-    const tooltipHeight = lines.length * 13 + 12;
+    const tooltipWidth = Math.min(430, Math.max(...lines.map((line) => line.length)) * 5.8 + 18);
+    const tooltipHeight = lines.length * 14 + 12;
     const preferredX = anchor === "end" ? x - tooltipWidth : x;
     const tooltipX = Math.max(margin.left, Math.min(preferredX, margin.left + contentWidth - tooltipWidth));
     const tooltipY = y + 8;
@@ -228,9 +228,9 @@ const draw = () => {
       .attr("width", tooltipWidth).attr("height", tooltipHeight).attr("rx", 4)
       .attr("fill", "#17191e").attr("stroke", "rgba(255,255,255,0.18)");
     const text = group.append("text").attr("x", 9).attr("y", 15)
-      .attr("fill", "rgba(255,255,255,0.88)").attr("font-size", 9);
+      .attr("fill", "rgba(255,255,255,0.88)").attr("font-size", 10);
     lines.forEach((line, index) => text.append("tspan")
-      .attr("x", 9).attr("dy", index === 0 ? 0 : 13).text(line));
+      .attr("x", 9).attr("dy", index === 0 ? 0 : 14).text(line));
   };
   const hideOutlierTooltip = () => svg.selectAll("g.outlier-tooltip").remove();
   const showOutlierTooltip = (event, row, point) => {
@@ -240,8 +240,8 @@ const draw = () => {
       ? d3.utcFormat("%d %b %Y")(new Date(point.entryDate))
       : `Week ${point.sourceIndex + 1}`;
     const fence = point.value < row.weeklyWhiskerMin ? "BELOW LOWER FENCE" : "ABOVE UPPER FENCE";
-    const tooltipWidth = 150;
-    const tooltipHeight = 49;
+    const tooltipWidth = 155;
+    const tooltipHeight = 52;
     const tooltipX = Math.max(
       margin.left,
       Math.min(pointerX + 9, margin.left + contentWidth - tooltipWidth),
@@ -256,17 +256,32 @@ const draw = () => {
       .attr("width", tooltipWidth).attr("height", tooltipHeight).attr("rx", 4)
       .attr("fill", "#17191e").attr("stroke", "rgba(255,255,255,0.18)");
     tooltip.append("text")
-      .attr("x", 9).attr("y", 14)
-      .attr("fill", "rgba(255,255,255,0.58)").attr("font-size", 8)
+      .attr("x", 9).attr("y", 15)
+      .attr("fill", "rgba(255,255,255,0.58)").attr("font-size", 9)
       .text(`${row.label} · ${date}`);
     tooltip.append("text")
-      .attr("x", 9).attr("y", 29)
-      .attr("fill", "rgba(255,255,255,0.9)").attr("font-size", 9).attr("font-weight", 500)
+      .attr("x", 9).attr("y", 31)
+      .attr("fill", "rgba(255,255,255,0.9)").attr("font-size", 10).attr("font-weight", 500)
       .text(`Weekly PnL  ${formatUsd(point.value)}`);
     tooltip.append("text")
-      .attr("x", 9).attr("y", 42)
-      .attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 7.5)
+      .attr("x", 9).attr("y", 45)
+      .attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 8.5)
       .text(fence);
+  };
+  const appendPanelHeading = ({ y, title, subtitle }) => {
+    const heading = svg.append("text")
+      .attr("x", margin.left).attr("y", y);
+    heading.append("tspan")
+      .attr("fill", "rgba(255,255,255,0.64)")
+      .attr("font-size", 11)
+      .attr("font-weight", 500)
+      .text(title);
+    heading.append("tspan")
+      .attr("dx", 10)
+      .attr("fill", "rgba(255,255,255,0.36)")
+      .attr("font-size", 9)
+      .attr("font-weight", 400)
+      .text(subtitle);
   };
 
   const boxPlotLeft = margin.left + 58;
@@ -292,12 +307,12 @@ const draw = () => {
       .call(d3.axisLeft(y).ticks(5).tickSize(-(boxPlotRight - boxPlotLeft)).tickPadding(8).tickFormat(formatCompactUsd));
     yAxis.select(".domain").remove();
     yAxis.selectAll(".tick line").attr("stroke", "rgba(255,255,255,0.07)");
-    yAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 8);
+    yAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 9);
     const xAxis = svg.append("g")
       .attr("transform", `translate(0,${axisY})`)
       .call(d3.axisBottom(x).tickSize(0).tickPadding(7).tickFormat((key) => weeklyBoxRows.find((row) => row.key === key)?.label || key));
     xAxis.select(".domain").attr("stroke", "rgba(255,255,255,0.14)");
-    xAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.46)").attr("font-size", 7.5);
+    xAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.46)").attr("font-size", 8.5);
     return { x, y };
   };
 
@@ -305,14 +320,11 @@ const draw = () => {
     .attr("x1", margin.left).attr("x2", margin.left + contentWidth)
     .attr("y1", boxHeaderY - 24).attr("y2", boxHeaderY - 24)
     .attr("stroke", "rgba(255,255,255,0.12)");
-  svg.append("text")
-    .attr("x", margin.left).attr("y", boxHeaderY)
-    .attr("fill", "rgba(255,255,255,0.64)").attr("font-size", 10).attr("font-weight", 500)
-    .text(`WEEKLY PNL BOXPLOTS · ${props.dimensionLabel.toUpperCase()}`);
-  svg.append("text")
-    .attr("x", margin.left).attr("y", boxHeaderY + 16)
-    .attr("fill", "rgba(255,255,255,0.36)").attr("font-size", 8)
-    .text("OBSERVED WEEKS · WHISKER = 1.5× IQR · BOX = 25–75% · LINE = MEDIAN · DOT = OUTLIER");
+  appendPanelHeading({
+    y: boxHeaderY,
+    title: `WEEKLY PNL BOXPLOTS · ${props.dimensionLabel.toUpperCase()}`,
+    subtitle: "OBSERVED WEEKS · WHISKER = 1.5× IQR · BOX = 25–75% · LINE = MEDIAN · DOT = OUTLIER",
+  });
   const boxScales = drawBoxPlotAxes(boxPlotTop, boxPlotBottom, boxAxisY);
   const boxWidth = Math.min(18, Math.max(8, (boxScales.x.step?.() || 30) * 0.5));
   svg.append("path")
@@ -376,14 +388,11 @@ const draw = () => {
     box.append("title").text(`${row.label}\nWhiskers: ${formatUsd(row.weeklyWhiskerMin)} to ${formatUsd(row.weeklyWhiskerMax)}\n25–75%: ${formatUsd(row.weeklyQ25)} to ${formatUsd(row.weeklyQ75)}\nMedian: ${formatUsd(row.weeklyMedian)}${outlierSummary}`);
   });
 
-  svg.append("text")
-    .attr("x", margin.left).attr("y", distributionHeaderY)
-    .attr("fill", "rgba(255,255,255,0.64)").attr("font-size", 10).attr("font-weight", 500)
-    .text("WEEKLY PNL OBSERVATIONS");
-  svg.append("text")
-    .attr("x", margin.left).attr("y", distributionHeaderY + 16)
-    .attr("fill", "rgba(255,255,255,0.36)").attr("font-size", 8)
-    .text("ROWS RANKED BY TOTAL PNL · SHARED WEEKLY SCALE · BLUE = UP · RED = DOWN · LINE = MEDIAN · WHITE BORDER = BEST WEEK");
+  appendPanelHeading({
+    y: distributionHeaderY,
+    title: "WEEKLY PNL OBSERVATIONS",
+    subtitle: "ROWS RANKED BY TOTAL PNL · SHARED WEEKLY SCALE · BLUE = UP · RED = DOWN · LINE = MEDIAN · WHITE BORDER = BEST WEEK",
+  });
 
   const distributionPlotLeft = margin.left + 62;
   const distributionSummaryWidth = 260;
@@ -403,7 +412,7 @@ const draw = () => {
     .attr("transform", `translate(0,${distributionAxisY})`)
     .call(d3.axisTop(distributionX).ticks(7).tickSize(0).tickPadding(6).tickFormat(formatCompactUsd));
   distributionAxis.select(".domain").remove();
-  distributionAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.42)").attr("font-size", 8);
+  distributionAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.42)").attr("font-size", 9);
   const distributionSummaryColumns = [
     { label: "MAX", x: distributionSummaryX, anchor: "start", value: (weeks) => d3.max(weeks) ?? 0, tooltip: "Largest weekly PnL for this sweep setting." },
     { label: "MIN", x: distributionSummaryX + (distributionSummaryRight - distributionSummaryX) / 3, anchor: "middle", value: (weeks) => d3.min(weeks) ?? 0, tooltip: "Smallest weekly PnL for this sweep setting." },
@@ -413,7 +422,7 @@ const draw = () => {
   distributionSummaryColumns.forEach((column) => {
     const header = svg.append("text")
       .attr("x", column.x).attr("y", distributionAxisY - 7).attr("text-anchor", column.anchor)
-      .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 8)
+      .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 9)
       .text(column.label);
     header
       .on("mouseenter", () => showHeaderTooltip(column.x, distributionAxisY - 7, column.tooltip, column.anchor === "end" ? "end" : "start"))
@@ -446,7 +455,7 @@ const draw = () => {
       .attr("stroke", "rgba(255,255,255,0.045)");
     group.append("text")
       .attr("x", margin.left).attr("y", center).attr("dy", "0.32em")
-      .attr("fill", "rgba(255,255,255,0.76)").attr("font-size", 9).attr("font-weight", 500)
+      .attr("fill", "rgba(255,255,255,0.76)").attr("font-size", 10).attr("font-weight", 500)
       .text(row.label);
 
     row.weeks.forEach((value, weekIndex) => {
@@ -467,7 +476,7 @@ const draw = () => {
       .attr("stroke", "rgba(255,255,255,0.9)").attr("stroke-width", 1.2);
     distributionSummaryColumns.forEach((column) => group.append("text")
       .attr("x", column.x).attr("y", center).attr("dy", "0.32em").attr("text-anchor", column.anchor)
-      .attr("fill", "rgba(255,255,255,0.72)").attr("font-size", 8.5)
+      .attr("fill", "rgba(255,255,255,0.72)").attr("font-size", 9.5)
       .text(formatCompactUsd(column.value(row.weeks))));
   });
 
@@ -476,19 +485,11 @@ const draw = () => {
     .attr("y1", distributionHeaderY - 24).attr("y2", distributionHeaderY - 24)
     .attr("stroke", "rgba(255,255,255,0.12)");
 
-  svg.append("text")
-    .attr("x", margin.left)
-    .attr("y", rankedHeaderY)
-    .attr("fill", "rgba(255,255,255,0.64)")
-    .attr("font-size", 10)
-    .attr("font-weight", 500)
-    .text("RANKED SWEEP · OUTLIER LENS");
-  svg.append("text")
-    .attr("x", margin.left)
-    .attr("y", rankedHeaderY + 16)
-    .attr("fill", "rgba(255,255,255,0.36)")
-    .attr("font-size", 8)
-    .text("PNL ATTRIBUTION AND ENTRY VOLATILITY · SORTED BY TOTAL PNL");
+  appendPanelHeading({
+    y: rankedHeaderY,
+    title: "RANKED SWEEP · OUTLIER LENS",
+    subtitle: "PNL ATTRIBUTION AND ENTRY VOLATILITY · SORTED BY TOTAL PNL",
+  });
 
   const columnX = {
     setting: margin.left,
@@ -519,7 +520,7 @@ const draw = () => {
   headers.forEach(({ label, x, anchor, tooltip }) => {
     const header = svg.append("text")
       .attr("x", x).attr("y", rankedColumnsY).attr("text-anchor", anchor)
-      .attr("fill", "rgba(255,255,255,0.45)").attr("font-size", 8).text(label);
+      .attr("fill", "rgba(255,255,255,0.45)").attr("font-size", 9).text(label);
     header
       .on("mouseenter", () => showHeaderTooltip(x, rankedColumnsY, tooltip, anchor))
       .on("mouseleave", hideHeaderTooltip);
@@ -546,7 +547,7 @@ const draw = () => {
     group.append("line").attr("x1", margin.left).attr("x2", margin.left + contentWidth)
       .attr("y1", top).attr("y2", top).attr("stroke", "rgba(255,255,255,0.05)");
     group.append("text").attr("x", columnX.setting).attr("y", center).attr("dy", "0.32em")
-      .attr("fill", "rgba(255,255,255,0.78)").attr("font-size", 9).attr("font-weight", 500).text(row.label);
+      .attr("fill", "rgba(255,255,255,0.78)").attr("font-size", 10).attr("font-weight", 500).text(row.label);
 
     const [cumMin, cumMax] = d3.extent(row.cumulative);
     const sparkX = d3.scaleLinear().domain([0, Math.max(1, row.cumulative.length - 1)]).range([columnX.spark, columnX.spark + sparkWidth]);
@@ -561,7 +562,7 @@ const draw = () => {
 
     const addValue = (x, value, color = "rgba(255,255,255,0.7)") => group.append("text")
       .attr("x", x).attr("y", center).attr("dy", "0.32em").attr("text-anchor", "end")
-      .attr("fill", color).attr("font-size", 8.5).text(value);
+      .attr("fill", color).attr("font-size", 9.5).text(value);
     const optionPnl = Number(row.optionPnl) || 0;
     const hedgePnl = Number(row.hedgePnl) || 0;
     addValue(columnX.optionPnl, formatCompactUsd(optionPnl), optionPnlColor(optionPnl));
