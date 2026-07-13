@@ -49,10 +49,14 @@ const STRUCTURE_OPTIONS = [
 ];
 
 const DELTA_OPTIONS = [
+  { value: 0.05, label: "5D" },
+  { value: 0.1, label: "10D" },
   { value: 0.15, label: "15D" },
   { value: 0.25, label: "25D" },
-  { value: 0.3, label: "30D" },
+  { value: 0.35, label: "35D" },
+  { value: 0.45, label: "45D" },
 ];
+const DEFAULT_DELTA_OPTION = DELTA_OPTIONS.find((option) => option.value === 0.25);
 
 const WEEKDAY_OPTIONS = [
   { value: 1, label: "Monday" },
@@ -297,7 +301,7 @@ const sweepInsights = computed(() => {
 const railGroups = computed(() => {
   const mat = currentMaturity.value;
   const struc = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
-  const del = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
+  const del = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
   const wd = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
   const opt = showDelta.value ? del.label : "ATM";
   const entryLbl = `${wd.label} ${String(ui.entryHourUtc).padStart(2,"0")}:00 UTC`;
@@ -317,7 +321,7 @@ const railGroups = computed(() => {
 const strategyTitle = computed(() => {
   const m = currentMaturity.value;
   const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
-  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
+  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
   const opt = showDelta.value ? d.label : "ATM";
   let h = "Unhedged";
   if (ui.hedgeEnabled) {
@@ -338,7 +342,7 @@ const strategyTitle = computed(() => {
 const instrumentPill = computed(() => {
   const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
   const m = currentMaturity.value;
-  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
+  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
   const side = ui.longOption ? "Long" : "Short";
   const opt = showDelta.value ? `${d.label} ${s.label}` : "ATM";
   const investment = ui.investmentMode === "btc" ? "1 BTC" : "$100k";
@@ -352,13 +356,13 @@ const structureLabel = computed(() => {
 
 const maturityLabel = computed(() => {
   const m = currentMaturity.value;
-  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
+  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
   const opt = showDelta.value ? d.label : "ATM";
   return `${m.label} ${opt}`;
 });
 
 const deltaLabel = computed(() => {
-  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
+  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
   return d.label;
 });
 
@@ -429,7 +433,7 @@ const chartTitle = computed(() => {
     return `${entry} cycle · hourly detail`;
   }
   const m = currentMaturity.value;
-  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DELTA_OPTIONS[1];
+  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
   const side = ui.longOption ? "Long" : "Short";
   let strategy = `${side} straddle ${m.label}`;
   if (ui.structure === "strangle") {
@@ -1912,6 +1916,9 @@ onMounted(loadBacktest);
 
 .segmented {
   display: flex;
+  align-items: center;
+  height: 30px;
+  box-sizing: border-box;
   background: rgba(255,255,255,0.05);
   border-radius: 8px;
   padding: 2px;
@@ -1924,7 +1931,9 @@ onMounted(loadBacktest);
   font-size: 12px;
   font-weight: 500;
   color: #70767d;
-  padding: 6px 14px;
+  height: 26px;
+  padding: 0 14px;
+  line-height: 1;
   border-radius: 6px;
   cursor: pointer;
 }
@@ -1956,6 +1965,9 @@ onMounted(loadBacktest);
 
 .sweepDimensionControl {
   display: flex;
+  align-items: center;
+  height: 30px;
+  box-sizing: border-box;
   padding: 2px;
   border: 1px solid rgba(255,255,255,0.1);
   border-radius: 7px;
@@ -1964,9 +1976,11 @@ onMounted(loadBacktest);
 
 .sweepDimensionControl button,
 .runSweepButton {
+  height: 24px;
+  box-sizing: border-box;
   border: 0;
   border-radius: 5px;
-  padding: 7px 11px;
+  padding: 0 11px;
   background: transparent;
   color: #747a82;
   font: 500 11px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
@@ -1985,6 +1999,7 @@ onMounted(loadBacktest);
 }
 
 .runSweepButton {
+  height: 30px;
   min-width: 88px;
   border: 1px solid rgba(125,211,252,0.28);
   color: #7dd3fc;
@@ -2423,7 +2438,9 @@ onMounted(loadBacktest);
 }
 
 .topSaveButton {
-  padding: 6px 12px;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 12px;
   border-radius: 6px;
 }
 

@@ -74,6 +74,8 @@ const draw = () => {
     const sorted = [...weeks].sort((a, b) => b - a);
     const positive = sum(weeks.filter((value) => value > 0));
     const negative = Math.abs(sum(weeks.filter((value) => value < 0)));
+    const maxDrawdown = Math.abs(Number(row.maxDrawdown) || 0);
+    const annualizedPnl = weeks.length ? total * 52 / weeks.length : 0;
     const cumulative = [0];
     weeks.forEach((value) => cumulative.push(cumulative[cumulative.length - 1] + value));
     return {
@@ -83,6 +85,7 @@ const draw = () => {
       robustPnl: total - bestWeek,
       winRate: weeks.length ? weeks.filter((value) => value > 0).length / weeks.length : 0,
       profitFactor: negative ? positive / negative : 0,
+      calmar: maxDrawdown ? annualizedPnl / maxDrawdown : Number.NaN,
       cvar: d3.mean(sorted.slice(-3)) ?? 0,
       cumulative,
       bestIndex,
@@ -381,11 +384,12 @@ const draw = () => {
     spark: margin.left + contentWidth * 0.07,
     pnl: margin.left + contentWidth * 0.25,
     pnlValue: margin.left + contentWidth * 0.56,
-    sharpe: margin.left + contentWidth * 0.64,
-    drawdown: margin.left + contentWidth * 0.72,
-    win: margin.left + contentWidth * 0.79,
-    profitFactor: margin.left + contentWidth * 0.86,
-    cvar: margin.left + contentWidth * 0.93,
+    sharpe: margin.left + contentWidth * 0.63,
+    drawdown: margin.left + contentWidth * 0.70,
+    calmar: margin.left + contentWidth * 0.77,
+    win: margin.left + contentWidth * 0.83,
+    profitFactor: margin.left + contentWidth * 0.89,
+    cvar: margin.left + contentWidth * 0.96,
   };
   const headers = [
     { label: "SETTING", x: columnX.setting, anchor: "start", tooltip: "The sweep parameter value used for this backtest variant." },
@@ -393,6 +397,7 @@ const draw = () => {
     { label: "TOTAL → EX BEST", x: columnX.pnl, anchor: "start", tooltip: "Total PnL compared with total PnL after subtracting the single best week. A large gap indicates outlier dependence." },
     { label: "SHARPE", x: columnX.sharpe, anchor: "end", tooltip: "Annualized weekly Sharpe: average weekly PnL divided by weekly PnL volatility, multiplied by √52." },
     { label: "MAX DD", x: columnX.drawdown, anchor: "end", tooltip: "Largest peak-to-trough loss in cumulative PnL during the backtest." },
+    { label: "CALMAR", x: columnX.calmar, anchor: "end", tooltip: "Annualized weekly PnL divided by absolute maximum drawdown. Higher means more return per unit of peak-to-trough loss." },
     { label: "WIN", x: columnX.win, anchor: "end", tooltip: "Percentage of weeks with positive PnL." },
     { label: "PF", x: columnX.profitFactor, anchor: "end", tooltip: "Profit factor: gross PnL from winning weeks divided by the absolute gross loss from losing weeks. Above 1 means gains exceed losses." },
     { label: "CVAR WK", x: columnX.cvar, anchor: "end", tooltip: "Weekly tail loss: the average PnL of the three worst weeks. More negative means a heavier downside tail." },
@@ -416,7 +421,7 @@ const draw = () => {
     .attr("class", "rank-row")
     .attr("role", "button")
     .attr("tabindex", 0)
-    .attr("aria-label", (row) => `${row.label}: total PnL ${formatUsd(row.total)}, excluding best week ${formatUsd(row.robustPnl)}, Sharpe ${formatSharpe(Number(row.sharpe) || 0)}`)
+    .attr("aria-label", (row) => `${row.label}: total PnL ${formatUsd(row.total)}, excluding best week ${formatUsd(row.robustPnl)}, Sharpe ${formatSharpe(Number(row.sharpe) || 0)}, Calmar ${Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "not available"}`)
     .style("cursor", "pointer")
     .on("click", (_, row) => emit("select", row));
 
@@ -456,6 +461,7 @@ const draw = () => {
       .attr("fill", color).attr("font-size", 8.5).text(value);
     addValue(columnX.sharpe, formatSharpe(Number(row.sharpe) || 0), sharpeColor(Number(row.sharpe) || 0));
     addValue(columnX.drawdown, formatCompactUsd(Number(row.maxDrawdown) || 0), drawdownColor(Number(row.maxDrawdown) || 0));
+    addValue(columnX.calmar, Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "—");
     addValue(columnX.win, d3.format(".0%")(row.winRate));
     addValue(columnX.profitFactor, d3.format(".2f")(row.profitFactor));
     addValue(columnX.cvar, formatCompactUsd(row.cvar));
