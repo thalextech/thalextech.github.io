@@ -116,12 +116,6 @@ const rollDayOptions = computed(() =>
 
 const openMenu = ref(null);
 
-// Legacy state for old hover/editing pill logic (kept to prevent Vue warnings during render)
-const editingPill = ref(null);
-const showHedgePanel = ref(false);
-const hoveredPill = ref(null);
-const hoveredControl = ref(null);
-
 function toggleMenu(name) {
   openMenu.value = openMenu.value === name ? null : name;
 }
@@ -164,7 +158,6 @@ const hedgePct = computed(() => {
   return ((val - 1) / 23) * 100 + '%';
 });
 
-const activeRailGroup = ref("instrument");
 const mode = ref("single");
 const sweepDimension = ref("entry_hour");
 const sweepResults = ref([]);
@@ -298,98 +291,45 @@ const sweepInsights = computed(() => {
   };
 });
 
-const railGroups = computed(() => {
-  const mat = currentMaturity.value;
-  const struc = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
-  const del = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
-  const wd = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
-  const opt = showDelta.value ? del.label : "ATM";
-  const entryLbl = `${wd.label} ${String(ui.entryHourUtc).padStart(2,"0")}:00 UTC`;
-  const hedgeLbl = !ui.hedgeEnabled ? "Off" : ui.hedgeIntervalHours === 24 ? `Daily ${String(ui.entryHourUtc).padStart(2,"0")}:00` : `Every ${ui.hedgeIntervalHours}h`;
-  const hedge2 = ui.hedgeEnabled ? "Perp · no fees" : "Option-only PnL";
+const strategyLabels = computed(() => {
+  const maturity = currentMaturity.value;
+  const structure =
+    STRUCTURE_OPTIONS.find((option) => option.value === ui.structure) ||
+    STRUCTURE_OPTIONS[0];
+  const delta =
+    DELTA_OPTIONS.find((option) => option.value === Number(ui.targetDelta)) ||
+    DEFAULT_DELTA_OPTION;
+  const weekday =
+    WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.entryWeekday)) ||
+    WEEKDAY_OPTIONS[4];
   const side = ui.longOption ? "Long" : "Short";
-  const exit1 = ui.holdToExpiry ? "Hold to expiry" : `Roll every ${ui.exitHoldDays}D`;
-  const exit2 = ui.holdToExpiry ? "Use selected expiry" : `Max ${mat.nearDays ?? mat.value}D`;
-  return [
-    { key: "instrument", label: "Instrument", primary: `BTC · ${side} ${struc.label}`, secondary: `${mat.label} · ${opt}` },
-    { key: "entry", label: "Entry", primary: entryLbl, secondary: "Filter: none" },
-    { key: "hedging", label: "Hedging", primary: hedgeLbl, secondary: hedge2 },
-    { key: "exit", label: "Exit", primary: exit1, secondary: exit2 },
-  ];
-});
+  const hour = String(ui.entryHourUtc).padStart(2, "0");
+  const option = showDelta.value ? `${delta.label} ${structure.label}` : "ATM";
 
-const strategyTitle = computed(() => {
-  const m = currentMaturity.value;
-  const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
-  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
-  const opt = showDelta.value ? d.label : "ATM";
-  let h = "Unhedged";
-  if (ui.hedgeEnabled) {
-    const hrs = ui.hedgeIntervalHours;
-    if (hrs === 24) {
-      h = "Hedged daily";
-    } else {
-      const d = hrs / 24;
-      const dStr = d.toFixed(hrs >= 12 ? 1 : 2).replace(/\.?0+$/, '');
-      const plural = parseFloat(dStr) === 1 ? '' : 's';
-      h = `Hedged every ${dStr} day${plural}`;
-    }
+  let chartStrategy = `${side} straddle ${maturity.label}`;
+  if (ui.structure === "strangle") {
+    chartStrategy = `${side} strangle ${maturity.label} (${delta.label})`;
+  } else if (ui.structure === "risk_reversal") {
+    chartStrategy = `Risk reversal ${maturity.label} (${delta.label} call ${ui.longOption ? "long" : "short"} / put ${ui.longOption ? "short" : "long"})`;
+  } else if (ui.structure === "call" || ui.structure === "put") {
+    chartStrategy = `${side} ${ui.structure} ${maturity.label} (${delta.label})`;
+  } else if (ui.structure === "calendar_spread") {
+    chartStrategy = `${side} ATM calendar spread ${maturity.label}`;
   }
-  return `${m.label} ${opt} ${s.label} - ${h}`;
-});
 
-// New design pill values
-const instrumentPill = computed(() => {
-  const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
-  const m = currentMaturity.value;
-  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
-  const side = ui.longOption ? "Long" : "Short";
-  const opt = showDelta.value ? `${d.label} ${s.label}` : "ATM";
-  const investment = ui.investmentMode === "btc" ? "1 BTC" : "$100k";
-  return `BTC · ${side} ${s.label} · ${m.label} ${opt} · ${investment}`;
+  return {
+    instrument: `BTC · ${side} ${structure.label} · ${maturity.label} ${option} · ${ui.investmentMode === "btc" ? "1 BTC" : "$100k"}`,
+    entry: `${weekday.label.slice(0, 3)} ${hour}:00`,
+    weekday: weekday.label,
+    hedge: !ui.hedgeEnabled
+      ? "Off"
+      : ui.hedgeIntervalHours === 24
+        ? `Daily ${hour}:00 · Perp`
+        : `Every ${ui.hedgeIntervalHours}h · Perp`,
+    exit: ui.holdToExpiry ? "Hold to expiry" : `Roll every ${ui.exitHoldDays}D`,
+    chart: `${chartStrategy}, ${ui.hedgeEnabled ? `hedged every ${ui.hedgeIntervalHours}h` : "unhedged"}`,
+  };
 });
-
-const structureLabel = computed(() => {
-  const s = STRUCTURE_OPTIONS.find(o => o.value === ui.structure) || STRUCTURE_OPTIONS[0];
-  return s.label;
-});
-
-const maturityLabel = computed(() => {
-  const m = currentMaturity.value;
-  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
-  const opt = showDelta.value ? d.label : "ATM";
-  return `${m.label} ${opt}`;
-});
-
-const deltaLabel = computed(() => {
-  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
-  return d.label;
-});
-
-const entryPill = computed(() => {
-  const wd = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
-  return `${wd.label.slice(0,3)} ${String(ui.entryHourUtc).padStart(2,'0')}:00`;
-});
-
-const selectedWeekdayLabel = computed(() => {
-  const wd = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
-  return wd.label;
-});
-
-const hedgePill = computed(() => {
-  if (!ui.hedgeEnabled) return "Off";
-  return ui.hedgeIntervalHours === 24
-    ? `Daily ${String(ui.entryHourUtc).padStart(2,'0')}:00 · Perp`
-    : `Every ${ui.hedgeIntervalHours}h · Perp`;
-});
-
-const exitPill = computed(() => {
-  return ui.holdToExpiry
-    ? "Hold to expiry"
-    : `Roll every ${ui.exitHoldDays}D`;
-});
-
-const holdPill = computed(() => ui.holdToExpiry ? "On" : "Off");
 
 // Metrics for new design (only 3)
 const finalPnlValue = computed(() => {
@@ -432,23 +372,7 @@ const chartTitle = computed(() => {
     });
     return `${entry} cycle · hourly detail`;
   }
-  const m = currentMaturity.value;
-  const d = DELTA_OPTIONS.find(o => o.value === Number(ui.targetDelta)) || DEFAULT_DELTA_OPTION;
-  const side = ui.longOption ? "Long" : "Short";
-  let strategy = `${side} straddle ${m.label}`;
-  if (ui.structure === "strangle") {
-    strategy = `${side} strangle ${m.label} (${d.label})`;
-  } else if (ui.structure === "risk_reversal") {
-    strategy = `Risk reversal ${m.label} (${d.label} call ${ui.longOption ? 'long' : 'short'} / put ${ui.longOption ? 'short' : 'long'})`;
-  } else if (ui.structure === "call" || ui.structure === "put") {
-    strategy = `${side} ${ui.structure} ${m.label} (${d.label})`;
-  } else if (ui.structure === "calendar_spread") {
-    strategy = `${side} ATM calendar spread ${m.label}`;
-  }
-  const hedge = ui.hedgeEnabled
-    ? `hedged every ${ui.hedgeIntervalHours}h`
-    : "unhedged";
-  return `${strategy}, ${hedge}`;
+  return strategyLabels.value.chart;
 });
 
 const chartSubtitle = computed(() => {
@@ -929,7 +853,7 @@ onMounted(loadBacktest);
         <!-- Instrument -->
         <div class="pill instrumentPill" style="position: relative;" @click="toggleMenu('instrument')">
           <span class="pillLabel">Instrument</span>
-          <span class="pillValue">{{ instrumentPill }}</span>
+          <span class="pillValue">{{ strategyLabels.instrument }}</span>
           <div v-if="openMenu === 'instrument'" class="dropdown instrument-dropdown" @click.stop>
             <div class="inst-field">
               <label class="inst-label">Side</label>
@@ -1010,7 +934,7 @@ onMounted(loadBacktest);
         <!-- Entry -->
         <div class="pill entryPill" style="position: relative;" @click="toggleMenu('entry')">
           <span class="pillLabel">Entry</span>
-          <span class="pillValue">{{ entryPill }}</span>
+          <span class="pillValue">{{ strategyLabels.entry }}</span>
           <div v-if="openMenu === 'entry'" class="dropdown entry-dropdown" @click.stop>
             <label class="inst-label" style="margin-bottom: 3px;">Weekday</label>
             <div class="inst-choices weekday-choices">
@@ -1025,7 +949,7 @@ onMounted(loadBacktest);
             </div>
             <div class="entry-picker">
               <div class="entry-picker__header">
-                <span class="entry-picker__day">{{ selectedWeekdayLabel }}</span>
+                <span class="entry-picker__day">{{ strategyLabels.weekday }}</span>
                 <span class="entry-picker__time">{{ String(ui.entryHourUtc).padStart(2,'0') }}:00</span>
               </div>
               <div class="hour-grid">
@@ -1045,7 +969,7 @@ onMounted(loadBacktest);
         <!-- Hedge -->
         <div class="pill hedgePill" style="position: relative;" @click="toggleMenu('hedge')">
           <span class="pillLabel">Hedge</span>
-          <span class="pillValue">{{ hedgePill }}</span>
+          <span class="pillValue">{{ strategyLabels.hedge }}</span>
           <div v-if="openMenu === 'hedge'" class="dropdown" @click.stop>
             <div class="freq-toggle-row">
               <span class="freq-row__label">Hedge</span>
@@ -1079,7 +1003,7 @@ onMounted(loadBacktest);
         <!-- Exit -->
         <div class="pill exitPill" style="position: relative;" @click="toggleMenu('exit')">
           <span class="pillLabel">Exit</span>
-          <span class="pillValue">{{ exitPill }}</span>
+          <span class="pillValue">{{ strategyLabels.exit }}</span>
           <div v-if="openMenu === 'exit'" class="dropdown" @click.stop>
             <div class="freq-toggle-row">
               <span class="freq-row__label">Hold to expiry</span>
@@ -1272,6 +1196,19 @@ onMounted(loadBacktest);
 </template>
 
 <style scoped>
+:global(:root) {
+  --color-bg: #0a0b0e;
+  --color-surface: #131316;
+  --color-surface-raised: #1a1a1f;
+  --color-text: #e8eaed;
+  --color-text-muted: #70767d;
+  --color-accent: #7dd3fc;
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border: rgba(255, 255, 255, 0.09);
+  --color-border-strong: rgba(255, 255, 255, 0.2);
+  --color-overlay: rgba(0, 0, 0, 0.5);
+}
+
 :global(*) {
   box-sizing: border-box;
 }
@@ -1279,8 +1216,8 @@ onMounted(loadBacktest);
 :global(body) {
   margin: 0;
   min-width: 320px;
-  background: #0a0b0e;
-  color: #e8eaed;
+  background: var(--color-bg);
+  color: var(--color-text);
   font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
   color-scheme: dark;
 }
@@ -1290,7 +1227,7 @@ onMounted(loadBacktest);
   width: 100%;
   min-height: 100vh;
   padding: 0;
-  background: #0a0b0e;
+  background: var(--color-bg);
   display: flex;
   flex-direction: column;
 }
@@ -1300,7 +1237,7 @@ onMounted(loadBacktest);
   align-items: center;
   height: 58px;
   padding: 0 28px;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid var(--color-border-subtle);
   gap: 20px;
   flex-shrink: 0;
 }
@@ -1308,7 +1245,7 @@ onMounted(loadBacktest);
 .wordmark {
   font-size: 14px;
   font-weight: 600;
-  color: #e8eaed;
+  color: var(--color-text);
 }
 
 .divider {
@@ -1331,7 +1268,7 @@ onMounted(loadBacktest);
   display: flex;
   gap: 7px;
   align-items: center;
-  border: 1px solid rgba(255,255,255,0.09);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 7px 13px;
   font-size: 12px;
@@ -1343,7 +1280,7 @@ onMounted(loadBacktest);
 }
 
 .pill:hover {
-  border-color: rgba(255,255,255,0.2);
+  border-color: var(--color-border-strong);
 }
 
 /* Ensure controls are visible and usable on hover */
@@ -1358,7 +1295,7 @@ onMounted(loadBacktest);
   font-size: 11px;
   background: #000;
   color: #fff;
-  border: 1px solid rgba(255,255,255,0.2);
+  border: 1px solid var(--color-border-strong);
   border-radius: 4px;
   padding: 2px 6px;
   cursor: pointer;
@@ -1369,15 +1306,15 @@ onMounted(loadBacktest);
 
 .pill select option,
 .dropdown select option {
-  background: #0a0b0e;
-  color: #e8eaed;
+  background: var(--color-bg);
+  color: var(--color-text);
 }
 
 /* In dropdowns, no borders on inner inputs */
 .dropdown select {
   border: 1px solid rgba(255,255,255,0.1);
-  background: #0a0b0e;
-  color: #e8eaed;
+  background: var(--color-bg);
+  color: var(--color-text);
   padding: 6px 8px;
   width: 100%;
   margin-bottom: 4px;
@@ -2145,182 +2082,6 @@ onMounted(loadBacktest);
   letter-spacing: 1.2px;
   text-transform: uppercase;
   color: #70767d;
-}
-
-.railGroups {
-  display: grid;
-  gap: 14px;
-}
-
-.railGroup {
-  border-bottom: 1px solid #29292d;
-  padding-bottom: 14px;
-}
-
-.railGroupButton {
-  display: grid;
-  width: 100%;
-  gap: 8px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  padding: 0;
-  text-align: left;
-}
-
-.railGroupButton span {
-  color: #8f8f96;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.railGroupButton strong {
-  color: #f2f2f4;
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 1.15;
-}
-
-.railGroupButton em {
-  color: #b4b4bc;
-  font-style: normal;
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.railPanel {
-  display: grid;
-  gap: 12px;
-  margin-top: 16px;
-  padding: 14px;
-  border: 1px solid #303035;
-  border-radius: 8px;
-  background: #101014;
-}
-
-.field {
-  display: grid;
-  gap: 6px;
-}
-
-.field span {
-  color: #8f8f96;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.field select {
-  width: 100%;
-  padding: 0 30px 0 10px;
-}
-
-.field select:focus,
-.field select:disabled {
-  color: #73737b;
-  cursor: not-allowed;
-}
-
-.toggleField,
-.rangeField {
-  display: grid;
-  gap: 10px;
-  color: #d7d7dc;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.toggleField {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-}
-
-.toggleField input {
-  width: 42px;
-  height: 24px;
-  appearance: none;
-  border: 1px solid #3a3a40;
-  border-radius: 999px;
-  background: #1a1a1f;
-  cursor: pointer;
-  position: relative;
-}
-
-.toggleField input::before {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #8f8f96;
-  transition: transform 140ms ease, background 140ms ease;
-}
-
-.toggleField input:checked {
-  border-color: #5fc7a6;
-  background: #12392f;
-}
-
-.toggleField input:checked::before {
-  transform: translateX(18px);
-  background: #62c7a7;
-}
-
-.rangeField span {
-  color: #8f8f96;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.rangeField input {
-  width: 100%;
-  accent-color: #62c7a7;
-}
-
-.rangeField.disabled {
-  opacity: 0.45;
-}
-
-.readonlyPanel {
-  padding: 12px;
-}
-
-.readonlyRow {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.readonlyRow span {
-  color: #f2f2f4;
-}
-
-.readonlyRow strong {
-  color: #9fa0aa;
-  font-size: 13px;
-}
-
-.runButton {
-  width: 100%;
-  height: 54px;
-  background: #f2f2f4;
-  color: #09090b;
-  cursor: pointer;
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.runButton:hover:not(:disabled) {
-  background: #ffffff;
-}
-
-.runButton:disabled {
-  cursor: progress;
-  opacity: 0.55;
 }
 
 .chartColumn {
