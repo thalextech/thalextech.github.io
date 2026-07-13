@@ -137,26 +137,14 @@ watch(openMenu, (val) => {
   }, 0);
 });
 
-const localHedgeIntervalHours = ref(ui.hedgeIntervalHours);
-
-watch(() => ui.hedgeIntervalHours, (val) => {
-  localHedgeIntervalHours.value = val;
-});
-
-let hedgeDebounce = null;
 let runDebounce = null;
 
 function updateHedgeInterval(val) {
-  const numVal = Number(val);
-  localHedgeIntervalHours.value = numVal;
-  clearTimeout(hedgeDebounce);
-  hedgeDebounce = setTimeout(() => {
-    ui.hedgeIntervalHours = numVal;
-  }, 500);
+  ui.hedgeIntervalHours = Number(val);
 }
 
 const hedgePct = computed(() => {
-  const val = Number(localHedgeIntervalHours.value) || 1;
+  const val = Number(ui.hedgeIntervalHours) || 1;
   return ((val - 1) / 23) * 100 + '%';
 });
 
@@ -221,16 +209,6 @@ const hoursFor = (hour, enabled, interval) => {
 const requiredHours = computed(() => hoursFor(ui.entryHourUtc, ui.hedgeEnabled, ui.hedgeIntervalHours));
 const requiredHoursKey = computed(() => requiredHours.value.join(","));
 let loadedHoursKey = "";
-
-const metrics = computed(() => {
-  const summary = result.value?.summary;
-  if (!summary) return [];
-  return [
-    { label: "Final PnL", value: formatUsd.format(summary.finalEquityUsd) },
-    { label: "Sharpe", value: Number.isFinite(summary.sharpeRatio) ? formatNumber.format(summary.sharpeRatio) : "n/a" },
-    { label: "Max DD", value: formatUsd.format(maxDrawdown.value) },
-  ];
-});
 
 const maxDrawdown = computed(() => {
   return computeMaxDrawdown(result.value?.cycleSummary);
@@ -613,7 +591,7 @@ const switchMode = (nextMode) => {
   selectedCycle.value = null;
   if (nextMode === "single") {
     sweepDataCache = null;
-    handleMaturityChange();
+    scheduleBacktest();
   }
 };
 
@@ -644,7 +622,7 @@ const handleCycleSelect = async (cycle) => {
   selectedCycle.value = cycle;
   cycleBreakEvens.value = computeBreakEvens(cycle);
   cycleDetailError.value = "";
-  const cacheKey = `${cycle.entryTs}|${cycle.exitTs}|${ui.hedgeIntervalHours}|${ui.hedgeEnabled}`;
+  const cacheKey = `${cycle.entryTs}|${cycle.exitTs}`;
   if (cycleDetailCache.has(cacheKey)) {
     const cached = cycleDetailCache.get(cacheKey);
     cycleDetailRows.value = cached.rows;
@@ -687,10 +665,8 @@ const handleCycleSelect = async (cycle) => {
 const loadBacktest = async () => {
   state.error = "";
   state.progress = "Loading data";
-  preparedData.value = null;
   try {
     const config = buildConfig();
-    state.progress = "Loading data";
     const loaded = await loadThalexHistory({
       start: config.start,
       end: config.end,
@@ -700,11 +676,12 @@ const loadBacktest = async () => {
       },
     });
     state.progress = "Preparing quotes";
-    preparedData.value = prepareBacktestData({
+    const nextPreparedData = prepareBacktestData({
       indexRows: loaded.indexRows,
       markRows: loaded.markRows,
       config,
     });
+    preparedData.value = nextPreparedData;
     loadedHoursKey = requiredHoursKey.value;
     state.progress = "Running strategy";
     runCurrent();
@@ -714,7 +691,7 @@ const loadBacktest = async () => {
   }
 };
 
-const handleMaturityChange = () => {
+const scheduleBacktest = () => {
   state.error = "";
   clearTimeout(runDebounce);
   if (mode.value === "sweep") {
@@ -731,6 +708,7 @@ const handleMaturityChange = () => {
   }, 80);
 };
 
+let scheduledUiKey = "";
 watch(
   () => [
     ui.maturityDays,
@@ -745,40 +723,47 @@ watch(
     ui.longOption,
     ui.investmentMode,
   ],
-  handleMaturityChange,
+  () => {
+    const isCalendarMaturity = CALENDAR_MATURITY_OPTIONS.some(
+      (option) => String(option.value) === String(ui.maturityDays),
+    );
+    if (ui.structure === "calendar_spread" && !isCalendarMaturity) {
+      ui.maturityDays = CALENDAR_MATURITY_OPTIONS[0].value;
+    } else if (ui.structure !== "calendar_spread" && isCalendarMaturity) {
+      ui.maturityDays = MATURITY_OPTIONS[0].value;
+    }
+    if (ui.exitHoldDays > maxExitHoldDays.value) {
+      ui.exitHoldDays = maxExitHoldDays.value;
+    }
+    if (!showDelta.value && sweepDimension.value === "delta_band") {
+      sweepDimension.value = "entry_hour";
+    }
+    if (!ui.hedgeEnabled) chartMode.value = "weekly";
+
+    const uiKey = [
+      ui.maturityDays,
+      ui.structure,
+      ui.targetDelta,
+      ui.entryWeekday,
+      ui.entryHourUtc,
+      ui.hedgeEnabled,
+      ui.hedgeIntervalHours,
+      ui.holdToExpiry,
+      ui.exitHoldDays,
+      ui.longOption,
+      ui.investmentMode,
+    ].join("|");
+    if (uiKey === scheduledUiKey) return;
+    scheduledUiKey = uiKey;
+    scheduleBacktest();
+  },
 );
-
-watch(() => ui.maturityDays, () => {
-  if (ui.exitHoldDays > maxExitHoldDays.value) {
-    ui.exitHoldDays = maxExitHoldDays.value;
-  }
-});
-
-watch(() => ui.structure, (structure) => {
-  const isCalendarMaturity = CALENDAR_MATURITY_OPTIONS.some(
-    (option) => String(option.value) === String(ui.maturityDays),
-  );
-  if (structure === "calendar_spread" && !isCalendarMaturity) {
-    ui.maturityDays = CALENDAR_MATURITY_OPTIONS[0].value;
-  } else if (structure !== "calendar_spread" && isCalendarMaturity) {
-    ui.maturityDays = MATURITY_OPTIONS[0].value;
-  }
-  if (!showDelta.value && sweepDimension.value === "delta_band") {
-    sweepDimension.value = "entry_hour";
-  }
-});
 
 watch(sweepDimension, () => {
   sweepResults.value = [];
   sweepTiming.value = null;
   sweepProgress.value = "";
 });
-
-watch(() => ui.hedgeEnabled, (enabled) => {
-  if (!enabled) chartMode.value = "weekly";
-});
-
-
 
 function handleSavePng() {
   const date = new Date().toISOString().slice(0, 10);
@@ -970,7 +955,7 @@ onMounted(loadBacktest);
               min="1" 
               max="24" 
               step="1" 
-              :value="localHedgeIntervalHours"
+              :value="ui.hedgeIntervalHours"
               @input="updateHedgeInterval(Number($event.target.value))"
               :style="{ '--pct': hedgePct }"
               :disabled="!ui.hedgeEnabled"
@@ -978,7 +963,7 @@ onMounted(loadBacktest);
             >
             <div class="freq-footer">
               <span class="freq-footer__edge">1h</span>
-              <span class="freq-footer__value">Every {{ localHedgeIntervalHours }}h</span>
+              <span class="freq-footer__value">Every {{ ui.hedgeIntervalHours }}h</span>
               <span class="freq-footer__edge">24h</span>
             </div>
           </div>
