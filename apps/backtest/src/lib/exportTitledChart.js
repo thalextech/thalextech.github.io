@@ -1,6 +1,7 @@
 import { exportChartToPng } from "../../../../lib/export-png.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+const SCREENSHOT_IMAGE_FILTER = "brightness(1.12) saturate(1.35)";
 
 const addText = (svg, { text, x, y, size, color, weight = 400 }) => {
   if (!text) return;
@@ -103,6 +104,7 @@ export function exportTitledChart({
     scale,
     padding,
     background,
+    imageFilter: SCREENSHOT_IMAGE_FILTER,
   });
 }
 
@@ -130,5 +132,6 @@ export function exportChartRegionToPng({
     scale,
     padding,
     background,
+    imageFilter: SCREENSHOT_IMAGE_FILTER,
   });
 }
