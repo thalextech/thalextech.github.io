@@ -83,7 +83,7 @@ export const computeMaxDrawdown = (rows = []) => {
   let peak = 0;
   let drawdown = 0;
   for (const row of rows) {
-    const equity = row.cumulativeDeltaHedgedPnl;
+    const equity = row.endingEquityUsd;
     peak = Math.max(peak, equity);
     drawdown = Math.min(drawdown, equity - peak);
   }
@@ -155,8 +155,7 @@ const dedupeByKey = (rows, makeKey) => {
   return [...byKey.values()];
 };
 
-const buildOptions = ({ markRows, indexRows, config }) => {
-  const indexByTs = new Map(indexRows.map((row) => [row.ts, row]));
+const buildOptions = ({ markRows, indexByTs, config }) => {
   return markRows
     .map((mark) => {
       const index = indexByTs.get(mark.ts);
@@ -195,18 +194,15 @@ const buildOptions = ({ markRows, indexRows, config }) => {
     });
 };
 
-const buildQuotes = ({ options, config }) =>
+// buildOptions guarantees this order. Filtering and Map-based deduplication
+// preserve insertion order, so quotes retain the same ordering without a sort.
+const buildQuotes = ({ options }) =>
   dedupeByKey(
     options.filter(
       (row) => row.dteDays > 0,
     ),
     (row) => `${row.ts}|${row.instrumentName}`,
-  ).sort((a, b) => {
-    if (a.ts !== b.ts) return a.ts - b.ts;
-    if (a.expirationTs !== b.expirationTs) return a.expirationTs - b.expirationTs;
-    if (a.strike !== b.strike) return a.strike - b.strike;
-    return a.optionType.localeCompare(b.optionType);
-  });
+  );
 
 const buildEntryExpirations = ({ quotes, entryCandidates, dataEnd, config }) => {
   const bestByEntryTs = new Map();
@@ -408,6 +404,7 @@ const buildQuoteGroups = (quotes) => {
 const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
   const { quotesByEntryExpiry, expiryGroupsByEntry } = quoteGroups || buildQuoteGroups(quotes);
 
+  // entryExpirations is ordered by entryTs; this loop preserves that order.
   const plans = [];
   let positionAvailableAtMs = Number.NEGATIVE_INFINITY;
   for (const entry of entryExpirations) {
@@ -521,6 +518,33 @@ const buildDecisionTimes = (plan, config) => {
   return [...times].sort((a, b) => a - b).map((ms) => new Date(ms));
 };
 
+const advanceHedgePosition = ({
+  quantity,
+  previousPrice,
+  pnlUsd,
+  indexPrice,
+  targetQuantity,
+}) => {
+  const nextPnlUsd =
+    previousPrice != null && Number.isFinite(quantity) && Number.isFinite(indexPrice)
+      ? pnlUsd + quantity * (indexPrice - previousPrice)
+      : pnlUsd;
+  const tradeQuantity = targetQuantity - quantity;
+  return {
+    quantity: targetQuantity,
+    previousPrice: indexPrice,
+    pnlUsd: nextPnlUsd,
+    trade:
+      Math.abs(tradeQuantity) > 1e-10
+        ? {
+            side: tradeQuantity > 0 ? "buy" : "sell",
+            quantity: Math.abs(tradeQuantity),
+            price: indexPrice,
+          }
+        : null,
+  };
+};
+
 export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
   if (!plan || !preparedData) return [];
   const config = normalizeBacktestConfig(inc);
@@ -557,11 +581,6 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
     }));
     const intervalHedgeQuantity = hedgeQuantity;
 
-    if (previousIndexPrice != null && Number.isFinite(indexRow.indexPrice)) {
-      hedgePnlUsd += hedgeQuantity * (indexRow.indexPrice - previousIndexPrice);
-    }
-
-    let hedgeTrade = null;
     const optionDeltaBtc = isExit
       ? 0
       : legQuotes.every(({ quote }) => Number.isFinite(quote?.delta))
@@ -570,21 +589,23 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
             0,
           )
         : Number.NaN;
+    let targetHedgeQuantity = hedgeQuantity;
     if (config.hedgeEnabled && decisionTimes.has(indexRow.ts)) {
       const hasDeltas = isExit || Number.isFinite(optionDeltaBtc);
-      const targetQuantity = hasDeltas
+      targetHedgeQuantity = hasDeltas
         ? (isExit ? 0 : -optionDeltaBtc)
         : hedgeQuantity;
-      const tradeQuantity = targetQuantity - hedgeQuantity;
-      if (Math.abs(tradeQuantity) > 1e-10) {
-        hedgeTrade = {
-          side: tradeQuantity > 0 ? "buy" : "sell",
-          quantity: Math.abs(tradeQuantity),
-          price: indexRow.indexPrice,
-        };
-      }
-      hedgeQuantity = targetQuantity;
     }
+    const hedgeState = advanceHedgePosition({
+      quantity: hedgeQuantity,
+      previousPrice: previousIndexPrice,
+      pnlUsd: hedgePnlUsd,
+      indexPrice: indexRow.indexPrice,
+      targetQuantity: targetHedgeQuantity,
+    });
+    hedgeQuantity = hedgeState.quantity;
+    hedgePnlUsd = hedgeState.pnlUsd;
+    const hedgeTrade = hedgeState.trade;
 
     const legMarks = legQuotes.map(({ leg, quote }) => {
       const expiresNow = indexRow.ts === leg.expirationTs;
@@ -771,7 +792,7 @@ const buildHedgePnlByCycle = ({ entryPlan, quotes, indexRows, config, indexByTs,
 
   for (const plan of entryPlan) {
     const decisions = buildDecisionTimes(plan, config);
-    let prevQty = 0, prevPrice = null, cyclePnl = 0;
+    let hedgeState = { quantity: 0, previousPrice: null, pnlUsd: 0 };
     for (const ht of decisions) {
       const ts = ht.getTime() / 1000;
       const isExit = ts === plan.exitTs;
@@ -787,15 +808,14 @@ const buildHedgePnlByCycle = ({ entryPlan, quotes, indexRows, config, indexByTs,
             0,
           ))
         : null;
-      const tq = has ? -od : prevQty;
-      const price = idx?.indexPrice;
-      if (prevPrice != null && Number.isFinite(prevQty) && Number.isFinite(price)) {
-        cyclePnl += prevQty * (price - prevPrice);
-      }
-      prevQty = tq;
-      prevPrice = price;
+      const targetQuantity = has ? -od : hedgeState.quantity;
+      hedgeState = advanceHedgePosition({
+        ...hedgeState,
+        indexPrice: idx?.indexPrice,
+        targetQuantity,
+      });
     }
-    hedgePnlByCycle.set(plan.cycle, cyclePnl);
+    hedgePnlByCycle.set(plan.cycle, hedgeState.pnlUsd);
   }
   return { hedgePnlByCycle };
 };
@@ -806,7 +826,7 @@ const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, indexRows, quotes, conf
     quotes.map((quote) => [`${quote.ts}|${quote.instrumentName}`, quote]),
   );
   let endingEquityUsd = 0;
-  return [...entryPlan].sort((a, b) => a.entryTs - b.entryTs).map((plan) => {
+  return entryPlan.map((plan) => {
     const settlementIndexPrice = indexMap.get(plan.exitTs)?.indexPrice ?? Number.NaN;
     const legExitValues = plan.legs.map((leg) => {
       const expiresAtExit = leg.expirationTs === plan.exitTs;
@@ -837,11 +857,11 @@ const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, indexRows, quotes, conf
   });
 };
 
-export const buildBacktestIndexes = (preparedData) => {
+export const buildBacktestIndexes = (preparedData, indexByTs) => {
   const indexRows = preparedData?.indexRows || [];
   const quotes = preparedData?.quotes || [];
   return {
-    indexByTs: new Map(indexRows.map((row) => [row.ts, row])),
+    indexByTs: indexByTs || new Map(indexRows.map((row) => [row.ts, row])),
     quoteByTimeInstrument: new Map(
       quotes.map((quote) => [`${quote.ts}|${quote.instrumentName}`, quote]),
     ),
@@ -855,9 +875,12 @@ export const prepareBacktestData = ({ indexRows, markRows, config: inc = {} }) =
   for (const r of indexRows) maxT = Math.max(maxT, r.dateTime?.getTime() || 0);
   for (const r of markRows) maxT = Math.max(maxT, r.dateTime?.getTime() || 0);
   const dataEnd = new Date(Math.min(config.end.getTime(), maxT || config.end.getTime()));
-  const options = buildOptions({ markRows, indexRows, config });
-  const quotes = buildQuotes({ options, config });
-  return { indexRows, markRows, options, quotes, dataEnd };
+  const indexByTs = new Map(indexRows.map((row) => [row.ts, row]));
+  const options = buildOptions({ markRows, indexByTs, config });
+  const quotes = buildQuotes({ options });
+  const preparedData = { indexRows, markRows, options, quotes, dataEnd };
+  preparedData.indexes = buildBacktestIndexes(preparedData, indexByTs);
+  return preparedData;
 };
 
 export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, config: inc = {} }) => {
@@ -878,7 +901,7 @@ export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, c
     entryExpirations,
     config: c,
     quoteGroups: indexes.quoteGroups,
-  }).sort((a, b) => a.entryTs - b.entryTs);
+  });
   const { hedgePnlByCycle } = buildHedgePnlByCycle({
     entryPlan,
     quotes,
@@ -896,20 +919,6 @@ export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, c
     indexByTs: indexes.indexByTs,
     quoteByTimeInstrument: indexes.quoteByTimeInstrument,
   });
-  const weeklyChartData = [...cycleSummary]
-    .sort((a, b) => a.entryTs - b.entryTs)
-    .map((row) => ({
-      ...row,
-      weekLabel: row.entryTime.toLocaleDateString("en-GB", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-        timeZone: "UTC",
-      }),
-      deltaHedgedShortPnl: row.cyclePnlUsd,
-      cumulativeDeltaHedgedPnl: row.endingEquityUsd,
-    }));
-
   const closedCycles = cycleSummary.filter((row) => row.closed);
   const cycleReturns = closedCycles
     .map((row) => row.cycleReturnOnNotional)
@@ -935,7 +944,6 @@ export const runWeeklyStraddleBacktest = ({ indexRows, markRows, preparedData, c
     dataEnd,
     counts: { closedCycles: closedCycles.length },
     cycleSummary,
-    weeklyChartData,
     summary: {
       finalEquityUsd,
       cumulativeReturnOnNotional: finalEquityUsd / config.notionalUsd,

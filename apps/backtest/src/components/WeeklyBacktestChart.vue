@@ -60,8 +60,8 @@ const draw = () => {
 
   // Normalize y to actual data range (include 0)
   const allValues = rows.flatMap(r => [
-    r.deltaHedgedShortPnl || 0,
-    r.cumulativeDeltaHedgedPnl || 0,
+    r.cyclePnlUsd || 0,
+    r.endingEquityUsd || 0,
     0
   ]);
   let [dataMin, dataMax] = d3.extent(allValues);
@@ -109,7 +109,7 @@ const draw = () => {
   const bw = Math.max(2, slot - 1);
 
   // Proper diverging red/blue color scale for weekly PnL bars
-  const barValues = rows.map(r => r.deltaHedgedShortPnl || 0);
+  const barValues = rows.map(r => r.cyclePnlUsd || 0);
   const [barMin, barMax] = d3.extent(barValues);
   const colorDomain = [Math.min(barMin, 0), 0, Math.max(barMax, 0)];
   const barColor = d3.scaleDiverging(d3.interpolateRdBu)
@@ -117,7 +117,7 @@ const draw = () => {
 
   // Bars from 0 baseline
   rows.forEach((row, i) => {
-    const v = row.deltaHedgedShortPnl || 0;
+    const v = row.cyclePnlUsd || 0;
     const top = y(Math.max(0, v));
     const bottom = y(Math.min(0, v));
     const h = Math.max(1, bottom - top);
@@ -143,7 +143,7 @@ const draw = () => {
 
   const cumulativeLine = d3.line()
     .x((_, index) => x(index))
-    .y((row) => y(row.cumulativeDeltaHedgedPnl || 0))
+    .y((row) => y(row.endingEquityUsd || 0))
     .curve(d3.curveStepBefore);
 
   svg.append("path")

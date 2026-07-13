@@ -6,6 +6,7 @@ import { exportTitledChart } from "../lib/exportTitledChart.js";
 const props = defineProps({
   rows: { type: Array, default: () => [] },
 });
+const emit = defineEmits(["select"]);
 
 const chartRef = ref(null);
 let resizeObserver;
@@ -91,7 +92,7 @@ const draw = () => {
       .append("g")
       .attr("transform", `translate(${margin.left},${panelY})`);
 
-    group.selectAll(`rect.${key}`)
+    const bars = group.selectAll(`rect.${key}`)
       .data(rows)
       .join("rect")
       .attr("class", key)
@@ -100,12 +101,26 @@ const draw = () => {
       .attr("width", x.bandwidth())
       .attr("height", (row) => Math.max(1, Math.abs(y(valueFor(row, key)) - y(0))))
       .attr("fill", (row) => color(valueFor(row, key)))
-      .append("title")
+      .attr("tabindex", 0)
+      .attr("role", "button")
+      .attr("aria-label", (row) =>
+        `${formatEntryDate(new Date(row.entryTime))} ${label}; open cycle detail`,
+      )
+      .style("cursor", "pointer")
+      .on("click", (_, row) => emit("select", row))
+      .on("keydown", (event, row) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        emit("select", row);
+      });
+
+    bars.append("title")
       .text((row) => [
         instrumentName(row),
         `Option PnL: ${formatUsd(valueFor(row, "shortOptionPnlUsd"))}`,
         `Hedge PnL: ${formatUsd(valueFor(row, "hedgePnlUsd"))}`,
         `Total PnL: ${formatUsd(valueFor(row, "cyclePnlUsd"))}`,
+        "Click to open cycle detail",
       ].join("\n"));
 
     const axis = d3.axisLeft(y)

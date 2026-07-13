@@ -233,7 +233,7 @@ const metrics = computed(() => {
 });
 
 const maxDrawdown = computed(() => {
-  return computeMaxDrawdown(result.value?.weeklyChartData);
+  return computeMaxDrawdown(result.value?.cycleSummary);
 });
 
 const sweepConfigs = computed(() => {
@@ -354,7 +354,7 @@ const cycleContours = ref(null);
 const cycleDetailLoading = ref(false);
 const cycleDetailError = ref("");
 const cycleDetailCache = new Map();
-const chartRows = computed(() => result.value?.weeklyChartData || []);
+const chartRows = computed(() => result.value?.cycleSummary || []);
 const hedgePerformanceRows = computed(() => result.value?.cycleSummary || []);
 
 const chartTitle = computed(() => {
@@ -473,7 +473,7 @@ const indexPreparedByHour = (prepared) => ({
   prepared,
   indexBuckets: bucketRowsByHour(prepared.indexRows),
   quoteBuckets: bucketRowsByHour(prepared.quotes),
-  backtestIndexes: buildBacktestIndexes(prepared),
+  backtestIndexes: prepared.indexes || buildBacktestIndexes(prepared),
 });
 
 const preparedViewForHours = (hourIndex, hours) => {
@@ -565,11 +565,11 @@ const runSweep = async () => {
         config: thisConfig,
         sharpe: run.summary.sharpeRatio,
         pnl: run.summary.finalEquityUsd,
-        maxDrawdown: computeMaxDrawdown(run.weeklyChartData),
+        maxDrawdown: computeMaxDrawdown(run.cycleSummary),
         cycles: run.counts.closedCycles,
         returnOnNotional: run.summary.cumulativeReturnOnNotional,
-        weeklyReturns: (run.weeklyChartData || []).map(r => ({
-          pnl: r.deltaHedgedShortPnl || 0,
+        weeklyReturns: (run.cycleSummary || []).map(r => ({
+          pnl: r.cyclePnlUsd || 0,
           hour: thisConfig.entryHourUtc,
           entryDate: r.entryTime,
         })),
@@ -1126,6 +1126,7 @@ onMounted(loadBacktest);
           v-else-if="mode === 'single' && !selectedCycle"
           ref="chartRef"
           :rows="hedgePerformanceRows"
+          @select="handleCycleSelect"
         />
         <div v-else-if="mode === 'single' && cycleDetailLoading" class="cycleDetailState">Loading hourly detail…</div>
         <div v-else-if="mode === 'single' && cycleDetailError" class="cycleDetailState error">{{ cycleDetailError }}</div>
