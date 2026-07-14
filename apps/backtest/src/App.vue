@@ -926,7 +926,7 @@ function handleSavePng() {
     if (!ivRvChartRef.value || !ivRvRows.value.length) return;
     ivRvChartRef.value.exportPng({
       filename: `rv-iv-${ivRvTenor.value}d-${ivRvResolution.value}h${ivRvAlignForward.value ? "-shifted" : ""}${ivRvShowIndex.value ? "-index" : ""}-${date}.png`,
-      scale: 3,
+      scale: 4,
       padding: 24,
     });
     return;
@@ -945,7 +945,7 @@ function handleSavePng() {
       subtitle: chartSubtitle.value,
       source: chartSourceSubtitle.value,
       filename,
-      scale: 3,
+      scale: 4,
       padding: 24,
     });
     return;
@@ -960,7 +960,7 @@ function handleSavePng() {
     : `backtest-${date}.png`;
   chartRef.value.exportPng({
     filename,
-    scale: 3,
+    scale: 4,
     title: chartTitle.value,
     subtitle: chartSubtitle.value,
     source: chartSourceSubtitle.value,
@@ -978,7 +978,7 @@ function saveRvHeatmap(date = new Date().toISOString().slice(0, 10)) {
   if (!chart) return;
   chart.exportPng({
     filename: `rv-hourly-heatmap-${date}.png`,
-    scale: 3,
+    scale: 4,
     padding: 24,
   });
 }
@@ -987,7 +987,7 @@ function saveReturnHeatmap(date = new Date().toISOString().slice(0, 10)) {
   if (!returnHeatmapRef.value) return;
   returnHeatmapRef.value.exportPng({
     filename: `btc-hourly-return-heatmap-${date}.png`,
-    scale: 3,
+    scale: 4,
     padding: 24,
   });
 }

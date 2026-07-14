@@ -360,7 +360,7 @@ const exportElementScreenshot = async (
 
   await document.fonts?.ready;
 
-  const scale = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  const scale = 4;
   const exportWidth = width + EXPORT_PADDING_LEFT + EXPORT_PADDING_RIGHT;
   const exportHeight = height + EXPORT_PADDING_TOP + EXPORT_PADDING_BOTTOM;
   const output = document.createElement("canvas");

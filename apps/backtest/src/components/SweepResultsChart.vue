@@ -716,7 +716,7 @@ watch(
 
 function exportPng({
   filename = "sweep.png",
-  scale = 3,
+  scale = 4,
   padding = 24,
   title = "",
   subtitle = "",
@@ -746,7 +746,7 @@ function exportPanel(panel) {
     svgEl,
     region: panel.region,
     filename: `sweep-${panel.key}-${date}.png`,
-    scale: 3,
+    scale: 4,
     padding: 18,
   });
 }

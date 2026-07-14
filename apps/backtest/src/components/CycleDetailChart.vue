@@ -362,7 +362,7 @@ watch(() => props.breakEvens, draw, { deep: true });
 watch(() => props.zeroMtmContours, draw, { deep: true });
 watch(breakEvenMode, draw);
 
-function exportPng({ filename = "cycle-detail.png", scale = 3, padding = 24, title = "", subtitle = "", source = "", metrics = [] } = {}) {
+function exportPng({ filename = "cycle-detail.png", scale = 4, padding = 24, title = "", subtitle = "", source = "", metrics = [] } = {}) {
   const svgEl = chartRef.value?.querySelector("svg");
   if (!svgEl) return;
   exportTitledChart({ svgEl, title, subtitle, source, metrics, filename, scale, padding, background: "#0a0b0e" });

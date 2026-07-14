@@ -24,7 +24,7 @@ export function exportTitledChart({
   source,
   metrics = [],
   filename,
-  scale = 3,
+  scale = 4,
   padding = 24,
   background = "#0a0b0e",
 } = {}) {
@@ -112,7 +112,7 @@ export function exportChartRegionToPng({
   svgEl,
   region,
   filename,
-  scale = 3,
+  scale = 4,
   padding = 18,
   background = "#0a0b0e",
 } = {}) {

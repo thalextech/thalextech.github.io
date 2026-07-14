@@ -186,7 +186,7 @@ watch(() => props.rows, draw);
 
 function exportPng({
   filename = "backtest.png",
-  scale = 3,
+  scale = 4,
   padding = 24,
   title = "",
   subtitle = "",

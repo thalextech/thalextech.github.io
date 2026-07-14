@@ -739,7 +739,7 @@ async function handleSavePng() {
   node.classList.add("capturing");
   await new Promise((resolve) => requestAnimationFrame(resolve));
   try {
-    const pixelRatio = 2;
+    const pixelRatio = 4;
     const padding = 32;
     // scrollWidth/Height covers content that overflows the node's box
     // (e.g. .topControls with width: max-content on narrow viewports).

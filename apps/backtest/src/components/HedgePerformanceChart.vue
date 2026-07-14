@@ -205,7 +205,7 @@ watch(() => props.rows, draw);
 
 function exportPng({
   filename = "hedge-performance.png",
-  scale = 3,
+  scale = 4,
   padding = 24,
   title = "",
   subtitle = "",
