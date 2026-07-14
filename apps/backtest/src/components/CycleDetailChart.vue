@@ -260,14 +260,29 @@ const draw = () => {
     .append("title")
     .text((row) => `${formatTime(new Date(row.dateTime))}\nIndex ${formatUsd(row.indexPrice)}`);
 
-  // Hedge trade markers as circles (larger, colored)
+  // Scale marker area with the absolute BTC delta traded. A square-root radius
+  // makes visual area proportional to quantity while the floor keeps small
+  // executions legible.
+  const hedgeTrades = rows.filter(
+    (row) => row.hedgeTrade && !isHidden(`hedge_${row.hedgeTrade.side}`),
+  );
+  const largestHedgeTrade = d3.max(
+    hedgeTrades,
+    (row) => Number(row.hedgeTrade?.quantity) || 0,
+  ) || 0;
+  const hedgeTradeRadius = d3.scaleSqrt()
+    .domain([0, largestHedgeTrade || 1])
+    .range([0, 9])
+    .clamp(true);
+
+  // Hedge trade markers as quantity-scaled circles.
   price.selectAll("circle.hedge-trade")
-    .data(rows.filter((row) => row.hedgeTrade && !isHidden(`hedge_${row.hedgeTrade.side}`)))
+    .data(hedgeTrades)
     .join("circle")
     .attr("class", "hedge-trade")
     .attr("cx", (row) => x(new Date(row.dateTime)))
     .attr("cy", (row) => indexY(row.indexPrice))
-    .attr("r", 6)
+    .attr("r", (row) => Math.max(3, hedgeTradeRadius(row.hedgeTrade.quantity)))
     .attr("fill", (row) => row.hedgeTrade.side === "buy" ? BUY : SELL)
     .attr("stroke", (row) => row.hedgeTrade.side === "buy" ? BUY : SELL)
     .attr("stroke-width", 1)

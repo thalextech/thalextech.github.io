@@ -51,13 +51,7 @@ const draw = () => {
   const realizedPlotBottom = realizedPlotTop + realizedPlotHeight;
   const realizedAxisY = realizedPlotBottom + 8;
   const realizedBottom = realizedAxisY + 28;
-  const boxHeaderY = realizedBottom + 50;
-  const boxPlotTop = boxHeaderY + 24;
-  const boxPlotHeight = 382;
-  const boxPlotBottom = boxPlotTop + boxPlotHeight;
-  const boxAxisY = boxPlotBottom + 8;
-  const boxBottom = boxAxisY + 28;
-  const distributionHeaderY = boxBottom + 50;
+  const distributionHeaderY = realizedBottom + 50;
   const distributionAxisY = distributionHeaderY + 25;
   const distributionRowsY = distributionAxisY + 16;
   const distributionRowHeight = 26;
@@ -90,18 +84,7 @@ const draw = () => {
         x: 0,
         y: realizedHeaderY - 24,
         width,
-        height: boxHeaderY - realizedHeaderY,
-      },
-    },
-    {
-      key: "weekly-boxplots",
-      label: "Weekly PnL boxplots",
-      buttonTop: boxHeaderY - 17,
-      region: {
-        x: 0,
-        y: boxHeaderY - 24,
-        width,
-        height: distributionHeaderY - boxHeaderY,
+        height: distributionHeaderY - realizedHeaderY,
       },
     },
     {
@@ -138,7 +121,7 @@ const draw = () => {
     .attr("height", height)
     .attr("font-family", CHART_FONT_FAMILY)
     .attr("role", "img")
-    .attr("aria-label", "Sweep comparison, ranked sweep analysis, weekly PnL box plots, and observed weekly returns");
+    .attr("aria-label", "Sweep comparison, ranked sweep analysis, realized volatility, and observed weekly returns");
 
   const sum = (values) => d3.sum(values);
   const analyzedRows = rows.map((row) => {
@@ -172,36 +155,6 @@ const draw = () => {
       cumulative,
       bestIndex,
       sortedWeeks,
-    };
-  });
-  const weeklyBoxRows = analyzedRows.map((row) => {
-    const [weeklyMin = 0, weeklyMax = 0] = d3.extent(row.sortedWeeks);
-    const weeklyQ25 = d3.quantileSorted(row.sortedWeeks, 0.25) ?? 0;
-    const weeklyMedian = d3.quantileSorted(row.sortedWeeks, 0.5) ?? 0;
-    const weeklyQ75 = d3.quantileSorted(row.sortedWeeks, 0.75) ?? 0;
-    const iqr = weeklyQ75 - weeklyQ25;
-    const lowerFence = weeklyQ25 - 1.5 * iqr;
-    const upperFence = weeklyQ75 + 1.5 * iqr;
-    const weeklyWhiskerMin = row.sortedWeeks.find((value) => value >= lowerFence) ?? weeklyMin;
-    let weeklyWhiskerMax = weeklyMax;
-    for (let index = row.sortedWeeks.length - 1; index >= 0; index -= 1) {
-      if (row.sortedWeeks[index] <= upperFence) {
-        weeklyWhiskerMax = row.sortedWeeks[index];
-        break;
-      }
-    }
-    return {
-      ...row,
-      weeklyMin,
-      weeklyQ25,
-      weeklyMedian,
-      weeklyQ75,
-      weeklyMax,
-      weeklyWhiskerMin,
-      weeklyWhiskerMax,
-      weeklyOutliers: row.weeklyPoints.filter(
-        (point) => point.value < weeklyWhiskerMin || point.value > weeklyWhiskerMax,
-      ),
     };
   });
   const drawdownValues = analyzedRows.map((row) => Number(row.maxDrawdown)).filter(Number.isFinite);
@@ -265,42 +218,6 @@ const draw = () => {
       .attr("fill", "rgba(255,255,255,0.88)").attr("font-size", 10);
     lines.forEach((line, index) => text.append("tspan")
       .attr("x", 9).attr("dy", index === 0 ? 0 : 14).text(line));
-  };
-  const hideOutlierTooltip = () => svg.selectAll("g.outlier-tooltip").remove();
-  const showOutlierTooltip = (event, row, point) => {
-    hideOutlierTooltip();
-    const [pointerX, pointerY] = d3.pointer(event, svg.node());
-    const date = point.entryDate
-      ? d3.utcFormat("%d %b %Y")(new Date(point.entryDate))
-      : `Week ${point.sourceIndex + 1}`;
-    const fence = point.value < row.weeklyWhiskerMin ? "BELOW LOWER FENCE" : "ABOVE UPPER FENCE";
-    const tooltipWidth = 155;
-    const tooltipHeight = 52;
-    const tooltipX = Math.max(
-      margin.left,
-      Math.min(pointerX + 9, margin.left + contentWidth - tooltipWidth),
-    );
-    const preferredY = pointerY - tooltipHeight - 8;
-    const tooltipY = preferredY > boxPlotTop ? preferredY : pointerY + 8;
-    const tooltip = svg.append("g")
-      .attr("class", "outlier-tooltip")
-      .attr("transform", `translate(${tooltipX},${tooltipY})`)
-      .attr("pointer-events", "none");
-    tooltip.append("rect")
-      .attr("width", tooltipWidth).attr("height", tooltipHeight).attr("rx", 4)
-      .attr("fill", "#17191e").attr("stroke", "rgba(255,255,255,0.18)");
-    tooltip.append("text")
-      .attr("x", 9).attr("y", 15)
-      .attr("fill", "rgba(255,255,255,0.58)").attr("font-size", 9)
-      .text(`${row.label} · ${date}`);
-    tooltip.append("text")
-      .attr("x", 9).attr("y", 31)
-      .attr("fill", "rgba(255,255,255,0.9)").attr("font-size", 10).attr("font-weight", 500)
-      .text(`Weekly PnL  ${formatUsd(point.value)}`);
-    tooltip.append("text")
-      .attr("x", 9).attr("y", 45)
-      .attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 8.5)
-      .text(fence);
   };
   const appendPanelHeading = ({ y, title, subtitle }) => {
     const heading = svg.append("text")
@@ -566,110 +483,6 @@ const draw = () => {
       .attr("font-size", 9)
       .text("NO REALIZED-VOL METRICS AVAILABLE");
   }
-
-  const boxPlotLeft = margin.left + 58;
-  const boxPlotRight = margin.left + contentWidth - 8;
-  const weeklyValues = weeklyBoxRows.flatMap((row) => row.weeks);
-  const [weeklyMin = -1, weeklyMax = 1] = d3.extent(weeklyValues);
-  const weeklySpan = weeklyMax - weeklyMin;
-  const weeklyPadding = weeklySpan > 0
-    ? weeklySpan * 0.025
-    : Math.max(Math.abs(weeklyMin) * 0.025, 1);
-  const weeklyDomain = [
-    weeklyMin - weeklyPadding,
-    weeklyMax + weeklyPadding,
-  ];
-  const drawBoxPlotAxes = (plotTop, plotBottom, axisY) => {
-    const x = d3.scalePoint()
-      .domain(weeklyBoxRows.map((row) => row.key))
-      .range([boxPlotLeft, boxPlotRight])
-      .padding(0.45);
-    const y = d3.scaleLinear().domain(weeklyDomain).range([plotBottom, plotTop]);
-    const yAxis = svg.append("g")
-      .attr("transform", `translate(${boxPlotLeft},0)`)
-      .call(d3.axisLeft(y).ticks(5).tickSize(-(boxPlotRight - boxPlotLeft)).tickPadding(8).tickFormat(formatCompactUsd));
-    yAxis.select(".domain").remove();
-    yAxis.selectAll(".tick line").attr("stroke", "rgba(255,255,255,0.07)");
-    yAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 9);
-    const xAxis = svg.append("g")
-      .attr("transform", `translate(0,${axisY})`)
-      .call(d3.axisBottom(x).tickSize(0).tickPadding(7).tickFormat((key) => weeklyBoxRows.find((row) => row.key === key)?.label || key));
-    xAxis.select(".domain").attr("stroke", "rgba(255,255,255,0.14)");
-    xAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.46)").attr("font-size", 8.5);
-    return { x, y };
-  };
-
-  svg.append("line")
-    .attr("x1", margin.left).attr("x2", margin.left + contentWidth)
-    .attr("y1", boxHeaderY - 24).attr("y2", boxHeaderY - 24)
-    .attr("stroke", "rgba(255,255,255,0.12)");
-  appendPanelHeading({
-    y: boxHeaderY,
-    title: `WEEKLY PNL BOXPLOTS · ${props.dimensionLabel.toUpperCase()}`,
-    subtitle: "OBSERVED WEEKS · WHISKER = 1.5× IQR · BOX = 25–75% · LINE = MEDIAN · DOT = OUTLIER",
-  });
-  const boxScales = drawBoxPlotAxes(boxPlotTop, boxPlotBottom, boxAxisY);
-  const boxWidth = Math.min(18, Math.max(8, (boxScales.x.step?.() || 30) * 0.5));
-  svg.append("path")
-    .datum(weeklyBoxRows)
-    .attr("d", d3.line()
-      .x((row) => boxScales.x(row.key))
-      .y((row) => boxScales.y(row.weeklyMedian)))
-    .attr("fill", "none").attr("stroke", "rgba(255,255,255,0.24)").attr("stroke-width", 1.1);
-  const boxGroups = svg.selectAll("g.weekly-box")
-    .data(weeklyBoxRows, (row) => row.key)
-    .join("g")
-    .attr("class", "weekly-box")
-    .style("cursor", "pointer")
-    .on("click", (_, row) => emit("select", row));
-  boxGroups.each(function (row) {
-    const group = d3.select(this);
-    const center = boxScales.x(row.key);
-    const color = performanceColor(Number(row.sharpe) || 0);
-    group.append("line")
-      .attr("x1", center).attr("x2", center)
-      .attr("y1", boxScales.y(row.weeklyWhiskerMax)).attr("y2", boxScales.y(row.weeklyWhiskerMin))
-      .attr("stroke", "rgba(255,255,255,0.32)");
-    [row.weeklyWhiskerMin, row.weeklyWhiskerMax].forEach((value) => group.append("line")
-      .attr("x1", center - boxWidth * 0.3).attr("x2", center + boxWidth * 0.3)
-      .attr("y1", boxScales.y(value)).attr("y2", boxScales.y(value))
-      .attr("stroke", "rgba(255,255,255,0.38)"));
-    const box = group.append("rect")
-      .attr("x", center - boxWidth / 2).attr("width", boxWidth)
-      .attr("y", boxScales.y(row.weeklyQ75))
-      .attr("height", Math.max(1, boxScales.y(row.weeklyQ25) - boxScales.y(row.weeklyQ75)))
-      .attr("rx", 1.5).attr("fill", color).attr("fill-opacity", 0.55);
-    group.append("line")
-      .attr("x1", center - boxWidth / 2).attr("x2", center + boxWidth / 2)
-      .attr("y1", boxScales.y(row.weeklyMedian)).attr("y2", boxScales.y(row.weeklyMedian))
-      .attr("stroke", "#ffffff").attr("stroke-width", 1.2);
-    const jitterOffsets = [0, -2.2, 2.2, -4.4, 4.4];
-    group.selectAll("circle.weekly-outlier")
-      .data(row.weeklyOutliers)
-      .join("circle")
-      .attr("class", "weekly-outlier")
-      .attr("cx", (_, index) => center + jitterOffsets[index % jitterOffsets.length])
-      .attr("cy", (point) => boxScales.y(point.value))
-      .attr("r", 2)
-      .attr("fill", color)
-      .attr("fill-opacity", 0.72)
-      .attr("stroke", "#0a0b0e")
-      .attr("stroke-width", 0.7)
-      .style("cursor", "help")
-      .on("mouseenter", function (event, point) {
-        d3.select(this).attr("fill-opacity", 1);
-        showOutlierTooltip(event, row, point);
-      })
-      .on("mousemove", (event, point) => showOutlierTooltip(event, row, point))
-      .on("mouseleave", function () {
-        d3.select(this).attr("fill-opacity", 0.72);
-        hideOutlierTooltip();
-      });
-    const outlierSummary = row.weeklyOutliers.length
-      ? `\nOutliers (${row.weeklyOutliers.length}): ${row.weeklyOutliers.map((point) => formatUsd(point.value)).join(", ")}`
-      : "\nOutliers: none";
-    box.append("title").text(`${row.label}\nWhiskers: ${formatUsd(row.weeklyWhiskerMin)} to ${formatUsd(row.weeklyWhiskerMax)}\n25–75%: ${formatUsd(row.weeklyQ25)} to ${formatUsd(row.weeklyQ75)}\nMedian: ${formatUsd(row.weeklyMedian)}${outlierSummary}`);
-  });
 
   appendPanelHeading({
     y: distributionHeaderY,

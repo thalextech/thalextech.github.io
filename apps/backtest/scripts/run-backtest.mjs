@@ -44,13 +44,17 @@ export function hoursForConfig(config) {
   const interval = Math.max(1, Math.min(24, Math.round(Number(config.hedgeIntervalHours) || 24)));
 
   const hs = new Set([entry, 8]);
+  if (config.exitMode === "weekly_schedule") hs.add(Number(config.exitHourUtc));
   if (enabled) {
-    let h = entry;
-    const step = interval;
-    do {
-      hs.add(h);
-      h = (h + step) % 24;
-    } while (h !== entry);
+    const addHedgeCycle = (startHour) => {
+      let h = startHour;
+      do {
+        hs.add(h);
+        h = (h + interval) % 24;
+      } while (h !== startHour);
+    };
+    addHedgeCycle(entry);
+    if (config.exitMode === "after_days") addHedgeCycle(8);
   }
   return [...hs].sort((a, b) => a - b);
 }
@@ -201,6 +205,9 @@ Options (examples):
   --hedge 24                  (hours, or 0/false to disable)
   --hold-to-expiry true
   --exit-hold-days 7
+  --exit-mode weekly_schedule (after_days|weekly_schedule|expiry)
+  --exit-weekday 0            (0=Sun ... 6=Sat)
+  --exit-hour 20
   --long false                (short by default)
   --sizing-mode notional      (notional | btc)
   --notional-usd 100000
@@ -234,7 +241,10 @@ async function main() {
     hedgeEnabled: args.hedge != null ? Number(args.hedge) > 0 : undefined,
     hedgeIntervalHours: args.hedge != null && Number(args.hedge) > 0 ? Number(args.hedge) : undefined,
     holdToExpiry: args.holdToExpiry,
+    exitMode: args.exitMode,
     exitHoldDays: args.exitHoldDays,
+    exitWeekday: args.exitWeekday,
+    exitHourUtc: args.exitHour,
     longOption: args.long,
     sizingMode: args.sizingMode,
     notionalUsd: args.notionalUsd,
@@ -298,7 +308,11 @@ async function main() {
       dte: config.targetDteDays,
       delta: config.targetDelta,
       hedge: config.hedgeEnabled ? `${config.hedgeIntervalHours}h` : "off",
-      exit: config.holdToExpiry ? "to expiry" : `${config.exitHoldDays}D roll`,
+      exit: config.exitMode === "expiry"
+        ? "to expiry"
+        : config.exitMode === "weekly_schedule"
+          ? `${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][config.exitWeekday]} ${String(config.exitHourUtc).padStart(2,"0")}:00 weekly`
+          : `roll every ${config.exitHoldDays}D`,
       side: config.longOption ? "long" : "short",
     });
     console.log("Period:", config.start.toISOString().slice(0,10), "→", (config.end || new Date()).toISOString().slice(0,10));

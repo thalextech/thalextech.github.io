@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildCycleDetail,
   computeMaxDrawdown,
+  nextWeeklyExitTs,
   normalizeBacktestConfig,
   prepareBacktestData,
   prepareCycleDetailData,
@@ -86,6 +87,53 @@ test("normalizeBacktestConfig applies defaults and coerces external input once",
   assert.equal(config.exitHoldDays, 14);
   assert.equal(config.targetDelta, 0.35);
   assert.equal(config.sizingMode, "notional");
+});
+
+test("weekly exit schedule chooses the next UTC occurrence after entry", () => {
+  const friday20 = Date.UTC(2025, 5, 6, 20) / 1000;
+  assert.equal(
+    nextWeeklyExitTs(friday20, 0, 20),
+    Date.UTC(2025, 5, 8, 20) / 1000,
+  );
+  assert.equal(
+    nextWeeklyExitTs(friday20, 5, 20),
+    Date.UTC(2025, 5, 13, 20) / 1000,
+  );
+});
+
+test("weekly schedule exits before expiry and waits for the next entry slot", () => {
+  const fixture = buildParityFixture();
+  const result = runWeeklyStraddleBacktest({
+    ...fixture,
+    config: {
+      ...fixture.config,
+      exitMode: "weekly_schedule",
+      exitWeekday: 0,
+      exitHourUtc: 8,
+    },
+  });
+  assert.equal(result.cycleSummary.length, 1);
+  assert.equal(
+    result.cycleSummary[0].exitTs,
+    Date.UTC(2025, 5, 8, 8) / 1000,
+  );
+  assert.equal(result.cycleSummary[0].exitAtExpiry, false);
+});
+
+test("fixed-day roll immediately replaces each closed position", () => {
+  const fixture = buildParityFixture();
+  const result = runWeeklyStraddleBacktest({
+    ...fixture,
+    config: {
+      ...fixture.config,
+      exitMode: "after_days",
+      exitHoldDays: 2,
+    },
+  });
+  assert.ok(result.cycleSummary.length > 1);
+  for (let index = 1; index < result.cycleSummary.length; index += 1) {
+    assert.equal(result.cycleSummary[index].entryTs, result.cycleSummary[index - 1].exitTs);
+  }
 });
 
 test("computeMaxDrawdown returns the largest peak-to-trough loss", () => {

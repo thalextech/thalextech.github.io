@@ -6,6 +6,7 @@ import {
   OPTION_PRICING_DAYS_PER_YEAR,
   PRECOMPUTED_DELTA_SCALE,
 } from "../src/lib/optionRisk.js";
+import { interpolateAtmIv } from "../src/lib/atmIv.js";
 
 const ARTIFACT_VERSION = 2;
 const ARTIFACT_SCHEMA = "thalex-option-backtest";
@@ -185,35 +186,18 @@ const instrumentIdByName = new Map(
   instruments.map((instrument, instrumentId) => [instrument.name, instrumentId]),
 );
 
-const weightedAtmIv = (quotes, spot, ts, targetDays) => {
-  const callsByExpiry = new Map();
+const interpolatedAtmIv = (quotes, spot, ts, targetDays) => {
+  const surfaceQuotes = [];
   for (const [, instrumentName, , ivOpen, , ivClose] of quotes || []) {
     const instrument = instrumentByName.get(instrumentName);
-    if (!instrument || instrument.optionType !== "C" || instrument.expirationTs <= ts) continue;
-    const current = callsByExpiry.get(instrument.expirationTs);
-    const distance = Math.abs(instrument.strike - spot);
-    if (!current || distance < current.distance) {
-      callsByExpiry.set(instrument.expirationTs, {
-        iv: Number.isFinite(ivClose) ? ivClose : ivOpen,
-        distance,
-      });
-    }
+    if (!instrument || instrument.expirationTs <= ts) continue;
+    surfaceQuotes.push({
+      expirationTs: instrument.expirationTs,
+      strike: instrument.strike,
+      iv: Number.isFinite(ivClose) ? ivClose : ivOpen,
+    });
   }
-  const targetTs = ts + targetDays * 86_400;
-  const expiries = [...callsByExpiry.keys()].sort((a, b) => a - b);
-  let below;
-  let above;
-  for (const expiry of expiries) {
-    if (expiry <= targetTs) below = expiry;
-    if (expiry >= targetTs) { above = expiry; break; }
-  }
-  if (!below || !above) return null;
-  const belowIv = callsByExpiry.get(below)?.iv;
-  const aboveIv = callsByExpiry.get(above)?.iv;
-  if (!Number.isFinite(belowIv) || !Number.isFinite(aboveIv)) return null;
-  if (below === above) return belowIv;
-  const weightBelow = (above - targetTs) / (above - below);
-  return belowIv * weightBelow + aboveIv * (1 - weightBelow);
+  return interpolateAtmIv({ quotes: surfaceQuotes, spot, ts, targetDays });
 };
 
 const quotesByTs = new Map();
@@ -232,7 +216,7 @@ const ivRvRows = [...indexOhlcByTs.values()]
     row.high,
     row.low,
     row.close,
-    ...IV_RV_TENORS.map((tenor) => weightedAtmIv(quotesByTs.get(row.ts), row.open, row.ts, tenor)),
+    ...IV_RV_TENORS.map((tenor) => interpolatedAtmIv(quotesByTs.get(row.ts), row.open, row.ts, tenor)),
   ]);
 await fs.writeFile(
   path.join(RUNTIME_DATA_DIR, IV_RV_FILENAME),
@@ -241,6 +225,11 @@ await fs.writeFile(
     version: 1,
     resolutionSeconds: 3_600,
     tenors: IV_RV_TENORS,
+    ivInterpolation: {
+      strike: "linear-log-moneyness",
+      maturity: "linear-total-variance",
+      requiresBracketingNodes: true,
+    },
     fields: ["ts", "open", "high", "low", "close", ...IV_RV_TENORS.map((tenor) => `iv${tenor}`)],
     rows: ivRvRows,
   }),

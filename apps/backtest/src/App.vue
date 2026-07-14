@@ -3,10 +3,20 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import CycleDetailChart from "./components/CycleDetailChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
 import IvRvChart from "./components/IvRvChart.vue";
+import WeekdayHourHeatmap from "./components/WeekdayHourHeatmap.vue";
 import SweepResultsChart from "./components/SweepResultsChart.vue";
 import WeeklyBacktestChart from "./components/WeeklyBacktestChart.vue";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
-import { buildIvRvChartRows, loadIvRvHistory } from "./lib/ivRv.js";
+import {
+  buildIvRvChartRows,
+  buildHourlyParkinsonRows,
+  buildHourlyReturnHeatmap,
+  buildHourlyRvHeatmap,
+  buildHourlyRvWeekdayGroups,
+  loadIvRvHistory,
+  summarizeIvRvRows,
+  summarizeRvWeekdayGroups,
+} from "./lib/ivRv.js";
 import { blackScholesPrice } from "./lib/optionPricing.js";
 import { computeZeroMtmContours } from "./lib/zeroMtmContours.js";
 import {
@@ -95,8 +105,10 @@ const ui = reactive({
   entryHourUtc: 8,
   hedgeEnabled: true,
   hedgeIntervalHours: 24,
-  holdToExpiry: false,
+  exitMode: "after_days",
   exitHoldDays: 7,
+  exitWeekday: 0,
+  exitHourUtc: 20,
   longOption: false,
   investmentMode: "notional",
 });
@@ -155,11 +167,16 @@ const ivRvSourceRows = ref([]);
 const ivRvLoading = ref(false);
 const ivRvError = ref("");
 const ivRvTenor = ref(7);
-const ivRvResolution = ref(8);
+const ivRvResolution = ref(24);
 const ivRvShowIndex = ref(false);
 const ivRvAlignForward = ref(false);
 const ivRvRangeStart = ref(0);
 const ivRvRangeEnd = ref(100);
+const rvChartRef = ref(null);
+const returnHeatmapRef = ref(null);
+const rvOutlierCorrection = ref(false);
+const rvRangeStart = ref(0);
+const rvRangeEnd = ref(100);
 const IV_RV_TENORS = [7, 14, 30];
 const IV_RV_RESOLUTIONS = [1, 4, 8, 24];
 const fullIvRvRows = computed(() => buildIvRvChartRows({
@@ -206,10 +223,54 @@ const ivRvRangeLabel = computed(() => {
   const range = ivRvSelectedRange.value;
   return range ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}` : "No range";
 });
-const latestIvRv = computed(() => [...ivRvRows.value].reverse().find(
-  (row) => Number.isFinite(row.iv) && Number.isFinite(row.rv),
-));
+const ivRvStats = computed(() => summarizeIvRvRows(ivRvRows.value));
 const formatVol = (value) => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+const rvHourlyRows = computed(() => buildHourlyParkinsonRows(ivRvSourceRows.value));
+const rvExtent = computed(() => rvHourlyRows.value.length
+  ? { min: rvHourlyRows.value[0].ts, max: rvHourlyRows.value.at(-1).ts }
+  : null);
+const rvSelectedRange = computed(() => {
+  const extent = rvExtent.value;
+  if (!extent) return null;
+  const span = extent.max - extent.min;
+  return {
+    start: extent.min + span * rvRangeStart.value / 100,
+    end: extent.min + span * rvRangeEnd.value / 100,
+  };
+});
+const rvFilteredRows = computed(() => {
+  const range = rvSelectedRange.value;
+  return range
+    ? rvHourlyRows.value.filter((row) => row.ts >= range.start && row.ts <= range.end)
+    : rvHourlyRows.value;
+});
+const rvRangeStartModel = computed({
+  get: () => rvRangeStart.value,
+  set: (value) => { rvRangeStart.value = Math.min(Number(value), rvRangeEnd.value - 0.1); },
+});
+const rvRangeEndModel = computed({
+  get: () => rvRangeEnd.value,
+  set: (value) => { rvRangeEnd.value = Math.max(Number(value), rvRangeStart.value + 0.1); },
+});
+const rvRangeStyle = computed(() => ({
+  "--range-start": `${rvRangeStart.value}%`,
+  "--range-end": `${rvRangeEnd.value}%`,
+}));
+const rvRangeLabel = computed(() => {
+  const range = rvSelectedRange.value;
+  return range ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}` : "No range";
+});
+const rvWeekdayGroups = computed(() => buildHourlyRvWeekdayGroups(rvFilteredRows.value));
+const rvHeatmapCells = computed(() => buildHourlyRvHeatmap(rvFilteredRows.value, {
+  winsorizeOutliers: rvOutlierCorrection.value,
+}));
+const returnHeatmapCells = computed(() => buildHourlyReturnHeatmap(
+  ivRvSourceRows.value.filter((row) => {
+    const range = rvSelectedRange.value;
+    return !range || (row.ts >= range.start && row.ts <= range.end);
+  }),
+));
+const rvWeekdayInsights = computed(() => summarizeRvWeekdayGroups(rvWeekdayGroups.value));
 const sweepDimension = ref("entry_hour");
 const sweepResults = ref([]);
 const sweepRunning = ref(false);
@@ -251,16 +312,27 @@ const formatNumber = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
-const hoursFor = (hour, enabled, interval) => {
+const hoursFor = (hour, enabled, interval, scheduledExitHour = null, includeExpiryRoll = false) => {
   const hs = new Set([Number(hour), 8]);
+  if (Number.isInteger(Number(scheduledExitHour))) hs.add(Number(scheduledExitHour));
   if (enabled) {
     const step = Math.max(1, Math.min(24, Number(interval)));
-    let h = Number(hour);
-    do { hs.add(h); h = (h + step) % 24; } while (h !== Number(hour));
+    const addHedgeCycle = (startHour) => {
+      let h = Number(startHour);
+      do { hs.add(h); h = (h + step) % 24; } while (h !== Number(startHour));
+    };
+    addHedgeCycle(hour);
+    if (includeExpiryRoll) addHedgeCycle(8);
   }
   return [...hs].sort((a, b) => a - b);
 };
-const requiredHours = computed(() => hoursFor(ui.entryHourUtc, ui.hedgeEnabled, ui.hedgeIntervalHours));
+const requiredHours = computed(() => hoursFor(
+  ui.entryHourUtc,
+  ui.hedgeEnabled,
+  ui.hedgeIntervalHours,
+  ui.exitMode === "weekly_schedule" ? ui.exitHourUtc : null,
+  ui.exitMode === "after_days",
+));
 const requiredHoursKey = computed(() => requiredHours.value.join(","));
 let loadedHoursKey = "";
 
@@ -342,6 +414,28 @@ const sweepInsights = computed(() => {
   };
 });
 
+const exitModeExplanation = computed(() => {
+  const entryWeekday = WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
+  const exitWeekday = WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.exitWeekday)) || WEEKDAY_OPTIONS[0];
+  const entryTime = `${entryWeekday.label.slice(0, 3)} ${String(ui.entryHourUtc).padStart(2, "0")}:00`;
+  const exitTime = `${exitWeekday.label.slice(0, 3)} ${String(ui.exitHourUtc).padStart(2, "0")}:00`;
+
+  if (ui.exitMode === "expiry") {
+    return `Keep each position open until its option expiry. Re-enter only at the first ${entryTime} UTC entry after it has closed.`;
+  }
+  if (ui.exitMode === "weekly_schedule") {
+    const entryHourOfWeek = Number(ui.entryWeekday) * 24 + Number(ui.entryHourUtc);
+    const exitHourOfWeek = Number(ui.exitWeekday) * 24 + Number(ui.exitHourUtc);
+    let holdingHours = (exitHourOfWeek - entryHourOfWeek + 7 * 24) % (7 * 24);
+    if (holdingHours === 0) holdingHours = 7 * 24;
+    const days = Math.floor(holdingHours / 24);
+    const hours = holdingHours % 24;
+    const duration = [days ? `${days}d` : "", hours ? `${hours}h` : ""].filter(Boolean).join(" ");
+    return `Close at the next ${exitTime} UTC after entry (${duration} later), then stay in cash until the next ${entryTime} entry. If the option expires first, close at expiry.`;
+  }
+  return `Roll every ${ui.exitHoldDays} calendar day${ui.exitHoldDays === 1 ? "" : "s"}: close the current position and immediately open its replacement. The strategy stays continuously invested. If the option expires first, roll at expiry.`;
+});
+
 const strategyLabels = computed(() => {
   const maturity = currentMaturity.value;
   const structure =
@@ -355,6 +449,10 @@ const strategyLabels = computed(() => {
     WEEKDAY_OPTIONS[4];
   const side = ui.longOption ? "Long" : "Short";
   const hour = String(ui.entryHourUtc).padStart(2, "0");
+  const exitWeekday =
+    WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.exitWeekday)) ||
+    WEEKDAY_OPTIONS[0];
+  const exitHour = String(ui.exitHourUtc).padStart(2, "0");
   const option = showDelta.value ? `${delta.label} ${structure.label}` : "ATM";
 
   let chartStrategy = `${side} straddle ${maturity.label}`;
@@ -377,7 +475,11 @@ const strategyLabels = computed(() => {
       : ui.hedgeIntervalHours === 24
         ? `Daily ${hour}:00 · Perp`
         : `Every ${ui.hedgeIntervalHours}h · Perp`,
-    exit: ui.holdToExpiry ? "Hold to expiry" : `Roll every ${ui.exitHoldDays}D`,
+    exit: ui.exitMode === "expiry"
+      ? "Option expiry"
+      : ui.exitMode === "weekly_schedule"
+        ? `Pick close · ${exitWeekday.label.slice(0, 3)} ${exitHour}:00`
+        : `Roll every ${ui.exitHoldDays}D`,
     chart: `${chartStrategy}, ${ui.hedgeEnabled ? `hedged every ${ui.hedgeIntervalHours}h` : "unhedged"}`,
   };
 });
@@ -442,9 +544,12 @@ const chartSubtitle = computed(() => {
   }
   const weekday = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
   const entryTime = `${String(ui.entryHourUtc).padStart(2, "0")}:00 UTC`;
-  const exit = ui.holdToExpiry
+  const exitWeekday = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.exitWeekday)) || WEEKDAY_OPTIONS[0];
+  const exit = ui.exitMode === "expiry"
     ? "Held to expiry"
-    : `Rolled after ${ui.exitHoldDays}D`;
+    : ui.exitMode === "weekly_schedule"
+      ? `Exited ${exitWeekday.label} at ${String(ui.exitHourUtc).padStart(2, "0")}:00 UTC; cash until next entry`
+      : `Rolled every ${ui.exitHoldDays}D; continuously invested`;
   const sizing = ui.investmentMode === "btc" ? "1 BTC per leg" : "$100k notional";
   return `Entered ${weekday.label} at ${entryTime} · ${exit} · ${sizing}`;
 });
@@ -474,8 +579,10 @@ const buildConfig = (overrides = {}) => {
     hourlyOffset: Number(ui.entryHourUtc),
     hedgeEnabled: ui.hedgeEnabled,
     hedgeIntervalHours: Number(ui.hedgeIntervalHours),
-    holdToExpiry: ui.holdToExpiry,
+    exitMode: ui.exitMode,
     exitHoldDays: Number(ui.exitHoldDays),
+    exitWeekday: Number(ui.exitWeekday),
+    exitHourUtc: Number(ui.exitHourUtc),
     longOption: ui.longOption,
     sizingMode: ui.investmentMode,
     btcQuantity: 1,
@@ -497,7 +604,13 @@ const runSweep = async () => {
     buildConfig({ ...cell.overrides, end: sweepEnd }),
   );
   const sweepHours = [...new Set(configs.flatMap((config) =>
-    hoursFor(config.entryHourUtc, config.hedgeEnabled, config.hedgeIntervalHours),
+    hoursFor(
+      config.entryHourUtc,
+      config.hedgeEnabled,
+      config.hedgeIntervalHours,
+      config.exitMode === "weekly_schedule" ? config.exitHourUtc : null,
+      config.exitMode === "after_days",
+    ),
   ))].sort((a, b) => a - b);
   const sweepHoursKey = sweepHours.join(",");
   const startedAt = performance.now();
@@ -609,12 +722,13 @@ const switchMode = (nextMode) => {
   selectedCycle.value = null;
   if (nextMode === "single") {
     scheduleBacktest();
-  } else if (nextMode === "iv-rv" && !ivRvSourceRows.value.length) {
+  } else if (["iv-rv", "rv"].includes(nextMode) && !ivRvSourceRows.value.length) {
     loadIvRv();
   }
 };
 
 const loadIvRv = async () => {
+  if (ivRvLoading.value) return;
   ivRvLoading.value = true;
   ivRvError.value = "";
   try {
@@ -754,8 +868,10 @@ watch(
     ui.entryHourUtc,
     ui.hedgeEnabled,
     ui.hedgeIntervalHours,
-    ui.holdToExpiry,
+    ui.exitMode,
     ui.exitHoldDays,
+    ui.exitWeekday,
+    ui.exitHourUtc,
     ui.longOption,
     ui.investmentMode,
   ],
@@ -784,8 +900,10 @@ watch(
       ui.entryHourUtc,
       ui.hedgeEnabled,
       ui.hedgeIntervalHours,
-      ui.holdToExpiry,
+      ui.exitMode,
       ui.exitHoldDays,
+      ui.exitWeekday,
+      ui.exitHourUtc,
       ui.longOption,
       ui.investmentMode,
     ].join("|");
@@ -814,6 +932,11 @@ function handleSavePng() {
     return;
   }
 
+  if (mode.value === "rv") {
+    saveRvHeatmap(date);
+    return;
+  }
+
   if (mode.value === 'sweep') {
     if (!sweepChartRef.value) return;
     const filename = `sweep-${sweepDimension.value}-${date}.png`;
@@ -821,11 +944,6 @@ function handleSavePng() {
       title: `Parameter Sweep: ${sweepDimensionLabel.value}`,
       subtitle: chartSubtitle.value,
       source: chartSourceSubtitle.value,
-      metrics: sweepInsights.value ? [
-        { label: "BEST PNL", value: `${sweepInsights.value.bestPnl.label} ${formatUsd.format(sweepInsights.value.bestPnl.pnl)}` },
-        { label: "BEST SHARPE", value: sweepInsights.value.bestSharpe ? `${sweepInsights.value.bestSharpe.label} ${formatNumber.format(sweepInsights.value.bestSharpe.sharpe)}` : '—' },
-        { label: "RUNS", value: String(sweepResults.value.length) },
-      ] : [],
       filename,
       scale: 3,
       padding: 24,
@@ -851,6 +969,26 @@ function handleSavePng() {
       { label: "SHARPE", value: sharpeValue.value },
       { label: "MAX DRAWDOWN", value: maxDdValue.value, muted: true },
     ],
+  });
+}
+
+function saveRvHeatmap(date = new Date().toISOString().slice(0, 10)) {
+  if (!rvWeekdayInsights.value) return;
+  const chart = rvChartRef.value;
+  if (!chart) return;
+  chart.exportPng({
+    filename: `rv-hourly-heatmap-${date}.png`,
+    scale: 3,
+    padding: 24,
+  });
+}
+
+function saveReturnHeatmap(date = new Date().toISOString().slice(0, 10)) {
+  if (!returnHeatmapRef.value) return;
+  returnHeatmapRef.value.exportPng({
+    filename: `btc-hourly-return-heatmap-${date}.png`,
+    scale: 3,
+    padding: 24,
   });
 }
 
@@ -1019,15 +1157,15 @@ onMounted(loadBacktest);
         <div class="pill exitPill" style="position: relative;" @click="toggleMenu('exit')">
           <span class="pillLabel">Exit</span>
           <span class="pillValue">{{ strategyLabels.exit }}</span>
-          <div v-if="openMenu === 'exit'" class="dropdown" @click.stop>
-            <div class="freq-toggle-row">
-              <span class="freq-row__label">Hold to expiry</span>
-              <label class="toggle-switch">
-                <input type="checkbox" v-model="ui.holdToExpiry" />
-                <span class="toggle-slider"></span>
-              </label>
+          <div v-if="openMenu === 'exit'" class="dropdown exit-dropdown" @click.stop>
+            <label class="freq-row__label">Close position</label>
+            <div class="inst-choices exit-mode-choices">
+              <button type="button" :class="['inst-choice', { active: ui.exitMode === 'after_days' }]" @click="ui.exitMode = 'after_days'">Roll</button>
+              <button type="button" :class="['inst-choice', { active: ui.exitMode === 'expiry' }]" @click="ui.exitMode = 'expiry'">Option expiry</button>
+              <button type="button" :class="['inst-choice', { active: ui.exitMode === 'weekly_schedule' }]" @click="ui.exitMode = 'weekly_schedule'">Pick close</button>
             </div>
-            <div v-if="!ui.holdToExpiry">
+            <p class="exit-mode-explanation">{{ exitModeExplanation }}</p>
+            <div v-if="ui.exitMode === 'after_days'" class="exit-mode-detail">
               <label class="freq-row__label">Roll every</label>
               <div class="inst-choices exit-day-choices">
                 <button
@@ -1039,6 +1177,33 @@ onMounted(loadBacktest);
                 >
                   {{ days }}D
                 </button>
+              </div>
+            </div>
+            <div v-else-if="ui.exitMode === 'weekly_schedule'" class="exit-mode-detail">
+              <label class="freq-row__label">Pick close day</label>
+              <div class="inst-choices weekday-choices">
+                <button
+                  v-for="weekday in WEEKDAY_OPTIONS"
+                  :key="weekday.value"
+                  type="button"
+                  :class="['inst-choice', { active: Number(ui.exitWeekday) === weekday.value }]"
+                  @click="ui.exitWeekday = weekday.value"
+                >{{ weekday.label.slice(0, 3) }}</button>
+              </div>
+              <div class="entry-picker exit-time-picker">
+                <div class="entry-picker__header">
+                  <span class="entry-picker__day">Pick close time</span>
+                  <span class="entry-picker__time">{{ String(ui.exitHourUtc).padStart(2, '0') }}:00</span>
+                </div>
+                <div class="hour-grid">
+                  <button
+                    v-for="hour in 24"
+                    :key="hour - 1"
+                    type="button"
+                    :class="{ active: ui.exitHourUtc === hour - 1 }"
+                    @click="ui.exitHourUtc = hour - 1; openMenu = null"
+                  >{{ String(hour - 1).padStart(2, '0') }}</button>
+                </div>
               </div>
             </div>
           </div>
@@ -1069,8 +1234,15 @@ onMounted(loadBacktest);
         >
           RV - IV
         </button>
+        <button
+          type="button"
+          :class="['segment', { active: mode === 'rv' }]"
+          @click="switchMode('rv')"
+        >
+          RV
+        </button>
       </div>
-      <button class="saveButton topSaveButton" type="button" :disabled="mode === 'single' ? cycleDetailLoading : mode === 'sweep' ? (sweepRunning || !sweepResults.length) : (ivRvLoading || !ivRvRows.length)" @click="handleSavePng">
+      <button class="saveButton topSaveButton" type="button" :disabled="mode === 'single' ? cycleDetailLoading : mode === 'sweep' ? (sweepRunning || !sweepResults.length) : mode === 'rv' ? (ivRvLoading || !rvWeekdayInsights) : (ivRvLoading || !ivRvRows.length)" @click="handleSavePng">
         Save PNG
       </button>
     </div>
@@ -1092,7 +1264,7 @@ onMounted(loadBacktest);
           <div class="metricLabel">MAX DRAWDOWN</div>
         </div>
         </template>
-        <template v-else-if="sweepInsights">
+        <template v-else-if="mode === 'sweep' && sweepInsights">
           <div class="metric">
             <div class="metricValue">{{ sweepInsights.bestPnl.label }}</div>
             <div class="metricLabel">BEST PNL · {{ formatUsd.format(sweepInsights.bestPnl.pnl) }}</div>
@@ -1106,18 +1278,32 @@ onMounted(loadBacktest);
             <div class="metricLabel">PROFIT · {{ formatUsd.format(sweepInsights.medianPnl) }}</div>
           </div>
         </template>
-        <template v-else-if="mode === 'iv-rv' && latestIvRv">
+        <template v-else-if="mode === 'iv-rv' && ivRvStats">
           <div class="metric">
-            <div class="metricValue">{{ formatVol(latestIvRv.iv) }}</div>
-            <div class="metricLabel">LATEST ATM IV</div>
+            <div class="metricValue">{{ formatVol(ivRvStats.averageIv) }}</div>
+            <div class="metricLabel">AVERAGE ATM IV</div>
           </div>
           <div class="metric">
-            <div class="metricValue">{{ formatVol(latestIvRv.rv) }}</div>
-            <div class="metricLabel">LATEST PARKINSON RV</div>
+            <div class="metricValue">{{ formatVol(ivRvStats.averageRv) }}</div>
+            <div class="metricLabel">AVERAGE PARKINSON RV</div>
           </div>
           <div class="metric">
-            <div class="metricValue">{{ formatVol(latestIvRv.iv - latestIvRv.rv) }}</div>
-            <div class="metricLabel">IV MINUS RV</div>
+            <div class="metricValue">{{ formatVol(ivRvStats.difference) }}</div>
+            <div class="metricLabel">AVERAGE IV MINUS RV</div>
+          </div>
+        </template>
+        <template v-else-if="mode === 'rv' && rvWeekdayInsights">
+          <div class="metric">
+            <div class="metricValue">{{ formatVol(rvWeekdayInsights.average) }}</div>
+            <div class="metricLabel">AVERAGE HOURLY RV</div>
+          </div>
+          <div class="metric">
+            <div class="metricValue">{{ rvWeekdayInsights.lowest.label }}</div>
+            <div class="metricLabel">LOWEST MEDIAN · {{ formatVol(rvWeekdayInsights.lowest.median) }}</div>
+          </div>
+          <div class="metric">
+            <div class="metricValue">{{ rvWeekdayInsights.highest.label }}</div>
+            <div class="metricLabel">HIGHEST MEDIAN · {{ formatVol(rvWeekdayInsights.highest.median) }}</div>
           </div>
         </template>
       </div>
@@ -1166,7 +1352,7 @@ onMounted(loadBacktest);
             </button>
           </div>
         </div>
-        <div v-else class="sweepHeader">
+        <div v-else-if="mode === 'iv-rv'" class="sweepHeader">
           <div>
             <div class="chartTitle">BTC ATM IV vs Parkinson RV</div>
             <div class="chartSubtitle">Hourly source data · RV uses the {{ ivRvAlignForward ? 'following' : 'trailing' }} tenor window</div>
@@ -1192,6 +1378,23 @@ onMounted(loadBacktest);
             <div class="sweepDimensionControl" role="group" aria-label="Chart overlays">
               <button type="button" :class="{ active: ivRvShowIndex }" :aria-pressed="ivRvShowIndex" @click="ivRvShowIndex = !ivRvShowIndex">Index</button>
               <button type="button" :class="{ active: ivRvAlignForward }" :aria-pressed="ivRvAlignForward" title="Compare each IV point with realized volatility over the following tenor" @click="ivRvAlignForward = !ivRvAlignForward">Shift RV</button>
+            </div>
+          </div>
+        </div>
+        <div v-else class="sweepHeader">
+          <div>
+            <div class="chartTitle">BTC hourly volatility and returns</div>
+            <div class="chartSubtitle">Single-hour observations by weekday and UTC hour</div>
+          </div>
+          <div class="ivRvRangeInline">
+            <span class="ivRvRangeLabel">{{ rvRangeLabel }}</span>
+            <div class="ivRvRangeControl">
+              <div class="dateRangeSlider" :style="rvRangeStyle">
+                <span class="dateRangeTrack" aria-hidden="true"></span>
+                <span class="dateRangeSelection" aria-hidden="true"></span>
+                <input v-model.number="rvRangeStartModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period start" />
+                <input v-model.number="rvRangeEndModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period end" />
+              </div>
             </div>
           </div>
         </div>
@@ -1239,7 +1442,7 @@ onMounted(loadBacktest);
           </div>
         </div>
 
-        <div v-else class="sweepPanel">
+        <div v-else-if="mode === 'iv-rv'" class="sweepPanel">
           <div v-if="ivRvError" class="sweepEmpty">{{ ivRvError }}</div>
           <IvRvChart
             v-else
@@ -1249,6 +1452,62 @@ onMounted(loadBacktest);
             :loading="ivRvLoading"
             :show-index="ivRvShowIndex"
           />
+        </div>
+
+        <div v-else class="sweepPanel rvCombinedPanel">
+          <div v-if="ivRvError" class="sweepEmpty">{{ ivRvError }}</div>
+          <div v-else class="rvCombinedCharts">
+            <section class="rvChartSection rvHeatmapSection">
+              <div class="rvSectionHeader">
+                <div class="rvSectionLabel">WEEKDAY × UTC HOUR · MEAN</div>
+                <div class="rvSectionActions">
+                  <label class="rvOutlierToggle" title="Clamp raw hourly RV observations to the selected period's 1st and 99th percentiles before calculating cell averages">
+                    <input v-model="rvOutlierCorrection" type="checkbox" />
+                    <span>Outlier correction</span>
+                  </label>
+                  <button class="rvScreenshotButton" type="button" :disabled="ivRvLoading || !rvWeekdayInsights" title="Save heatmap as PNG" @click="saveRvHeatmap()">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                      <circle cx="12" cy="13" r="4" />
+                    </svg>
+                    Screenshot
+                  </button>
+                </div>
+              </div>
+              <WeekdayHourHeatmap
+                ref="rvChartRef"
+                :cells="rvHeatmapCells"
+                :loading="ivRvLoading"
+                :measure-label="rvOutlierCorrection ? 'Mean annualized hourly RV (1–99% winsorized)' : 'Mean annualized hourly RV'"
+              />
+            </section>
+            <section class="rvChartSection rvSecondaryHeatmapSection">
+              <div class="rvSectionHeader">
+                <div class="rvSectionLabel">HOURLY RETURN · WEEKDAY × UTC HOUR · MEAN</div>
+                <button class="rvScreenshotButton" type="button" :disabled="ivRvLoading || !returnHeatmapCells.length" title="Save hourly return heatmap as PNG" @click="saveReturnHeatmap()">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                    <circle cx="12" cy="13" r="4" />
+                  </svg>
+                  Screenshot
+                </button>
+              </div>
+              <WeekdayHourHeatmap
+                ref="returnHeatmapRef"
+                :cells="returnHeatmapCells"
+                :loading="ivRvLoading"
+                measure-label="Mean hourly return"
+                legend-label="Avg hourly return"
+                loading-message="Loading hourly returns…"
+                empty-message="No hourly return observations."
+                aria-label="BTC hourly returns by weekday and UTC hour"
+                gradient-id="btc-hourly-return-gradient"
+                color-mode="diverging"
+                :legend-decimals="2"
+                :value-decimals="3"
+              />
+            </section>
+          </div>
         </div>
 
         <div v-if="mode === 'single' && ui.hedgeEnabled && !selectedCycle" class="chartModeToggle" role="group" aria-label="Chart view">
@@ -1477,6 +1736,39 @@ onMounted(loadBacktest);
   padding: 10px;
   box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.8),
               0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.exit-dropdown {
+  width: 340px;
+  background: #0f0f12;
+  border-color: rgba(255,255,255,0.09);
+  border-radius: 12px;
+}
+
+.exit-mode-choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 5px;
+}
+
+.exit-mode-choices .inst-choice {
+  width: 100%;
+  font: inherit;
+}
+
+.exit-mode-detail {
+  margin-top: 12px;
+}
+
+.exit-mode-explanation {
+  margin: 9px 2px 0;
+  color: #8b9198;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.exit-time-picker {
+  margin-top: 8px;
 }
 
 .entry-picker {
@@ -2041,6 +2333,118 @@ onMounted(loadBacktest);
   border: 1px solid rgba(255,255,255,0.055);
   border-radius: 8px;
   background: #090a0d;
+}
+
+.rvCombinedPanel {
+  overflow: hidden;
+}
+
+.rvCombinedCharts {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 10px 18px;
+}
+
+.rvChartSection {
+  width: 100%;
+  min-width: 0;
+  height: 470px;
+  display: flex;
+  flex-direction: column;
+}
+
+.rvSecondaryHeatmapSection {
+  height: 470px;
+  position: relative;
+  margin-top: 32px;
+}
+
+.rvSecondaryHeatmapSection::before {
+  content: "";
+  position: absolute;
+  top: -16px;
+  left: -10px;
+  right: -10px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+.rvSectionHeader {
+  flex: 0 0 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+}
+
+.rvSectionLabel {
+  color: #777d84;
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+
+.rvSectionActions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.rvOutlierToggle {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 5px;
+  background: rgba(255,255,255,0.025);
+  color: #8f949b;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.rvOutlierToggle:has(input:checked) {
+  border-color: rgba(239,68,68,0.38);
+  background: rgba(239,68,68,0.09);
+  color: #f2f3f5;
+}
+
+.rvOutlierToggle input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: #dc2626;
+}
+
+.rvScreenshotButton {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 5px;
+  background: rgba(255,255,255,0.025);
+  color: #8f949b;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.rvScreenshotButton:hover:not(:disabled) {
+  border-color: rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.06);
+  color: #f2f3f5;
+}
+
+.rvScreenshotButton:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.rvChartSection :deep(.chartWrap) {
+  flex: 1;
+  height: auto;
 }
 
 .sweepHistogram {

@@ -14,8 +14,11 @@ export const DEFAULT_BACKTEST_CONFIG = {
   entryWeekday: 5,
   hedgeEnabled: true,
   hedgeIntervalHours: 24,
+  exitMode: "after_days",
   holdToExpiry: false,
   exitHoldDays: 7,
+  exitWeekday: 0,
+  exitHourUtc: 20,
   longOption: false,
   targetDteDays: 7,
   farTargetDteDays: 14,
@@ -49,11 +52,25 @@ export const normalizeBacktestConfig = (input = {}) => {
     1,
     Math.min(24, Math.round(Number(config.hedgeIntervalHours) || 24)),
   );
-  config.holdToExpiry = config.holdToExpiry !== false;
+  const requestedExitMode = input.exitMode;
+  config.exitMode = ["after_days", "weekly_schedule", "expiry"].includes(requestedExitMode)
+    ? requestedExitMode
+    : input.holdToExpiry === true
+      ? "expiry"
+      : DEFAULT_BACKTEST_CONFIG.exitMode;
+  config.holdToExpiry = config.exitMode === "expiry";
   config.exitHoldDays = Math.max(
     1,
     Math.round(Number(config.exitHoldDays) || DEFAULT_BACKTEST_CONFIG.exitHoldDays),
   );
+  const exitWeekday = Number(config.exitWeekday);
+  config.exitWeekday = Number.isInteger(exitWeekday) && exitWeekday >= 0 && exitWeekday <= 6
+    ? exitWeekday
+    : DEFAULT_BACKTEST_CONFIG.exitWeekday;
+  const exitHour = Number(config.exitHourUtc);
+  config.exitHourUtc = Number.isInteger(exitHour) && exitHour >= 0 && exitHour <= 23
+    ? exitHour
+    : DEFAULT_BACKTEST_CONFIG.exitHourUtc;
   config.longOption = Boolean(config.longOption);
   config.sizingMode = config.sizingMode === "btc" ? "btc" : "notional";
   config.btcQuantity = Math.max(
@@ -64,6 +81,20 @@ export const normalizeBacktestConfig = (input = {}) => {
     Number(config.targetDelta) || DEFAULT_BACKTEST_CONFIG.targetDelta,
   );
   return config;
+};
+
+export const nextWeeklyExitTs = (entryTs, exitWeekday, exitHourUtc) => {
+  if (![entryTs, exitWeekday, exitHourUtc].every(Number.isFinite)) return Number.NaN;
+  const entry = new Date(entryTs * 1000);
+  const daysAhead = (exitWeekday - entry.getUTCDay() + 7) % 7;
+  let exitTs = Date.UTC(
+    entry.getUTCFullYear(),
+    entry.getUTCMonth(),
+    entry.getUTCDate() + daysAhead,
+    exitHourUtc,
+  ) / 1000;
+  if (exitTs <= entryTs) exitTs += 7 * 86_400;
+  return exitTs;
 };
 
 export const computeMaxDrawdown = (rows = []) => {
@@ -370,6 +401,14 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
   for (const entry of entryExpirations) {
     const entryTimeMs = entry.entryTs * 1000;
     const expirationMs = entry.expirationTs * 1000;
+    const entryDate = new Date(entryTimeMs);
+    if (
+      plans.length === 0 &&
+      (entryDate.getUTCDay() !== config.entryWeekday ||
+        entryDate.getUTCHours() !== config.entryHourUtc)
+    ) {
+      continue;
+    }
     // This is a single-position strategy. Skip candidate entries while the
     // previously accepted trade is still open. A same-timestamp close/reopen
     // is allowed.
@@ -409,10 +448,19 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
         (cashflow, leg) => cashflow + leg.quantity * leg.entryPrice,
         0,
       );
-      const requestedExitMs = config.holdToExpiry
-        ? expirationMs
-        : entryTimeMs +
+      let requestedExitMs;
+      if (config.exitMode === "expiry") {
+        requestedExitMs = expirationMs;
+      } else if (config.exitMode === "weekly_schedule") {
+        requestedExitMs = nextWeeklyExitTs(
+          entry.entryTs,
+          config.exitWeekday,
+          config.exitHourUtc,
+        ) * 1000;
+      } else {
+        requestedExitMs = entryTimeMs +
           Math.max(1, Math.round(config.exitHoldDays)) * 86_400_000;
+      }
       const exitMs = Math.min(requestedExitMs, expirationMs);
       const entryTime = new Date(entryTimeMs);
       const expiration = new Date(expirationMs);
@@ -423,8 +471,11 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
         entryWeekday: config.entryWeekday,
         hedgeEnabled: config.hedgeEnabled,
         hedgeIntervalHours: config.hedgeIntervalHours,
+        exitMode: config.exitMode,
         holdToExpiry: config.holdToExpiry,
         exitHoldDays: config.exitHoldDays,
+        exitWeekday: config.exitWeekday,
+        exitHourUtc: config.exitHourUtc,
         structure: config.structure,
         targetDelta: config.targetDelta,
         entryTime,
@@ -934,10 +985,15 @@ export const runWeeklyStraddleBacktest = ({
   const { indexRows: pi = [], quotes, dataEnd } = p;
   const indexes = p.indexes || buildBacktestIndexes(p);
   const entryScheduleKey = `${c.entryWeekday}|${c.entryHourUtc}`;
+  const rollHours = new Set([c.entryHourUtc, 8]);
+  const entryCandidates = c.exitMode === "after_days"
+    ? [...indexes.quoteGroups.entryCandidatesBySchedule.entries()]
+      .filter(([scheduleKey]) => rollHours.has(Number(scheduleKey.split("|")[1])))
+      .flatMap(([, candidates]) => candidates)
+    : indexes.quoteGroups.entryCandidatesBySchedule.get(entryScheduleKey) || [];
 
   const entryExpirations = buildEntryExpirations({
-    entryCandidates:
-      indexes.quoteGroups.entryCandidatesBySchedule.get(entryScheduleKey) || [],
+    entryCandidates,
     dataEnd,
     config: c,
   });
