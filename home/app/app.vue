@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 const APP_ORDER = [
+  "Backtest",
   "Simulator",
   "Combo PnL",
   "Straddle",
