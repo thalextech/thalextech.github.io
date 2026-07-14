@@ -11,3 +11,4 @@ node_modules
 # Generated backtest runtime shards; rebuild from the tracked Parquet source.
 /apps/backtest/public/data/thalex/prepared_1h_h*utc.json
 /apps/backtest/public/data/thalex/prepared_manifest.json
+/apps/backtest/public/data/thalex/prepared_iv_rv_1h.json

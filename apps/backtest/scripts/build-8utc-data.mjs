@@ -12,6 +12,8 @@ const ARTIFACT_SCHEMA = "thalex-option-backtest";
 const SOURCE_DATA_DIR = path.resolve("data/thalex");
 const RUNTIME_DATA_DIR = path.resolve("public/data/thalex");
 const MANIFEST_FILENAME = "prepared_manifest.json";
+const IV_RV_FILENAME = "prepared_iv_rv_1h.json";
+const IV_RV_TENORS = [7, 14, 30];
 const hours = Array.from({ length: 24 }, (_, hour) => hour);
 const preparedFilename = (hour) =>
   `prepared_1h_h${String(hour).padStart(2, "0")}utc.json`;
@@ -84,14 +86,25 @@ if (!indexFiles.length || !markFiles.length) {
 await fs.mkdir(RUNTIME_DATA_DIR, { recursive: true });
 
 const indexByHour = new Map(hours.map((hour) => [hour, []]));
+const indexOhlcByTs = new Map();
 for (const filename of indexFiles) {
   console.log(`[index] ${filename}`);
-  const rows = await readParquet(filename, ["ts", "index_price_open"]);
+  const rows = await readParquet(filename, [
+    "ts",
+    "index_price_open",
+    "index_price_high",
+    "index_price_low",
+    "index_price_close",
+  ]);
   for (const row of rows) {
     const ts = asNumber(row.ts);
-    const price = asNumber(row.index_price_open);
-    if (Number.isFinite(ts) && Number.isFinite(price)) {
-      indexByHour.get(new Date(ts * 1000).getUTCHours())?.push([ts, price]);
+    const open = asNumber(row.index_price_open);
+    const high = asNumber(row.index_price_high);
+    const low = asNumber(row.index_price_low);
+    const close = asNumber(row.index_price_close);
+    if ([ts, open, high, low, close].every(Number.isFinite)) {
+      indexByHour.get(new Date(ts * 1000).getUTCHours())?.push([ts, open]);
+      indexOhlcByTs.set(ts, { ts, open, high, low, close });
     }
   }
 }
@@ -119,12 +132,14 @@ for (const filename of markFiles) {
     "instrument_name",
     "mark_price_open",
     "iv_open",
+    "iv_close",
   ]);
   for (const row of rows) {
     const ts = asNumber(row.ts);
     const instrumentName = String(row.instrument_name || "");
     const markPrice = asNumber(row.mark_price_open);
     const iv = asNumber(row.iv_open);
+    const ivClose = asNumber(row.iv_close);
     if (
       !Number.isFinite(ts) ||
       !instrumentName ||
@@ -159,7 +174,7 @@ for (const filename of markFiles) {
     const deltaScaled = Math.round(delta * PRECOMPUTED_DELTA_SCALE);
     quoteRowsByHour
       .get(new Date(ts * 1000).getUTCHours())
-      ?.push([ts, instrumentName, markPrice, iv, deltaScaled]);
+      ?.push([ts, instrumentName, markPrice, iv, deltaScaled, ivClose]);
   }
 }
 
@@ -169,6 +184,69 @@ const instruments = [...instrumentByName.values()].sort((a, b) =>
 const instrumentIdByName = new Map(
   instruments.map((instrument, instrumentId) => [instrument.name, instrumentId]),
 );
+
+const weightedAtmIv = (quotes, spot, ts, targetDays) => {
+  const callsByExpiry = new Map();
+  for (const [, instrumentName, , ivOpen, , ivClose] of quotes || []) {
+    const instrument = instrumentByName.get(instrumentName);
+    if (!instrument || instrument.optionType !== "C" || instrument.expirationTs <= ts) continue;
+    const current = callsByExpiry.get(instrument.expirationTs);
+    const distance = Math.abs(instrument.strike - spot);
+    if (!current || distance < current.distance) {
+      callsByExpiry.set(instrument.expirationTs, {
+        iv: Number.isFinite(ivClose) ? ivClose : ivOpen,
+        distance,
+      });
+    }
+  }
+  const targetTs = ts + targetDays * 86_400;
+  const expiries = [...callsByExpiry.keys()].sort((a, b) => a - b);
+  let below;
+  let above;
+  for (const expiry of expiries) {
+    if (expiry <= targetTs) below = expiry;
+    if (expiry >= targetTs) { above = expiry; break; }
+  }
+  if (!below || !above) return null;
+  const belowIv = callsByExpiry.get(below)?.iv;
+  const aboveIv = callsByExpiry.get(above)?.iv;
+  if (!Number.isFinite(belowIv) || !Number.isFinite(aboveIv)) return null;
+  if (below === above) return belowIv;
+  const weightBelow = (above - targetTs) / (above - below);
+  return belowIv * weightBelow + aboveIv * (1 - weightBelow);
+};
+
+const quotesByTs = new Map();
+for (const hourlyRows of quoteRowsByHour.values()) {
+  for (const quote of hourlyRows) {
+    const ts = quote[0];
+    if (!quotesByTs.has(ts)) quotesByTs.set(ts, []);
+    quotesByTs.get(ts).push(quote);
+  }
+}
+const ivRvRows = [...indexOhlcByTs.values()]
+  .sort((a, b) => a.ts - b.ts)
+  .map((row) => [
+    row.ts,
+    row.open,
+    row.high,
+    row.low,
+    row.close,
+    ...IV_RV_TENORS.map((tenor) => weightedAtmIv(quotesByTs.get(row.ts), row.open, row.ts, tenor)),
+  ]);
+await fs.writeFile(
+  path.join(RUNTIME_DATA_DIR, IV_RV_FILENAME),
+  JSON.stringify({
+    schema: "thalex-iv-rv",
+    version: 1,
+    resolutionSeconds: 3_600,
+    tenors: IV_RV_TENORS,
+    fields: ["ts", "open", "high", "low", "close", ...IV_RV_TENORS.map((tenor) => `iv${tenor}`)],
+    rows: ivRvRows,
+  }),
+);
+console.log(`wrote ${ivRvRows.length.toLocaleString()} hourly IV/RV source rows`);
+
 const manifest = {
   schema: ARTIFACT_SCHEMA,
   version: ARTIFACT_VERSION,

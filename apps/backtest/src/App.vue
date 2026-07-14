@@ -2,9 +2,11 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import CycleDetailChart from "./components/CycleDetailChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
+import IvRvChart from "./components/IvRvChart.vue";
 import SweepResultsChart from "./components/SweepResultsChart.vue";
 import WeeklyBacktestChart from "./components/WeeklyBacktestChart.vue";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
+import { buildIvRvChartRows, loadIvRvHistory } from "./lib/ivRv.js";
 import { blackScholesPrice } from "./lib/optionPricing.js";
 import { computeZeroMtmContours } from "./lib/zeroMtmContours.js";
 import {
@@ -148,6 +150,66 @@ const hedgePct = computed(() => {
 });
 
 const mode = ref("single");
+const ivRvChartRef = ref(null);
+const ivRvSourceRows = ref([]);
+const ivRvLoading = ref(false);
+const ivRvError = ref("");
+const ivRvTenor = ref(7);
+const ivRvResolution = ref(8);
+const ivRvShowIndex = ref(false);
+const ivRvAlignForward = ref(false);
+const ivRvRangeStart = ref(0);
+const ivRvRangeEnd = ref(100);
+const IV_RV_TENORS = [7, 14, 30];
+const IV_RV_RESOLUTIONS = [1, 4, 8, 24];
+const fullIvRvRows = computed(() => buildIvRvChartRows({
+  rows: ivRvSourceRows.value,
+  tenorDays: ivRvTenor.value,
+  resolutionHours: ivRvResolution.value,
+  alignForwardRv: ivRvAlignForward.value,
+}));
+const ivRvExtent = computed(() => {
+  const rows = fullIvRvRows.value;
+  if (!rows.length) return null;
+  return { min: rows[0].ts, max: rows.at(-1).ts };
+});
+const ivRvSelectedRange = computed(() => {
+  const extent = ivRvExtent.value;
+  if (!extent) return null;
+  const span = extent.max - extent.min;
+  return {
+    start: extent.min + span * ivRvRangeStart.value / 100,
+    end: extent.min + span * ivRvRangeEnd.value / 100,
+  };
+});
+const ivRvRows = computed(() => {
+  const range = ivRvSelectedRange.value;
+  if (!range) return fullIvRvRows.value;
+  return fullIvRvRows.value.filter((row) => row.ts >= range.start && row.ts <= range.end);
+});
+const ivRvRangeStartModel = computed({
+  get: () => ivRvRangeStart.value,
+  set: (value) => { ivRvRangeStart.value = Math.min(Number(value), ivRvRangeEnd.value - 0.1); },
+});
+const ivRvRangeEndModel = computed({
+  get: () => ivRvRangeEnd.value,
+  set: (value) => { ivRvRangeEnd.value = Math.max(Number(value), ivRvRangeStart.value + 0.1); },
+});
+const ivRvRangeStyle = computed(() => ({
+  "--range-start": `${ivRvRangeStart.value}%`,
+  "--range-end": `${ivRvRangeEnd.value}%`,
+}));
+const formatIvRvRangeDate = (ts) => Number.isFinite(ts)
+  ? new Date(ts * 1000).toISOString().slice(0, 10)
+  : "—";
+const ivRvRangeLabel = computed(() => {
+  const range = ivRvSelectedRange.value;
+  return range ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}` : "No range";
+});
+const latestIvRv = computed(() => [...ivRvRows.value].reverse().find(
+  (row) => Number.isFinite(row.iv) && Number.isFinite(row.rv),
+));
+const formatVol = (value) => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
 const sweepDimension = ref("entry_hour");
 const sweepResults = ref([]);
 const sweepRunning = ref(false);
@@ -547,6 +609,20 @@ const switchMode = (nextMode) => {
   selectedCycle.value = null;
   if (nextMode === "single") {
     scheduleBacktest();
+  } else if (nextMode === "iv-rv" && !ivRvSourceRows.value.length) {
+    loadIvRv();
+  }
+};
+
+const loadIvRv = async () => {
+  ivRvLoading.value = true;
+  ivRvError.value = "";
+  try {
+    ivRvSourceRows.value = await loadIvRvHistory();
+  } catch (error) {
+    ivRvError.value = error?.message || "Unable to load IV/RV data";
+  } finally {
+    ivRvLoading.value = false;
   }
 };
 
@@ -652,9 +728,11 @@ const loadBacktest = async () => {
 const scheduleBacktest = () => {
   state.error = "";
   clearTimeout(runDebounce);
-  if (mode.value === "sweep") {
-    sweepResults.value = [];
-    sweepTiming.value = null;
+  if (mode.value !== "single") {
+    if (mode.value === "sweep") {
+      sweepResults.value = [];
+      sweepTiming.value = null;
+    }
     return;
   }
   runDebounce = setTimeout(() => {
@@ -725,6 +803,16 @@ watch(sweepDimension, () => {
 
 function handleSavePng() {
   const date = new Date().toISOString().slice(0, 10);
+
+  if (mode.value === "iv-rv") {
+    if (!ivRvChartRef.value || !ivRvRows.value.length) return;
+    ivRvChartRef.value.exportPng({
+      filename: `rv-iv-${ivRvTenor.value}d-${ivRvResolution.value}h${ivRvAlignForward.value ? "-shifted" : ""}${ivRvShowIndex.value ? "-index" : ""}-${date}.png`,
+      scale: 3,
+      padding: 24,
+    });
+    return;
+  }
 
   if (mode.value === 'sweep') {
     if (!sweepChartRef.value) return;
@@ -974,8 +1062,15 @@ onMounted(loadBacktest);
         >
           Sweep
         </button>
+        <button
+          type="button"
+          :class="['segment', { active: mode === 'iv-rv' }]"
+          @click="switchMode('iv-rv')"
+        >
+          RV - IV
+        </button>
       </div>
-      <button class="saveButton topSaveButton" type="button" :disabled="mode === 'single' ? cycleDetailLoading : (sweepRunning || !sweepResults.length)" @click="handleSavePng">
+      <button class="saveButton topSaveButton" type="button" :disabled="mode === 'single' ? cycleDetailLoading : mode === 'sweep' ? (sweepRunning || !sweepResults.length) : (ivRvLoading || !ivRvRows.length)" @click="handleSavePng">
         Save PNG
       </button>
     </div>
@@ -1011,6 +1106,20 @@ onMounted(loadBacktest);
             <div class="metricLabel">PROFIT · {{ formatUsd.format(sweepInsights.medianPnl) }}</div>
           </div>
         </template>
+        <template v-else-if="mode === 'iv-rv' && latestIvRv">
+          <div class="metric">
+            <div class="metricValue">{{ formatVol(latestIvRv.iv) }}</div>
+            <div class="metricLabel">LATEST ATM IV</div>
+          </div>
+          <div class="metric">
+            <div class="metricValue">{{ formatVol(latestIvRv.rv) }}</div>
+            <div class="metricLabel">LATEST PARKINSON RV</div>
+          </div>
+          <div class="metric">
+            <div class="metricValue">{{ formatVol(latestIvRv.iv - latestIvRv.rv) }}</div>
+            <div class="metricLabel">IV MINUS RV</div>
+          </div>
+        </template>
       </div>
 
       <!-- Chart area -->
@@ -1036,7 +1145,7 @@ onMounted(loadBacktest);
           <div class="chartSourceSubtitle">{{ chartSourceSubtitle }}</div>
         </div>
 
-        <div v-else class="sweepHeader">
+        <div v-else-if="mode === 'sweep'" class="sweepHeader">
           <div>
             <div class="chartTitle">Parameter sweep</div>
             <div v-if="!sweepResults.length && !sweepRunning" class="chartSubtitle">Compare one dimension while holding the current strategy settings fixed. Click a result to apply it.</div>
@@ -1055,6 +1164,35 @@ onMounted(loadBacktest);
             <button class="runSweepButton" type="button" :disabled="sweepRunning" @click="runSweep">
               {{ sweepRunning ? sweepProgress || 'Running…' : sweepResults.length ? 'Run' : 'Run sweep' }}
             </button>
+          </div>
+        </div>
+        <div v-else class="sweepHeader">
+          <div>
+            <div class="chartTitle">BTC ATM IV vs Parkinson RV</div>
+            <div class="chartSubtitle">Hourly source data · RV uses the {{ ivRvAlignForward ? 'following' : 'trailing' }} tenor window</div>
+          </div>
+          <div class="ivRvRangeInline">
+            <span class="ivRvRangeLabel">{{ ivRvRangeLabel }}</span>
+            <div class="ivRvRangeControl">
+              <div class="dateRangeSlider" :style="ivRvRangeStyle">
+                <span class="dateRangeTrack" aria-hidden="true"></span>
+                <span class="dateRangeSelection" aria-hidden="true"></span>
+                <input v-model.number="ivRvRangeStartModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="Chart period start" />
+                <input v-model.number="ivRvRangeEndModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="Chart period end" />
+              </div>
+            </div>
+          </div>
+          <div class="sweepControls">
+            <div class="sweepDimensionControl" role="group" aria-label="Volatility tenor">
+              <button v-for="tenor in IV_RV_TENORS" :key="tenor" type="button" :class="{ active: ivRvTenor === tenor }" @click="ivRvTenor = tenor">{{ tenor }}D</button>
+            </div>
+            <div class="sweepDimensionControl" role="group" aria-label="Chart sampling resolution">
+              <button v-for="resolution in IV_RV_RESOLUTIONS" :key="resolution" type="button" :class="{ active: ivRvResolution === resolution }" @click="ivRvResolution = resolution">{{ resolution }}h</button>
+            </div>
+            <div class="sweepDimensionControl" role="group" aria-label="Chart overlays">
+              <button type="button" :class="{ active: ivRvShowIndex }" :aria-pressed="ivRvShowIndex" @click="ivRvShowIndex = !ivRvShowIndex">Index</button>
+              <button type="button" :class="{ active: ivRvAlignForward }" :aria-pressed="ivRvAlignForward" title="Compare each IV point with realized volatility over the following tenor" @click="ivRvAlignForward = !ivRvAlignForward">Shift RV</button>
+            </div>
           </div>
         </div>
 
@@ -1081,7 +1219,7 @@ onMounted(loadBacktest);
           :zero-mtm-contours="cycleContours"
         />
 
-        <div v-else class="sweepPanel">
+        <div v-else-if="mode === 'sweep'" class="sweepPanel">
           <div v-if="sweepRunning && !sweepResults.length" class="sweepEmpty">{{ sweepProgress || 'Preparing sweep…' }}</div>
 
           <SweepResultsChart
@@ -1099,6 +1237,18 @@ onMounted(loadBacktest);
             · strategy {{ (sweepTiming.runMs / 1000).toFixed(2) }}s
             · {{ sweepTiming.reusedPreparedData ? 'reused loaded data' : `load ${(sweepTiming.loadMs / 1000).toFixed(2)}s · prepare ${(sweepTiming.prepareMs / 1000).toFixed(2)}s` }}
           </div>
+        </div>
+
+        <div v-else class="sweepPanel">
+          <div v-if="ivRvError" class="sweepEmpty">{{ ivRvError }}</div>
+          <IvRvChart
+            v-else
+            ref="ivRvChartRef"
+            class="sweepHistogram"
+            :rows="ivRvRows"
+            :loading="ivRvLoading"
+            :show-index="ivRvShowIndex"
+          />
         </div>
 
         <div v-if="mode === 'single' && ui.hedgeEnabled && !selectedCycle" class="chartModeToggle" role="group" aria-label="Chart view">
@@ -1919,6 +2069,87 @@ onMounted(loadBacktest);
   font-size: 9px;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+}
+
+.ivRvRangeControl {
+  width: 220px;
+}
+
+.ivRvRangeInline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.ivRvRangeLabel {
+  color: #626870;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dateRangeSlider {
+  position: relative;
+  height: 18px;
+}
+
+.dateRangeTrack,
+.dateRangeSelection {
+  position: absolute;
+  top: 7px;
+  height: 3px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.dateRangeTrack {
+  left: 0;
+  right: 0;
+  background: rgba(245, 245, 245, 0.2);
+}
+
+.dateRangeSelection {
+  left: var(--range-start);
+  right: calc(100% - var(--range-end));
+  background: #d8dadd;
+}
+
+.dateRangeInput {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+.dateRangeInput:focus { outline: none; }
+.dateRangeInput::-webkit-slider-runnable-track { height: 3px; background: transparent; }
+.dateRangeInput::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  margin-top: -2.5px;
+  border: 0;
+  border-radius: 50%;
+  background: #f5f5f7;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.dateRangeInput::-moz-range-track { height: 3px; background: transparent; }
+.dateRangeInput::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 50%;
+  background: #f5f5f7;
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 .configCluster {
