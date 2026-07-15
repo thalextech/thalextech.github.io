@@ -1417,17 +1417,6 @@ onMounted(loadBacktest);
             <div class="chartTitle">BTC hourly volatility and returns</div>
             <div class="chartSubtitle">Single-hour observations by weekday and UTC hour</div>
           </div>
-          <div class="ivRvRangeInline">
-            <span class="ivRvRangeLabel">{{ rvRangeLabel }}</span>
-            <div class="ivRvRangeControl">
-              <div class="dateRangeSlider" :style="rvRangeStyle">
-                <span class="dateRangeTrack" aria-hidden="true"></span>
-                <span class="dateRangeSelection" aria-hidden="true"></span>
-                <input v-model.number="rvRangeStartModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period start" />
-                <input v-model.number="rvRangeEndModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period end" />
-              </div>
-            </div>
-          </div>
         </div>
 
         <WeeklyBacktestChart
@@ -1492,6 +1481,17 @@ onMounted(loadBacktest);
               <div class="rvSectionHeader">
                 <div class="rvSectionLabel">WEEKDAY × UTC HOUR · MEAN</div>
                 <div class="rvSectionActions">
+                  <div class="ivRvRangeInline rvHeatmapRange">
+                    <span class="ivRvRangeLabel">{{ rvRangeLabel }}</span>
+                    <div class="ivRvRangeControl">
+                      <div class="dateRangeSlider" :style="rvRangeStyle">
+                        <span class="dateRangeTrack" aria-hidden="true"></span>
+                        <span class="dateRangeSelection" aria-hidden="true"></span>
+                        <input v-model.number="rvRangeStartModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period start" />
+                        <input v-model.number="rvRangeEndModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period end" />
+                      </div>
+                    </div>
+                  </div>
                   <label class="rvOutlierToggle" title="Clamp raw hourly RV observations to the selected period's 1st and 99th percentiles before calculating cell averages">
                     <input v-model="rvOutlierCorrection" type="checkbox" />
                     <span>Outlier correction</span>
@@ -2597,6 +2597,11 @@ onMounted(loadBacktest);
   align-items: center;
   gap: 10px;
   margin-left: auto;
+}
+
+.rvHeatmapRange {
+  height: 24px;
+  margin-left: 0;
 }
 
 .ivRvRangeLabel {
