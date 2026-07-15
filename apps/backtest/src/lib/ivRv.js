@@ -202,18 +202,6 @@ export function buildHourlyRvHeatmap(rows = [], { winsorizeOutliers = false } = 
   );
 }
 
-export function buildHourlyReturnHeatmap(rows = []) {
-  return buildWeekdayHourHeatmap(
-    rows,
-    (row) => (
-      Number.isFinite(row?.open) && Number.isFinite(row?.close) && row.open > 0 && row.close > 0
-        ? row.close / row.open - 1
-        : null
-    ),
-    (row) => Number.isFinite(row?.ts) ? new Date(row.ts * 1000) : null,
-  );
-}
-
 export function summarizeRvWeekdayGroups(groups = []) {
   const ranked = groups.map((group) => {
     const values = (group.values || []).filter(Number.isFinite).sort((a, b) => a - b);

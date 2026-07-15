@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   addTrailingParkinsonRv,
   buildHourlyParkinsonRows,
-  buildHourlyReturnHeatmap,
   buildHourlyRvHeatmap,
   buildHourlyRvWeekdayGroups,
   buildIvRvChartRows,
@@ -114,15 +113,4 @@ test("RV heatmap can winsorize period-wide outliers before averaging cells", () 
   assert.equal(raw.average, 0.595);
   assert.ok(corrected.average < raw.average);
   assert.ok(corrected.values.at(-1) < 1);
-});
-
-test("hourly return heatmap groups close-over-open returns", () => {
-  const ts = Date.UTC(2026, 0, 5, 8) / 1000;
-  const heatmap = buildHourlyReturnHeatmap([
-    { ts, open: 100, close: 101 },
-    { ts: ts + 7 * 24 * HOUR_SECONDS, open: 100, close: 99 },
-  ]);
-  const mondayEight = heatmap.find((cell) => cell.weekdayLabel === "Mon" && cell.hour === 8);
-  assert.equal(mondayEight.values.length, 2);
-  assert.ok(Math.abs(mondayEight.average) < 1e-12);
 });

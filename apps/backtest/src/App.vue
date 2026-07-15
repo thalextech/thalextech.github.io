@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import CycleDetailChart from "./components/CycleDetailChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
 import IvRvChart from "./components/IvRvChart.vue";
+import VarianceRatioDashboard from "./components/VarianceRatioDashboard.vue";
 import WeekdayHourHeatmap from "./components/WeekdayHourHeatmap.vue";
 import SweepResultsChart from "./components/SweepResultsChart.vue";
 import WeeklyBacktestChart from "./components/WeeklyBacktestChart.vue";
@@ -10,7 +11,6 @@ import { loadThalexHistory } from "./lib/thalexParquet.js";
 import {
   buildIvRvChartRows,
   buildHourlyParkinsonRows,
-  buildHourlyReturnHeatmap,
   buildHourlyRvHeatmap,
   buildHourlyRvWeekdayGroups,
   loadIvRvHistory,
@@ -19,6 +19,7 @@ import {
 } from "./lib/ivRv.js";
 import { blackScholesPrice } from "./lib/optionPricing.js";
 import { computeZeroMtmContours } from "./lib/zeroMtmContours.js";
+import { calculateVarianceRatioDashboard } from "./lib/serialCorrelation.js";
 import {
   DEFAULT_BACKTEST_CONFIG,
   buildCycleDetail,
@@ -173,8 +174,10 @@ const ivRvAlignForward = ref(false);
 const ivRvRangeStart = ref(0);
 const ivRvRangeEnd = ref(100);
 const rvChartRef = ref(null);
-const returnHeatmapRef = ref(null);
+const varianceRatioRef = ref(null);
 const rvOutlierCorrection = ref(false);
+const serialReturnMode = ref("deseasonalized");
+const serialCloseHour = ref(0);
 const rvRangeStart = ref(0);
 const rvRangeEnd = ref(100);
 const IV_RV_TENORS = [7, 14, 30];
@@ -264,11 +267,20 @@ const rvWeekdayGroups = computed(() => buildHourlyRvWeekdayGroups(rvFilteredRows
 const rvHeatmapCells = computed(() => buildHourlyRvHeatmap(rvFilteredRows.value, {
   winsorizeOutliers: rvOutlierCorrection.value,
 }));
-const returnHeatmapCells = computed(() => buildHourlyReturnHeatmap(
+const rvFilteredSourceRows = computed(() =>
   ivRvSourceRows.value.filter((row) => {
     const range = rvSelectedRange.value;
     return !range || (row.ts >= range.start && row.ts <= range.end);
   }),
+);
+const varianceRatioAnalysis = computed(() => calculateVarianceRatioDashboard(
+  rvFilteredSourceRows.value,
+  {
+    deseasonalize: serialReturnMode.value === "deseasonalized",
+    closeHour: serialCloseHour.value,
+    maxHours: 168,
+    bootstrapReplications: 400,
+  },
 ));
 const rvWeekdayInsights = computed(() => summarizeRvWeekdayGroups(rvWeekdayGroups.value));
 const sweepDimension = ref("entry_hour");
@@ -277,6 +289,8 @@ const sweepRunning = ref(false);
 const sweepProgress = ref("");
 const sweepTiming = ref(null);
 let sweepDataCache = null;
+let sweepRunDebounce = null;
+let sweepRerunPending = false;
 
 
 const state = reactive({
@@ -591,7 +605,14 @@ const buildConfig = (overrides = {}) => {
 };
 
 const runSweep = async () => {
-  if (sweepRunning.value || !sweepConfigs.value.length) return;
+  clearTimeout(sweepRunDebounce);
+  sweepRunDebounce = null;
+  if (!sweepConfigs.value.length) return;
+  if (sweepRunning.value) {
+    sweepRerunPending = true;
+    return;
+  }
+  sweepRerunPending = false;
   sweepRunning.value = true;
   sweepResults.value = [];
   sweepTiming.value = null;
@@ -698,7 +719,24 @@ const runSweep = async () => {
     state.error = error?.message || "Sweep failed";
   } finally {
     sweepRunning.value = false;
+    if (sweepRerunPending && mode.value === "sweep") {
+      sweepRerunPending = false;
+      void runSweep();
+    }
   }
+};
+
+const scheduleSweep = () => {
+  state.error = "";
+  clearTimeout(sweepRunDebounce);
+  if (mode.value !== "sweep") return;
+  sweepResults.value = [];
+  sweepTiming.value = null;
+  if (!sweepRunning.value) sweepProgress.value = "";
+  sweepRunDebounce = setTimeout(() => {
+    sweepRunDebounce = null;
+    if (mode.value === "sweep") void runSweep();
+  }, 80);
 };
 
 const applySweepResult = (cell) => {
@@ -718,10 +756,13 @@ const applySweepResult = (cell) => {
 };
 
 const switchMode = (nextMode) => {
+  const previousMode = mode.value;
   mode.value = nextMode;
   selectedCycle.value = null;
   if (nextMode === "single") {
     scheduleBacktest();
+  } else if (nextMode === "sweep" && previousMode !== "sweep") {
+    void runSweep();
   } else if (["iv-rv", "rv"].includes(nextMode) && !ivRvSourceRows.value.length) {
     loadIvRv();
   }
@@ -842,13 +883,7 @@ const loadBacktest = async () => {
 const scheduleBacktest = () => {
   state.error = "";
   clearTimeout(runDebounce);
-  if (mode.value !== "single") {
-    if (mode.value === "sweep") {
-      sweepResults.value = [];
-      sweepTiming.value = null;
-    }
-    return;
-  }
+  if (mode.value !== "single") return;
   runDebounce = setTimeout(() => {
     if (!preparedData.value || requiredHoursKey.value !== loadedHoursKey) {
       loadBacktest();
@@ -909,14 +944,13 @@ watch(
     ].join("|");
     if (uiKey === scheduledUiKey) return;
     scheduledUiKey = uiKey;
-    scheduleBacktest();
+    if (mode.value === "sweep") scheduleSweep();
+    else scheduleBacktest();
   },
 );
 
 watch(sweepDimension, () => {
-  sweepResults.value = [];
-  sweepTiming.value = null;
-  sweepProgress.value = "";
+  scheduleSweep();
 });
 
 function handleSavePng() {
@@ -983,10 +1017,10 @@ function saveRvHeatmap(date = new Date().toISOString().slice(0, 10)) {
   });
 }
 
-function saveReturnHeatmap(date = new Date().toISOString().slice(0, 10)) {
-  if (!returnHeatmapRef.value) return;
-  returnHeatmapRef.value.exportPng({
-    filename: `btc-hourly-return-heatmap-${date}.png`,
+function saveVarianceRatio(date = new Date().toISOString().slice(0, 10)) {
+  if (!varianceRatioRef.value || !varianceRatioAnalysis.value.sampleSize) return;
+  varianceRatioRef.value.exportPng({
+    filename: `btc-variance-ratio-${serialReturnMode.value}-${date}.png`,
     scale: 4,
     padding: 24,
   });
@@ -1334,7 +1368,7 @@ onMounted(loadBacktest);
         <div v-else-if="mode === 'sweep'" class="sweepHeader">
           <div>
             <div class="chartTitle">Parameter sweep</div>
-            <div v-if="!sweepResults.length && !sweepRunning" class="chartSubtitle">Compare one dimension while holding the current strategy settings fixed. Click a result to apply it.</div>
+            <div v-if="!sweepResults.length && !sweepRunning" class="chartSubtitle">Compare one dimension while holding the current strategy settings fixed.</div>
           </div>
           <div class="sweepControls">
             <div class="sweepDimensionControl" role="group" aria-label="Sweep dimension">
@@ -1347,9 +1381,6 @@ onMounted(loadBacktest);
                 @click="sweepDimension = dimension.value"
               >{{ dimension.label }}</button>
             </div>
-            <button class="runSweepButton" type="button" :disabled="sweepRunning" @click="runSweep">
-              {{ sweepRunning ? sweepProgress || 'Running…' : sweepResults.length ? 'Run' : 'Run sweep' }}
-            </button>
           </div>
         </div>
         <div v-else-if="mode === 'iv-rv'" class="sweepHeader">
@@ -1434,7 +1465,7 @@ onMounted(loadBacktest);
             :dimension-label="sweepDimensionLabel"
             @select="applySweepResult"
           />
-          <div v-else class="sweepEmpty">Choose a dimension, then run the sweep. Results include PnL, Sharpe, drawdown, and sample size.</div>
+          <div v-else class="sweepEmpty">No sweep results are available. Results include PnL, Sharpe, drawdown, and sample size.</div>
           <div v-if="sweepTiming" class="sweepPerformance">
             {{ sweepTiming.cells }} runs in {{ (sweepTiming.totalMs / 1000).toFixed(2) }}s
             · strategy {{ (sweepTiming.runMs / 1000).toFixed(2) }}s
@@ -1481,30 +1512,46 @@ onMounted(loadBacktest);
                 :measure-label="rvOutlierCorrection ? 'Mean annualized hourly RV (1–99% winsorized)' : 'Mean annualized hourly RV'"
               />
             </section>
-            <section class="rvChartSection rvSecondaryHeatmapSection">
+            <section class="rvChartSection rvSecondaryAnalysisSection">
               <div class="rvSectionHeader">
-                <div class="rvSectionLabel">HOURLY RETURN · WEEKDAY × UTC HOUR · MEAN</div>
-                <button class="rvScreenshotButton" type="button" :disabled="ivRvLoading || !returnHeatmapCells.length" title="Save hourly return heatmap as PNG" @click="saveReturnHeatmap()">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
-                    <circle cx="12" cy="13" r="4" />
-                  </svg>
-                  Screenshot
-                </button>
+                <div class="rvQuestionBlock">
+                  <div class="rvQuestionTitle">Does BTC keep the variance it generates intraday?</div>
+                  <div class="rvQuestionSubtitle">
+                    Daily close {{ String(serialCloseHour).padStart(2, '0') }}:00 UTC
+                    · {{ varianceRatioAnalysis.headline?.bootstrapWindows?.toLocaleString() || 0 }} days
+                    · {{ serialReturnMode === 'deseasonalized' ? 'de-seasonalized' : 'raw' }} hourly returns
+                  </div>
+                </div>
+                <div class="rvSectionActions rvReturnAnalysisActions">
+                  <div class="rvAnalysisToggle" role="group" aria-label="Return preprocessing">
+                    <button type="button" :class="{ active: serialReturnMode === 'raw' }" @click="serialReturnMode = 'raw'">Raw returns</button>
+                    <button type="button" :class="{ active: serialReturnMode === 'deseasonalized' }" @click="serialReturnMode = 'deseasonalized'">De-seasonalized</button>
+                  </div>
+                  <label class="rvCloseHourControl">
+                    <span>Daily close UTC</span>
+                    <select v-model.number="serialCloseHour">
+                      <option v-for="hour in 24" :key="hour - 1" :value="hour - 1">{{ String(hour - 1).padStart(2, '0') }}:00</option>
+                    </select>
+                  </label>
+                  <button
+                    class="rvScreenshotButton"
+                    type="button"
+                    :disabled="ivRvLoading || !varianceRatioAnalysis.sampleSize"
+                    title="Save variance-ratio analysis as PNG"
+                    @click="saveVarianceRatio()"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                      <circle cx="12" cy="13" r="4" />
+                    </svg>
+                    Screenshot
+                  </button>
+                </div>
               </div>
-              <WeekdayHourHeatmap
-                ref="returnHeatmapRef"
-                :cells="returnHeatmapCells"
+              <VarianceRatioDashboard
+                ref="varianceRatioRef"
+                :analysis="varianceRatioAnalysis"
                 :loading="ivRvLoading"
-                measure-label="Mean hourly return"
-                legend-label="Avg hourly return"
-                loading-message="Loading hourly returns…"
-                empty-message="No hourly return observations."
-                aria-label="BTC hourly returns by weekday and UTC hour"
-                gradient-id="btc-hourly-return-gradient"
-                color-mode="diverging"
-                :legend-decimals="2"
-                :value-decimals="3"
               />
             </section>
           </div>
@@ -2282,8 +2329,7 @@ onMounted(loadBacktest);
   background: #0d0e11;
 }
 
-.sweepDimensionControl button,
-.runSweepButton {
+.sweepDimensionControl button {
   height: 24px;
   box-sizing: border-box;
   border: 0;
@@ -2306,21 +2352,7 @@ onMounted(loadBacktest);
   background: rgba(255,255,255,0.1);
 }
 
-.runSweepButton {
-  height: 30px;
-  min-width: 88px;
-  border: 1px solid rgba(125,211,252,0.28);
-  color: #7dd3fc;
-  background: rgba(125,211,252,0.07);
-}
-
-.runSweepButton:hover:not(:disabled) {
-  background: rgba(125,211,252,0.13);
-  border-color: rgba(125,211,252,0.42);
-}
-
-.sweepDimensionControl button:disabled,
-.runSweepButton:disabled {
+.sweepDimensionControl button:disabled {
   cursor: default;
   opacity: 0.5;
 }
@@ -2354,13 +2386,14 @@ onMounted(loadBacktest);
   flex-direction: column;
 }
 
-.rvSecondaryHeatmapSection {
-  height: 470px;
+.rvSecondaryAnalysisSection {
+  height: auto;
+  min-height: 750px;
   position: relative;
   margin-top: 32px;
 }
 
-.rvSecondaryHeatmapSection::before {
+.rvSecondaryAnalysisSection::before {
   content: "";
   position: absolute;
   top: -16px;
@@ -2370,11 +2403,38 @@ onMounted(loadBacktest);
 }
 
 .rvSectionHeader {
-  flex: 0 0 30px;
+  flex: 0 0 auto;
+  min-height: 30px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 0 12px;
+}
+
+.rvSecondaryAnalysisSection .rvSectionHeader {
+  flex-wrap: wrap;
+  min-height: 52px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.rvQuestionBlock {
+  flex: 1 1 280px;
+}
+
+.rvQuestionTitle {
+  color: #f2f3f5;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.rvQuestionSubtitle {
+  margin-top: 3px;
+  color: #777d84;
+  font-size: 9px;
+  line-height: 1.35;
 }
 
 .rvSectionLabel {
@@ -2387,6 +2447,59 @@ onMounted(loadBacktest);
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+.rvReturnAnalysisActions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.rvAnalysisToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.025);
+}
+
+.rvAnalysisToggle button {
+  height: 20px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #777d84;
+  font: 500 9px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  cursor: pointer;
+}
+
+.rvAnalysisToggle button.active {
+  background: rgba(255,255,255,0.1);
+  color: #f2f3f5;
+}
+
+.rvCloseHourControl {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 5px 0 8px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 5px;
+  background: rgba(255,255,255,0.025);
+  color: #777d84;
+  font-size: 9px;
+}
+
+.rvCloseHourControl select {
+  height: 18px;
+  border: 0;
+  background: #15171c;
+  color: #d8dadd;
+  font: inherit;
+  outline: none;
 }
 
 .rvOutlierToggle {

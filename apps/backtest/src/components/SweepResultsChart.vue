@@ -18,9 +18,134 @@ const panelRegions = ref([]);
 let resizeObserver;
 
 const CHART_FONT_FAMILY = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
+const UI_AXIS_LABEL_COLOR = "rgba(255,255,255,0.46)";
 const formatUsd = d3.format("$,.0f");
 const formatSharpe = d3.format(".2f");
 const formatIv = d3.format(".1%");
+
+const rectanglesOverlap = (first, second, padding = 0) => !(
+  first.right + padding <= second.left
+  || first.left >= second.right + padding
+  || first.bottom + padding <= second.top
+  || first.top >= second.bottom + padding
+);
+
+const pointToSegmentDistance = (point, start, end) => {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  if (!dx && !dy) return Math.hypot(point.x - start.x, point.y - start.y);
+  const projection = Math.max(0, Math.min(1,
+    ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy),
+  ));
+  return Math.hypot(
+    point.x - (start.x + projection * dx),
+    point.y - (start.y + projection * dy),
+  );
+};
+
+const layoutScatterLabels = ({ rows, x, y, bounds }) => {
+  const points = rows.map((row, index) => ({
+    row,
+    index,
+    x: x(row.weeklySigma),
+    y: y(row.weeklyMean),
+    width: Math.max(22, String(row.label).length * 5.1),
+    height: 11,
+  }));
+  const dotBoxes = points.map((point) => ({
+    left: point.x - 6,
+    right: point.x + 6,
+    top: point.y - 6,
+    bottom: point.y + 6,
+  }));
+  const orderedPoints = [...points].sort((first, second) => {
+    const density = (point) => d3.sum(points, (other) => {
+      if (other === point) return 0;
+      const distance = Math.hypot(point.x - other.x, point.y - other.y);
+      return distance < 60 ? 60 - distance : 0;
+    });
+    return density(second) - density(first) || first.index - second.index;
+  });
+  const placed = [];
+  const placements = new Map();
+
+  orderedPoints.forEach((point) => {
+    const preferred = {
+      x: point.x + point.width / 2 + 8,
+      y: point.y - 7,
+    };
+    const candidateCenters = [
+      preferred,
+      { x: point.x + point.width / 2 + 8, y: point.y + 7 },
+      { x: point.x - point.width / 2 - 8, y: point.y - 7 },
+      { x: point.x - point.width / 2 - 8, y: point.y + 7 },
+      { x: point.x, y: point.y - point.height / 2 - 8 },
+      { x: point.x, y: point.y + point.height / 2 + 8 },
+    ];
+    for (let dy = -104; dy <= 104; dy += 13) {
+      for (let dx = -120; dx <= 120; dx += 12) {
+        candidateCenters.push({ x: point.x + dx, y: point.y + dy });
+      }
+    }
+
+    let best = null;
+    candidateCenters.forEach((center, candidateIndex) => {
+      const box = {
+        left: center.x - point.width / 2,
+        right: center.x + point.width / 2,
+        top: center.y - point.height / 2,
+        bottom: center.y + point.height / 2,
+      };
+      if (
+        box.left < bounds.left
+        || box.right > bounds.right
+        || box.top < bounds.top
+        || box.bottom > bounds.bottom
+      ) return;
+
+      const labelCollisions = placed.filter((placement) =>
+        rectanglesOverlap(box, placement.box, 2),
+      ).length;
+      const dotCollisions = dotBoxes.filter((dotBox) =>
+        rectanglesOverlap(box, dotBox, 1),
+      ).length;
+      const edge = {
+        x: Math.max(box.left, Math.min(point.x, box.right)),
+        y: Math.max(box.top, Math.min(point.y, box.bottom)),
+      };
+      const crossedDots = points.filter((other) =>
+        other !== point
+        && pointToSegmentDistance(other, point, edge) < 6,
+      ).length;
+      const anchorDistance = Math.hypot(edge.x - point.x, edge.y - point.y);
+      const preferredDistance = Math.hypot(center.x - preferred.x, center.y - preferred.y);
+      const score = labelCollisions * 1_000_000
+        + dotCollisions * 100_000
+        + crossedDots * 5_000
+        + anchorDistance
+        + preferredDistance * 0.02
+        + candidateIndex * 0.0001;
+      if (!best || score < best.score) best = { box, center, edge, score };
+    });
+
+    if (!best) return;
+    const edgeDistance = Math.hypot(best.edge.x - point.x, best.edge.y - point.y);
+    const leaderLength = Math.max(0, edgeDistance - 4.5);
+    const leader = leaderLength > 4
+      ? {
+          x1: point.x + (best.edge.x - point.x) * 4.5 / edgeDistance,
+          y1: point.y + (best.edge.y - point.y) * 4.5 / edgeDistance,
+          x2: best.edge.x,
+          y2: best.edge.y,
+        }
+      : null;
+    const placement = { ...best, leader };
+    placed.push(placement);
+    placements.set(point.row.key, placement);
+  });
+
+  return placements;
+};
 
 const draw = () => {
   const element = chartRef.value;
@@ -39,7 +164,7 @@ const draw = () => {
   const mapPlotTop = mapHeaderY + 34;
   const mapPlotHeight = 410;
   const mapPlotBottom = mapPlotTop + mapPlotHeight;
-  const mapBottom = mapPlotBottom + 34;
+  const mapBottom = mapPlotBottom + 42;
   const rankedHeaderY = mapBottom + 42;
   const rankedColumnsY = rankedHeaderY + 28;
   const rankedRowsY = rankedColumnsY + 18;
@@ -47,7 +172,7 @@ const draw = () => {
   const rankedBottom = rankedRowsY + rows.length * rankedRowHeight;
   const realizedHeaderY = rankedBottom + 50;
   const realizedPlotTop = realizedHeaderY + 34;
-  const realizedPlotHeight = 250;
+  const realizedPlotHeight = 350;
   const realizedPlotBottom = realizedPlotTop + realizedPlotHeight;
   const realizedAxisY = realizedPlotBottom + 8;
   const realizedBottom = realizedAxisY + 28;
@@ -58,12 +183,21 @@ const draw = () => {
   const distributionBottom = distributionRowsY + rows.length * distributionRowHeight;
   const width = Math.max(availableWidth, margin.left + contentWidth + margin.right);
   const height = distributionBottom + 36;
+  const panelSeparatorInset = 2;
+  const rankedSeparatorY = rankedHeaderY - 24;
+  const realizedSeparatorY = realizedHeaderY - 24;
+  const distributionSeparatorY = distributionHeaderY - 24;
   panelRegions.value = [
     {
       key: "comparison",
       label: "Comparison",
       buttonTop: 6,
-      region: { x: 0, y: 0, width, height: rankedHeaderY - 24 },
+      region: {
+        x: 0,
+        y: 0,
+        width,
+        height: rankedSeparatorY - panelSeparatorInset,
+      },
     },
     {
       key: "ranked-sweep",
@@ -71,9 +205,9 @@ const draw = () => {
       buttonTop: rankedHeaderY - 17,
       region: {
         x: 0,
-        y: rankedHeaderY - 24,
+        y: rankedSeparatorY + panelSeparatorInset,
         width,
-        height: realizedHeaderY - rankedHeaderY,
+        height: realizedSeparatorY - rankedSeparatorY - panelSeparatorInset * 2,
       },
     },
     {
@@ -82,9 +216,9 @@ const draw = () => {
       buttonTop: realizedHeaderY - 17,
       region: {
         x: 0,
-        y: realizedHeaderY - 24,
+        y: realizedSeparatorY + panelSeparatorInset,
         width,
-        height: distributionHeaderY - realizedHeaderY,
+        height: distributionSeparatorY - realizedSeparatorY - panelSeparatorInset * 2,
       },
     },
     {
@@ -93,9 +227,9 @@ const draw = () => {
       buttonTop: distributionHeaderY - 17,
       region: {
         x: 0,
-        y: distributionHeaderY - 24,
+        y: distributionSeparatorY + panelSeparatorInset,
         width,
-        height: height - distributionHeaderY + 24,
+        height: height - distributionSeparatorY - panelSeparatorInset,
       },
     },
   ];
@@ -251,7 +385,8 @@ const draw = () => {
     weeklyMean: d3.mean(row.weeks) ?? 0,
     weeklySigma: d3.deviation(row.weeks) ?? 0,
   }));
-  const mapPlotLeft = margin.left + 58;
+  const mapPlotLeft = margin.left + 40;
+  const realizedPlotLeft = margin.left + 32;
   const mapPlotRight = margin.left + contentWidth - 48;
   let mapPointGroups = svg.selectAll("g.sweep-map-point");
   let realizedGroups = svg.selectAll("g.realized-vol-setting");
@@ -332,19 +467,46 @@ const draw = () => {
 
   const mapXAxis = svg.append("g")
     .attr("transform", `translate(0,${mapPlotBottom})`)
-    .call(d3.axisBottom(mapX).tickValues(mapXTicks).tickSize(0).tickPadding(7).tickFormat(formatCompactUsd));
+    .call(d3.axisBottom(mapX).tickValues(mapXTicks).tickSize(0).tickPadding(15).tickFormat(formatCompactUsd));
   mapXAxis.select(".domain").remove();
-  mapXAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 9);
+  mapXAxis.selectAll("text").attr("fill", UI_AXIS_LABEL_COLOR).attr("font-size", 9);
   const mapYAxis = svg.append("g")
+    .attr("class", "export-y-axis")
     .attr("transform", `translate(${mapPlotLeft},0)`)
     .call(d3.axisLeft(mapY).tickValues(mapYTicks).tickSize(0).tickPadding(14).tickFormat(formatCompactUsd));
   mapYAxis.select(".domain").remove();
-  mapYAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.4)").attr("font-size", 9);
+  mapYAxis.selectAll("text")
+    .attr("x", margin.left - mapPlotLeft)
+    .attr("text-anchor", "start")
+    .attr("fill", UI_AXIS_LABEL_COLOR)
+    .attr("font-size", 9);
   svg.append("text")
-    .attr("x", (mapPlotLeft + mapPlotRight) / 2).attr("y", mapPlotBottom + 29)
+    .attr("x", (mapPlotLeft + mapPlotRight) / 2).attr("y", mapPlotBottom + 37)
     .attr("text-anchor", "middle")
     .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 9)
     .text("WEEKLY PNL σ");
+
+  const mapLabelPlacements = layoutScatterLabels({
+    rows: sweepMapRows,
+    x: mapX,
+    y: mapY,
+    bounds: {
+      left: mapPlotLeft + 2,
+      right: mapPlotRight - 2,
+      top: mapPlotTop + 2,
+      bottom: mapPlotBottom - 2,
+    },
+  });
+  svg.selectAll("line.comparison-label-leader")
+    .data(sweepMapRows.filter((row) => mapLabelPlacements.get(row.key)?.leader), (row) => row.key)
+    .join("line")
+    .attr("class", "comparison-label-leader")
+    .attr("x1", (row) => mapLabelPlacements.get(row.key).leader.x1)
+    .attr("y1", (row) => mapLabelPlacements.get(row.key).leader.y1)
+    .attr("x2", (row) => mapLabelPlacements.get(row.key).leader.x2)
+    .attr("y2", (row) => mapLabelPlacements.get(row.key).leader.y2)
+    .attr("stroke", "rgba(255,255,255,0.28)")
+    .attr("stroke-width", 0.65);
 
   mapPointGroups = svg.selectAll("g.sweep-map-point")
     .data(sweepMapRows, (row) => row.key)
@@ -363,10 +525,15 @@ const draw = () => {
     .attr("stroke", "rgba(255,255,255,0.92)")
     .attr("stroke-width", 0.8);
   mapPointGroups.append("text")
-    .attr("x", (row) => mapX(row.weeklySigma) + 6)
-    .attr("y", (row) => mapY(row.weeklyMean) - 5)
+    .attr("x", (row) => mapLabelPlacements.get(row.key)?.center.x ?? mapX(row.weeklySigma) + 6)
+    .attr("y", (row) => mapLabelPlacements.get(row.key)?.center.y ?? mapY(row.weeklyMean) - 5)
+    .attr("text-anchor", "middle")
+    .attr("dominant-baseline", "central")
     .attr("fill", "rgba(255,255,255,0.58)")
     .attr("font-size", 8.5)
+    .attr("stroke", "#090a0d")
+    .attr("stroke-width", 2.2)
+    .attr("paint-order", "stroke")
     .text((row) => row.label);
   mapPointGroups.append("title")
     .text((row) => `${row.label}\nCumulative PnL: ${formatUsd(row.total)}\nMean weekly PnL: ${formatUsd(row.weeklyMean)}\nWeekly PnL σ: ${formatUsd(row.weeklySigma)}\nSharpe: ${formatSharpe(Number(row.sharpe) || 0)}`);
@@ -397,7 +564,7 @@ const draw = () => {
       : Math.max(Math.abs(realizedMax) * 0.05, 0.01);
     const realizedX = d3.scalePoint()
       .domain(realizedRows.map((row) => row.key))
-      .range([mapPlotLeft, mapPlotRight])
+      .range([realizedPlotLeft, mapPlotRight])
       .padding(0.5);
     const realizedY = d3.scaleLinear()
       .domain([
@@ -408,11 +575,12 @@ const draw = () => {
       .nice(5);
     const realizedYTicks = realizedY.ticks(5);
     realizedYTicks.forEach((tick) => svg.append("line")
-      .attr("x1", mapPlotLeft).attr("x2", mapPlotRight)
+      .attr("x1", realizedPlotLeft).attr("x2", mapPlotRight)
       .attr("y1", realizedY(tick)).attr("y2", realizedY(tick))
       .attr("stroke", "rgba(255,255,255,0.055)"));
     const realizedYAxis = svg.append("g")
-      .attr("transform", `translate(${mapPlotLeft},0)`)
+      .attr("class", "export-y-axis")
+      .attr("transform", `translate(${realizedPlotLeft},0)`)
       .call(d3.axisLeft(realizedY)
         .tickValues(realizedYTicks)
         .tickSize(0)
@@ -420,7 +588,9 @@ const draw = () => {
         .tickFormat(d3.format(".0%")));
     realizedYAxis.select(".domain").remove();
     realizedYAxis.selectAll("text")
-      .attr("fill", "rgba(255,255,255,0.4)")
+      .attr("x", margin.left - realizedPlotLeft)
+      .attr("text-anchor", "start")
+      .attr("fill", UI_AXIS_LABEL_COLOR)
       .attr("font-size", 9);
     const realizedXAxis = svg.append("g")
       .attr("transform", `translate(0,${realizedAxisY})`)
@@ -428,9 +598,9 @@ const draw = () => {
         .tickSize(0)
         .tickPadding(7)
         .tickFormat((key) => realizedRows.find((row) => row.key === key)?.label || key));
-    realizedXAxis.select(".domain").attr("stroke", "rgba(255,255,255,0.14)");
+    realizedXAxis.select(".domain").remove();
     realizedXAxis.selectAll("text")
-      .attr("fill", "rgba(255,255,255,0.46)")
+      .attr("fill", UI_AXIS_LABEL_COLOR)
       .attr("font-size", 8.5);
 
     realizedGroups = svg.selectAll("g.realized-vol-setting")
@@ -478,7 +648,7 @@ const draw = () => {
     });
   } else {
     svg.append("text")
-      .attr("x", mapPlotLeft).attr("y", realizedPlotTop + 24)
+      .attr("x", realizedPlotLeft).attr("y", realizedPlotTop + 24)
       .attr("fill", "rgba(255,255,255,0.38)")
       .attr("font-size", 9)
       .text("NO REALIZED-VOL METRICS AVAILABLE");
@@ -551,7 +721,7 @@ const draw = () => {
       .attr("stroke", "rgba(255,255,255,0.045)");
     group.append("text")
       .attr("x", margin.left).attr("y", center).attr("dy", "0.32em")
-      .attr("fill", "rgba(255,255,255,0.76)").attr("font-size", 10).attr("font-weight", 500)
+      .attr("fill", UI_AXIS_LABEL_COLOR).attr("font-size", 10).attr("font-weight", 500)
       .text(row.label);
 
     row.weeks.forEach((value, weekIndex) => {
@@ -621,7 +791,8 @@ const draw = () => {
   headers.forEach(({ label, x, anchor, tooltip }) => {
     const header = svg.append("text")
       .attr("x", x).attr("y", rankedColumnsY).attr("text-anchor", anchor)
-      .attr("fill", "rgba(255,255,255,0.45)").attr("font-size", 9).text(label);
+      .attr("fill", label === "SETTING" ? UI_AXIS_LABEL_COLOR : "rgba(255,255,255,0.45)")
+      .attr("font-size", 9).text(label);
     header
       .on("mouseenter", () => showHeaderTooltip(x, rankedColumnsY, tooltip, anchor))
       .on("mouseleave", hideHeaderTooltip);
@@ -648,13 +819,11 @@ const draw = () => {
     group.append("line").attr("x1", margin.left).attr("x2", margin.left + contentWidth)
       .attr("y1", top).attr("y2", top).attr("stroke", "rgba(255,255,255,0.05)");
     group.append("text").attr("x", columnX.setting).attr("y", center).attr("dy", "0.32em")
-      .attr("fill", "rgba(255,255,255,0.78)").attr("font-size", 10).attr("font-weight", 500).text(row.label);
+      .attr("fill", UI_AXIS_LABEL_COLOR).attr("font-size", 10).attr("font-weight", 500).text(row.label);
 
     const [cumMin, cumMax] = d3.extent(row.cumulative);
     const sparkX = d3.scaleLinear().domain([0, Math.max(1, row.cumulative.length - 1)]).range([columnX.spark, columnX.spark + sparkWidth]);
     const sparkY = d3.scaleLinear().domain(cumMin === cumMax ? [cumMin - 1, cumMax + 1] : [cumMin, cumMax]).range([center + 7, center - 7]);
-    group.append("line").attr("x1", columnX.spark).attr("x2", columnX.spark + sparkWidth)
-      .attr("y1", sparkY(0)).attr("y2", sparkY(0)).attr("stroke", "rgba(255,255,255,0.1)");
     group.append("path").datum(row.cumulative)
       .attr("d", d3.line().x((_, i) => sparkX(i)).y((value) => sparkY(value)))
       .attr("fill", "none").attr("stroke", performanceColor(Number(row.sharpe) || 0)).attr("stroke-width", 1.2);
