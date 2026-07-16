@@ -9,7 +9,7 @@ const props = defineProps({
 const emit = defineEmits(["select"]);
 
 const chartRef = ref(null);
-const sortMode = ref("time");
+const sortMode = ref("pnl");
 let resizeObserver;
 
 const CHART_FONT_FAMILY = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
@@ -52,7 +52,7 @@ const draw = () => {
     .attr("role", "img")
     .attr(
       "aria-label",
-      "Three-column PnL decomposition with horizontal option, hedge, and total PnL bars",
+      "Three-column PnL decomposition with horizontal total, option, and hedge PnL bars",
     );
 
   if (!rows.length) {
@@ -67,9 +67,9 @@ const draw = () => {
   }
 
   const series = [
+    { key: "cyclePnlUsd", label: "Total PnL" },
     { key: "shortOptionPnlUsd", label: "Option PnL" },
     { key: "hedgePnlUsd", label: "Hedge PnL" },
-    { key: "cyclePnlUsd", label: "Total PnL" },
   ];
   const entryTimes = rows.map((row) => new Date(row.entryTime).getTime());
   const y = d3
