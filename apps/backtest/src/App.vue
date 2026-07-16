@@ -8,6 +8,11 @@ import VarianceRatioDashboard from "./components/VarianceRatioDashboard.vue";
 import WeekdayHourHeatmap from "./components/WeekdayHourHeatmap.vue";
 import SweepResultsChart from "./components/SweepResultsChart.vue";
 import WeeklyBacktestChart from "./components/WeeklyBacktestChart.vue";
+import {
+  hasWorkerDataset,
+  runSingleInWorker,
+  runSweepInWorker,
+} from "./lib/backtestWorkerClient.js";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
 import {
   buildIvRvChartRows,
@@ -27,11 +32,8 @@ import {
   computeMaxDrawdown,
   computeBreakEvens,
   normalizeBacktestConfig,
-  prepareBacktestData,
   prepareCycleDetailData,
   requiredQuoteDteDays,
-  runWeeklyStraddleBacktest,
-  runWeeklyStraddleBacktestBatch,
 } from "./lib/weeklyStraddleBacktest.js";
 
 const MATURITY_OPTIONS = [
@@ -299,7 +301,6 @@ const sweepResults = ref([]);
 const sweepRunning = ref(false);
 const sweepProgress = ref("");
 const sweepTiming = ref(null);
-let sweepDataCache = null;
 let sweepRunDebounce = null;
 let sweepRerunPending = false;
 
@@ -310,7 +311,7 @@ const state = reactive({
 });
 
 const result = ref(null);
-const preparedData = ref(null);
+let currentRunSequence = 0;
 
 const SWEEP_DIMENSIONS = [
   { value: "entry_hour", label: "Entry hour" },
@@ -658,15 +659,8 @@ const runSweep = async () => {
   let prepareMs = 0;
   let runMs = 0;
   try {
-    let sweepPrepared = preparedData.value;
-    if (sweepDataCache?.key === sweepDataKey) {
-      sweepPrepared = sweepDataCache.prepared;
-    } else if (loadedDataKey === sweepDataKey && sweepPrepared) {
-      sweepDataCache = {
-        key: sweepDataKey,
-        prepared: sweepPrepared,
-      };
-    } else {
+    let sourceData;
+    if (!hasWorkerDataset(sweepDataKey)) {
       sweepProgress.value = `Loading ${sweepHours.length} hourly data shards`;
       const loadStartedAt = performance.now();
       const loaded = await loadThalexHistory({
@@ -679,27 +673,15 @@ const runSweep = async () => {
         },
       });
       loadMs = performance.now() - loadStartedAt;
-      sweepProgress.value = "Preparing shared quote universe";
-      const prepareStartedAt = performance.now();
-      sweepPrepared = prepareBacktestData({
+      sourceData = {
         indexRows: loaded.indexRows,
         quoteSnapshots: loaded.quoteSnapshots,
         instruments: loaded.artifact.instruments,
-        config: configs[0],
-      });
-      prepareMs = performance.now() - prepareStartedAt;
-      sweepDataCache = { key: sweepDataKey, prepared: sweepPrepared };
+      };
     }
 
-    const runStartedAt = performance.now();
-    sweepProgress.value = `Running ${cells.length} configurations`;
-    const batchRuns = configs.map((config) => ({ config }));
-    const batchOutputs = runWeeklyStraddleBacktestBatch({
-      preparedData: sweepPrepared,
-      runs: batchRuns,
-    });
-
-    const nextResults = batchOutputs.map((run, index) => {
+    const progressiveResults = new Array(cells.length);
+    const buildSweepResult = (run, index) => {
       const cell = cells[index];
       const thisConfig = configs[index];
       const weeklyReturns = (run.cycleSummary || []).map((cycle) => ({
@@ -722,16 +704,32 @@ const runSweep = async () => {
         returnOnNotional: run.summary.cumulativeReturnOnNotional,
         weeklyReturns,
       };
-    }).filter((row) => row.weeklyReturns.some(({ pnl }) => pnl !== 0));
+    };
 
-    runMs = performance.now() - runStartedAt;
-    sweepResults.value = nextResults;
+    const workerResult = await runSweepInWorker({
+      datasetKey: sweepDataKey,
+      sourceData,
+      configs,
+      onProgress: ({ message }) => {
+        if (message) sweepProgress.value = message;
+      },
+      onResult: ({ index, result: run }) => {
+        const row = buildSweepResult(run, index);
+        if (row.weeklyReturns.some(({ pnl }) => pnl !== 0)) {
+          progressiveResults[index] = row;
+        }
+        sweepResults.value = progressiveResults.filter(Boolean);
+        sweepProgress.value = `Completed ${index + 1}/${cells.length} configurations`;
+      },
+    });
+    prepareMs = workerResult.timing.prepareMs;
+    runMs = workerResult.timing.runMs;
     sweepTiming.value = {
       loadMs,
       prepareMs,
       runMs,
       totalMs: performance.now() - startedAt,
-      reusedPreparedData: loadMs === 0,
+      reusedPreparedData: workerResult.timing.reusedPreparedData,
       cells: cells.length,
     };
     sweepProgress.value = "";
@@ -801,18 +799,35 @@ const loadIvRv = async () => {
   }
 };
 
-const runCurrent = () => {
-  if (!preparedData.value) return;
+const runCurrent = async () => {
+  if (!hasWorkerDataset(loadedDataKey)) {
+    await loadBacktest();
+    return;
+  }
+  const runSequence = ++currentRunSequence;
   selectedCycle.value = null;
   cycleDetailRows.value = [];
   cycleBreakEvens.value = null;
   cycleContours.value = null;
   cycleDetailCache.clear();
   const config = buildConfig();
-  result.value = runWeeklyStraddleBacktest({
-    preparedData: preparedData.value,
-    config,
-  });
+  state.progress = "Running strategy";
+  try {
+    const response = await runSingleInWorker({
+      datasetKey: loadedDataKey,
+      config,
+      onProgress: ({ message }) => {
+        if (runSequence === currentRunSequence && message) state.progress = message;
+      },
+    });
+    if (runSequence !== currentRunSequence) return;
+    result.value = response.result;
+    state.progress = "";
+  } catch (error) {
+    if (runSequence !== currentRunSequence) return;
+    state.error = error?.message || "Backtest failed";
+    state.progress = "";
+  }
 };
 
 const closeCycleDetail = () => {
@@ -875,33 +890,47 @@ const handleCycleSelect = async (cycle) => {
 };
 
 const loadBacktest = async () => {
+  const runSequence = ++currentRunSequence;
   state.error = "";
   state.progress = "Loading data";
   try {
     const config = buildConfig();
-    const loaded = await loadThalexHistory({
-      start: config.start,
-      end: config.end,
-      hourlyOffsets: requiredHours.value,
-      maxDteDays: requiredMaxDteDays.value,
-      onProgress: ({ current, total, file }) => {
-        state.progress = `Prepared ${current}/${total}: ${file}`;
+    const datasetKey = requiredDataKey.value;
+    let sourceData;
+    if (!hasWorkerDataset(datasetKey)) {
+      const loaded = await loadThalexHistory({
+        start: config.start,
+        end: config.end,
+        hourlyOffsets: requiredHours.value,
+        maxDteDays: requiredMaxDteDays.value,
+        onProgress: ({ current, total, file }) => {
+          if (runSequence === currentRunSequence) {
+            state.progress = `Loaded ${current}/${total}: ${file}`;
+          }
+        },
+      });
+      sourceData = {
+        indexRows: loaded.indexRows,
+        quoteSnapshots: loaded.quoteSnapshots,
+        instruments: loaded.artifact.instruments,
+      };
+    }
+    const response = await runSingleInWorker({
+      datasetKey,
+      sourceData,
+      config,
+      onProgress: ({ message }) => {
+        if (runSequence === currentRunSequence && message) state.progress = message;
       },
     });
-    state.progress = "Preparing quotes";
-    const nextPreparedData = prepareBacktestData({
-      indexRows: loaded.indexRows,
-      quoteSnapshots: loaded.quoteSnapshots,
-      instruments: loaded.artifact.instruments,
-      config,
-    });
-    preparedData.value = nextPreparedData;
-    loadedDataKey = requiredDataKey.value;
-    state.progress = "Running strategy";
-    runCurrent();
+    if (runSequence !== currentRunSequence) return;
+    loadedDataKey = datasetKey;
+    result.value = response.result;
     state.progress = "";
   } catch (error) {
+    if (runSequence !== currentRunSequence) return;
     state.error = error?.message || "Backtest failed";
+    state.progress = "";
   }
 };
 
@@ -910,10 +939,13 @@ const scheduleBacktest = () => {
   clearTimeout(runDebounce);
   if (mode.value !== "single") return;
   runDebounce = setTimeout(() => {
-    if (!preparedData.value || requiredDataKey.value !== loadedDataKey) {
-      loadBacktest();
+    if (
+      requiredDataKey.value !== loadedDataKey ||
+      !hasWorkerDataset(requiredDataKey.value)
+    ) {
+      void loadBacktest();
     } else {
-      runCurrent();
+      void runCurrent();
     }
   }, 80);
 };
