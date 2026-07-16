@@ -655,30 +655,13 @@ const runSweep = async () => {
   const sweepMaxDteDays = Math.max(...configs.map(requiredQuoteDteDays));
   const sweepDataKey = `${sweepHoursKey}|dte:${sweepMaxDteDays}`;
   const startedAt = performance.now();
-  let loadMs = 0;
-  let prepareMs = 0;
-  let runMs = 0;
   try {
-    let sourceData;
-    if (!hasWorkerDataset(sweepDataKey)) {
-      sweepProgress.value = `Loading ${sweepHours.length} hourly data shards`;
-      const loadStartedAt = performance.now();
-      const loaded = await loadThalexHistory({
-        start: configs[0].start,
-        end: configs[0].end,
-        hourlyOffsets: sweepHours,
-        maxDteDays: sweepMaxDteDays,
-        onProgress: ({ current, total }) => {
-          sweepProgress.value = `Loading data ${current}/${total}`;
-        },
-      });
-      loadMs = performance.now() - loadStartedAt;
-      sourceData = {
-        indexRows: loaded.indexRows,
-        quoteSnapshots: loaded.quoteSnapshots,
-        instruments: loaded.artifact.instruments,
-      };
-    }
+    const loadRequest = {
+      start: configs[0].start,
+      end: configs[0].end,
+      hourlyOffsets: sweepHours,
+      maxDteDays: sweepMaxDteDays,
+    };
 
     const progressiveResults = new Array(cells.length);
     const buildSweepResult = (run, index) => {
@@ -708,7 +691,7 @@ const runSweep = async () => {
 
     const workerResult = await runSweepInWorker({
       datasetKey: sweepDataKey,
-      sourceData,
+      loadRequest,
       configs,
       onProgress: ({ message }) => {
         if (message) sweepProgress.value = message;
@@ -722,12 +705,10 @@ const runSweep = async () => {
         sweepProgress.value = `Completed ${index + 1}/${cells.length} configurations`;
       },
     });
-    prepareMs = workerResult.timing.prepareMs;
-    runMs = workerResult.timing.runMs;
     sweepTiming.value = {
-      loadMs,
-      prepareMs,
-      runMs,
+      loadMs: workerResult.timing.loadMs,
+      prepareMs: workerResult.timing.prepareMs,
+      runMs: workerResult.timing.runMs,
       totalMs: performance.now() - startedAt,
       reusedPreparedData: workerResult.timing.reusedPreparedData,
       cells: cells.length,
@@ -896,28 +877,14 @@ const loadBacktest = async () => {
   try {
     const config = buildConfig();
     const datasetKey = requiredDataKey.value;
-    let sourceData;
-    if (!hasWorkerDataset(datasetKey)) {
-      const loaded = await loadThalexHistory({
+    const response = await runSingleInWorker({
+      datasetKey,
+      loadRequest: {
         start: config.start,
         end: config.end,
         hourlyOffsets: requiredHours.value,
         maxDteDays: requiredMaxDteDays.value,
-        onProgress: ({ current, total, file }) => {
-          if (runSequence === currentRunSequence) {
-            state.progress = `Loaded ${current}/${total}: ${file}`;
-          }
-        },
-      });
-      sourceData = {
-        indexRows: loaded.indexRows,
-        quoteSnapshots: loaded.quoteSnapshots,
-        instruments: loaded.artifact.instruments,
-      };
-    }
-    const response = await runSingleInWorker({
-      datasetKey,
-      sourceData,
+      },
       config,
       onProgress: ({ message }) => {
         if (runSequence === currentRunSequence && message) state.progress = message;

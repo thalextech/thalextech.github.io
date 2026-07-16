@@ -1,27 +1,40 @@
 export const createBacktestWorkerEngine = ({
+  loadThalexHistory,
   prepareBacktestData,
   runWeeklyStraddleBacktest,
   now = () => performance.now(),
 }) => {
   const preparedDatasets = new Map();
+  const preparationLoads = new Map();
 
-  const ensurePreparedData = ({
+  const loadAndPrepareData = async ({
     requestId,
     datasetKey,
-    sourceData,
+    loadRequest,
     config,
     emit,
   }) => {
-    if (preparedDatasets.has(datasetKey)) {
-      return {
-        preparedData: preparedDatasets.get(datasetKey),
-        prepareMs: 0,
-        reusedPreparedData: true,
-      };
-    }
-    if (!sourceData) {
-      throw new Error(`Prepared dataset is unavailable: ${datasetKey}`);
-    }
+    if (!loadRequest) throw new Error(`Load request is unavailable: ${datasetKey}`);
+    emit({
+      type: "progress",
+      requestId,
+      phase: "load",
+      message: "Loading quote history",
+    });
+    const loadStartedAt = now();
+    const loaded = await loadThalexHistory({
+      ...loadRequest,
+      onProgress: ({ current, total, file }) => emit({
+        type: "progress",
+        requestId,
+        phase: "load",
+        current,
+        total,
+        file,
+        message: `Loaded ${current}/${total}: ${file}`,
+      }),
+    });
+    const loadMs = now() - loadStartedAt;
     emit({
       type: "progress",
       requestId,
@@ -30,30 +43,72 @@ export const createBacktestWorkerEngine = ({
     });
     const startedAt = now();
     const preparedData = prepareBacktestData({
-      indexRows: sourceData.indexRows,
-      quoteSnapshots: sourceData.quoteSnapshots,
-      instruments: sourceData.instruments,
+      indexRows: loaded.indexRows,
+      quoteSnapshots: loaded.quoteSnapshots,
+      instruments: loaded.artifact.instruments,
       config,
     });
     const prepareMs = now() - startedAt;
     preparedDatasets.set(datasetKey, preparedData);
-    return { preparedData, prepareMs, reusedPreparedData: false };
+    return { preparedData, loadMs, prepareMs };
   };
 
-  const handleRequest = (data, emit) => {
+  const ensurePreparedData = async ({
+    requestId,
+    datasetKey,
+    loadRequest,
+    config,
+    emit,
+  }) => {
+    if (preparedDatasets.has(datasetKey)) {
+      return {
+        preparedData: preparedDatasets.get(datasetKey),
+        loadMs: 0,
+        prepareMs: 0,
+        reusedPreparedData: true,
+      };
+    }
+    if (preparationLoads.has(datasetKey)) {
+      const { preparedData } = await preparationLoads.get(datasetKey);
+      return {
+        preparedData,
+        loadMs: 0,
+        prepareMs: 0,
+        reusedPreparedData: true,
+      };
+    }
+    const preparation = loadAndPrepareData({
+      requestId,
+      datasetKey,
+      loadRequest,
+      config,
+      emit,
+    });
+    preparationLoads.set(datasetKey, preparation);
+    try {
+      return {
+        ...await preparation,
+        reusedPreparedData: false,
+      };
+    } finally {
+      preparationLoads.delete(datasetKey);
+    }
+  };
+
+  const handleRequest = async (data, emit) => {
     const {
       requestId,
       type,
       datasetKey,
-      sourceData,
+      loadRequest,
       config,
       configs = [],
     } = data;
     if (type === "run-single") {
-      const preparation = ensurePreparedData({
+      const preparation = await ensurePreparedData({
         requestId,
         datasetKey,
-        sourceData,
+        loadRequest,
         config,
         emit,
       });
@@ -74,6 +129,7 @@ export const createBacktestWorkerEngine = ({
         datasetKey,
         result,
         timing: {
+          loadMs: preparation.loadMs,
           prepareMs: preparation.prepareMs,
           runMs: now() - runStartedAt,
           reusedPreparedData: preparation.reusedPreparedData,
@@ -83,10 +139,10 @@ export const createBacktestWorkerEngine = ({
     }
 
     if (type !== "run-sweep") throw new Error(`Unknown worker request: ${type}`);
-    const preparation = ensurePreparedData({
+    const preparation = await ensurePreparedData({
       requestId,
       datasetKey,
-      sourceData,
+      loadRequest,
       config: configs[0],
       emit,
     });
@@ -115,6 +171,7 @@ export const createBacktestWorkerEngine = ({
       requestId,
       datasetKey,
       timing: {
+        loadMs: preparation.loadMs,
         prepareMs: preparation.prepareMs,
         runMs: now() - runStartedAt,
         reusedPreparedData: preparation.reusedPreparedData,

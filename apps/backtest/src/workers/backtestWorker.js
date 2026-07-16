@@ -3,15 +3,17 @@ import {
   runWeeklyStraddleBacktest,
 } from "../lib/weeklyStraddleBacktest.js";
 import { createBacktestWorkerEngine } from "../lib/backtestWorkerEngine.js";
+import { loadThalexHistory } from "../lib/thalexParquet.js";
 
 const engine = createBacktestWorkerEngine({
+  loadThalexHistory,
   prepareBacktestData,
   runWeeklyStraddleBacktest,
 });
 
-self.addEventListener("message", ({ data }) => {
+self.addEventListener("message", async ({ data }) => {
   try {
-    engine.handleRequest(data, (message) => self.postMessage(message));
+    await engine.handleRequest(data, (message) => self.postMessage(message));
   } catch (error) {
     self.postMessage({
       type: "error",

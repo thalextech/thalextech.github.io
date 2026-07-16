@@ -58,14 +58,14 @@ export const hasWorkerDataset = (datasetKey) =>
 
 export const runSingleInWorker = ({
   datasetKey,
-  sourceData,
+  loadRequest,
   config,
   onProgress,
 }) => requestWorker(
   {
     type: "run-single",
     datasetKey,
-    sourceData,
+    loadRequest,
     config,
   },
   { onProgress },
@@ -73,7 +73,7 @@ export const runSingleInWorker = ({
 
 export const runSweepInWorker = ({
   datasetKey,
-  sourceData,
+  loadRequest,
   configs,
   onProgress,
   onResult,
@@ -81,7 +81,7 @@ export const runSweepInWorker = ({
   {
     type: "run-sweep",
     datasetKey,
-    sourceData,
+    loadRequest,
     configs,
   },
   { onProgress, onResult },
