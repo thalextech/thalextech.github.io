@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import CycleDetailChart from "./components/CycleDetailChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
 import IvRvChart from "./components/IvRvChart.vue";
+import StyledSelectMenu from "./components/StyledSelectMenu.vue";
 import VarianceRatioDashboard from "./components/VarianceRatioDashboard.vue";
 import WeekdayHourHeatmap from "./components/WeekdayHourHeatmap.vue";
 import SweepResultsChart from "./components/SweepResultsChart.vue";
@@ -86,6 +87,10 @@ const HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) => ({
   value: hour,
   label: `${String(hour).padStart(2, "0")}:00`,
 }));
+const SERIAL_CLOSE_WEEKDAY_OPTIONS = [
+  { value: -1, label: "All" },
+  ...WEEKDAY_OPTIONS,
+];
 
 const HEDGE_FREQUENCY_OPTIONS = [
   { value: 1, label: "1h" },
@@ -1003,11 +1008,13 @@ function handleSavePng() {
     title: chartTitle.value,
     subtitle: chartSubtitle.value,
     source: chartSourceSubtitle.value,
-    metrics: [
-      { label: "FINAL PNL", value: finalPnlValue.value },
-      { label: "SHARPE", value: sharpeValue.value },
-      { label: "MAX DRAWDOWN", value: maxDdValue.value, muted: true },
-    ],
+    metrics: selectedCycle.value || chartMode.value === "hedge"
+      ? []
+      : [
+          { label: "FINAL PNL", value: finalPnlValue.value },
+          { label: "SHARPE", value: sharpeValue.value },
+          { label: "MAX DRAWDOWN", value: maxDdValue.value, muted: true },
+        ],
   });
 }
 
@@ -1532,19 +1539,16 @@ onMounted(loadBacktest);
                     <button type="button" :class="{ active: serialReturnMode === 'raw' }" @click="serialReturnMode = 'raw'">Raw returns</button>
                     <button type="button" :class="{ active: serialReturnMode === 'deseasonalized' }" @click="serialReturnMode = 'deseasonalized'">De-seasonalized</button>
                   </div>
-                  <label class="rvCloseHourControl">
-                    <span>Close weekday</span>
-                    <select v-model.number="serialCloseWeekday">
-                      <option :value="-1">All</option>
-                      <option v-for="weekday in WEEKDAY_OPTIONS" :key="weekday.value" :value="weekday.value">{{ weekday.label }}</option>
-                    </select>
-                  </label>
-                  <label class="rvCloseHourControl">
-                    <span>Daily close UTC</span>
-                    <select v-model.number="serialCloseHour">
-                      <option v-for="hour in 24" :key="hour - 1" :value="hour - 1">{{ String(hour - 1).padStart(2, '0') }}:00</option>
-                    </select>
-                  </label>
+                  <StyledSelectMenu
+                    v-model="serialCloseWeekday"
+                    label="Close weekday"
+                    :options="SERIAL_CLOSE_WEEKDAY_OPTIONS"
+                  />
+                  <StyledSelectMenu
+                    v-model="serialCloseHour"
+                    label="Daily close UTC"
+                    :options="HOUR_OPTIONS"
+                  />
                   <button
                     class="rvScreenshotButton"
                     type="button"
@@ -2490,28 +2494,6 @@ onMounted(loadBacktest);
 .rvAnalysisToggle button.active {
   background: rgba(255,255,255,0.1);
   color: #f2f3f5;
-}
-
-.rvCloseHourControl {
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 5px 0 8px;
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 5px;
-  background: rgba(255,255,255,0.025);
-  color: #777d84;
-  font-size: 9px;
-}
-
-.rvCloseHourControl select {
-  height: 18px;
-  border: 0;
-  background: #15171c;
-  color: #d8dadd;
-  font: inherit;
-  outline: none;
 }
 
 .rvOutlierToggle {

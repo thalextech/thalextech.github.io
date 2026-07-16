@@ -1,10 +1,14 @@
 <script setup>
 import * as d3 from "d3";
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   exportChartRegionToPng,
   exportTitledChart,
 } from "../lib/exportTitledChart.js";
+import {
+  calendarWeekKey,
+  orderSweepDistributionRows,
+} from "../lib/sweepDistribution.js";
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
@@ -15,7 +19,39 @@ const props = defineProps({
 const emit = defineEmits(["select"]);
 const chartRef = ref(null);
 const panelRegions = ref([]);
+const distributionControlsTop = ref(0);
+const distributionView = ref("ranked");
+const distributionSort = ref("median");
+const distributionSortOpen = ref(false);
+const selectedWeekKey = ref("");
 let resizeObserver;
+
+const DISTRIBUTION_SORT_OPTIONS = [
+  { value: "total", label: "Total P&L" },
+  { value: "sharpe", label: "Sharpe" },
+  { value: "median", label: "Median P&L" },
+];
+
+const distributionSequenceLabel = computed(() => {
+  if (props.dimension === "entry_hour") return "Clock";
+  if (props.dimension === "entry_weekday") return "Weekday";
+  return "Sequence";
+});
+const distributionSortLabel = computed(() =>
+  DISTRIBUTION_SORT_OPTIONS.find((option) => option.value === distributionSort.value)?.label
+  || "Median P&L"
+);
+
+const selectDistributionSort = (value) => {
+  distributionSort.value = value;
+  distributionSortOpen.value = false;
+};
+
+const handleSortFocusout = (event) => {
+  if (!event.currentTarget.contains(event.relatedTarget)) {
+    distributionSortOpen.value = false;
+  }
+};
 
 const CHART_FONT_FAMILY = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
 const UI_AXIS_LABEL_COLOR = "rgba(255,255,255,0.46)";
@@ -176,17 +212,18 @@ const draw = () => {
   const realizedPlotBottom = realizedPlotTop + realizedPlotHeight;
   const realizedAxisY = realizedPlotBottom + 8;
   const realizedBottom = realizedAxisY + 28;
-  const distributionHeaderY = realizedBottom + 50;
-  const distributionAxisY = distributionHeaderY + 25;
+  const distributionHeaderY = realizedBottom + 62;
+  const distributionAxisY = distributionHeaderY + 43;
   const distributionRowsY = distributionAxisY + 16;
-  const distributionRowHeight = 26;
+  const distributionRowHeight = 31;
   const distributionBottom = distributionRowsY + rows.length * distributionRowHeight;
+  distributionControlsTop.value = distributionHeaderY - 20;
   const width = Math.max(availableWidth, margin.left + contentWidth + margin.right);
   const height = distributionBottom + 36;
   const panelSeparatorInset = 2;
   const rankedSeparatorY = rankedHeaderY - 24;
   const realizedSeparatorY = realizedHeaderY - 24;
-  const distributionSeparatorY = distributionHeaderY - 24;
+  const distributionSeparatorY = distributionHeaderY - 36;
   panelRegions.value = [
     {
       key: "comparison",
@@ -264,6 +301,7 @@ const draw = () => {
         value: Number(point.pnl),
         entryDate: point.entryDate,
         sourceIndex,
+        weekKey: calendarWeekKey(point.entryDate, `week-${sourceIndex}`),
       }))
       .filter((point) => Number.isFinite(point.value));
     const weeks = weeklyPoints.map((point) => point.value);
@@ -657,13 +695,20 @@ const draw = () => {
   appendPanelHeading({
     y: distributionHeaderY,
     title: "WEEKLY PNL OBSERVATIONS",
-    subtitle: "ROWS RANKED BY TOTAL PNL · SHARED WEEKLY SCALE · BLUE = UP · RED = DOWN · LINE = MEDIAN · WHITE BORDER = BEST WEEK",
+    subtitle: distributionView.value === "ranked"
+      ? `RANKED BY ${distributionSortLabel.value.toUpperCase()} · LEFT ACCENT = TOP-3 RANK · THICK WHITE BAR = MEDIAN · BOX = MIDDLE 50% · THIN WHISKER = 10TH–90TH`
+      : `${distributionSequenceLabel.value.toUpperCase()} ORDER · LEFT ACCENT = TOP-3 PERFORMANCE RANK · THICK WHITE BAR = MEDIAN · BOX = MIDDLE 50% · THIN WHISKER = 10TH–90TH`,
   });
 
-  const distributionPlotLeft = margin.left + 62;
-  const distributionSummaryWidth = 260;
+  const distributionRows = orderSweepDistributionRows(analyzedRows, {
+    view: distributionView.value,
+    sortBy: distributionSort.value,
+    dimension: props.dimension,
+  });
+  const distributionPlotLeft = margin.left + 92;
+  const distributionSummaryWidth = 310;
   const distributionPlotRight = margin.left + contentWidth - distributionSummaryWidth;
-  const distributionSummaryX = distributionPlotRight + 22;
+  const distributionSummaryX = distributionPlotRight + 18;
   const distributionSummaryRight = margin.left + contentWidth;
   const allDistributionValues = analyzedRows.flatMap((row) => row.weeks);
   const [distributionMin = -1, distributionMax = 1] = d3.extent(allDistributionValues);
@@ -679,33 +724,62 @@ const draw = () => {
     .call(d3.axisTop(distributionX).ticks(7).tickSize(0).tickPadding(6).tickFormat(formatCompactUsd));
   distributionAxis.select(".domain").remove();
   distributionAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.42)").attr("font-size", 9);
+  svg.append("rect")
+    .attr("x", distributionPlotLeft)
+    .attr("y", distributionAxisY)
+    .attr("width", Math.max(0, distributionX(0) - distributionPlotLeft))
+    .attr("height", distributionBottom - distributionAxisY)
+    .attr("fill", "#cf6a5a")
+    .attr("fill-opacity", 0.025);
+  svg.append("rect")
+    .attr("x", distributionX(0))
+    .attr("y", distributionAxisY)
+    .attr("width", Math.max(0, distributionPlotRight - distributionX(0)))
+    .attr("height", distributionBottom - distributionAxisY)
+    .attr("fill", "#6ea3d8")
+    .attr("fill-opacity", 0.025);
   const distributionSummaryColumns = [
-    { label: "MAX", x: distributionSummaryX, anchor: "start", value: (weeks) => d3.max(weeks) ?? 0, tooltip: "Largest weekly PnL for this sweep setting." },
-    { label: "MIN", x: distributionSummaryX + (distributionSummaryRight - distributionSummaryX) / 3, anchor: "middle", value: (weeks) => d3.min(weeks) ?? 0, tooltip: "Smallest weekly PnL for this sweep setting." },
-    { label: "MEAN", x: distributionSummaryX + (distributionSummaryRight - distributionSummaryX) * 2 / 3, anchor: "middle", value: (weeks) => d3.mean(weeks) ?? 0, tooltip: "Mean weekly PnL for this sweep setting." },
-    { label: "MEDIAN", x: distributionSummaryRight, anchor: "end", value: (weeks) => d3.median(weeks) ?? 0, tooltip: "Median weekly PnL for this sweep setting." },
+    { label: "TOTAL PNL", x: distributionSummaryX + 58, value: (row) => formatCompactUsd(row.total), tooltip: "Cumulative PnL across all displayed weekly observations." },
+    { label: "SHARPE", x: distributionSummaryX + 122, value: (row) => formatSharpe(Number(row.sharpe) || 0), tooltip: "Annualized Sharpe computed from the displayed weekly PnL observations." },
+    { label: "WORST WEEK", x: distributionSummaryX + 216, value: (row) => formatCompactUsd(d3.min(row.weeks) ?? 0), tooltip: "Smallest weekly PnL observation for this sweep setting." },
+    { label: "POSITIVE", x: distributionSummaryRight, value: (row) => d3.format(".0%")(row.winRate), tooltip: "Share of displayed weeks with positive PnL." },
   ];
   distributionSummaryColumns.forEach((column) => {
     const header = svg.append("text")
-      .attr("x", column.x).attr("y", distributionAxisY - 7).attr("text-anchor", column.anchor)
+      .attr("x", column.x).attr("y", distributionAxisY - 7).attr("text-anchor", "end")
       .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 9)
       .text(column.label);
     header
-      .on("mouseenter", () => showHeaderTooltip(column.x, distributionAxisY - 7, column.tooltip, column.anchor === "end" ? "end" : "start"))
+      .on("mouseenter", () => showHeaderTooltip(column.x, distributionAxisY - 7, column.tooltip, "end"))
       .on("mouseleave", hideHeaderTooltip);
   });
   svg.append("line")
     .attr("x1", distributionX(0)).attr("x2", distributionX(0))
     .attr("y1", distributionAxisY).attr("y2", distributionBottom)
-    .attr("stroke", "rgba(255,255,255,0.18)");
+    .attr("stroke", "rgba(255,255,255,0.48)")
+    .attr("stroke-width", 1.4);
+
+  const sessionForRow = (row) => {
+    if (props.dimension !== "entry_hour") return null;
+    const hour = Number(row.config?.entryHourUtc);
+    if (!Number.isFinite(hour)) return null;
+    if (hour < 8) return { label: "Asia", color: "#6ea3d8", background: "rgba(110,163,216,0.025)" };
+    if (hour < 16) return { label: "Europe", color: "#c8a66a", background: "rgba(200,166,106,0.025)" };
+    return { label: "US", color: "#cf6a5a", background: "rgba(207,106,90,0.025)" };
+  };
+  const distributionRowFill = (row, rowIndex) => {
+    const session = distributionView.value === "clock" ? sessionForRow(row) : null;
+    if (session) return session.background;
+    return rowIndex % 2 ? "rgba(255,255,255,0.014)" : "transparent";
+  };
 
   const distributionGroups = svg.selectAll("g.distribution-row")
-    .data(rankedRows, (row) => row.key)
+    .data(distributionRows, (row) => row.key)
     .join("g")
     .attr("class", "distribution-row")
     .attr("role", "button")
     .attr("tabindex", 0)
-    .attr("aria-label", (row) => `${row.label}: maximum ${formatUsd(d3.max(row.weeks) ?? 0)}, minimum ${formatUsd(d3.min(row.weeks) ?? 0)}, average ${formatUsd(d3.mean(row.weeks) ?? 0)}, median ${formatUsd(d3.median(row.weeks) ?? 0)}`)
+    .attr("aria-label", (row) => `${row.label}, rank ${row.distributionRank}: total ${formatUsd(row.total)}, Sharpe ${formatSharpe(Number(row.sharpe) || 0)}, worst week ${formatUsd(d3.min(row.weeks) ?? 0)}, positive week rate ${d3.format(".0%")(row.winRate)}`)
     .style("cursor", "pointer")
     .on("click", (_, row) => emit("select", row));
 
@@ -715,40 +789,88 @@ const draw = () => {
     const center = top + distributionRowHeight / 2;
     group.append("rect").attr("class", "distribution-hit-area")
       .attr("x", margin.left).attr("y", top).attr("width", contentWidth).attr("height", distributionRowHeight)
-      .attr("fill", "transparent");
+      .attr("fill", distributionRowFill(row, rowIndex));
     group.append("line")
       .attr("x1", margin.left).attr("x2", margin.left + contentWidth).attr("y1", top).attr("y2", top)
       .attr("stroke", "rgba(255,255,255,0.045)");
+    if (row.distributionRank <= 3) {
+      group.append("rect")
+        .attr("x", margin.left - 8)
+        .attr("y", top + 4)
+        .attr("width", 2)
+        .attr("height", distributionRowHeight - 8)
+        .attr("rx", 1)
+        .attr("fill", row.distributionRank === 1 ? "#d7a85d" : row.distributionRank === 2 ? "#9ba7b3" : "#a97555")
+        .attr("fill-opacity", 0.9);
+    }
     group.append("text")
       .attr("x", margin.left).attr("y", center).attr("dy", "0.32em")
+      .attr("fill", "rgba(255,255,255,0.28)").attr("font-size", 8.5)
+      .text(String(row.distributionRank).padStart(2, "0"));
+    group.append("text")
+      .attr("x", margin.left + 24).attr("y", center).attr("dy", "0.32em")
       .attr("fill", UI_AXIS_LABEL_COLOR).attr("font-size", 10).attr("font-weight", 500)
       .text(row.label);
 
-    row.weeks.forEach((value, weekIndex) => {
-      const jitter = (((weekIndex * 7 + rowIndex * 3) % 13) - 6) * 0.65;
-      const point = group.append("circle")
-        .attr("cx", distributionX(value)).attr("cy", center + jitter).attr("r", 2.35)
-        .attr("fill", value >= 0 ? "#6ea3d8" : "#cf6a5a").attr("fill-opacity", 0.56)
-        .attr("stroke", weekIndex === row.bestIndex ? "#ffffff" : "none")
-        .attr("stroke-width", weekIndex === row.bestIndex ? 0.8 : 0);
-      const sourcePoint = row.weeklyReturns?.[weekIndex];
-      const date = sourcePoint?.entryDate ? d3.utcFormat("%d %b %Y")(new Date(sourcePoint.entryDate)) : `Week ${weekIndex + 1}`;
-      point.append("title").text(`${row.label} · ${date}\nWeekly PnL: ${formatUsd(value)}`);
-    });
-    const median = d3.median(row.weeks) || 0;
+    const q10 = d3.quantileSorted(row.sortedWeeks, 0.10) ?? 0;
+    const q25 = d3.quantileSorted(row.sortedWeeks, 0.25) ?? 0;
+    const median = d3.quantileSorted(row.sortedWeeks, 0.50) ?? 0;
+    const q75 = d3.quantileSorted(row.sortedWeeks, 0.75) ?? 0;
+    const q90 = d3.quantileSorted(row.sortedWeeks, 0.90) ?? 0;
+    group.append("line")
+      .attr("x1", distributionX(q10)).attr("x2", distributionX(q90))
+      .attr("y1", center).attr("y2", center)
+      .attr("stroke", "rgba(255,255,255,0.36)").attr("stroke-width", 1);
+    [q10, q90].forEach((value) => group.append("line")
+      .attr("x1", distributionX(value)).attr("x2", distributionX(value))
+      .attr("y1", center - 3).attr("y2", center + 3)
+      .attr("stroke", "rgba(255,255,255,0.42)").attr("stroke-width", 1));
+    group.append("rect")
+      .attr("x", Math.min(distributionX(q25), distributionX(q75)))
+      .attr("y", center - 4)
+      .attr("width", Math.max(1, Math.abs(distributionX(q75) - distributionX(q25))))
+      .attr("height", 8)
+      .attr("rx", 2)
+      .attr("fill", "rgba(255,255,255,0.16)")
+      .attr("stroke", "rgba(255,255,255,0.22)")
+      .attr("stroke-width", 0.6);
     group.append("line")
       .attr("x1", distributionX(median)).attr("x2", distributionX(median))
-      .attr("y1", center - 8).attr("y2", center + 8)
-      .attr("stroke", "rgba(255,255,255,0.9)").attr("stroke-width", 1.2);
+      .attr("y1", center - 7).attr("y2", center + 7)
+      .attr("stroke", "rgba(255,255,255,0.94)").attr("stroke-width", 2.2);
+
+    row.weeklyPoints.forEach((weeklyPoint, weekIndex) => {
+      const jitter = (((weekIndex * 7 + rowIndex * 3) % 13) - 6) * 0.65;
+      const isSelectedWeek = weeklyPoint.weekKey === selectedWeekKey.value;
+      const pointColor = performanceColor(Number(row.sharpe) || 0);
+      const point = group.append("circle")
+        .datum({ ...weeklyPoint, rowKey: row.key })
+        .attr("class", "weekly-point")
+        .attr("cx", distributionX(weeklyPoint.value)).attr("cy", center + jitter).attr("r", 2.2)
+        .attr("fill", pointColor).attr("fill-opacity", isSelectedWeek ? 0.96 : 0.72)
+        .attr("stroke", isSelectedWeek ? "#ffffff" : "none")
+        .attr("stroke-width", isSelectedWeek ? 1.1 : 0)
+        .style("cursor", "pointer")
+        .on("mouseenter", function () { d3.select(this).attr("fill-opacity", 0.95).attr("r", 2.7); })
+        .on("mouseleave", function () { d3.select(this).attr("fill-opacity", isSelectedWeek ? 0.96 : 0.72).attr("r", 2.2); })
+        .on("click", (event) => {
+          event.stopPropagation();
+          selectedWeekKey.value = selectedWeekKey.value === weeklyPoint.weekKey
+            ? ""
+            : weeklyPoint.weekKey;
+        });
+      const date = weeklyPoint.entryDate ? d3.utcFormat("%d %b %Y")(new Date(weeklyPoint.entryDate)) : `Week ${weekIndex + 1}`;
+      point.append("title").text(`${row.label} · ${date}\nWeekly PnL: ${formatUsd(weeklyPoint.value)}\nClick to compare this calendar week across rows.`);
+    });
     distributionSummaryColumns.forEach((column) => group.append("text")
-      .attr("x", column.x).attr("y", center).attr("dy", "0.32em").attr("text-anchor", column.anchor)
+      .attr("x", column.x).attr("y", center).attr("dy", "0.32em").attr("text-anchor", "end")
       .attr("fill", "rgba(255,255,255,0.72)").attr("font-size", 9.5)
-      .text(formatCompactUsd(column.value(row.weeks))));
+      .text(column.value(row)));
   });
 
   svg.append("line")
     .attr("x1", margin.left).attr("x2", margin.left + contentWidth)
-    .attr("y1", distributionHeaderY - 24).attr("y2", distributionHeaderY - 24)
+    .attr("y1", distributionSeparatorY).attr("y2", distributionSeparatorY)
     .attr("stroke", "rgba(255,255,255,0.12)");
 
   svg.append("line")
@@ -758,7 +880,7 @@ const draw = () => {
 
   appendPanelHeading({
     y: rankedHeaderY,
-    title: "RANKED SWEEP · OUTLIER LENS",
+    title: "RANKED SWEEP",
     subtitle: "PNL ATTRIBUTION AND ENTRY VOLATILITY · SORTED BY TOTAL PNL",
   });
 
@@ -851,7 +973,16 @@ const draw = () => {
       .attr("stroke", "rgba(255,255,255,0.92)")
       .attr("stroke-width", (row) => row.key === key ? 1.4 : 0.8);
     realizedGroups.attr("opacity", (row) => !key || row.key === key ? 1 : 0.3);
-    distributionGroups.select(".distribution-hit-area").attr("fill", (row) => row.key === key ? "rgba(255,255,255,0.055)" : "transparent");
+    distributionGroups.select(".distribution-hit-area")
+      .attr("fill", (row, index) => row.key === key
+        ? "rgba(255,255,255,0.055)"
+        : distributionRowFill(row, index));
+    distributionGroups.selectAll(".weekly-point")
+      .attr("fill-opacity", (point) => {
+        if (point.weekKey === selectedWeekKey.value) return 0.96;
+        if (!key) return 0.72;
+        return point.rowKey === key ? 0.9 : 0.28;
+      });
     rankGroups.select(".rank-hit-area").attr("fill", (row) => row.key === key ? "rgba(255,255,255,0.055)" : "transparent");
   };
   const bindHover = (selection) => selection
@@ -875,7 +1006,14 @@ onMounted(async () => {
 onBeforeUnmount(() => resizeObserver?.disconnect());
 
 watch(
-  () => [props.rows, props.dimension, props.dimensionLabel],
+  () => [
+    props.rows,
+    props.dimension,
+    props.dimensionLabel,
+    distributionView.value,
+    distributionSort.value,
+    selectedWeekKey.value,
+  ],
   async () => {
     await nextTick();
     draw();
@@ -927,6 +1065,67 @@ defineExpose({ exportPng });
   <div class="chartViewport">
     <div class="chartSurface">
       <div ref="chartRef" class="chartCanvas"></div>
+      <div
+        v-if="panelRegions.length"
+        class="distributionControls"
+        :style="{ top: `${distributionControlsTop}px` }"
+        aria-label="Weekly PnL observation order"
+      >
+        <div class="distributionViewToggle" role="group" aria-label="Distribution view">
+          <button
+            type="button"
+            :class="{ active: distributionView === 'clock' }"
+            :aria-pressed="distributionView === 'clock'"
+            @click="distributionView = 'clock'"
+          >
+            {{ distributionSequenceLabel }}
+          </button>
+          <button
+            type="button"
+            :class="{ active: distributionView === 'ranked' }"
+            :aria-pressed="distributionView === 'ranked'"
+            @click="distributionView = 'ranked'"
+          >
+            Ranked
+          </button>
+        </div>
+        <div
+          class="distributionSortControl"
+          @focusout="handleSortFocusout"
+          @keydown.esc="distributionSortOpen = false"
+        >
+          <span>Rank by</span>
+          <button
+            class="distributionSortTrigger"
+            type="button"
+            aria-haspopup="listbox"
+            :aria-expanded="distributionSortOpen"
+            @click="distributionSortOpen = !distributionSortOpen"
+          >
+            {{ distributionSortLabel }}
+            <span class="distributionSortChevron" aria-hidden="true"></span>
+          </button>
+          <div
+            v-if="distributionSortOpen"
+            class="distributionSortMenu"
+            role="listbox"
+            aria-label="Rank weekly PnL observations by"
+          >
+            <button
+              v-for="option in DISTRIBUTION_SORT_OPTIONS"
+              :key="option.value"
+              type="button"
+              role="option"
+              :aria-selected="distributionSort === option.value"
+              :class="{ active: distributionSort === option.value }"
+              @click="selectDistributionSort(option.value)"
+            >
+              <span>{{ option.label }}</span>
+              <span v-if="distributionSort === option.value" class="distributionSortCheck" aria-hidden="true">✓</span>
+            </button>
+          </div>
+        </div>
+      </div>
       <button
         v-for="panel in panelRegions"
         :key="panel.key"
@@ -962,6 +1161,134 @@ defineExpose({ exportPng });
 .chartCanvas :deep(svg) {
   display: block;
   max-width: none;
+}
+
+.distributionControls {
+  position: absolute;
+  right: 58px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.distributionViewToggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(10, 11, 14, 0.78);
+  backdrop-filter: blur(6px);
+}
+
+.distributionViewToggle button {
+  height: 20px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #777d84;
+  font: 500 9px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  cursor: pointer;
+}
+
+.distributionViewToggle button.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f2f3f5;
+}
+
+.distributionSortControl {
+  position: relative;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  background: rgba(10, 11, 14, 0.78);
+  color: #777d84;
+  font: 500 9px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  backdrop-filter: blur(6px);
+}
+
+.distributionSortTrigger {
+  min-width: 88px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  border-radius: 4px;
+  padding: 0 7px 0 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #d8dadd;
+  font: inherit;
+  cursor: pointer;
+}
+
+.distributionSortTrigger:hover,
+.distributionSortTrigger:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f2f3f5;
+}
+
+.distributionSortChevron {
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: translateY(-1px) rotate(45deg);
+}
+
+.distributionSortMenu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 8;
+  min-width: 126px;
+  overflow: hidden;
+  padding: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 6px;
+  background: #14161a;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
+}
+
+.distributionSortMenu button {
+  width: 100%;
+  height: 27px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  border-radius: 4px;
+  padding: 0 8px;
+  background: transparent;
+  color: #9ba0a7;
+  font: 500 10px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+
+.distributionSortMenu button:hover,
+.distributionSortMenu button:focus-visible {
+  background: rgba(255, 255, 255, 0.07);
+  color: #f2f3f5;
+  outline: none;
+}
+
+.distributionSortMenu button.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f2f3f5;
+}
+
+.distributionSortCheck {
+  color: #d8dadd;
+  font-size: 11px;
 }
 
 .panelExportButton {
