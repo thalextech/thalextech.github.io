@@ -8,6 +8,7 @@ const entryTs = Date.UTC(2026, 0, 1, 8) / 1000;
 const spot = 100;
 
 const makeLeg = ({ strike, optionType, expiryDays = 30, quantity, entryPrice }) => ({
+  instrumentId: expiryDays * 1_000_000 + strike * 2 + (optionType === "C" ? 1 : 0),
   instrumentName: `BTC-${expiryDays}D-${strike}-${optionType}`,
   strike,
   optionType,
@@ -18,7 +19,7 @@ const makeLeg = ({ strike, optionType, expiryDays = 30, quantity, entryPrice }) 
 
 const quoteFor = (leg, iv = 0.6, delta = leg.optionType === "C" ? 0.25 : -0.25) => ({
   ts: entryTs,
-  instrumentName: leg.instrumentName,
+  instrumentId: leg.instrumentId,
   strike: leg.strike,
   expirationTs: leg.expirationTs,
   impliedVol: iv,

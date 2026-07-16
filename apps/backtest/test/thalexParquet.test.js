@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  DEFAULT_SHARD_LOAD_CONCURRENCY,
   decodeInstrumentDictionary,
   decodePreparedShard,
+  loadThalexHistory,
   THALEX_ARTIFACT_VERSION,
 } from "../src/lib/thalexParquet.js";
 import { PRECOMPUTED_DELTA_SCALE } from "../src/lib/optionRisk.js";
@@ -59,4 +61,60 @@ test("runtime rejects stale artifact versions", () => {
     () => decodeInstrumentDictionary({ ...manifest, version: 1 }),
     /rebuild data with schema version 2/,
   );
+});
+
+test("history shards load concurrently while preserving hour order", async () => {
+  assert.equal(DEFAULT_SHARD_LOAD_CONCURRENCY, 4);
+  const originalFetch = globalThis.fetch;
+  const requestedHours = [0, 1, 2, 3, 4];
+  const progress = [];
+  let activeShardLoads = 0;
+  let peakShardLoads = 0;
+
+  globalThis.fetch = async (url) => {
+    if (url.endsWith("prepared_manifest.json")) {
+      return { ok: true, json: async () => manifest };
+    }
+
+    const hour = Number(/h(\d{2})utc/.exec(url)?.[1]);
+    activeShardLoads += 1;
+    peakShardLoads = Math.max(peakShardLoads, activeShardLoads);
+    await new Promise((resolve) => setTimeout(resolve, (5 - hour) * 2));
+    activeShardLoads -= 1;
+    return {
+      ok: true,
+      json: async () => ({
+        schema: "thalex-option-backtest",
+        version: THALEX_ARTIFACT_VERSION,
+        hourlyOffset: hour,
+        index: [[100 + hour, 99_000 + hour]],
+        quotes: [[100 + hour, [[0, 4_000, 0.55, 5_100]]]],
+      }),
+    };
+  };
+
+  try {
+    const loaded = await loadThalexHistory({
+      start: new Date(0),
+      end: new Date(1_000_000),
+      hourlyOffsets: requestedHours,
+      dataRoot: "test/bounded-shards",
+      maxConcurrentShardLoads: 2,
+      onProgress: (event) => progress.push(event),
+    });
+
+    assert.equal(peakShardLoads, 2);
+    assert.deepEqual(
+      loaded.indexRows.map((row) => row.ts),
+      requestedHours.map((hour) => 100 + hour),
+    );
+    assert.deepEqual(
+      loaded.quoteSnapshots.map(([ts]) => ts),
+      requestedHours.map((hour) => 100 + hour),
+    );
+    assert.deepEqual(progress.map(({ current }) => current), [1, 2, 3, 4, 5]);
+    assert.ok(progress.every(({ total }) => total === requestedHours.length));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

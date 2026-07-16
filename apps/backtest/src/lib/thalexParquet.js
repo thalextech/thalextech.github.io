@@ -8,6 +8,7 @@ export const THALEX_ARTIFACT_VERSION = 2;
 const ARTIFACT_SCHEMA = "thalex-option-backtest";
 const DEFAULT_DATA_ROOT = "data/thalex";
 const MANIFEST_FILENAME = "prepared_manifest.json";
+export const DEFAULT_SHARD_LOAD_CONCURRENCY = 4;
 const preparedFilename = (hour) =>
   `prepared_1h_h${String(hour).padStart(2, "0")}utc.json`;
 const manifestCache = new Map();
@@ -116,6 +117,27 @@ const loadManifest = (dataRoot) => {
   return manifestCache.get(dataRoot);
 };
 
+const mapWithConcurrency = async (items, requestedConcurrency, mapper) => {
+  if (!items.length) return [];
+  const concurrency = Math.max(
+    1,
+    Math.min(items.length, Math.floor(Number(requestedConcurrency)) || 1),
+  );
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  return results;
+};
+
 export async function loadThalexHistory({
   start,
   end,
@@ -123,6 +145,7 @@ export async function loadThalexHistory({
   hourlyOffsets,
   dataRoot = DEFAULT_DATA_ROOT,
   onProgress,
+  maxConcurrentShardLoads = DEFAULT_SHARD_LOAD_CONCURRENCY,
 }) {
   const hours = [...new Set((hourlyOffsets || [hourlyOffset]).map(Number))]
     .sort((a, b) => a - b);
@@ -132,23 +155,33 @@ export async function loadThalexHistory({
   const quoteSnapshots = [];
   const { manifest, instruments } = await loadManifest(dataRoot);
 
-  for (const [index, hour] of hours.entries()) {
-    onProgress?.({
-      phase: "prepared",
-      current: index + 1,
-      total: hours.length,
-      file: `h${hour}`,
-    });
-    const filename = preparedFilename(hour);
-    const payload = await fetchJson(
-      dataUrl(dataRoot, filename),
-      `Missing prepared data for hour ${hour}`,
-    );
-    const decoded = decodePreparedShard({
-      payload,
-      startTs,
-      endTs,
-    });
+  let completedShards = 0;
+  const decodedShards = await mapWithConcurrency(
+    hours,
+    maxConcurrentShardLoads,
+    async (hour) => {
+      const filename = preparedFilename(hour);
+      const payload = await fetchJson(
+        dataUrl(dataRoot, filename),
+        `Missing prepared data for hour ${hour}`,
+      );
+      const decoded = decodePreparedShard({
+        payload,
+        startTs,
+        endTs,
+      });
+      completedShards += 1;
+      onProgress?.({
+        phase: "prepared",
+        current: completedShards,
+        total: hours.length,
+        file: `h${hour}`,
+      });
+      return decoded;
+    },
+  );
+
+  for (const decoded of decodedShards) {
     indexRows.push(...decoded.indexRows);
     quoteSnapshots.push(...decoded.quoteSnapshots);
   }

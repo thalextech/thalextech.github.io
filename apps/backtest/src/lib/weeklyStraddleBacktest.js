@@ -123,7 +123,6 @@ const buildAggregateQuotes = ({ quoteSnapshots, instruments, indexByTs }) => {
       quotes.push({
         ts,
         instrumentId,
-        instrumentName: instrument.name,
         markPrice,
         expirationTs: instrument.expirationTs,
         strike: instrument.strike,
@@ -165,7 +164,6 @@ const buildDetailQuotes = ({
       quotes.push({
         ts,
         instrumentId,
-        instrumentName: instrument.name,
         markPrice,
         expirationTs: instrument.expirationTs,
         strike: instrument.strike,
@@ -344,40 +342,60 @@ const selectCalendarLegs = ({ nearGroup, farGroup, entryIndexPrice, config }) =>
   };
 };
 
+const buildQuoteLookup = (quotes) => {
+  const quoteByTsInstrumentId = new Map();
+  for (const quote of quotes) {
+    let quotesAtTs = quoteByTsInstrumentId.get(quote.ts);
+    if (!quotesAtTs) {
+      quotesAtTs = new Map();
+      quoteByTsInstrumentId.set(quote.ts, quotesAtTs);
+    }
+    quotesAtTs.set(quote.instrumentId, quote);
+  }
+  return quoteByTsInstrumentId;
+};
+
+const quoteAt = (quoteByTsInstrumentId, ts, instrumentId) =>
+  quoteByTsInstrumentId.get(ts)?.get(instrumentId);
+
 const buildQuoteGroups = (quotes) => {
-  const quotesByEntryExpiry = new Map();
+  const quoteGroupsByEntry = new Map();
   const expiryGroupsByEntry = new Map();
   for (const quote of quotes) {
-    const key = `${quote.ts}|${quote.expirationTs}`;
-    if (!quotesByEntryExpiry.has(key)) {
-      const group = {
+    let groupsAtEntry = quoteGroupsByEntry.get(quote.ts);
+    if (!groupsAtEntry) {
+      groupsAtEntry = new Map();
+      quoteGroupsByEntry.set(quote.ts, groupsAtEntry);
+    }
+    let group = groupsAtEntry.get(quote.expirationTs);
+    if (!group) {
+      group = {
         calls: [],
         putsByStrike: new Map(),
         expirationTs: quote.expirationTs,
         dteDays: quote.dteDays,
       };
-      quotesByEntryExpiry.set(key, group);
+      groupsAtEntry.set(quote.expirationTs, group);
       if (!expiryGroupsByEntry.has(quote.ts)) expiryGroupsByEntry.set(quote.ts, []);
       expiryGroupsByEntry.get(quote.ts).push(group);
     }
-    const group = quotesByEntryExpiry.get(key);
     if (quote.optionType === "C") {
       group.calls.push(quote);
     } else if (quote.optionType === "P") {
       group.putsByStrike.set(quote.strike, quote);
     }
   }
-  const entryCandidates = [...quotesByEntryExpiry.values()].map((group) => {
-    const quote = group.calls[0] || group.putsByStrike.values().next().value;
-    return quote;
-  }).filter(Boolean);
+  const entryCandidates = [...quoteGroupsByEntry.values()]
+    .flatMap((groupsAtEntry) => [...groupsAtEntry.values()])
+    .map((group) => group.calls[0] || group.putsByStrike.values().next().value)
+    .filter(Boolean);
   const scheduleKeyByTs = new Map();
   const entryCandidatesBySchedule = new Map();
   for (const quote of entryCandidates) {
     let scheduleKey = scheduleKeyByTs.get(quote.ts);
-    if (!scheduleKey) {
+    if (scheduleKey == null) {
       const date = new Date(quote.ts * 1000);
-      scheduleKey = `${date.getUTCDay()}|${date.getUTCHours()}`;
+      scheduleKey = date.getUTCDay() * 24 + date.getUTCHours();
       scheduleKeyByTs.set(quote.ts, scheduleKey);
     }
     if (!entryCandidatesBySchedule.has(scheduleKey)) {
@@ -386,14 +404,21 @@ const buildQuoteGroups = (quotes) => {
     entryCandidatesBySchedule.get(scheduleKey).push(quote);
   }
   return {
-    quotesByEntryExpiry,
+    quoteGroupsByEntry,
     expiryGroupsByEntry,
     entryCandidatesBySchedule,
   };
 };
 
-const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
-  const { quotesByEntryExpiry, expiryGroupsByEntry } = quoteGroups || buildQuoteGroups(quotes);
+const buildEntryPlan = ({
+  quotes,
+  entryExpirations,
+  config,
+  quoteGroups,
+  instrumentNamesById = [],
+}) => {
+  const { quoteGroupsByEntry, expiryGroupsByEntry } =
+    quoteGroups || buildQuoteGroups(quotes);
 
   // entryExpirations is ordered by entryTs; this loop preserves that order.
   const plans = [];
@@ -409,7 +434,7 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
     // is allowed.
     if (entryTimeMs < positionAvailableAtMs) continue;
 
-    const group = quotesByEntryExpiry.get(`${entry.entryTs}|${entry.expirationTs}`);
+    const group = quoteGroupsByEntry.get(entry.entryTs)?.get(entry.expirationTs);
     if (!group) continue;
     const entryIndexPrice =
       group.calls[0]?.indexPrice ?? [...group.putsByStrike.values()][0]?.indexPrice;
@@ -429,7 +454,9 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
     }
     if (selected) {
       const legs = selected.legs.map(({ quote, quantity }) => ({
-        instrumentName: quote.instrumentName,
+        instrumentId: quote.instrumentId,
+        instrumentName:
+          instrumentNamesById[quote.instrumentId] || `Instrument ${quote.instrumentId}`,
         optionType: quote.optionType,
         strike: quote.strike,
         expiration: new Date(quote.expirationTs * 1000),
@@ -558,12 +585,7 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
   const indexRows = (preparedData.indexRows || [])
     .filter((row) => row.ts >= plan.entryTs && row.ts <= plan.exitTs)
     .sort((a, b) => a.ts - b.ts);
-  const quoteByTimeInstrument = new Map(
-    (preparedData.quotes || []).map((quote) => [
-      `${quote.ts}|${quote.instrumentName}`,
-      quote,
-    ]),
-  );
+  const quoteByTsInstrumentId = buildQuoteLookup(preparedData.quotes || []);
   const decisionTimes = new Set(
     buildDecisionTimes(plan, config).map((date) => date.getTime() / 1000),
   );
@@ -584,7 +606,7 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
     const isExit = indexRow.ts === plan.exitTs;
     const legQuotes = plan.legs.map((leg) => ({
       leg,
-      quote: quoteByTimeInstrument.get(`${indexRow.ts}|${leg.instrumentName}`),
+      quote: quoteAt(quoteByTsInstrumentId, indexRow.ts, leg.instrumentId),
     }));
     const intervalHedgeQuantity = hedgeQuantity;
 
@@ -792,13 +814,20 @@ export function computeBreakEvens(plan) {
   return { lower, upper };
 }
 
-const buildPathMetricsByCycle = ({ entryPlan, quotes, indexRows, config, indexByTs, quoteByTimeInstrument }) => {
+const buildPathMetricsByCycle = ({
+  entryPlan,
+  quotes,
+  indexRows,
+  config,
+  indexByTs,
+  quoteByTsInstrumentId,
+}) => {
   const hedgePnlByCycle = new Map(entryPlan.map(p => [p.cycle, 0]));
   const realizedMetricsByCycle = new Map();
 
   const indexMap = indexByTs || new Map(indexRows.map(r => [r.ts, r]));
   const qmap = config.hedgeEnabled
-    ? quoteByTimeInstrument || new Map(quotes.map(q => [`${q.ts}|${q.instrumentName}`, q]))
+    ? quoteByTsInstrumentId || buildQuoteLookup(quotes)
     : null;
 
   for (const plan of entryPlan) {
@@ -827,7 +856,7 @@ const buildPathMetricsByCycle = ({ entryPlan, quotes, indexRows, config, indexBy
       if (!config.hedgeEnabled) continue;
       const legQuotes = plan.legs.map((leg) => ({
         leg,
-        quote: qmap.get(`${ts}|${leg.instrumentName}`),
+        quote: quoteAt(qmap, ts, leg.instrumentId),
       }));
       const has = isExit || legQuotes.every(({ quote }) => Number.isFinite(quote?.delta));
       const od = has
@@ -858,11 +887,18 @@ const buildPathMetricsByCycle = ({ entryPlan, quotes, indexRows, config, indexBy
   return { hedgePnlByCycle, realizedMetricsByCycle };
 };
 
-const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, realizedMetricsByCycle, indexRows, quotes, config, indexByTs, quoteByTimeInstrument }) => {
+const buildCycleSummary = ({
+  entryPlan,
+  hedgePnlByCycle,
+  realizedMetricsByCycle,
+  indexRows,
+  quotes,
+  config,
+  indexByTs,
+  quoteByTsInstrumentId,
+}) => {
   const indexMap = indexByTs || new Map(indexRows.map((row) => [row.ts, row]));
-  const quoteMap = quoteByTimeInstrument || new Map(
-    quotes.map((quote) => [`${quote.ts}|${quote.instrumentName}`, quote]),
-  );
+  const quoteMap = quoteByTsInstrumentId || buildQuoteLookup(quotes);
   let endingEquityUsd = 0;
   return entryPlan.map((plan) => {
     const settlementIndexPrice = indexMap.get(plan.exitTs)?.indexPrice ?? Number.NaN;
@@ -871,7 +907,7 @@ const buildCycleSummary = ({ entryPlan, hedgePnlByCycle, realizedMetricsByCycle,
       const payoff = leg.optionType === "C"
         ? Math.max(settlementIndexPrice - leg.strike, 0)
         : Math.max(leg.strike - settlementIndexPrice, 0);
-      const quote = quoteMap.get(`${plan.exitTs}|${leg.instrumentName}`);
+      const quote = quoteAt(quoteMap, plan.exitTs, leg.instrumentId);
       return expiresAtExit ? payoff : quote?.markPrice ?? Number.NaN;
     });
     const optionSettlementValueUsd = plan.legs.reduce(
@@ -902,9 +938,7 @@ export const buildBacktestIndexes = (preparedData, indexByTs) => {
   const quotes = preparedData?.quotes || [];
   return {
     indexByTs: indexByTs || new Map(indexRows.map((row) => [row.ts, row])),
-    quoteByTimeInstrument: new Map(
-      quotes.map((quote) => [`${quote.ts}|${quote.instrumentName}`, quote]),
-    ),
+    quoteByTsInstrumentId: buildQuoteLookup(quotes),
     quoteGroups: buildQuoteGroups(quotes),
   };
 };
@@ -932,7 +966,12 @@ export const prepareBacktestData = ({
 }) => {
   const { dataEnd, indexByTs } = prepareDataWindow({ indexRows, quoteSnapshots, config });
   const quotes = buildAggregateQuotes({ quoteSnapshots, instruments, indexByTs });
-  const preparedData = { indexRows, quotes, dataEnd };
+  const preparedData = {
+    indexRows,
+    quotes,
+    dataEnd,
+    instrumentNamesById: instruments.map((instrument) => instrument.name),
+  };
   preparedData.indexes = buildBacktestIndexes(preparedData, indexByTs);
   return preparedData;
 };
@@ -959,7 +998,12 @@ export const prepareCycleDetailData = ({
     indexByTs,
     selectedExpirationTs,
   });
-  return { indexRows, quotes, dataEnd };
+  return {
+    indexRows,
+    quotes,
+    dataEnd,
+    instrumentNamesById: instruments.map((instrument) => instrument.name),
+  };
 };
 
 export const runWeeklyStraddleBacktest = ({
@@ -977,9 +1021,14 @@ export const runWeeklyStraddleBacktest = ({
     instruments,
     config,
   });
-  const { indexRows: pi = [], quotes, dataEnd } = p;
+  const {
+    indexRows: pi = [],
+    quotes,
+    dataEnd,
+    instrumentNamesById = [],
+  } = p;
   const indexes = p.indexes || buildBacktestIndexes(p);
-  const entryScheduleKey = `${c.entryWeekday}|${c.entryHourUtc}`;
+  const entryScheduleKey = c.entryWeekday * 24 + c.entryHourUtc;
   // The configured entry schedule applies to every cycle. Letting fixed-day
   // rolls fall through to another weekday makes weekday sweeps converge onto
   // the same trades whenever the intended re-entry timestamp is unavailable.
@@ -996,6 +1045,7 @@ export const runWeeklyStraddleBacktest = ({
     entryExpirations,
     config: c,
     quoteGroups: indexes.quoteGroups,
+    instrumentNamesById,
   });
   const { hedgePnlByCycle, realizedMetricsByCycle } = buildPathMetricsByCycle({
     entryPlan,
@@ -1003,7 +1053,7 @@ export const runWeeklyStraddleBacktest = ({
     indexRows: pi,
     config: c,
     indexByTs: indexes.indexByTs,
-    quoteByTimeInstrument: indexes.quoteByTimeInstrument,
+    quoteByTsInstrumentId: indexes.quoteByTsInstrumentId,
   });
   const cycleSummary = buildCycleSummary({
     entryPlan,
@@ -1013,7 +1063,7 @@ export const runWeeklyStraddleBacktest = ({
     quotes,
     config: c,
     indexByTs: indexes.indexByTs,
-    quoteByTimeInstrument: indexes.quoteByTimeInstrument,
+    quoteByTsInstrumentId: indexes.quoteByTsInstrumentId,
   });
   const closedCycles = cycleSummary.filter((row) => row.closed);
   let cumulativeOptionPnlUsd = 0;

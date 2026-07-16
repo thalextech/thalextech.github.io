@@ -338,11 +338,17 @@ test("aggregate preparation keeps delta-only risk while detail preparation filte
   assert.equal(aggregate.quotes.length, 2);
   assert.equal(aggregate.quotes[0].delta, 0.55);
   assert.equal(aggregate.quotes[0].impliedVol, 0.55);
+  assert.equal("instrumentName" in aggregate.quotes[0], false);
+  assert.equal(
+    aggregate.indexes.quoteByTsInstrumentId.get(ts).get(0),
+    aggregate.quotes[0],
+  );
   assert.equal("gamma" in aggregate.quotes[0], false);
   assert.equal("vega" in aggregate.quotes[0], false);
   assert.equal("theta" in aggregate.quotes[0], false);
   assert.equal(detail.quotes.length, 1);
   assert.equal(detail.quotes[0].expirationTs, expirationTs);
+  assert.equal("instrumentName" in detail.quotes[0], false);
   assert.equal(Number.isFinite(detail.quotes[0].gamma), true);
   assert.equal(Number.isFinite(detail.quotes[0].vega), true);
   assert.equal(Number.isFinite(detail.quotes[0].theta), true);
@@ -382,6 +388,9 @@ test("batch runs match independent runs across entry hours", () => {
   ));
 
   const selectedPlan = batch[0].cycleSummary[0];
+  assert.ok(selectedPlan.legs.every((leg) =>
+    Number.isInteger(leg.instrumentId) && leg.instrumentName.startsWith("BTC-")
+  ));
   const sampledPrices = Array.from({ length: 8 }, (_, day) => 100_008 + day * 500);
   const sampledVariance = sampledPrices.slice(1).reduce((variance, price, index) => {
     const sampledReturn = Math.log(price / sampledPrices[index]);

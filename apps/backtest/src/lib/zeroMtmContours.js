@@ -59,8 +59,8 @@ export const buildEntrySurface = ({ plan, preparedData, skewVolPoints = 2.5 }) =
     ])),
   ]));
   const legEntryVols = new Map(plan.legs.map((leg) => {
-    const quote = entryQuotes.find((row) => row.instrumentName === leg.instrumentName);
-    return [leg.instrumentName, quote?.impliedVol];
+    const quote = entryQuotes.find((row) => row.instrumentId === leg.instrumentId);
+    return [leg.instrumentId, quote?.impliedVol];
   }));
   return { entrySpot: plan.entryIndexPrice, smiles, legEntryVols, skewVolPoints };
 };
@@ -68,7 +68,7 @@ export const buildEntrySurface = ({ plan, preparedData, skewVolPoints = 2.5 }) =
 const volatilityFor = ({ leg, spot, surface, surfaceMode, scenario }) => {
   const nodes = surface.smiles[scenario]?.get(leg.expirationTs) || [];
   if (surfaceMode === "sticky_strike") {
-    const baseVol = surface.legEntryVols.get(leg.instrumentName);
+    const baseVol = surface.legEntryVols.get(leg.instrumentId);
     if (!Number.isFinite(baseVol)) return Number.NaN;
     if (scenario === "base") return baseVol;
     const baseNodes = surface.smiles.base?.get(leg.expirationTs) || [];
