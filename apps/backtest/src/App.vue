@@ -29,6 +29,7 @@ import {
   normalizeBacktestConfig,
   prepareBacktestData,
   prepareCycleDetailData,
+  requiredQuoteDteDays,
   runWeeklyStraddleBacktest,
   runWeeklyStraddleBacktestBatch,
 } from "./lib/weeklyStraddleBacktest.js";
@@ -357,8 +358,14 @@ const requiredHours = computed(() => hoursFor(
   ui.exitMode === "weekly_schedule" ? ui.exitHourUtc : null,
   ui.exitMode === "after_days",
 ));
-const requiredHoursKey = computed(() => requiredHours.value.join(","));
-let loadedHoursKey = "";
+const requiredMaxDteDays = computed(() => Math.max(
+  Number(currentMaturity.value.maxDteDays) || 0,
+  Number(currentMaturity.value.farDays) || 0,
+));
+const requiredDataKey = computed(() =>
+  `${requiredHours.value.join(",")}|dte:${requiredMaxDteDays.value}`,
+);
+let loadedDataKey = "";
 
 const maxDrawdown = computed(() => {
   return computeMaxDrawdown(result.value?.cycleSummary);
@@ -644,17 +651,19 @@ const runSweep = async () => {
     ),
   ))].sort((a, b) => a - b);
   const sweepHoursKey = sweepHours.join(",");
+  const sweepMaxDteDays = Math.max(...configs.map(requiredQuoteDteDays));
+  const sweepDataKey = `${sweepHoursKey}|dte:${sweepMaxDteDays}`;
   const startedAt = performance.now();
   let loadMs = 0;
   let prepareMs = 0;
   let runMs = 0;
   try {
     let sweepPrepared = preparedData.value;
-    if (sweepDataCache?.key === sweepHoursKey) {
+    if (sweepDataCache?.key === sweepDataKey) {
       sweepPrepared = sweepDataCache.prepared;
-    } else if (loadedHoursKey === sweepHoursKey && sweepPrepared) {
+    } else if (loadedDataKey === sweepDataKey && sweepPrepared) {
       sweepDataCache = {
-        key: sweepHoursKey,
+        key: sweepDataKey,
         prepared: sweepPrepared,
       };
     } else {
@@ -664,6 +673,7 @@ const runSweep = async () => {
         start: configs[0].start,
         end: configs[0].end,
         hourlyOffsets: sweepHours,
+        maxDteDays: sweepMaxDteDays,
         onProgress: ({ current, total }) => {
           sweepProgress.value = `Loading data ${current}/${total}`;
         },
@@ -678,7 +688,7 @@ const runSweep = async () => {
         config: configs[0],
       });
       prepareMs = performance.now() - prepareStartedAt;
-      sweepDataCache = { key: sweepHoursKey, prepared: sweepPrepared };
+      sweepDataCache = { key: sweepDataKey, prepared: sweepPrepared };
     }
 
     const runStartedAt = performance.now();
@@ -830,10 +840,14 @@ const handleCycleSelect = async (cycle) => {
   cycleDetailRows.value = [];
   try {
     const config = buildConfig({ start: new Date(cycle.entryTime), end: new Date(cycle.exitTime) });
+    const detailMaxDteDays = Math.max(
+      ...cycle.legs.map((leg) => (leg.expirationTs - cycle.entryTs) / 86_400),
+    );
     const loaded = await loadThalexHistory({
       start: config.start,
       end: config.end,
       hourlyOffsets: Array.from({ length: 24 }, (_, hour) => hour),
+      maxDteDays: detailMaxDteDays,
     });
     const detailData = prepareCycleDetailData({
       plan: cycle,
@@ -869,6 +883,7 @@ const loadBacktest = async () => {
       start: config.start,
       end: config.end,
       hourlyOffsets: requiredHours.value,
+      maxDteDays: requiredMaxDteDays.value,
       onProgress: ({ current, total, file }) => {
         state.progress = `Prepared ${current}/${total}: ${file}`;
       },
@@ -881,7 +896,7 @@ const loadBacktest = async () => {
       config,
     });
     preparedData.value = nextPreparedData;
-    loadedHoursKey = requiredHoursKey.value;
+    loadedDataKey = requiredDataKey.value;
     state.progress = "Running strategy";
     runCurrent();
     state.progress = "";
@@ -895,7 +910,7 @@ const scheduleBacktest = () => {
   clearTimeout(runDebounce);
   if (mode.value !== "single") return;
   runDebounce = setTimeout(() => {
-    if (!preparedData.value || requiredHoursKey.value !== loadedHoursKey) {
+    if (!preparedData.value || requiredDataKey.value !== loadedDataKey) {
       loadBacktest();
     } else {
       runCurrent();
@@ -1431,8 +1446,15 @@ onMounted(loadBacktest);
           </div>
         </div>
 
+        <div v-if="state.error" class="cycleDetailState error">{{ state.error }}</div>
+        <div
+          v-else-if="mode === 'single' && state.progress && !result"
+          class="cycleDetailState"
+        >
+          {{ state.progress }}
+        </div>
         <WeeklyBacktestChart
-          v-if="mode === 'single' && !selectedCycle && chartMode === 'weekly'"
+          v-else-if="mode === 'single' && !selectedCycle && chartMode === 'weekly'"
           ref="chartRef"
           :rows="cycleRows"
           :design-spec="true"

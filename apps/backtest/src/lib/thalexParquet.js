@@ -3,15 +3,17 @@ import {
   PRECOMPUTED_DELTA_SCALE,
 } from "./optionRisk.js";
 
-export const THALEX_ARTIFACT_VERSION = 2;
+export const THALEX_ARTIFACT_VERSION = 3;
 
 const ARTIFACT_SCHEMA = "thalex-option-backtest";
 const DEFAULT_DATA_ROOT = "data/thalex";
 const MANIFEST_FILENAME = "prepared_manifest.json";
 export const DEFAULT_SHARD_LOAD_CONCURRENCY = 4;
-const preparedFilename = (hour) =>
-  `prepared_1h_h${String(hour).padStart(2, "0")}utc.json`;
+const preparedFilename = (hour, bucketKey) =>
+  `prepared_1h_h${String(hour).padStart(2, "0")}utc_dte${bucketKey}.json`;
 const manifestCache = new Map();
+const preparedShardCache = new Map();
+const preparedShardLoads = new Map();
 
 const asNumber = (value) => {
   if (typeof value === "bigint") return Number(value);
@@ -39,6 +41,36 @@ const assertPricingContract = (manifest) => {
       `Unsupported Thalex pricing metadata; rebuild data with schema version ${THALEX_ARTIFACT_VERSION}`,
     );
   }
+};
+
+const decodeDteBuckets = (manifest) => {
+  const buckets = (manifest.dteBuckets || []).map((bucket) => ({
+    key: String(bucket.key || ""),
+    minExclusive: asNumber(bucket.minExclusive),
+    maxInclusive:
+      bucket.maxInclusive == null ? Number.POSITIVE_INFINITY : asNumber(bucket.maxInclusive),
+  }));
+  if (
+    !buckets.length ||
+    buckets.some((bucket, index) =>
+      !bucket.key ||
+      !Number.isFinite(bucket.minExclusive) ||
+      !(bucket.maxInclusive > bucket.minExclusive) ||
+      (index > 0 && bucket.minExclusive !== buckets[index - 1].maxInclusive)
+    )
+  ) {
+    throw new Error(
+      `Unsupported Thalex DTE buckets; rebuild data with schema version ${THALEX_ARTIFACT_VERSION}`,
+    );
+  }
+  return buckets;
+};
+
+export const selectDteBuckets = (buckets, maxDteDays) => {
+  if (!buckets.length || !Number.isFinite(Number(maxDteDays))) return buckets;
+  const requestedMax = Math.max(0, Number(maxDteDays));
+  const finalIndex = buckets.findIndex((bucket) => requestedMax <= bucket.maxInclusive);
+  return finalIndex < 0 ? buckets : buckets.slice(0, finalIndex + 1);
 };
 
 export const decodeInstrumentDictionary = (manifest) => {
@@ -95,10 +127,29 @@ const dataUrl = (dataRoot, filename) => {
   return `${baseUrl}${dataRoot}/${filename}`;
 };
 
-const fetchJson = async (url, missingMessage) => {
-  const response = await fetch(url);
+const fetchJson = async (url, missingMessage, options) => {
+  const response = await fetch(url, options);
   if (!response.ok) throw new Error(missingMessage);
   return response.json();
+};
+
+const cachedPreparedShard = async (url, missingMessage) => {
+  const cached = preparedShardCache.get(url)?.deref?.();
+  if (cached) return cached;
+  if (!preparedShardLoads.has(url)) {
+    preparedShardLoads.set(
+      url,
+      fetchJson(url, missingMessage)
+        .then((payload) => {
+          if (typeof WeakRef === "function") {
+            preparedShardCache.set(url, new WeakRef(payload));
+          }
+          return payload;
+        })
+        .finally(() => preparedShardLoads.delete(url)),
+    );
+  }
+  return preparedShardLoads.get(url);
 };
 
 const loadManifest = (dataRoot) => {
@@ -108,9 +159,11 @@ const loadManifest = (dataRoot) => {
       fetchJson(
         dataUrl(dataRoot, MANIFEST_FILENAME),
         "Missing prepared data manifest",
+        { cache: "no-cache" },
       ).then((manifest) => ({
         manifest,
         instruments: decodeInstrumentDictionary(manifest),
+        dteBuckets: decodeDteBuckets(manifest),
       })),
     );
   }
@@ -146,6 +199,7 @@ export async function loadThalexHistory({
   dataRoot = DEFAULT_DATA_ROOT,
   onProgress,
   maxConcurrentShardLoads = DEFAULT_SHARD_LOAD_CONCURRENCY,
+  maxDteDays,
 }) {
   const hours = [...new Set((hourlyOffsets || [hourlyOffset]).map(Number))]
     .sort((a, b) => a - b);
@@ -153,17 +207,21 @@ export async function loadThalexHistory({
   const endTs = Math.floor(end.getTime() / 1000);
   const indexRows = [];
   const quoteSnapshots = [];
-  const { manifest, instruments } = await loadManifest(dataRoot);
+  const { manifest, instruments, dteBuckets } = await loadManifest(dataRoot);
+  const selectedBuckets = selectDteBuckets(dteBuckets, maxDteDays);
+  const shardRequests = hours.flatMap((hour) =>
+    selectedBuckets.map((bucket) => ({ hour, bucket })),
+  );
 
   let completedShards = 0;
   const decodedShards = await mapWithConcurrency(
-    hours,
+    shardRequests,
     maxConcurrentShardLoads,
-    async (hour) => {
-      const filename = preparedFilename(hour);
-      const payload = await fetchJson(
+    async ({ hour, bucket }) => {
+      const filename = preparedFilename(hour, bucket.key);
+      const payload = await cachedPreparedShard(
         dataUrl(dataRoot, filename),
-        `Missing prepared data for hour ${hour}`,
+        `Missing prepared data for hour ${hour}, DTE ${bucket.key}`,
       );
       const decoded = decodePreparedShard({
         payload,
@@ -174,8 +232,8 @@ export async function loadThalexHistory({
       onProgress?.({
         phase: "prepared",
         current: completedShards,
-        total: hours.length,
-        file: `h${hour}`,
+        total: shardRequests.length,
+        file: `h${hour} · ${bucket.key}D`,
       });
       return decoded;
     },
@@ -192,6 +250,7 @@ export async function loadThalexHistory({
       version: manifest.version,
       pricing: manifest.pricing,
       instruments,
+      dteBuckets: selectedBuckets,
     },
   };
 }

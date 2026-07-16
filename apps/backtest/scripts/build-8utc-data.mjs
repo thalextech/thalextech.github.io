@@ -8,16 +8,27 @@ import {
 } from "../src/lib/optionRisk.js";
 import { interpolateAtmIv } from "../src/lib/atmIv.js";
 
-const ARTIFACT_VERSION = 2;
+const ARTIFACT_VERSION = 3;
 const ARTIFACT_SCHEMA = "thalex-option-backtest";
 const SOURCE_DATA_DIR = path.resolve("data/thalex");
 const RUNTIME_DATA_DIR = path.resolve("public/data/thalex");
 const MANIFEST_FILENAME = "prepared_manifest.json";
 const IV_RV_FILENAME = "prepared_iv_rv_1h.json";
 const IV_RV_TENORS = [7, 14, 30];
+const DTE_BUCKETS = [
+  { key: "000-010", minExclusive: 0, maxInclusive: 10 },
+  { key: "010-028", minExclusive: 10, maxInclusive: 28 },
+  { key: "028-060", minExclusive: 28, maxInclusive: 60 },
+  { key: "060-075", minExclusive: 60, maxInclusive: 75 },
+  { key: "075-135", minExclusive: 75, maxInclusive: 135 },
+  { key: "135-240", minExclusive: 135, maxInclusive: 240 },
+  { key: "240-plus", minExclusive: 240, maxInclusive: Number.POSITIVE_INFINITY },
+];
 const hours = Array.from({ length: 24 }, (_, hour) => hour);
-const preparedFilename = (hour) =>
-  `prepared_1h_h${String(hour).padStart(2, "0")}utc.json`;
+const preparedFilename = (hour, bucketKey) =>
+  `prepared_1h_h${String(hour).padStart(2, "0")}utc_dte${bucketKey}.json`;
+const dteBucketFor = (dteDays) =>
+  DTE_BUCKETS.find((bucket) => dteDays <= bucket.maxInclusive);
 
 const MONTHS = {
   JAN: 0,
@@ -85,6 +96,11 @@ if (!indexFiles.length || !markFiles.length) {
 }
 
 await fs.mkdir(RUNTIME_DATA_DIR, { recursive: true });
+for (const filename of await fs.readdir(RUNTIME_DATA_DIR)) {
+  if (/^prepared_1h_h\d{2}utc(?:_dte[^.]+)?\.json$/.test(filename)) {
+    await fs.unlink(path.join(RUNTIME_DATA_DIR, filename));
+  }
+}
 
 const indexByHour = new Map(hours.map((hour) => [hour, []]));
 const indexOhlcByTs = new Map();
@@ -173,9 +189,15 @@ for (const filename of markFiles) {
 
     instrumentByName.set(instrumentName, instrument);
     const deltaScaled = Math.round(delta * PRECOMPUTED_DELTA_SCALE);
+    const dteDays = (instrument.expirationTs - ts) / 86_400;
+    const dteBucket = dteBucketFor(dteDays);
+    if (!dteBucket) {
+      skippedInvalidQuotes += 1;
+      continue;
+    }
     quoteRowsByHour
       .get(new Date(ts * 1000).getUTCHours())
-      ?.push([ts, instrumentName, markPrice, iv, deltaScaled, ivClose]);
+      ?.push([ts, instrumentName, markPrice, iv, deltaScaled, ivClose, dteBucket.key]);
   }
 }
 
@@ -247,6 +269,11 @@ const manifest = {
     deltaScale: PRECOMPUTED_DELTA_SCALE,
   },
   instrumentFields: ["name", "expirationTs", "strike", "optionTypeCode"],
+  dteBuckets: DTE_BUCKETS.map(({ key, minExclusive, maxInclusive }) => ({
+    key,
+    minExclusive,
+    maxInclusive: Number.isFinite(maxInclusive) ? maxInclusive : null,
+  })),
   instruments: instruments.map((instrument) => [
     instrument.name,
     instrument.expirationTs,
@@ -260,58 +287,70 @@ await fs.writeFile(
 );
 
 for (const hour of hours) {
-  const index = indexByHour.get(hour);
-  const flatQuotes = quoteRowsByHour.get(hour).map(
-    ([ts, instrumentName, markPrice, iv, deltaScaled]) => [
-      ts,
-      instrumentIdByName.get(instrumentName),
-      markPrice,
-      iv,
-      deltaScaled,
-    ],
-  );
-  flatQuotes.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  for (let rowIndex = 0; rowIndex < flatQuotes.length; rowIndex += 1) {
-    const current = flatQuotes[rowIndex];
-    if (!Number.isInteger(current[1]) || !Number.isFinite(current[4])) {
-      throw new Error(`Invalid compact quote in hour ${hour}`);
-    }
-    if (
-      rowIndex > 0 &&
-      flatQuotes[rowIndex - 1][0] === current[0] &&
-      flatQuotes[rowIndex - 1][1] === current[1]
-    ) {
-      const instrumentName = instruments[current[1]]?.name || current[1];
-      throw new Error(
-        `Duplicate quote for ${instrumentName} at ${current[0]} in hour ${hour}`,
+  for (const [bucketIndex, bucket] of DTE_BUCKETS.entries()) {
+    const index = bucketIndex === 0 ? indexByHour.get(hour) : [];
+    const flatQuotes = quoteRowsByHour.get(hour)
+      .filter((row) => row[6] === bucket.key)
+      .map(
+        ([ts, instrumentName, markPrice, iv, deltaScaled]) => [
+          ts,
+          instrumentIdByName.get(instrumentName),
+          markPrice,
+          iv,
+          deltaScaled,
+        ],
       );
+    flatQuotes.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    for (let rowIndex = 0; rowIndex < flatQuotes.length; rowIndex += 1) {
+      const current = flatQuotes[rowIndex];
+      if (!Number.isInteger(current[1]) || !Number.isFinite(current[4])) {
+        throw new Error(`Invalid compact quote in hour ${hour}, DTE ${bucket.key}`);
+      }
+      if (
+        rowIndex > 0 &&
+        flatQuotes[rowIndex - 1][0] === current[0] &&
+        flatQuotes[rowIndex - 1][1] === current[1]
+      ) {
+        const instrumentName = instruments[current[1]]?.name || current[1];
+        throw new Error(
+          `Duplicate quote for ${instrumentName} at ${current[0]} in hour ${hour}, DTE ${bucket.key}`,
+        );
+      }
     }
-  }
-  const quotes = [];
-  for (const [ts, instrumentId, markPrice, iv, deltaScaled] of flatQuotes) {
-    let snapshot = quotes.at(-1);
-    if (!snapshot || snapshot[0] !== ts) {
-      snapshot = [ts, []];
-      quotes.push(snapshot);
+    const quotes = [];
+    for (const [ts, instrumentId, markPrice, iv, deltaScaled] of flatQuotes) {
+      let snapshot = quotes.at(-1);
+      if (!snapshot || snapshot[0] !== ts) {
+        snapshot = [ts, []];
+        quotes.push(snapshot);
+      }
+      snapshot[1].push([instrumentId, markPrice, iv, deltaScaled]);
     }
-    snapshot[1].push([instrumentId, markPrice, iv, deltaScaled]);
-  }
 
-  const payload = {
-    schema: ARTIFACT_SCHEMA,
-    version: ARTIFACT_VERSION,
-    hourlyOffset: hour,
-    indexFields: ["ts", "indexPrice"],
-    quoteFields: ["ts", "entries"],
-    quoteEntryFields: ["instrumentId", "markPrice", "iv", "deltaScaled"],
-    index,
-    quotes,
-  };
-  const outPath = path.join(RUNTIME_DATA_DIR, preparedFilename(hour));
-  await fs.writeFile(outPath, JSON.stringify(payload));
-  console.log(
-    `wrote ${outPath}: ${index.length.toLocaleString()} index rows, ${flatQuotes.length.toLocaleString()} quote rows`,
-  );
+    const payload = {
+      schema: ARTIFACT_SCHEMA,
+      version: ARTIFACT_VERSION,
+      hourlyOffset: hour,
+      dteBucket: {
+        key: bucket.key,
+        minExclusive: bucket.minExclusive,
+        maxInclusive: Number.isFinite(bucket.maxInclusive) ? bucket.maxInclusive : null,
+      },
+      indexFields: ["ts", "indexPrice"],
+      quoteFields: ["ts", "entries"],
+      quoteEntryFields: ["instrumentId", "markPrice", "iv", "deltaScaled"],
+      index,
+      quotes,
+    };
+    const outPath = path.join(
+      RUNTIME_DATA_DIR,
+      preparedFilename(hour, bucket.key),
+    );
+    await fs.writeFile(outPath, JSON.stringify(payload));
+    console.log(
+      `wrote ${outPath}: ${index.length.toLocaleString()} index rows, ${flatQuotes.length.toLocaleString()} quote rows`,
+    );
+  }
 }
 
 console.log(

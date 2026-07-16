@@ -83,6 +83,14 @@ export const normalizeBacktestConfig = (input = {}) => {
   return config;
 };
 
+export const requiredQuoteDteDays = (config = {}) => Math.max(
+  0,
+  Number(config.maxWeeklyDteDays) || 0,
+  config.structure === "calendar_spread"
+    ? Number(config.farTargetDteDays) || 0
+    : 0,
+);
+
 export const nextWeeklyExitTs = (entryTs, exitWeekday, exitHourUtc) => {
   if (![entryTs, exitWeekday, exitHourUtc].every(Number.isFinite)) return Number.NaN;
   const entry = new Date(entryTs * 1000);

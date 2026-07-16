@@ -17,10 +17,15 @@ import {
   runWeeklyStraddleBacktest,
   runWeeklyStraddleBacktestBatch,
   normalizeBacktestConfig,
+  requiredQuoteDteDays,
   DEFAULT_BACKTEST_CONFIG,
   computeMaxDrawdown,
 } from "../src/lib/weeklyStraddleBacktest.js";
-import { decodeInstrumentDictionary, decodePreparedShard } from "../src/lib/thalexParquet.js";
+import {
+  decodeInstrumentDictionary,
+  decodePreparedShard,
+  selectDteBuckets,
+} from "../src/lib/thalexParquet.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
@@ -28,9 +33,15 @@ const DATA_DIR = path.join(PROJECT_ROOT, "public/data/thalex");
 
 const manifest = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "prepared_manifest.json"), "utf8"));
 const INSTRUMENTS = decodeInstrumentDictionary(manifest);
+const DTE_BUCKETS = (manifest.dteBuckets || []).map((bucket) => ({
+  ...bucket,
+  maxInclusive:
+    bucket.maxInclusive == null ? Number.POSITIVE_INFINITY : Number(bucket.maxInclusive),
+}));
 
-function loadShard(hour) {
-  const filename = `prepared_1h_h${String(hour).padStart(2, "0")}utc.json`;
+function loadShard(hour, bucketKey) {
+  const filename =
+    `prepared_1h_h${String(hour).padStart(2, "0")}utc_dte${bucketKey}.json`;
   const payload = JSON.parse(fs.readFileSync(path.join(DATA_DIR, filename), "utf8"));
   return decodePreparedShard({ payload });
 }
@@ -63,24 +74,32 @@ export function hoursForConfig(config) {
  * Load prepared data for the required hours.
  * Returns { indexRows, quoteSnapshots, instruments, preparedData }
  */
-export async function loadDataForHours(hours, start = null, end = null) {
+export async function loadDataForHours(
+  hours,
+  start = null,
+  end = null,
+  maxDteDays = Number.POSITIVE_INFINITY,
+) {
   let indexRows = [];
   let quoteSnapshots = [];
 
   const startTs = start ? Math.floor(start.getTime() / 1000) : Number.NEGATIVE_INFINITY;
   const endTs = end ? Math.floor(end.getTime() / 1000) : Number.POSITIVE_INFINITY;
 
+  const buckets = selectDteBuckets(DTE_BUCKETS, maxDteDays);
   for (const hour of hours) {
-    const decoded = loadShard(hour);
-    const filteredIndex = start || end
-      ? decoded.indexRows.filter(r => r.ts >= startTs && r.ts <= endTs)
-      : decoded.indexRows;
-    const filteredQuotes = start || end
-      ? decoded.quoteSnapshots.filter(([ts]) => ts >= startTs && ts <= endTs)
-      : decoded.quoteSnapshots;
+    for (const bucket of buckets) {
+      const decoded = loadShard(hour, bucket.key);
+      const filteredIndex = start || end
+        ? decoded.indexRows.filter(r => r.ts >= startTs && r.ts <= endTs)
+        : decoded.indexRows;
+      const filteredQuotes = start || end
+        ? decoded.quoteSnapshots.filter(([ts]) => ts >= startTs && ts <= endTs)
+        : decoded.quoteSnapshots;
 
-    indexRows.push(...filteredIndex);
-    quoteSnapshots.push(...filteredQuotes);
+      indexRows.push(...filteredIndex);
+      quoteSnapshots.push(...filteredQuotes);
+    }
   }
 
   // Sort just in case
@@ -101,7 +120,8 @@ export async function runBacktest(overrides = {}) {
   const { indexRows, quoteSnapshots, instruments } = await loadDataForHours(
     hours,
     config.start,
-    config.end
+    config.end,
+    requiredQuoteDteDays(config),
   );
 
   const preparedData = prepareBacktestData({
@@ -139,10 +159,12 @@ export async function runBacktestBatch(configList = []) {
 
   // Use the first config's date range for loading (they should be similar for sweeps)
   const refConfig = normalized[0];
+  const maxDteDays = Math.max(...normalized.map(requiredQuoteDteDays));
   const { indexRows, quoteSnapshots, instruments } = await loadDataForHours(
     hours,
     refConfig.start,
-    refConfig.end
+    refConfig.end,
+    maxDteDays,
   );
 
   const preparedData = prepareBacktestData({

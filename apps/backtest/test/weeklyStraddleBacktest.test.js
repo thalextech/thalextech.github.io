@@ -7,6 +7,7 @@ import {
   normalizeBacktestConfig,
   prepareBacktestData,
   prepareCycleDetailData,
+  requiredQuoteDteDays,
   runWeeklyStraddleBacktest,
   runWeeklyStraddleBacktestBatch,
 } from "../src/lib/weeklyStraddleBacktest.js";
@@ -151,6 +152,19 @@ test("normalizeBacktestConfig applies defaults and coerces external input once",
   assert.equal(config.exitHoldDays, 14);
   assert.equal(config.targetDelta, 0.35);
   assert.equal(config.sizingMode, "notional");
+  assert.equal(requiredQuoteDteDays({ maxWeeklyDteDays: 28 }), 28);
+  assert.equal(
+    requiredQuoteDteDays({ maxWeeklyDteDays: 10, farTargetDteDays: 30 }),
+    10,
+  );
+  assert.equal(
+    requiredQuoteDteDays({
+      structure: "calendar_spread",
+      maxWeeklyDteDays: 10,
+      farTargetDteDays: 30,
+    }),
+    30,
+  );
 });
 
 test("weekly exit schedule chooses the next UTC occurrence after entry", () => {

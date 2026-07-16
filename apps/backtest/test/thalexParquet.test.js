@@ -16,13 +16,18 @@ const manifest = {
     daysPerYear: 365,
     deltaScale: PRECOMPUTED_DELTA_SCALE,
   },
+  dteBuckets: [
+    { key: "000-010", minExclusive: 0, maxInclusive: 10 },
+    { key: "010-028", minExclusive: 10, maxInclusive: 28 },
+    { key: "028-plus", minExclusive: 28, maxInclusive: null },
+  ],
   instruments: [
     ["BTC-13JUN25-100000-C", 1_749_808_800, 100_000, 1],
     ["BTC-13JUN25-100000-P", 1_749_808_800, 100_000, -1],
   ],
 };
 
-test("schema-v2 dictionary decodes numeric metadata once", () => {
+test("current schema dictionary decodes numeric metadata once", () => {
   const instruments = decodeInstrumentDictionary(manifest);
 
   assert.deepEqual(instruments[0], {
@@ -59,7 +64,7 @@ test("compact quote snapshots are filtered without per-quote expansion", () => {
 test("runtime rejects stale artifact versions", () => {
   assert.throws(
     () => decodeInstrumentDictionary({ ...manifest, version: 1 }),
-    /rebuild data with schema version 2/,
+    new RegExp(`rebuild data with schema version ${THALEX_ARTIFACT_VERSION}`),
   );
 });
 
@@ -100,6 +105,7 @@ test("history shards load concurrently while preserving hour order", async () =>
       hourlyOffsets: requestedHours,
       dataRoot: "test/bounded-shards",
       maxConcurrentShardLoads: 2,
+      maxDteDays: 10,
       onProgress: (event) => progress.push(event),
     });
 
@@ -114,6 +120,50 @@ test("history shards load concurrently while preserving hour order", async () =>
     );
     assert.deepEqual(progress.map(({ current }) => current), [1, 2, 3, 4, 5]);
     assert.ok(progress.every(({ total }) => total === requestedHours.length));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("maturity buckets fetch only the additional DTE band", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedFiles = [];
+  let manifestFetchOptions;
+
+  globalThis.fetch = async (url, options) => {
+    if (url.endsWith("prepared_manifest.json")) {
+      manifestFetchOptions = options;
+      return { ok: true, json: async () => manifest };
+    }
+    requestedFiles.push(url.split("/").at(-1));
+    const bucketKey = /_dte([^.]+)\.json$/.exec(url)?.[1];
+    return {
+      ok: true,
+      json: async () => ({
+        schema: "thalex-option-backtest",
+        version: THALEX_ARTIFACT_VERSION,
+        hourlyOffset: 8,
+        index: bucketKey === "000-010" ? [[100, 99_000]] : [],
+        quotes: [[100, [[0, 4_000, 0.55, 5_100]]]],
+      }),
+    };
+  };
+
+  try {
+    const args = {
+      start: new Date(0),
+      end: new Date(1_000_000),
+      hourlyOffsets: [8],
+      dataRoot: "test/dte-cache",
+    };
+    await loadThalexHistory({ ...args, maxDteDays: 10 });
+    await loadThalexHistory({ ...args, maxDteDays: 28 });
+
+    assert.deepEqual(requestedFiles, [
+      "prepared_1h_h08utc_dte000-010.json",
+      "prepared_1h_h08utc_dte010-028.json",
+    ]);
+    assert.deepEqual(manifestFetchOptions, { cache: "no-cache" });
   } finally {
     globalThis.fetch = originalFetch;
   }
