@@ -402,13 +402,8 @@ const buildEntryPlan = ({ quotes, entryExpirations, config, quoteGroups }) => {
     const entryTimeMs = entry.entryTs * 1000;
     const expirationMs = entry.expirationTs * 1000;
     const entryDate = new Date(entryTimeMs);
-    if (
-      plans.length === 0 &&
-      (entryDate.getUTCDay() !== config.entryWeekday ||
-        entryDate.getUTCHours() !== config.entryHourUtc)
-    ) {
-      continue;
-    }
+    if (entryDate.getUTCHours() !== config.entryHourUtc) continue;
+    if (entryDate.getUTCDay() !== config.entryWeekday) continue;
     // This is a single-position strategy. Skip candidate entries while the
     // previously accepted trade is still open. A same-timestamp close/reopen
     // is allowed.
@@ -985,12 +980,11 @@ export const runWeeklyStraddleBacktest = ({
   const { indexRows: pi = [], quotes, dataEnd } = p;
   const indexes = p.indexes || buildBacktestIndexes(p);
   const entryScheduleKey = `${c.entryWeekday}|${c.entryHourUtc}`;
-  const rollHours = new Set([c.entryHourUtc, 8]);
-  const entryCandidates = c.exitMode === "after_days"
-    ? [...indexes.quoteGroups.entryCandidatesBySchedule.entries()]
-      .filter(([scheduleKey]) => rollHours.has(Number(scheduleKey.split("|")[1])))
-      .flatMap(([, candidates]) => candidates)
-    : indexes.quoteGroups.entryCandidatesBySchedule.get(entryScheduleKey) || [];
+  // The configured entry schedule applies to every cycle. Letting fixed-day
+  // rolls fall through to another weekday makes weekday sweeps converge onto
+  // the same trades whenever the intended re-entry timestamp is unavailable.
+  const entryCandidates =
+    indexes.quoteGroups.entryCandidatesBySchedule.get(entryScheduleKey) || [];
 
   const entryExpirations = buildEntryExpirations({
     entryCandidates,

@@ -2,6 +2,12 @@
 import * as d3 from "d3";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { exportChartToPng } from "../../../../lib/export-png.js";
+import {
+  RV_AXIS_COLOR,
+  RV_AXIS_FONT_SIZE,
+  RV_PLOT_GUTTERS,
+  calculateRvPlotLayout,
+} from "../lib/rvChartLayout.js";
 
 const props = defineProps({
   cells: { type: Array, default: () => [] },
@@ -30,7 +36,9 @@ defineExpose({
 
 function styleAxis(group) {
   group.selectAll("path, line").remove();
-  group.selectAll("text").attr("fill", "#f2f3f5").style("font", `10px ${font}`);
+  group.selectAll("text")
+    .attr("fill", RV_AXIS_COLOR)
+    .style("font", `${RV_AXIS_FONT_SIZE}px ${font}`);
 }
 
 function formatValue(value, decimals = props.valueDecimals) {
@@ -70,9 +78,8 @@ function render() {
   svg.selectAll("*").remove();
   const host = svgRef.value.parentElement;
   const width = Math.max(620, host?.clientWidth || 1100);
-  const height = Math.max(380, host?.clientHeight || 620);
-  const margin = { top: 34, right: 118, bottom: 70, left: 84 };
-  const innerWidth = width - margin.left - margin.right;
+  const height = Math.max(440, host?.clientHeight || 620);
+  const margin = { top: 34, right: RV_PLOT_GUTTERS.right, bottom: 70, left: RV_PLOT_GUTTERS.left };
   const innerHeight = height - margin.top - margin.bottom;
   svg.attr("viewBox", `0 0 ${width} ${height}`);
 
@@ -86,10 +93,10 @@ function render() {
 
   const weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const hours = Array.from({ length: 24 }, (_, hour) => hour);
-  const cellSize = Math.min(50, innerWidth / 24, innerHeight / 7);
-  const gridWidth = cellSize * 24;
-  const gridHeight = cellSize * 7;
-  const gridX = margin.left + (innerWidth - gridWidth) / 2;
+  const commonLayout = calculateRvPlotLayout(width);
+  const gridWidth = commonLayout.plotWidth;
+  const gridHeight = gridWidth * 7 / 24;
+  const gridX = commonLayout.plotLeft;
   const gridY = margin.top + (innerHeight - gridHeight) / 2;
   const x = d3.scaleBand().domain(hours).range([0, gridWidth]);
   const y = d3.scaleBand().domain(weekdays).range([0, gridHeight]);
@@ -108,7 +115,7 @@ function render() {
   const chart = svg.append("g").attr("transform", `translate(${gridX},${gridY})`);
 
   chart.append("g").attr("transform", `translate(0,${gridHeight})`)
-    .call(d3.axisBottom(x).tickSize(0).tickPadding(8).tickFormat((hour) => String(hour))).call(styleAxis)
+    .call(d3.axisBottom(x).tickSize(0).tickPadding(10).tickFormat((hour) => String(hour))).call(styleAxis)
     .selectAll("text")
     .attr("text-anchor", "end")
     .attr("transform", "rotate(-90)")
@@ -116,9 +123,9 @@ function render() {
     .attr("dy", "-0.15em");
   chart.append("g").call(d3.axisLeft(y).tickSize(0).tickPadding(12)).call(styleAxis);
   chart.append("text").attr("x", gridWidth / 2).attr("y", gridHeight + 58)
-    .attr("text-anchor", "middle").attr("fill", "#f2f3f5").style("font", `11px ${font}`).text("Hour (UTC)");
+    .attr("text-anchor", "middle").attr("fill", RV_AXIS_COLOR).style("font", `${RV_AXIS_FONT_SIZE}px ${font}`).text("Hour (UTC)");
   chart.append("text").attr("transform", "rotate(-90)").attr("x", -gridHeight / 2).attr("y", -58)
-    .attr("text-anchor", "middle").attr("fill", "#f2f3f5").style("font", `11px ${font}`).text("Day of Week");
+    .attr("text-anchor", "middle").attr("fill", RV_AXIS_COLOR).style("font", `${RV_AXIS_FONT_SIZE}px ${font}`).text("Day of Week");
 
   const cell = chart.selectAll("g.heat-cell").data(cells, (row) => row.key).join("g")
     .attr("class", "heat-cell").attr("transform", (row) => `translate(${x(row.hour)},${y(row.weekdayLabel)})`);
@@ -149,10 +156,10 @@ function render() {
     .attr("offset", (value) => `${value * 100}%`).attr("stop-color", (value) => color(extent[0] + value * (extent[1] - extent[0])));
   legend.append("rect").attr("width", 14).attr("height", legendHeight).attr("fill", `url(#${props.gradientId})`)
     .attr("stroke", "#090a0d").attr("stroke-width", 1);
-  legend.append("text").attr("x", -2).attr("y", -10).attr("fill", "#f2f3f5").style("font", `10px ${font}`).text(props.legendLabel);
+  legend.append("text").attr("x", -2).attr("y", -10).attr("fill", RV_AXIS_COLOR).style("font", `${RV_AXIS_FONT_SIZE}px ${font}`).text(props.legendLabel);
   [extent[0], (extent[0] + extent[1]) / 2, extent[1]].forEach((value, index) => {
     const yPos = legendHeight - index * legendHeight / 2;
-    legend.append("text").attr("x", 24).attr("y", yPos + 3).attr("fill", "#f2f3f5").style("font", `10px ${font}`).text(formatValue(value, props.legendDecimals));
+    legend.append("text").attr("x", 24).attr("y", yPos + 3).attr("fill", RV_AXIS_COLOR).style("font", `${RV_AXIS_FONT_SIZE}px ${font}`).text(formatValue(value, props.legendDecimals));
   });
 }
 

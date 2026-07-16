@@ -2,6 +2,12 @@ import { HOUR_SECONDS } from "./ivRv.js";
 
 const HOURS_PER_DAY = 24;
 
+const normalizeOptionalWeekday = (value) => {
+  if (value === null || value === undefined || value === "") return null;
+  const weekday = Number(value);
+  return Number.isInteger(weekday) && weekday >= 0 && weekday <= 6 ? weekday : null;
+};
+
 const mean = (values) => values.length
   ? values.reduce((sum, value) => sum + value, 0) / values.length
   : null;
@@ -77,12 +83,20 @@ export function buildHourlyLogReturns(rows = [], { deseasonalize = true } = {}) 
   }));
 }
 
-export function buildComplete24HourWindows(hourlyReturns = [], closeHour = 0) {
+export function buildComplete24HourWindows(
+  hourlyReturns = [],
+  closeHour = 0,
+  closeWeekday = null,
+) {
   const normalizedCloseHour = Math.max(0, Math.min(23, Math.trunc(Number(closeHour) || 0)));
+  const normalizedCloseWeekday = normalizeOptionalWeekday(closeWeekday);
   const returnByTimestamp = new Map(hourlyReturns.map((row) => [row.ts, row]));
   const windows = [];
   for (const end of hourlyReturns) {
-    if (end.hour !== normalizedCloseHour) continue;
+    if (
+      end.hour !== normalizedCloseHour
+      || (normalizedCloseWeekday !== null && end.weekday !== normalizedCloseWeekday)
+    ) continue;
     const values = [];
     for (let hoursBack = HOURS_PER_DAY - 1; hoursBack >= 0; hoursBack -= 1) {
       const row = returnByTimestamp.get(end.ts - hoursBack * HOUR_SECONDS);
@@ -165,11 +179,12 @@ const combineStats = (target, source) => {
 
 export function buildDayBootstrapVarianceRatios(hourlyReturns = [], {
   closeHour = 0,
+  closeWeekday = null,
   replications = 400,
   confidence = 0.95,
   seed = 94721,
 } = {}) {
-  const windows = buildComplete24HourWindows(hourlyReturns, closeHour);
+  const windows = buildComplete24HourWindows(hourlyReturns, closeHour, closeWeekday);
   const blockStats = windows.map((window) => buildHorizonStats(window.values));
   const pointStats = Array.from(
     { length: HOURS_PER_DAY },
@@ -238,9 +253,9 @@ export function buildDayBootstrapVarianceRatios(hourlyReturns = [], {
   });
 }
 
-export function buildCloseHourVr24Range(hourlyReturns = []) {
+export function buildCloseHourVr24Range(hourlyReturns = [], { closeWeekday = null } = {}) {
   const rows = Array.from({ length: HOURS_PER_DAY }, (_, closeHour) => {
-    const windows = buildComplete24HourWindows(hourlyReturns, closeHour);
+    const windows = buildComplete24HourWindows(hourlyReturns, closeHour, closeWeekday);
     const hourlyValues = windows.flatMap((window) => window.values);
     const dailyValues = windows.map((window) =>
       window.values.reduce((sum, value) => sum + value, 0),
@@ -267,26 +282,21 @@ export function buildCloseHourVr24Range(hourlyReturns = []) {
 export function calculateVarianceRatioDashboard(rows = [], {
   deseasonalize = true,
   closeHour = 0,
-  maxHours = 168,
+  closeWeekday = null,
   bootstrapReplications = 400,
 } = {}) {
   const normalizedCloseHour = Math.max(0, Math.min(23, Math.trunc(Number(closeHour) || 0)));
+  const normalizedCloseWeekday = normalizeOptionalWeekday(closeWeekday);
   const hourlyReturns = buildHourlyLogReturns(rows, { deseasonalize });
   const dayBootstrapRows = buildDayBootstrapVarianceRatios(hourlyReturns, {
     closeHour: normalizedCloseHour,
+    closeWeekday: normalizedCloseWeekday,
     replications: bootstrapReplications,
   });
-  const overlappingRows = buildVarianceRatioCurve(hourlyReturns, { maxHours });
-  const varianceRatios = overlappingRows.map((row, index) => (
-    index < HOURS_PER_DAY ? dayBootstrapRows[index] : {
-      ...row,
-      ciLower: null,
-      ciUpper: null,
-      significantBelowOne: null,
-      bootstrapWindows: dayBootstrapRows[0]?.bootstrapWindows || 0,
-      bootstrapReplications: 0,
-    }
-  ));
+  const varianceRatios = dayBootstrapRows.map((row) => ({
+    ...row,
+    estimator: "close_hour_anchored",
+  }));
   const baseHeadline = varianceRatios[HOURS_PER_DAY - 1] || null;
   const annualizedHourlyVolatility = Number.isFinite(baseHeadline?.oneHourVariance)
     ? Math.sqrt(365 * HOURS_PER_DAY * baseHeadline.oneHourVariance)
@@ -296,24 +306,29 @@ export function calculateVarianceRatioDashboard(rows = [], {
     : null;
   const headline = baseHeadline ? {
     ...baseHeadline,
+    estimator: "anchored_daily",
     varianceDifference: 1 - baseHeadline.ratio,
     annualizedHourlyVolatility,
     annualizedDailyVolatility,
     volatilityDifferencePoints:
       (annualizedHourlyVolatility - annualizedDailyVolatility) * 100,
   } : null;
-  const intradayRows = varianceRatios.slice(1, HOURS_PER_DAY);
+  const intradayRows = varianceRatios.slice(1);
   const trough = intradayRows.length
     ? intradayRows.reduce((minimum, row) => row.ratio < minimum.ratio ? row : minimum)
     : null;
   return {
     varianceRatios,
     headline,
+    termStructureVr24: varianceRatios[HOURS_PER_DAY - 1] || null,
     trough,
-    closeHourRange: buildCloseHourVr24Range(hourlyReturns),
+    closeHourRange: buildCloseHourVr24Range(hourlyReturns, {
+      closeWeekday: normalizedCloseWeekday,
+    }),
     sampleSize: hourlyReturns.length,
     deseasonalize,
     closeHour: normalizedCloseHour,
+    closeWeekday: normalizedCloseWeekday,
     maxHours: varianceRatios.at(-1)?.horizon || 0,
   };
 }

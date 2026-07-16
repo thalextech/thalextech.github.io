@@ -18,8 +18,8 @@ let resizeObserver;
 const FONT = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
 const formatUsd = d3.format("$,.0f");
 const formatTime = d3.utcFormat("%d %b %H:%M");
-const BUY = "#63a67b";
-const SELL = "#c96f6f";
+const BUY = d3.interpolateRdBu(0.75);
+const SELL = d3.interpolateRdBu(0.22);
 const INDEX = "rgba(255,255,255,0.42)";
 const BREAK_EVEN = "rgba(255, 255, 255, 0.65)";
 const SERIES_STROKE_WIDTH = 1.25;
@@ -29,7 +29,7 @@ const CONTOUR_COLORS = {
 };
 const LEGEND_TOOLTIPS = {
   index: "Observed BTC index price at each hourly bar. This is the underlying spot path used for option repricing, hedge P&L, Greek attribution, and break-even comparisons.",
-  hedge_buy: "Green markers show delta-hedge purchases. A buy increases the signed BTC hedge position. Executing the hedge changes exposure but creates no immediate P&L before fees; subsequent spot movement creates hedge MTM.",
+  hedge_buy: "Blue markers show delta-hedge purchases. A buy increases the signed BTC hedge position. Executing the hedge changes exposure but creates no immediate P&L before fees; subsequent spot movement creates hedge MTM.",
   hedge_sell: "Red markers show delta-hedge sales. A sell reduces or reverses the signed BTC hedge position. The marker is execution direction, not whether that hedge ultimately made money.",
   break_even_lines: "Terminal break-even levels. At expiry, intrinsic value of all option legs equals the position's signed entry premium. These horizontal lines ignore remaining time value and IV, so they are payoff break-evens—not today's mark-to-market break-evens.",
   contour_base: "Base zero-MTM contour. At every timestamp it solves for every spot S where the option structure, repriced on the frozen entry IV surface, has exactly its entry value: V(S,t)=V₀. Hedges do not reset this contour because they change account P&L, not the option structure's entry variance budget.",

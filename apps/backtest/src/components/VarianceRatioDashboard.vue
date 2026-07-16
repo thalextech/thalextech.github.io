@@ -2,6 +2,12 @@
 import * as d3 from "d3";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { exportChartToPng } from "../../../../lib/export-png.js";
+import {
+  RV_AXIS_COLOR,
+  RV_AXIS_FONT_SIZE,
+  RV_TERM_STRUCTURE_MAX_WIDTH,
+  calculateRvPlotLayout,
+} from "../lib/rvChartLayout.js";
 
 const props = defineProps({
   analysis: { type: Object, default: null },
@@ -27,7 +33,9 @@ const formatRatio = (value, digits = 3) =>
 function styleAxis(group) {
   group.selectAll("path").remove();
   group.selectAll("line").attr("stroke", "rgba(255,255,255,0.08)");
-  group.selectAll("text").attr("fill", "#f2f3f5").style("font", `10px ${font}`);
+  group.selectAll("text")
+    .attr("fill", RV_AXIS_COLOR)
+    .style("font", `${RV_AXIS_FONT_SIZE}px ${font}`);
 }
 
 function positionTooltip(event) {
@@ -47,9 +55,11 @@ function positionTooltip(event) {
   tooltip.style.top = `${top}px`;
 }
 
-function showTooltip(event, row) {
+function showTooltip(event, row, title = null) {
   if (!tooltipRef.value) return;
+  tooltipRef.value.classList.remove("isMethod");
   const lines = [
+    ...(title ? [title] : []),
     `Horizon  ${row.horizon}h`,
     `Variance ratio  ${formatRatio(row.ratio)}`,
     `Valid returns  ${row.count.toLocaleString()}`,
@@ -58,8 +68,8 @@ function showTooltip(event, row) {
     lines.push(
       `95% day-bootstrap CI  ${formatRatio(row.ciLower)} to ${formatRatio(row.ciUpper)}`,
     );
-  } else if (row.horizon > 24) {
-    lines.push("Point estimate only beyond 24h");
+  } else {
+    lines.push("Point estimate only · no interval");
   }
   lines.push(
     row.ratio < 1
@@ -69,6 +79,19 @@ function showTooltip(event, row) {
         : "Matches a random walk",
   );
   tooltipRef.value.textContent = lines.join("\n");
+  tooltipRef.value.hidden = false;
+  positionTooltip(event);
+}
+
+function showMethodTooltip(event) {
+  if (!tooltipRef.value) return;
+  tooltipRef.value.classList.add("isMethod");
+  tooltipRef.value.textContent = [
+    "METHOD + LIMITS",
+    "VR(q) = 1 + 2Σ(1 − k/q)ρₖ. Line + cloud use complete selected-close days; the bootstrap resamples those days, never hours.",
+    "All horizons use one anchored estimator. The chart stops at 24h rather than joining a different weekly estimator at the daily cutoff.",
+    "There are 24 selectable close hours ≈ 24 tests; expect roughly one to clear 95% by chance, so one significant anchor is not evidence by itself.",
+  ].join("\n\n");
   tooltipRef.value.hidden = false;
   positionTooltip(event);
 }
@@ -84,7 +107,7 @@ function render() {
   svg.selectAll("*").remove();
   const host = svgRef.value.parentElement;
   const width = Math.max(760, host?.clientWidth || 1100);
-  const height = 680;
+  const height = 620;
   svg.attr("viewBox", `0 0 ${width} ${height}`);
 
   const analysis = props.analysis;
@@ -108,10 +131,12 @@ function render() {
     return;
   }
 
-  const content = { left: 12, right: 12 };
-  const margin = { left: 84, right: 38 };
-  const plotWidth = width - margin.left - margin.right;
-  const contentWidth = width - content.left - content.right;
+  const { plotLeft, plotWidth } = calculateRvPlotLayout(
+    width,
+    RV_TERM_STRUCTURE_MAX_WIDTH,
+  );
+  const margin = { left: plotLeft, right: width - plotLeft - plotWidth };
+  const content = { left: plotLeft };
   const reversalIsSignificant =
     Number.isFinite(headline.ciUpper) && headline.ciUpper < 1;
   const extensionIsSignificant =
@@ -128,36 +153,21 @@ function render() {
       ? "BTC moves extend rather than reverse in this sample."
       : "This sample cannot rule out a pure random walk because 1 is inside the CI.";
 
-  const cardTop = 18;
-  const cardHeight = 136;
-  svg
-    .append("rect")
-    .attr("x", content.left)
-    .attr("y", cardTop)
-    .attr("width", contentWidth)
-    .attr("height", cardHeight)
-    .attr("rx", 6)
-    .attr("fill", "rgba(255,255,255,0.025)")
-    .attr("stroke", "rgba(255,255,255,0.09)");
+  const answerTop = 430;
+  const answerHeight = 82;
+  const answerCenterY = answerTop + answerHeight / 2;
   svg
     .append("text")
     .attr("x", content.left + 18)
-    .attr("y", cardTop + 23)
-    .attr("fill", "#777d84")
-    .attr("letter-spacing", "1px")
-    .style("font", `10px ${font}`)
-    .text("THE ANSWER · VR(24)");
-  svg
-    .append("text")
-    .attr("x", content.left + 18)
-    .attr("y", cardTop + 86)
+    .attr("y", answerCenterY)
+    .attr("dominant-baseline", "middle")
     .attr("fill", statusColor)
-    .style("font", `300 38px ${font}`)
+    .style("font", `300 33px ${font}`)
     .text(formatRatio(headline.ratio));
   svg
     .append("text")
-    .attr("x", content.left + 168)
-    .attr("y", cardTop + 53)
+    .attr("x", content.left + 150)
+    .attr("y", answerCenterY - 20)
     .attr("fill", "#d8dadd")
     .style("font", `400 11px ${font}`)
     .text(
@@ -165,8 +175,8 @@ function render() {
     );
   svg
     .append("text")
-    .attr("x", content.left + 168)
-    .attr("y", cardTop + 73)
+    .attr("x", content.left + 150)
+    .attr("y", answerCenterY)
     .attr("fill", "#d8dadd")
     .style("font", `400 11px ${font}`)
     .text(
@@ -174,24 +184,14 @@ function render() {
     );
   svg
     .append("text")
-    .attr("x", content.left + 168)
-    .attr("y", cardTop + 101)
+    .attr("x", content.left + 150)
+    .attr("y", answerCenterY + 23)
     .attr("fill", statusColor)
     .style("font", `500 10px ${font}`)
     .text(marketVerdict);
-  svg
-    .append("text")
-    .attr("x", content.left + 168)
-    .attr("y", cardTop + 120)
-    .attr("fill", "#70767d")
-    .style("font", `9px ${font}`)
-    .text(
-      `95% interval [${formatRatio(headline.ciLower)}, ${formatRatio(headline.ciUpper)}]`,
-    );
-
-  const chartHeaderY = 184;
-  const plotTop = 243;
-  const plotBottom = 525;
+  const chartHeaderY = 24;
+  const plotTop = 90;
+  const plotBottom = 365;
   svg
     .append("text")
     .attr("x", content.left)
@@ -199,25 +199,25 @@ function render() {
     .attr("fill", "#777d84")
     .attr("letter-spacing", "1px")
     .style("font", `10px ${font}`)
-    .text("HOW TO VERIFY IT · VR(q), 1H–168H");
-  const readingLine = svg
+    .text("ANCHORED TERM STRUCTURE · VR(q), 1H–24H");
+  const readingGuide = svg
     .append("text")
     .attr("x", content.left)
-    .attr("y", chartHeaderY + 20)
+    .attr("y", chartHeaderY + 22)
     .attr("fill", "#9aa0a6")
     .style("font", `9px ${font}`);
-  readingLine
+  readingGuide
     .append("tspan")
-    .text("Each point: variance of q-hour returns ÷ q × hourly variance.  ");
-  readingLine
+    .text("Each point: variance of within-block q-hour returns ÷ q × hourly variance.  ");
+  readingGuide
     .append("tspan")
     .attr("fill", "#f2f3f5")
     .attr("font-weight", 600)
     .text("1.00 = random walk.  ");
-  readingLine
+  readingGuide
     .append("tspan")
     .text(
-      "Below 1: moves partially reverse. Above 1: they extend. Where the curve flattens is the timescale at which reversal completes.",
+      "Below 1: moves partially reverse. Above 1: they extend.",
     );
 
   const bandRows = rows.filter(
@@ -227,6 +227,7 @@ function render() {
     1,
     ...rows.map((row) => row.ratio),
     ...bandRows.flatMap((row) => [row.ciLower, row.ciUpper]),
+    headline.ratio,
   ];
   const extent = d3.extent(yValues);
   const yPadding = Math.max((extent[1] - extent[0]) * 0.12, 0.015);
@@ -267,11 +268,23 @@ function render() {
     .text("Random walk · VR = 1");
 
   svg
+    .append("rect")
+    .attr("x", margin.left)
+    .attr("y", plotTop)
+    .attr("width", plotWidth)
+    .attr("height", plotBottom - plotTop)
+    .attr("fill", "transparent")
+    .on("mouseenter", showMethodTooltip)
+    .on("mousemove", positionTooltip)
+    .on("mouseleave", hideTooltip);
+
+  svg
     .append("path")
     .datum(bandRows)
     .attr("fill", curveColor)
     .attr("fill-opacity", 0.16)
     .attr("stroke", "none")
+    .style("pointer-events", "none")
     .attr(
       "d",
       d3
@@ -286,6 +299,7 @@ function render() {
     .attr("fill", "none")
     .attr("stroke", curveColor)
     .attr("stroke-width", 2.1)
+    .style("pointer-events", "none")
     .attr(
       "d",
       d3
@@ -309,7 +323,11 @@ function render() {
     .attr("cy", y(headline.ratio))
     .attr("r", 5)
     .attr("fill", highlightColor)
-    .attr("stroke", "#090a0d");
+    .attr("stroke", "#090a0d")
+    .style("cursor", "default")
+    .on("mouseenter", (event) => showTooltip(event, headline, `${String(analysis.closeHour).padStart(2, "0")}:00 UTC anchored daily estimate`))
+    .on("mousemove", positionTooltip)
+    .on("mouseleave", hideTooltip);
 
   const trough = analysis.trough;
   if (trough && Number.isFinite(trough.ratio)) {
@@ -352,7 +370,7 @@ function render() {
       );
 
     if (headline.ratio > trough.ratio + 0.01 && trough.horizon < 24) {
-      const recoveryX = x(24) + 15;
+      const recoveryX = x(24) - 10;
       const recoveryY = Math.max(plotTop + 30, y(headline.ratio) - 34);
       svg
         .append("line")
@@ -366,6 +384,7 @@ function render() {
         .append("text")
         .attr("x", recoveryX)
         .attr("y", recoveryY)
+        .attr("text-anchor", "end")
         .attr("fill", highlightColor)
         .style("font", `500 9px ${font}`);
       recoveryText.append("tspan").text("Recovery into 24h");
@@ -399,7 +418,7 @@ function render() {
         .axisLeft(y)
         .ticks(6)
         .tickSize(0)
-        .tickPadding(10)
+        .tickPadding(12)
         .tickFormat(d3.format(".2f")),
     )
     .call(styleAxis);
@@ -409,7 +428,7 @@ function render() {
     .call(
       d3
         .axisBottom(x)
-        .tickValues([1, 2, 4, 8, 12, 24, 48, 72, 120, 168])
+        .tickValues([1, 2, 4, 8, 12, 24])
         .tickFormat((tick) => `${tick}h`)
         .tickSize(0)
         .tickPadding(10),
@@ -420,56 +439,9 @@ function render() {
     .attr("x", margin.left + plotWidth / 2)
     .attr("y", plotBottom + 42)
     .attr("text-anchor", "middle")
-    .attr("fill", "#f2f3f5")
-    .style("font", `11px ${font}`)
+    .attr("fill", RV_AXIS_COLOR)
+    .style("font", `${RV_AXIS_FONT_SIZE}px ${font}`)
     .text("Return horizon q · logarithmic scale");
-  const closeHourRange = analysis.closeHourRange;
-  if (closeHourRange) {
-    svg
-      .append("text")
-      .attr("x", content.left)
-      .attr("y", 588)
-      .attr("fill", "#9aa0a6")
-      .style("font", `9px ${font}`)
-      .text(
-        `VR(24) ranges ${formatRatio(closeHourRange.minimum.ratio, 2)}–${formatRatio(closeHourRange.maximum.ratio, 2)} across close hours; the term-structure shape shifts with the anchor.`,
-      );
-  }
-  svg
-    .append("text")
-    .attr("x", content.left)
-    .attr("y", 616)
-    .attr("fill", "#777d84")
-    .attr("letter-spacing", "1px")
-    .style("font", `10px ${font}`)
-    .text("METHOD + LIMITS");
-  svg
-    .append("text")
-    .attr("x", content.left)
-    .attr("y", 635)
-    .attr("fill", "#666c73")
-    .style("font", `9px ${font}`)
-    .text(
-      "VR(q) = 1 + 2Σ(1 − k/q)ρₖ. CI: block bootstrap resampling complete days, never individual hours.",
-    );
-  svg
-    .append("text")
-    .attr("x", content.left)
-    .attr("y", 652)
-    .attr("fill", "#666c73")
-    .style("font", `9px ${font}`)
-    .text(
-      "Weekly extension is point estimates only — about 92 effective weekly observations, so bands there would be much wider than at 24h.",
-    );
-  svg
-    .append("text")
-    .attr("x", content.left)
-    .attr("y", 669)
-    .attr("fill", "#666c73")
-    .style("font", `9px ${font}`)
-    .text(
-      "There are 24 selectable close hours ≈ 24 tests; expect roughly one to clear 95% by chance, so one significant anchor is not evidence by itself.",
-    );
 }
 
 watch(() => [props.analysis, props.loading], render, { deep: true });
@@ -498,7 +470,9 @@ onBeforeUnmount(() => resizeObserver?.disconnect());
 .varianceRatioWrap {
   position: relative;
   width: 100%;
-  height: 680px;
+  height: 530px;
+  margin-right: auto;
+  margin-left: auto;
   min-width: 0;
 }
 .varianceRatioSvg {
@@ -524,5 +498,11 @@ onBeforeUnmount(() => resizeObserver?.disconnect());
   white-space: pre;
   pointer-events: none;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.34);
+}
+.varianceRatioTooltip.isMethod {
+  width: min(440px, calc(100% - 16px));
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 </style>

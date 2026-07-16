@@ -178,6 +178,7 @@ const varianceRatioRef = ref(null);
 const rvOutlierCorrection = ref(false);
 const serialReturnMode = ref("deseasonalized");
 const serialCloseHour = ref(0);
+const serialCloseWeekday = ref(-1);
 const rvRangeStart = ref(0);
 const rvRangeEnd = ref(100);
 const IV_RV_TENORS = [7, 14, 30];
@@ -278,10 +279,14 @@ const varianceRatioAnalysis = computed(() => calculateVarianceRatioDashboard(
   {
     deseasonalize: serialReturnMode.value === "deseasonalized",
     closeHour: serialCloseHour.value,
-    maxHours: 168,
+    closeWeekday: serialCloseWeekday.value,
     bootstrapReplications: 400,
   },
 ));
+const serialCloseWeekdayLabel = computed(() =>
+  WEEKDAY_OPTIONS.find((option) => option.value === serialCloseWeekday.value)?.label
+    || "All weekdays",
+);
 const rvWeekdayInsights = computed(() => summarizeRvWeekdayGroups(rvWeekdayGroups.value));
 const sweepDimension = ref("entry_hour");
 const sweepResults = ref([]);
@@ -447,7 +452,7 @@ const exitModeExplanation = computed(() => {
     const duration = [days ? `${days}d` : "", hours ? `${hours}h` : ""].filter(Boolean).join(" ");
     return `Close at the next ${exitTime} UTC after entry (${duration} later), then stay in cash until the next ${entryTime} entry. If the option expires first, close at expiry.`;
   }
-  return `Roll every ${ui.exitHoldDays} calendar day${ui.exitHoldDays === 1 ? "" : "s"}: close the current position and immediately open its replacement. The strategy stays continuously invested. If the option expires first, roll at expiry.`;
+  return `Target a roll every ${ui.exitHoldDays} calendar day${ui.exitHoldDays === 1 ? "" : "s"} at the configured entry hour. If the option expires first, close at expiry and wait until that entry hour before reopening.`;
 });
 
 const strategyLabels = computed(() => {
@@ -563,7 +568,7 @@ const chartSubtitle = computed(() => {
     ? "Held to expiry"
     : ui.exitMode === "weekly_schedule"
       ? `Exited ${exitWeekday.label} at ${String(ui.exitHourUtc).padStart(2, "0")}:00 UTC; cash until next entry`
-      : `Rolled every ${ui.exitHoldDays}D; continuously invested`;
+      : `Rolled every ${ui.exitHoldDays}D at ${entryTime}; expiry-first gaps allowed`;
   const sizing = ui.investmentMode === "btc" ? "1 BTC per leg" : "$100k notional";
   return `Entered ${weekday.label} at ${entryTime} · ${exit} · ${sizing}`;
 });
@@ -1020,7 +1025,7 @@ function saveRvHeatmap(date = new Date().toISOString().slice(0, 10)) {
 function saveVarianceRatio(date = new Date().toISOString().slice(0, 10)) {
   if (!varianceRatioRef.value || !varianceRatioAnalysis.value.sampleSize) return;
   varianceRatioRef.value.exportPng({
-    filename: `btc-variance-ratio-${serialReturnMode.value}-${date}.png`,
+    filename: `btc-variance-ratio-${serialReturnMode.value}-${serialCloseWeekdayLabel.value.toLowerCase()}-${date}.png`,
     scale: 4,
     padding: 24,
   });
@@ -1517,7 +1522,7 @@ onMounted(loadBacktest);
                 <div class="rvQuestionBlock">
                   <div class="rvQuestionTitle">Does BTC keep the variance it generates intraday?</div>
                   <div class="rvQuestionSubtitle">
-                    Daily close {{ String(serialCloseHour).padStart(2, '0') }}:00 UTC
+                    {{ serialCloseWeekdayLabel }} · close {{ String(serialCloseHour).padStart(2, '0') }}:00 UTC
                     · {{ varianceRatioAnalysis.headline?.bootstrapWindows?.toLocaleString() || 0 }} days
                     · {{ serialReturnMode === 'deseasonalized' ? 'de-seasonalized' : 'raw' }} hourly returns
                   </div>
@@ -1527,6 +1532,13 @@ onMounted(loadBacktest);
                     <button type="button" :class="{ active: serialReturnMode === 'raw' }" @click="serialReturnMode = 'raw'">Raw returns</button>
                     <button type="button" :class="{ active: serialReturnMode === 'deseasonalized' }" @click="serialReturnMode = 'deseasonalized'">De-seasonalized</button>
                   </div>
+                  <label class="rvCloseHourControl">
+                    <span>Close weekday</span>
+                    <select v-model.number="serialCloseWeekday">
+                      <option :value="-1">All</option>
+                      <option v-for="weekday in WEEKDAY_OPTIONS" :key="weekday.value" :value="weekday.value">{{ weekday.label }}</option>
+                    </select>
+                  </label>
                   <label class="rvCloseHourControl">
                     <span>Daily close UTC</span>
                     <select v-model.number="serialCloseHour">

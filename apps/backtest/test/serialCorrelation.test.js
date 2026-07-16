@@ -61,6 +61,8 @@ test("complete windows require every one of the selected day's 24 hours", () => 
   });
   const missing = complete.filter((_, index) => index !== 10);
   assert.equal(buildComplete24HourWindows(complete, 0).length, 2);
+  assert.equal(buildComplete24HourWindows(complete, 0, 2).length, 1);
+  assert.equal(buildComplete24HourWindows(complete, 0, 1).length, 0);
   assert.equal(buildComplete24HourWindows(missing, 0).length, 1);
 });
 
@@ -95,17 +97,46 @@ test("day bootstrap identifies statistically significant VR(24) reversal", () =>
   assert.equal(vr24.significantBelowOne, true);
 });
 
-test("dashboard uses the anchored daily estimate at 24h and extends point estimates weekly", () => {
+test("dashboard redraws one anchored curve and cloud when the close hour changes", () => {
+  const sourceRows = rowsFromReturns(simulateReturns({ count: 12_000, phi: -0.35, seed: 50 }));
   const analysis = calculateVarianceRatioDashboard(
-    rowsFromReturns(simulateReturns({ count: 12_000, phi: -0.35, seed: 50 })),
+    sourceRows,
     { deseasonalize: false, bootstrapReplications: 100 },
   );
-  assert.equal(analysis.varianceRatios.length, 168);
+  assert.equal(analysis.varianceRatios.length, 24);
   assert.equal(analysis.headline.horizon, 24);
+  assert.equal(analysis.headline.estimator, "anchored_daily");
   assert.ok(Number.isFinite(analysis.headline.ciLower));
   assert.ok(Number.isFinite(analysis.headline.volatilityDifferencePoints));
+  assert.equal(analysis.termStructureVr24.estimator, "close_hour_anchored");
+  assert.equal(analysis.termStructureVr24.ratio, analysis.headline.ratio);
+  assert.ok(analysis.varianceRatios.every((row) =>
+    Number.isFinite(row.ciLower) && Number.isFinite(row.ciUpper),
+  ));
   assert.ok(analysis.trough.horizon >= 2 && analysis.trough.horizon <= 24);
   assert.equal(analysis.closeHourRange.rows.length, 24);
   assert.ok(analysis.closeHourRange.minimum.ratio <= analysis.closeHourRange.maximum.ratio);
-  assert.equal(analysis.varianceRatios[24].ciLower, null);
+
+  const alternateAnchor = calculateVarianceRatioDashboard(sourceRows, {
+    deseasonalize: false,
+    closeHour: 16,
+    bootstrapReplications: 100,
+  });
+  assert.ok(
+    alternateAnchor.varianceRatios.some((row, index) =>
+      Math.abs(row.ratio - analysis.varianceRatios[index].ratio) > 1e-6,
+    ),
+  );
+
+  const mondayOnly = calculateVarianceRatioDashboard(sourceRows, {
+    deseasonalize: false,
+    closeHour: 0,
+    closeWeekday: 1,
+    bootstrapReplications: 100,
+  });
+  assert.equal(mondayOnly.closeWeekday, 1);
+  assert.ok(mondayOnly.headline.bootstrapWindows < analysis.headline.bootstrapWindows);
+  assert.ok(mondayOnly.varianceRatios.some((row, index) =>
+    Math.abs(row.ratio - analysis.varianceRatios[index].ratio) > 1e-6,
+  ));
 });

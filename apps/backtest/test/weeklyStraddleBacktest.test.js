@@ -70,6 +70,70 @@ const buildParityFixture = () => {
   return { indexRows, quoteSnapshots, instruments, config };
 };
 
+const buildMultiExpiryEntryHourFixture = () => {
+  const startTs = Date.UTC(2025, 5, 6, 0) / 1000;
+  const expirationTimestamps = [13, 20, 27, 4].map((day, index) =>
+    Date.UTC(2025, index === 3 ? 6 : 5, day, 8) / 1000
+  );
+  const instruments = expirationTimestamps.flatMap((expirationTs, expirationIndex) => [
+    {
+      instrumentId: expirationIndex * 2,
+      name: `BTC-W${expirationIndex + 1}-100000-C`,
+      expirationTs,
+      strike: 100_000,
+      optionType: "C",
+    },
+    {
+      instrumentId: expirationIndex * 2 + 1,
+      name: `BTC-W${expirationIndex + 1}-100000-P`,
+      expirationTs,
+      strike: 100_000,
+      optionType: "P",
+    },
+  ]);
+  const endTs = expirationTimestamps.at(-1) + 3_600;
+  const indexRows = [];
+  const quoteSnapshots = [];
+  for (let ts = startTs; ts <= endTs; ts += DAY_SECONDS) {
+    for (const hour of [8, 9]) {
+      const observationTs = ts + hour * 3_600;
+      if (observationTs > endTs) continue;
+      const elapsedDays = Math.floor((observationTs - startTs) / DAY_SECONDS);
+      const indexPrice = 100_000 + elapsedDays * 230 + hour * 17;
+      indexRows.push({ ts: observationTs, indexPrice });
+      const entries = instruments
+        .filter((instrument) => instrument.expirationTs > observationTs)
+        .map((instrument) => {
+          const dteDays = (instrument.expirationTs - observationTs) / DAY_SECONDS;
+          const hourPremium = hour === 9 ? 180 : 0;
+          const markPrice = 650 + dteDays * 320 + hourPremium + instrument.instrumentId * 11;
+          const delta = instrument.optionType === "C" ? 0.55 : -0.45;
+          return [
+            instrument.instrumentId,
+            markPrice,
+            0.55,
+            delta * PRECOMPUTED_DELTA_SCALE,
+          ];
+        });
+      quoteSnapshots.push([observationTs, entries]);
+    }
+  }
+  const config = normalizeBacktestConfig({
+    start: new Date(startTs * 1000),
+    end: new Date(endTs * 1000),
+    entryWeekday: 5,
+    entryHourUtc: 8,
+    hourlyOffset: 8,
+    exitMode: "after_days",
+    exitHoldDays: 7,
+    hedgeEnabled: false,
+    targetDteDays: 7,
+    minWeeklyDteDays: 4,
+    maxWeeklyDteDays: 10,
+  });
+  return { indexRows, quoteSnapshots, instruments, config };
+};
+
 test("normalizeBacktestConfig applies defaults and coerces external input once", () => {
   const config = normalizeBacktestConfig({
     entryHourUtc: "12",
@@ -120,8 +184,8 @@ test("weekly schedule exits before expiry and waits for the next entry slot", ()
   assert.equal(result.cycleSummary[0].exitAtExpiry, false);
 });
 
-test("fixed-day roll immediately replaces each closed position", () => {
-  const fixture = buildParityFixture();
+test("fixed-day roll waits for the next configured entry slot after close", () => {
+  const fixture = buildMultiExpiryEntryHourFixture();
   const result = runWeeklyStraddleBacktest({
     ...fixture,
     config: {
@@ -131,9 +195,82 @@ test("fixed-day roll immediately replaces each closed position", () => {
     },
   });
   assert.ok(result.cycleSummary.length > 1);
+  assert.ok(result.cycleSummary.every((cycle) =>
+    new Date(cycle.entryTs * 1000).getUTCDay() === fixture.config.entryWeekday
+  ));
   for (let index = 1; index < result.cycleSummary.length; index += 1) {
-    assert.equal(result.cycleSummary[index].entryTs, result.cycleSummary[index - 1].exitTs);
+    assert.ok(result.cycleSummary[index].entryTs >= result.cycleSummary[index - 1].exitTs);
   }
+});
+
+test("fixed-day entry-hour sweeps preserve the selected hour across expiries", () => {
+  const { indexRows, quoteSnapshots, instruments, config } = buildMultiExpiryEntryHourFixture();
+  const preparedData = prepareBacktestData({
+    indexRows,
+    quoteSnapshots,
+    instruments,
+    config,
+  });
+  const results = [8, 9].map((entryHourUtc) =>
+    runWeeklyStraddleBacktest({
+      preparedData,
+      config: {
+        ...config,
+        entryHourUtc,
+        hourlyOffset: entryHourUtc,
+      },
+    })
+  );
+
+  assert.ok(results.every((result) => result.counts.closedCycles >= 3));
+  results.forEach((result, index) => {
+    const expectedHour = index === 0 ? 8 : 9;
+    assert.ok(result.cycleSummary.every((cycle) =>
+      new Date(cycle.entryTs * 1000).getUTCHours() === expectedHour
+    ));
+  });
+  assert.notDeepEqual(
+    results[0].cycleSummary.map((cycle) => cycle.entryTs),
+    results[1].cycleSummary.map((cycle) => cycle.entryTs),
+  );
+  assert.notDeepEqual(
+    results[0].cycleSummary.map((cycle) => cycle.cyclePnlUsd),
+    results[1].cycleSummary.map((cycle) => cycle.cyclePnlUsd),
+  );
+});
+
+test("fixed-day entry-weekday sweeps preserve the selected weekday across every cycle", () => {
+  const { indexRows, quoteSnapshots, instruments, config } = buildMultiExpiryEntryHourFixture();
+  const preparedData = prepareBacktestData({
+    indexRows,
+    quoteSnapshots,
+    instruments,
+    config,
+  });
+  const weekdays = [1, 3, 5];
+  const results = weekdays.map((entryWeekday) =>
+    runWeeklyStraddleBacktest({
+      preparedData,
+      config: {
+        ...config,
+        entryWeekday,
+        exitHoldDays: 2,
+      },
+    })
+  );
+
+  assert.ok(results.every((result) => result.counts.closedCycles >= 2));
+  results.forEach((result, index) => {
+    assert.ok(result.cycleSummary.every((cycle) =>
+      new Date(cycle.entryTs * 1000).getUTCDay() === weekdays[index]
+    ));
+  });
+  assert.equal(
+    new Set(results.map((result) => JSON.stringify(
+      result.cycleSummary.map((cycle) => cycle.entryTs),
+    ))).size,
+    weekdays.length,
+  );
 });
 
 test("computeMaxDrawdown returns the largest peak-to-trough loss", () => {
