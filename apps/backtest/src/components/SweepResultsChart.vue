@@ -30,6 +30,8 @@ const DISTRIBUTION_SORT_OPTIONS = [
   { value: "total", label: "Total P&L" },
   { value: "sharpe", label: "Sharpe" },
   { value: "median", label: "Median P&L" },
+  { value: "average_dte", label: "Avg DTE" },
+  { value: "average_iv", label: "Avg IV" },
 ];
 
 const distributionSequenceLabel = computed(() => {
@@ -58,6 +60,7 @@ const UI_AXIS_LABEL_COLOR = "rgba(255,255,255,0.46)";
 const formatUsd = d3.format("$,.0f");
 const formatSharpe = d3.format(".2f");
 const formatIv = d3.format(".1%");
+const formatDte = (value) => `${d3.format(".1f")(value)}d`;
 
 const rectanglesOverlap = (first, second, padding = 0) => !(
   first.right + padding <= second.left
@@ -706,7 +709,7 @@ const draw = () => {
     dimension: props.dimension,
   });
   const distributionPlotLeft = margin.left + 92;
-  const distributionSummaryWidth = 310;
+  const distributionSummaryWidth = 430;
   const distributionPlotRight = margin.left + contentWidth - distributionSummaryWidth;
   const distributionSummaryX = distributionPlotRight + 18;
   const distributionSummaryRight = margin.left + contentWidth;
@@ -740,8 +743,10 @@ const draw = () => {
     .attr("fill-opacity", 0.025);
   const distributionSummaryColumns = [
     { label: "TOTAL PNL", x: distributionSummaryX + 58, value: (row) => formatCompactUsd(row.total), tooltip: "Cumulative PnL across all displayed weekly observations." },
-    { label: "SHARPE", x: distributionSummaryX + 122, value: (row) => formatSharpe(Number(row.sharpe) || 0), tooltip: "Annualized Sharpe computed from the displayed weekly PnL observations." },
-    { label: "WORST WEEK", x: distributionSummaryX + 216, value: (row) => formatCompactUsd(d3.min(row.weeks) ?? 0), tooltip: "Smallest weekly PnL observation for this sweep setting." },
+    { label: "SHARPE", x: distributionSummaryX + 114, value: (row) => formatSharpe(Number(row.sharpe) || 0), tooltip: "Annualized Sharpe computed from the displayed weekly PnL observations." },
+    { label: "AVG IV", x: distributionSummaryX + 170, value: (row) => Number.isFinite(Number(row.averageEntryIv)) ? formatIv(Number(row.averageEntryIv)) : "—", tooltip: "Mean normalized entry implied volatility across selected option legs in completed cycles." },
+    { label: "AVG DTE", x: distributionSummaryX + 234, value: (row) => Number.isFinite(Number(row.averageEntryDteDays)) ? formatDte(Number(row.averageEntryDteDays)) : "—", tooltip: "Mean option days to expiry at entry across completed cycles." },
+    { label: "WORST WEEK", x: distributionSummaryX + 326, value: (row) => formatCompactUsd(d3.min(row.weeks) ?? 0), tooltip: "Smallest weekly PnL observation for this sweep setting." },
     { label: "POSITIVE", x: distributionSummaryRight, value: (row) => d3.format(".0%")(row.winRate), tooltip: "Share of displayed weeks with positive PnL." },
   ];
   distributionSummaryColumns.forEach((column) => {
@@ -779,7 +784,7 @@ const draw = () => {
     .attr("class", "distribution-row")
     .attr("role", "button")
     .attr("tabindex", 0)
-    .attr("aria-label", (row) => `${row.label}, rank ${row.distributionRank}: total ${formatUsd(row.total)}, Sharpe ${formatSharpe(Number(row.sharpe) || 0)}, worst week ${formatUsd(d3.min(row.weeks) ?? 0)}, positive week rate ${d3.format(".0%")(row.winRate)}`)
+    .attr("aria-label", (row) => `${row.label}, rank ${row.distributionRank}: total ${formatUsd(row.total)}, Sharpe ${formatSharpe(Number(row.sharpe) || 0)}, average entry IV ${Number.isFinite(Number(row.averageEntryIv)) ? formatIv(Number(row.averageEntryIv)) : "not available"}, average entry DTE ${Number.isFinite(Number(row.averageEntryDteDays)) ? formatDte(Number(row.averageEntryDteDays)) : "not available"}, worst week ${formatUsd(d3.min(row.weeks) ?? 0)}, positive week rate ${d3.format(".0%")(row.winRate)}`)
     .style("cursor", "pointer")
     .on("click", (_, row) => emit("select", row));
 
@@ -889,12 +894,13 @@ const draw = () => {
     spark: margin.left + contentWidth * 0.07,
     optionPnl: margin.left + contentWidth * 0.36,
     hedgePnl: margin.left + contentWidth * 0.46,
-    entryIv: margin.left + contentWidth * 0.56,
-    sharpe: margin.left + contentWidth * 0.64,
-    drawdown: margin.left + contentWidth * 0.71,
-    calmar: margin.left + contentWidth * 0.78,
-    win: margin.left + contentWidth * 0.84,
-    profitFactor: margin.left + contentWidth * 0.90,
+    entryIv: margin.left + contentWidth * 0.53,
+    entryDte: margin.left + contentWidth * 0.60,
+    sharpe: margin.left + contentWidth * 0.66,
+    drawdown: margin.left + contentWidth * 0.73,
+    calmar: margin.left + contentWidth * 0.80,
+    win: margin.left + contentWidth * 0.85,
+    profitFactor: margin.left + contentWidth * 0.91,
     cvar: margin.left + contentWidth * 0.97,
   };
   const headers = [
@@ -903,6 +909,7 @@ const draw = () => {
     { label: "OPTION PNL", x: columnX.optionPnl, anchor: "end", tooltip: "Cumulative option-leg PnL across completed cycles, before hedge PnL." },
     { label: "HEDGE PNL", x: columnX.hedgePnl, anchor: "end", tooltip: "Cumulative perpetual-futures hedge PnL across completed cycles." },
     { label: "AVG ENTRY IV", x: columnX.entryIv, anchor: "end", tooltip: "Mean normalized entry implied volatility across selected option legs in completed cycles." },
+    { label: "AVG DTE", x: columnX.entryDte, anchor: "end", tooltip: "Mean option days to expiry at entry across completed cycles. For Friday hourly sweeps, entries after the 08:00 UTC expiry use a shorter DTE and may be flat until the next entry slot." },
     { label: "SHARPE", x: columnX.sharpe, anchor: "end", tooltip: "Annualized weekly Sharpe: average weekly PnL divided by weekly PnL volatility, multiplied by √52." },
     { label: "MAX DD", x: columnX.drawdown, anchor: "end", tooltip: "Largest peak-to-trough loss in cumulative PnL during the backtest." },
     { label: "CALMAR", x: columnX.calmar, anchor: "end", tooltip: "Annualized weekly PnL divided by absolute maximum drawdown. Higher means more return per unit of peak-to-trough loss." },
@@ -927,7 +934,7 @@ const draw = () => {
     .attr("class", "rank-row")
     .attr("role", "button")
     .attr("tabindex", 0)
-    .attr("aria-label", (row) => `${row.label}: option PnL ${formatUsd(Number(row.optionPnl) || 0)}, hedge PnL ${formatUsd(Number(row.hedgePnl) || 0)}, average entry IV ${Number.isFinite(Number(row.averageEntryIv)) ? formatIv(Number(row.averageEntryIv)) : "not available"}, Sharpe ${formatSharpe(Number(row.sharpe) || 0)}, Calmar ${Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "not available"}`)
+    .attr("aria-label", (row) => `${row.label}: average entry DTE ${Number.isFinite(Number(row.averageEntryDteDays)) ? formatDte(Number(row.averageEntryDteDays)) : "not available"}, option PnL ${formatUsd(Number(row.optionPnl) || 0)}, hedge PnL ${formatUsd(Number(row.hedgePnl) || 0)}, average entry IV ${Number.isFinite(Number(row.averageEntryIv)) ? formatIv(Number(row.averageEntryIv)) : "not available"}, Sharpe ${formatSharpe(Number(row.sharpe) || 0)}, Calmar ${Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "not available"}`)
     .style("cursor", "pointer")
     .on("click", (_, row) => emit("select", row));
 
@@ -960,6 +967,7 @@ const draw = () => {
     addValue(columnX.optionPnl, formatCompactUsd(optionPnl), optionPnlColor(optionPnl));
     addValue(columnX.hedgePnl, formatCompactUsd(hedgePnl), hedgePnlColor(hedgePnl));
     addValue(columnX.entryIv, Number.isFinite(Number(row.averageEntryIv)) ? formatIv(Number(row.averageEntryIv)) : "—");
+    addValue(columnX.entryDte, Number.isFinite(Number(row.averageEntryDteDays)) ? formatDte(Number(row.averageEntryDteDays)) : "—");
     addValue(columnX.sharpe, formatSharpe(Number(row.sharpe) || 0), sharpeTextColor(Number(row.sharpe) || 0));
     addValue(columnX.drawdown, formatCompactUsd(Number(row.maxDrawdown) || 0), drawdownColor(Number(row.maxDrawdown) || 0));
     addValue(columnX.calmar, Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "—");

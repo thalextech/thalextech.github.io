@@ -6,9 +6,9 @@ import {
 } from "../src/lib/sweepDistribution.js";
 
 const rows = [
-  { key: "h20", total: 30, sharpe: 0.5, weeks: [0, 4], config: { entryHourUtc: 20 } },
-  { key: "h00", total: 10, sharpe: 1.2, weeks: [1, 2], config: { entryHourUtc: 0 } },
-  { key: "h08", total: 20, sharpe: 0.8, weeks: [-4, 10], config: { entryHourUtc: 8 } },
+  { key: "h20", total: 30, sharpe: 0.5, averageEntryDteDays: 6.5, averageEntryIv: 0.41, weeks: [0, 4], config: { entryHourUtc: 20 } },
+  { key: "h00", total: 10, sharpe: 1.2, averageEntryDteDays: 7.3, averageEntryIv: 0.43, weeks: [1, 2], config: { entryHourUtc: 0 } },
+  { key: "h08", total: 20, sharpe: 0.8, averageEntryDteDays: 7, averageEntryIv: 0.45, weeks: [-4, 10], config: { entryHourUtc: 8 } },
 ];
 
 test("sweep distributions separate clock order from ranked order", () => {
@@ -27,6 +27,18 @@ test("sweep distributions separate clock order from ranked order", () => {
   });
   assert.deepEqual(rankedBySharpe.map((row) => row.key), ["h00", "h08", "h20"]);
   assert.deepEqual(rankedBySharpe.map((row) => row.distributionRank), [1, 2, 3]);
+
+  const rankedByDte = orderSweepDistributionRows(rows, {
+    view: "ranked",
+    sortBy: "average_dte",
+  });
+  assert.deepEqual(rankedByDte.map((row) => row.key), ["h00", "h08", "h20"]);
+
+  const rankedByIv = orderSweepDistributionRows(rows, {
+    view: "ranked",
+    sortBy: "average_iv",
+  });
+  assert.deepEqual(rankedByIv.map((row) => row.key), ["h08", "h00", "h20"]);
 });
 
 test("calendar week selection uses the same Monday key across entry weekdays", () => {

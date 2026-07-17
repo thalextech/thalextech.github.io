@@ -680,6 +680,7 @@ const runSweep = async () => {
         pnl: run.summary.finalEquityUsd,
         optionPnl: run.summary.cumulativeOptionPnlUsd,
         hedgePnl: run.summary.cumulativeHedgePnlUsd,
+        averageEntryDteDays: run.summary.meanEntryDteDays,
         averageEntryIv: run.summary.meanEntryImpliedVol,
         averageSampledRealizedVol: run.summary.meanSampledRealizedVol,
         maxDrawdown: computeMaxDrawdown(run.cycleSummary),

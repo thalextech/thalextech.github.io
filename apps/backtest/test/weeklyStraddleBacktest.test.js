@@ -243,6 +243,8 @@ test("fixed-day entry-hour sweeps preserve the selected hour across expiries", (
       new Date(cycle.entryTs * 1000).getUTCHours() === expectedHour
     ));
   });
+  assert.ok(Math.abs(results[0].summary.meanEntryDteDays - 7) < 1e-9);
+  assert.ok(Math.abs(results[1].summary.meanEntryDteDays - (7 - 1 / 24)) < 1e-9);
   assert.notDeepEqual(
     results[0].cycleSummary.map((cycle) => cycle.entryTs),
     results[1].cycleSummary.map((cycle) => cycle.entryTs),

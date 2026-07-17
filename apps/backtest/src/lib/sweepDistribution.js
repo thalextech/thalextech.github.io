@@ -7,6 +7,12 @@ const numericOrNegativeInfinity = (value) => {
 
 export function sweepDistributionSortValue(row, sortBy) {
   if (sortBy === "sharpe") return numericOrNegativeInfinity(row.sharpe);
+  if (sortBy === "average_dte") {
+    return numericOrNegativeInfinity(row.averageEntryDteDays);
+  }
+  if (sortBy === "average_iv") {
+    return numericOrNegativeInfinity(row.averageEntryIv);
+  }
   if (sortBy === "median") {
     return row.weeks?.length
       ? numericOrNegativeInfinity(d3.median(row.weeks))
