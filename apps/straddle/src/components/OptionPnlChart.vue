@@ -15,7 +15,7 @@ const svgRef = ref(null);
 const tooltipRef = ref(null);
 const gradientId = `iv-gradient-${Math.random().toString(16).slice(2)}`;
 const SVG_FONT_FAMILY =
-  'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
+  '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
 
 const layout = {
   mainWidth: 860,
@@ -29,18 +29,18 @@ const DETAIL_TOP_INSET = 28;
 const LEGEND_TOP_OFFSET = 14;
 
 const TEXT_STYLES = {
-  axisText: { fill: "#d6d7de" },
-  axisLabel: { fill: "#d6d7de", size: "12px", weight: 700 },
-  mainTitle: { fill: "#fff", size: "18px", weight: 650 },
-  mainSubtitle: { fill: "#c9c9cf", size: "13px" },
-  detailTitle: { fill: "#fff", size: "14px", weight: 600 },
-  detailSubtitle: { fill: "#a9abb6", size: "12px" },
-  detailMetric: { fill: "#a9abb6", size: "12px", weight: 400 },
-  detailLegend: { fill: "#a9abb6", size: "11px", weight: 500 },
-  legendTitle: { fill: "#d6d7de", size: "12px" },
-  legendLabel: { fill: "#a9abb6", size: "11px" },
-  noData: { fill: "#c9c9cf", size: "14px" },
-  detailMessage: { fill: "#c9c9cf", size: "12px" },
+  axisText: { fill: "#70767d", size: "10px" },
+  axisLabel: { fill: "#70767d", size: "11px", weight: 600 },
+  mainTitle: { fill: "#e8eaed", size: "16px", weight: 600 },
+  mainSubtitle: { fill: "#70767d", size: "11px" },
+  detailTitle: { fill: "#e8eaed", size: "13px", weight: 600 },
+  detailSubtitle: { fill: "#70767d", size: "11px" },
+  detailMetric: { fill: "#70767d", size: "11px", weight: 400 },
+  detailLegend: { fill: "#70767d", size: "10px", weight: 500 },
+  legendTitle: { fill: "#70767d", size: "11px" },
+  legendLabel: { fill: "#70767d", size: "10px" },
+  noData: { fill: "#70767d", size: "12px" },
+  detailMessage: { fill: "#70767d", size: "11px" },
 };
 
 const DETAIL_SERIES_CONFIG = [
@@ -556,7 +556,7 @@ const ensureChartElements = () => {
   }
 
   if (!chartState.background) {
-    chartState.background = svg.append("rect").attr("fill", "#000");
+    chartState.background = svg.append("rect").attr("fill", "#0a0b0e");
   }
 
   if (!chartState.mainTitleText) {
@@ -1448,9 +1448,9 @@ onUnmounted(() => {
 <style scoped>
 .chartWrap {
   position: relative;
-  border-radius: 14px;
+  border-radius: 7px;
   overflow: hidden;
-  background: #000;
+  background: #0a0b0e;
 }
 
 svg {

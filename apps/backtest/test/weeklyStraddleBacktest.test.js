@@ -44,7 +44,9 @@ const buildParityFixture = () => {
       if (ts >= expirationTs) continue;
       const entries = [];
       for (const instrument of instruments) {
-        const delta = instrument.optionType === "C" ? 0.55 : -0.45;
+        const intradayDeltaShift = hour === 9 ? 0.05 : 0;
+        const delta = (instrument.optionType === "C" ? 0.55 : -0.45)
+          + intradayDeltaShift;
         entries.push([
           instrument.instrumentId,
           4_000 - day * 250 + instrument.instrumentId * 50,
@@ -69,6 +71,86 @@ const buildParityFixture = () => {
     maxWeeklyDteDays: 10,
   });
   return { indexRows, quoteSnapshots, instruments, config };
+};
+
+const buildOneDayMaturityFixture = () => {
+  const entryTs = Date.UTC(2025, 5, 6, 8) / 1000;
+  const oneDayExpirationTs = entryTs + DAY_SECONDS;
+  const sevenDayExpirationTs = entryTs + 7 * DAY_SECONDS;
+  const instruments = [
+    {
+      instrumentId: 0,
+      name: "BTC-07JUN25-100000-C",
+      expirationTs: oneDayExpirationTs,
+      strike: 100_000,
+      optionType: "C",
+    },
+    {
+      instrumentId: 1,
+      name: "BTC-07JUN25-100000-P",
+      expirationTs: oneDayExpirationTs,
+      strike: 100_000,
+      optionType: "P",
+    },
+    {
+      instrumentId: 2,
+      name: "BTC-13JUN25-100000-C",
+      expirationTs: sevenDayExpirationTs,
+      strike: 100_000,
+      optionType: "C",
+    },
+    {
+      instrumentId: 3,
+      name: "BTC-13JUN25-100000-P",
+      expirationTs: sevenDayExpirationTs,
+      strike: 100_000,
+      optionType: "P",
+    },
+  ];
+  const entryQuotes = instruments.map((instrument) => [
+    instrument.instrumentId,
+    instrument.expirationTs === oneDayExpirationTs ? 1_300 : 3_800,
+    0.55,
+    (instrument.optionType === "C" ? 0.52 : -0.48) * PRECOMPUTED_DELTA_SCALE,
+  ]);
+  const oneDayExitQuotes = instruments
+    .filter((instrument) => instrument.expirationTs === sevenDayExpirationTs)
+    .map((instrument) => [
+      instrument.instrumentId,
+      3_500,
+      0.54,
+      (instrument.optionType === "C" ? 0.54 : -0.46) * PRECOMPUTED_DELTA_SCALE,
+    ]);
+  const indexRows = [
+    { ts: entryTs, indexPrice: 100_000 },
+    { ts: oneDayExpirationTs, indexPrice: 101_000 },
+    { ts: sevenDayExpirationTs, indexPrice: 102_000 },
+  ];
+  const quoteSnapshots = [
+    [entryTs, entryQuotes],
+    [oneDayExpirationTs, oneDayExitQuotes],
+  ];
+  const config = normalizeBacktestConfig({
+    start: new Date(entryTs * 1000),
+    end: new Date(sevenDayExpirationTs * 1000),
+    entryWeekday: 5,
+    entryHourUtc: 8,
+    hourlyOffset: 8,
+    exitMode: "after_days",
+    exitHoldDays: 1,
+    hedgeEnabled: false,
+    targetDteDays: 1,
+    minWeeklyDteDays: 0.25,
+    maxWeeklyDteDays: 1.5,
+  });
+  return {
+    indexRows,
+    quoteSnapshots,
+    instruments,
+    config,
+    oneDayExpirationTs,
+    sevenDayExpirationTs,
+  };
 };
 
 const buildMultiExpiryEntryHourFixture = () => {
@@ -212,9 +294,48 @@ test("fixed-day roll waits for the next configured entry slot after close", () =
   assert.ok(result.cycleSummary.every((cycle) =>
     new Date(cycle.entryTs * 1000).getUTCDay() === fixture.config.entryWeekday
   ));
+  assert.ok(Math.abs(result.summary.meanHoldingPeriodDays - 2) < 1e-9);
   for (let index = 1; index < result.cycleSummary.length; index += 1) {
     assert.ok(result.cycleSummary[index].entryTs >= result.cycleSummary[index - 1].exitTs);
   }
+});
+
+test("1D maturity selects daily options instead of rolling a 7D option after one day", () => {
+  const fixture = buildOneDayMaturityFixture();
+  const preparedData = prepareBacktestData(fixture);
+  const oneDayResult = runWeeklyStraddleBacktest({
+    preparedData,
+    config: fixture.config,
+  });
+
+  assert.equal(oneDayResult.counts.closedCycles, 1);
+  assert.equal(oneDayResult.cycleSummary[0].dteDays, 1);
+  assert.equal(oneDayResult.cycleSummary[0].holdingPeriodDays, 1);
+  assert.equal(oneDayResult.cycleSummary[0].exitAtExpiry, true);
+  assert.equal(oneDayResult.cycleSummary[0].exitTs, fixture.oneDayExpirationTs);
+  assert.ok(oneDayResult.cycleSummary[0].legs.every(
+    (leg) => leg.expirationTs === fixture.oneDayExpirationTs,
+  ));
+  assert.ok(oneDayResult.cycleSummary[0].legs.every(
+    (leg) => leg.instrumentName.startsWith("BTC-07JUN25"),
+  ));
+
+  const dailyRollOfSevenDayResult = runWeeklyStraddleBacktest({
+    preparedData,
+    config: {
+      ...fixture.config,
+      targetDteDays: 7,
+      minWeeklyDteDays: 4,
+      maxWeeklyDteDays: 10,
+    },
+  });
+  assert.equal(dailyRollOfSevenDayResult.counts.closedCycles, 1);
+  assert.equal(dailyRollOfSevenDayResult.cycleSummary[0].dteDays, 7);
+  assert.equal(dailyRollOfSevenDayResult.cycleSummary[0].holdingPeriodDays, 1);
+  assert.equal(dailyRollOfSevenDayResult.cycleSummary[0].exitAtExpiry, false);
+  assert.ok(dailyRollOfSevenDayResult.cycleSummary[0].legs.every(
+    (leg) => leg.expirationTs === fixture.sevenDayExpirationTs,
+  ));
 });
 
 test("fixed-day entry-hour sweeps preserve the selected hour across expiries", () => {
@@ -443,5 +564,15 @@ test("batch runs match independent runs across entry hours", () => {
   });
   assert.ok(
     Math.abs(detailRows.at(-1).hedgePnlUsd - selectedPlan.hedgePnlUsd) < 1e-7,
+  );
+
+  const hourlyDetailRows = buildCycleDetail({
+    plan: selectedPlan,
+    preparedData: detailPrepared,
+    config: { ...configs[0], hedgeIntervalHours: 1 },
+  });
+  assert.ok(
+    hourlyDetailRows.filter((row) => row.hedgeTrade).length
+      > detailRows.filter((row) => row.hedgeTrade).length,
   );
 });

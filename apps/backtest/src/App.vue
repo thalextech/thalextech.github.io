@@ -4,6 +4,7 @@ import CycleDetailChart from "./components/CycleDetailChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
 import IvRvChart from "./components/IvRvChart.vue";
 import StyledSelectMenu from "./components/StyledSelectMenu.vue";
+import VarianceStandardizedVrHeatmap from "./components/VarianceStandardizedVrHeatmap.vue";
 import VarianceRatioDashboard from "./components/VarianceRatioDashboard.vue";
 import WeekdayHourHeatmap from "./components/WeekdayHourHeatmap.vue";
 import SweepResultsChart from "./components/SweepResultsChart.vue";
@@ -25,7 +26,11 @@ import {
 } from "./lib/ivRv.js";
 import { blackScholesPrice } from "./lib/optionPricing.js";
 import { computeZeroMtmContours } from "./lib/zeroMtmContours.js";
-import { calculateVarianceRatioDashboard } from "./lib/serialCorrelation.js";
+import {
+  buildForwardVarianceRatioSeasonality,
+  calculateVarianceRatioDashboard,
+  RETURN_ADJUSTMENT,
+} from "./lib/serialCorrelation.js";
 import {
   DEFAULT_BACKTEST_CONFIG,
   buildCycleDetail,
@@ -36,7 +41,10 @@ import {
   requiredQuoteDteDays,
 } from "./lib/weeklyStraddleBacktest.js";
 
+const DEFAULT_MATURITY_DAYS = 7;
+
 const MATURITY_OPTIONS = [
+  { value: 1, label: "1D", minDteDays: 0.25, maxDteDays: 1.5 },
   { value: 7, label: "7D", minDteDays: 4, maxDteDays: 10 },
   { value: 14, label: "14D", minDteDays: 7, maxDteDays: 28 },
   { value: 30, label: "30D", minDteDays: 14, maxDteDays: 60 },
@@ -90,7 +98,7 @@ const HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) => ({
   value: hour,
   label: `${String(hour).padStart(2, "0")}:00`,
 }));
-const SERIAL_CLOSE_WEEKDAY_OPTIONS = [
+const SERIAL_ANCHOR_WEEKDAY_OPTIONS = [
   { value: -1, label: "All" },
   ...WEEKDAY_OPTIONS,
 ];
@@ -108,7 +116,7 @@ const HEDGE_FREQUENCY_OPTIONS = [
 
 const ui = reactive({
   structure: "straddle",
-  maturityDays: 7,
+  maturityDays: DEFAULT_MATURITY_DAYS,
   targetDelta: 0.25,
   entryWeekday: 5,
   entryHourUtc: 8,
@@ -130,7 +138,9 @@ const maturityOptions = computed(() =>
   ui.structure === "calendar_spread" ? CALENDAR_MATURITY_OPTIONS : MATURITY_OPTIONS,
 );
 const currentMaturity = computed(() =>
-  maturityOptions.value.find((option) => String(option.value) === String(ui.maturityDays)) || maturityOptions.value[0],
+  maturityOptions.value.find((option) => String(option.value) === String(ui.maturityDays))
+    || maturityOptions.value.find((option) => option.value === DEFAULT_MATURITY_DAYS)
+    || maturityOptions.value[0],
 );
 const showDelta = computed(() => !["straddle", "calendar_spread"].includes(ui.structure));
 const rollDayOptions = computed(() =>
@@ -182,11 +192,11 @@ const ivRvAlignForward = ref(false);
 const ivRvRangeStart = ref(0);
 const ivRvRangeEnd = ref(100);
 const rvChartRef = ref(null);
+const standardizedVrHeatmapRef = ref(null);
+const showHeatmapDataLabels = ref(false);
 const varianceRatioRef = ref(null);
-const rvOutlierCorrection = ref(false);
-const serialReturnMode = ref("deseasonalized");
-const serialCloseHour = ref(0);
-const serialCloseWeekday = ref(-1);
+const serialAnchorHour = ref(8);
+const serialAnchorWeekday = ref(5);
 const rvRangeStart = ref(0);
 const rvRangeEnd = ref(100);
 const IV_RV_TENORS = [7, 14, 30];
@@ -273,28 +283,36 @@ const rvRangeLabel = computed(() => {
   return range ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}` : "No range";
 });
 const rvWeekdayGroups = computed(() => buildHourlyRvWeekdayGroups(rvFilteredRows.value));
-const rvHeatmapCells = computed(() => buildHourlyRvHeatmap(rvFilteredRows.value, {
-  winsorizeOutliers: rvOutlierCorrection.value,
-}));
+const rvHeatmapCells = computed(() => buildHourlyRvHeatmap(rvFilteredRows.value));
 const rvFilteredSourceRows = computed(() =>
   ivRvSourceRows.value.filter((row) => {
     const range = rvSelectedRange.value;
     return !range || (row.ts >= range.start && row.ts <= range.end);
   }),
 );
+const standardizedVrHeatmapCells = computed(() =>
+  buildForwardVarianceRatioSeasonality(rvFilteredSourceRows.value, {
+    adjustment: RETURN_ADJUSTMENT.VARIANCE_STANDARDIZED,
+  }),
+);
 const varianceRatioAnalysis = computed(() => calculateVarianceRatioDashboard(
   rvFilteredSourceRows.value,
   {
-    deseasonalize: serialReturnMode.value === "deseasonalized",
-    closeHour: serialCloseHour.value,
-    closeWeekday: serialCloseWeekday.value,
+    adjustment: RETURN_ADJUSTMENT.RAW,
+    closeHour: serialAnchorHour.value,
+    closeWeekday: serialAnchorWeekday.value,
+    anchorMode: "start",
     bootstrapReplications: 400,
-  },
+ },
 ));
-const serialCloseWeekdayLabel = computed(() =>
-  WEEKDAY_OPTIONS.find((option) => option.value === serialCloseWeekday.value)?.label
+const serialAnchorWeekdayLabel = computed(() =>
+  WEEKDAY_OPTIONS.find((option) => option.value === serialAnchorWeekday.value)?.label
     || "All weekdays",
 );
+const selectStandardizedVrCell = ({ weekday, hour }) => {
+  serialAnchorWeekday.value = weekday;
+  serialAnchorHour.value = hour;
+};
 const rvWeekdayInsights = computed(() => summarizeRvWeekdayGroups(rvWeekdayGroups.value));
 const sweepDimension = ref("entry_hour");
 const sweepResults = ref([]);
@@ -544,7 +562,19 @@ const cycleContours = ref(null);
 const cycleDetailLoading = ref(false);
 const cycleDetailError = ref("");
 const cycleDetailCache = new Map();
+let currentCycleDetailSequence = 0;
 const cycleRows = computed(() => result.value?.cycleSummary || []);
+
+const clearCycleDetail = ({ clearCache = false } = {}) => {
+  currentCycleDetailSequence += 1;
+  selectedCycle.value = null;
+  cycleDetailRows.value = [];
+  cycleBreakEvens.value = null;
+  cycleContours.value = null;
+  cycleDetailLoading.value = false;
+  cycleDetailError.value = "";
+  if (clearCache) cycleDetailCache.clear();
+};
 
 const chartTitle = computed(() => {
   if (selectedCycle.value) {
@@ -681,6 +711,7 @@ const runSweep = async () => {
         optionPnl: run.summary.cumulativeOptionPnlUsd,
         hedgePnl: run.summary.cumulativeHedgePnlUsd,
         averageEntryDteDays: run.summary.meanEntryDteDays,
+        averageHoldingPeriodDays: run.summary.meanHoldingPeriodDays,
         averageEntryIv: run.summary.meanEntryImpliedVol,
         averageSampledRealizedVol: run.summary.meanSampledRealizedVol,
         maxDrawdown: computeMaxDrawdown(run.cycleSummary),
@@ -787,11 +818,8 @@ const runCurrent = async () => {
     return;
   }
   const runSequence = ++currentRunSequence;
-  selectedCycle.value = null;
-  cycleDetailRows.value = [];
-  cycleBreakEvens.value = null;
-  cycleContours.value = null;
-  cycleDetailCache.clear();
+  clearCycleDetail({ clearCache: true });
+  result.value = null;
   const config = buildConfig();
   state.progress = "Running strategy";
   try {
@@ -813,11 +841,7 @@ const runCurrent = async () => {
 };
 
 const closeCycleDetail = () => {
-  selectedCycle.value = null;
-  cycleDetailRows.value = [];
-  cycleBreakEvens.value = null;
-  cycleContours.value = null;
-  cycleDetailError.value = "";
+  clearCycleDetail();
 };
 
 const handleCycleSelect = async (cycle) => {
@@ -825,7 +849,13 @@ const handleCycleSelect = async (cycle) => {
   selectedCycle.value = cycle;
   cycleBreakEvens.value = computeBreakEvens(cycle);
   cycleDetailError.value = "";
-  const cacheKey = `${cycle.entryTs}|${cycle.exitTs}`;
+  const detailSequence = ++currentCycleDetailSequence;
+  const cacheKey = [
+    cycle.entryTs,
+    cycle.exitTs,
+    cycle.hedgeEnabled,
+    cycle.hedgeIntervalHours,
+  ].join("|");
   if (cycleDetailCache.has(cacheKey)) {
     const cached = cycleDetailCache.get(cacheKey);
     cycleDetailRows.value = cached.rows;
@@ -861,18 +891,24 @@ const handleCycleSelect = async (cycle) => {
       price: blackScholesPrice,
       surfaceMode: "sticky_strike",
     });
+    if (detailSequence !== currentCycleDetailSequence) return;
     cycleDetailCache.set(cacheKey, { rows, contours });
     cycleDetailRows.value = rows;
     cycleContours.value = contours;
   } catch (error) {
+    if (detailSequence !== currentCycleDetailSequence) return;
     cycleDetailError.value = error?.message || "Unable to load hourly cycle detail";
   } finally {
-    cycleDetailLoading.value = false;
+    if (detailSequence === currentCycleDetailSequence) {
+      cycleDetailLoading.value = false;
+    }
   }
 };
 
 const loadBacktest = async () => {
   const runSequence = ++currentRunSequence;
+  clearCycleDetail({ clearCache: true });
+  result.value = null;
   state.error = "";
   state.progress = "Loading data";
   try {
@@ -942,7 +978,7 @@ watch(
     if (ui.structure === "calendar_spread" && !isCalendarMaturity) {
       ui.maturityDays = CALENDAR_MATURITY_OPTIONS[0].value;
     } else if (ui.structure !== "calendar_spread" && isCalendarMaturity) {
-      ui.maturityDays = MATURITY_OPTIONS[0].value;
+      ui.maturityDays = DEFAULT_MATURITY_DAYS;
     }
     if (ui.exitHoldDays > maxExitHoldDays.value) {
       ui.exitHoldDays = maxExitHoldDays.value;
@@ -1044,10 +1080,19 @@ function saveRvHeatmap(date = new Date().toISOString().slice(0, 10)) {
   });
 }
 
+function saveStandardizedVrHeatmap(date = new Date().toISOString().slice(0, 10)) {
+  if (!standardizedVrHeatmapRef.value || !standardizedVrHeatmapCells.value.length) return;
+  standardizedVrHeatmapRef.value.exportPng({
+    filename: `btc-variance-standardized-vr24-heatmap-${date}.png`,
+    scale: 4,
+    padding: 24,
+  });
+}
+
 function saveVarianceRatio(date = new Date().toISOString().slice(0, 10)) {
   if (!varianceRatioRef.value || !varianceRatioAnalysis.value.sampleSize) return;
   varianceRatioRef.value.exportPng({
-    filename: `btc-variance-ratio-${serialReturnMode.value}-${serialCloseWeekdayLabel.value.toLowerCase()}-${date}.png`,
+    filename: `btc-forward-variance-ratio-raw-${serialAnchorWeekdayLabel.value.toLowerCase()}-${String(serialAnchorHour.value).padStart(2, "0")}utc-${date}.png`,
     scale: 4,
     padding: 24,
   });
@@ -1439,13 +1484,6 @@ onMounted(loadBacktest);
             </div>
           </div>
         </div>
-        <div v-else class="sweepHeader">
-          <div>
-            <div class="chartTitle">BTC hourly volatility and returns</div>
-            <div class="chartSubtitle">Single-hour observations by weekday and UTC hour</div>
-          </div>
-        </div>
-
         <div v-if="state.error" class="cycleDetailState error">{{ state.error }}</div>
         <div
           v-else-if="mode === 'single' && state.progress && !result"
@@ -1513,23 +1551,28 @@ onMounted(loadBacktest);
           <div v-else class="rvCombinedCharts">
             <section class="rvChartSection rvHeatmapSection">
               <div class="rvSectionHeader">
-                <div class="rvSectionLabel">WEEKDAY × UTC HOUR · MEAN</div>
-                <div class="rvSectionActions">
-                  <div class="ivRvRangeInline rvHeatmapRange">
-                    <span class="ivRvRangeLabel">{{ rvRangeLabel }}</span>
-                    <div class="ivRvRangeControl">
-                      <div class="dateRangeSlider" :style="rvRangeStyle">
-                        <span class="dateRangeTrack" aria-hidden="true"></span>
-                        <span class="dateRangeSelection" aria-hidden="true"></span>
-                        <input v-model.number="rvRangeStartModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period start" />
-                        <input v-model.number="rvRangeEndModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period end" />
-                      </div>
+                <div class="ivRvRangeInline rvHeatmapRange">
+                  <span class="ivRvRangeLabel">{{ rvRangeLabel }}</span>
+                  <div class="ivRvRangeControl">
+                    <div class="dateRangeSlider" :style="rvRangeStyle">
+                      <span class="dateRangeTrack" aria-hidden="true"></span>
+                      <span class="dateRangeSelection" aria-hidden="true"></span>
+                      <input v-model.number="rvRangeStartModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period start" />
+                      <input v-model.number="rvRangeEndModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period end" />
                     </div>
                   </div>
-                  <label class="rvOutlierToggle" title="Clamp raw hourly RV observations to the selected period's 1st and 99th percentiles before calculating cell averages">
-                    <input v-model="rvOutlierCorrection" type="checkbox" />
-                    <span>Outlier correction</span>
-                  </label>
+                </div>
+                <div class="rvSectionActions">
+                  <button
+                    class="rvScreenshotButton rvDataLabelsButton"
+                    :class="{ active: showHeatmapDataLabels }"
+                    type="button"
+                    :aria-pressed="showHeatmapDataLabels"
+                    title="Show values in both heatmaps"
+                    @click="showHeatmapDataLabels = !showHeatmapDataLabels"
+                  >
+                    Data labels
+                  </button>
                   <button class="rvScreenshotButton" type="button" :disabled="ivRvLoading || !rvWeekdayInsights" title="Save heatmap as PNG" @click="saveRvHeatmap()">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
@@ -1543,40 +1586,21 @@ onMounted(loadBacktest);
                 ref="rvChartRef"
                 :cells="rvHeatmapCells"
                 :loading="ivRvLoading"
-                :measure-label="rvOutlierCorrection ? 'Mean annualized hourly RV (1–99% winsorized)' : 'Mean annualized hourly RV'"
+                measure-label="Mean annualized hourly RV"
+                :show-data-labels="showHeatmapDataLabels"
+                chart-title="HOURLY REALIZED VOLATILITY · WEEKDAY × UTC HOUR"
+                methodology="Method: mean annualized Parkinson RV within each UTC weekday/hour bucket; raw 1h observations."
               />
             </section>
             <section class="rvChartSection rvSecondaryAnalysisSection">
-              <div class="rvSectionHeader">
-                <div class="rvQuestionBlock">
-                  <div class="rvQuestionTitle">Does BTC keep the variance it generates intraday?</div>
-                  <div class="rvQuestionSubtitle">
-                    {{ serialCloseWeekdayLabel }} · close {{ String(serialCloseHour).padStart(2, '0') }}:00 UTC
-                    · {{ varianceRatioAnalysis.headline?.bootstrapWindows?.toLocaleString() || 0 }} days
-                    · {{ serialReturnMode === 'deseasonalized' ? 'de-seasonalized' : 'raw' }} hourly returns
-                  </div>
-                </div>
-                <div class="rvSectionActions rvReturnAnalysisActions">
-                  <div class="rvAnalysisToggle" role="group" aria-label="Return preprocessing">
-                    <button type="button" :class="{ active: serialReturnMode === 'raw' }" @click="serialReturnMode = 'raw'">Raw returns</button>
-                    <button type="button" :class="{ active: serialReturnMode === 'deseasonalized' }" @click="serialReturnMode = 'deseasonalized'">De-seasonalized</button>
-                  </div>
-                  <StyledSelectMenu
-                    v-model="serialCloseWeekday"
-                    label="Close weekday"
-                    :options="SERIAL_CLOSE_WEEKDAY_OPTIONS"
-                  />
-                  <StyledSelectMenu
-                    v-model="serialCloseHour"
-                    label="Daily close UTC"
-                    :options="HOUR_OPTIONS"
-                  />
+              <div class="rvSecondaryHeatmapBlock">
+                <div class="rvSecondaryHeatmapToolbar">
                   <button
                     class="rvScreenshotButton"
                     type="button"
-                    :disabled="ivRvLoading || !varianceRatioAnalysis.sampleSize"
-                    title="Save variance-ratio analysis as PNG"
-                    @click="saveVarianceRatio()"
+                    :disabled="ivRvLoading || !standardizedVrHeatmapCells.length"
+                    title="Save variance-standardized VR(24) heatmap as PNG"
+                    @click="saveStandardizedVrHeatmap()"
                   >
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
@@ -1585,12 +1609,50 @@ onMounted(loadBacktest);
                     Screenshot
                   </button>
                 </div>
+                <div class="rvSecondaryHeatmap">
+                  <VarianceStandardizedVrHeatmap
+                    ref="standardizedVrHeatmapRef"
+                    :cells="standardizedVrHeatmapCells"
+                    :loading="ivRvLoading"
+                    :show-data-labels="showHeatmapDataLabels"
+                    @select="selectStandardizedVrCell"
+                  />
+                </div>
               </div>
-              <VarianceRatioDashboard
-                ref="varianceRatioRef"
-                :analysis="varianceRatioAnalysis"
-                :loading="ivRvLoading"
-              />
+              <div class="rvTermStructureBlock">
+                <div class="rvTermStructureToolbar">
+                  <div class="rvSectionActions">
+                    <StyledSelectMenu
+                      v-model="serialAnchorWeekday"
+                      label="Entry weekday"
+                      :options="SERIAL_ANCHOR_WEEKDAY_OPTIONS"
+                    />
+                    <StyledSelectMenu
+                      v-model="serialAnchorHour"
+                      label="Entry hour UTC"
+                      :options="HOUR_OPTIONS"
+                    />
+                    <button
+                      class="rvScreenshotButton"
+                      type="button"
+                      :disabled="ivRvLoading || !varianceRatioAnalysis.sampleSize"
+                      title="Save variance-ratio analysis as PNG"
+                      @click="saveVarianceRatio()"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                        <circle cx="12" cy="13" r="4" />
+                      </svg>
+                      Screenshot
+                    </button>
+                  </div>
+                </div>
+                <VarianceRatioDashboard
+                  ref="varianceRatioRef"
+                  :analysis="varianceRatioAnalysis"
+                  :loading="ivRvLoading"
+                />
+              </div>
             </section>
           </div>
         </div>
@@ -2424,17 +2486,39 @@ onMounted(loadBacktest);
   flex-direction: column;
 }
 
+.rvHeatmapSection {
+  height: 480px;
+}
+
+.rvHeatmapSection :deep(.chartWrap) {
+  margin-top: 12px;
+}
+
+.rvHeatmapSection .rvSectionHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+}
+
+.rvHeatmapSection .rvHeatmapRange {
+  grid-column: 2;
+}
+
+.rvHeatmapSection .rvSectionActions {
+  grid-column: 3;
+  justify-self: end;
+}
+
 .rvSecondaryAnalysisSection {
   height: auto;
   min-height: 750px;
   position: relative;
-  margin-top: 32px;
+  margin-top: 16px;
 }
 
 .rvSecondaryAnalysisSection::before {
   content: "";
   position: absolute;
-  top: -16px;
+  top: -8px;
   left: -10px;
   right: -10px;
   border-top: 1px solid rgba(255,255,255,0.08);
@@ -2450,99 +2534,48 @@ onMounted(loadBacktest);
   padding: 0 12px;
 }
 
-.rvSecondaryAnalysisSection .rvSectionHeader {
-  flex-wrap: wrap;
-  min-height: 52px;
-  padding-top: 6px;
-  padding-bottom: 6px;
+.rvSecondaryHeatmap {
+  display: flex;
+  flex: 0 0 486px;
+  width: 100%;
+  min-width: 0;
+  height: 486px;
 }
 
-.rvQuestionBlock {
-  flex: 1 1 280px;
+.rvSecondaryHeatmapToolbar {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 12px 4px;
 }
 
-.rvQuestionTitle {
-  color: #f2f3f5;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.35;
+.rvTermStructureBlock {
+  position: relative;
+  margin-top: 16px;
 }
 
-.rvQuestionSubtitle {
-  margin-top: 3px;
-  color: #777d84;
-  font-size: 9px;
-  line-height: 1.35;
+.rvTermStructureBlock::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  border-top: 1px solid rgba(255,255,255,0.08);
 }
 
-.rvSectionLabel {
-  color: #777d84;
-  font-size: 10px;
-  letter-spacing: 1px;
+.rvTermStructureToolbar {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 12px 4px;
 }
 
 .rvSectionActions {
   display: flex;
   align-items: center;
   gap: 7px;
-}
-
-.rvReturnAnalysisActions {
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.rvAnalysisToggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 6px;
-  background: rgba(255,255,255,0.025);
-}
-
-.rvAnalysisToggle button {
-  height: 20px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: #777d84;
-  font: 500 9px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
-  cursor: pointer;
-}
-
-.rvAnalysisToggle button.active {
-  background: rgba(255,255,255,0.1);
-  color: #f2f3f5;
-}
-
-.rvOutlierToggle {
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 9px;
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 5px;
-  background: rgba(255,255,255,0.025);
-  color: #8f949b;
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.rvOutlierToggle:has(input:checked) {
-  border-color: rgba(239,68,68,0.38);
-  background: rgba(239,68,68,0.09);
-  color: #f2f3f5;
-}
-
-.rvOutlierToggle input {
-  width: 12px;
-  height: 12px;
-  margin: 0;
-  accent-color: #dc2626;
 }
 
 .rvScreenshotButton {
@@ -2569,6 +2602,12 @@ onMounted(loadBacktest);
 .rvScreenshotButton:disabled {
   cursor: default;
   opacity: 0.45;
+}
+
+.rvDataLabelsButton.active {
+  border-color: rgba(255,255,255,0.28);
+  background: rgba(255,255,255,0.12);
+  color: #f2f3f5;
 }
 
 .rvChartSection :deep(.chartWrap) {

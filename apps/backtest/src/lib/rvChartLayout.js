@@ -1,5 +1,7 @@
 export const RV_AXIS_COLOR = "#9ba0a7";
 export const RV_AXIS_FONT_SIZE = 10;
+export const RV_CHART_TITLE_FONT_SIZE = 12;
+export const RV_CHART_DESCRIPTION_FONT_SIZE = 10.5;
 export const RV_PLOT_MAX_WIDTH = 1152;
 export const RV_TERM_STRUCTURE_MAX_WIDTH = 1280;
 export const RV_PLOT_GUTTERS = Object.freeze({ left: 84, right: 118 });

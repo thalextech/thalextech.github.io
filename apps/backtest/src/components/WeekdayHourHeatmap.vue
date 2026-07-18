@@ -5,6 +5,8 @@ import { exportChartToPng } from "../../../../lib/export-png.js";
 import {
   RV_AXIS_COLOR,
   RV_AXIS_FONT_SIZE,
+  RV_CHART_DESCRIPTION_FONT_SIZE,
+  RV_CHART_TITLE_FONT_SIZE,
   RV_PLOT_GUTTERS,
   calculateRvPlotLayout,
 } from "../lib/rvChartLayout.js";
@@ -19,9 +21,18 @@ const props = defineProps({
   ariaLabel: { type: String, default: "Hourly realized volatility by weekday and UTC hour" },
   gradientId: { type: String, default: "rv-hourly-red-gradient" },
   colorMode: { type: String, default: "sequential-red" },
+  divergingCenter: { type: Number, default: 0 },
+  valueFormat: { type: String, default: "percent" },
   legendDecimals: { type: Number, default: 0 },
   valueDecimals: { type: Number, default: 2 },
+  showDataLabels: { type: Boolean, default: false },
+  showPositiveSign: { type: Boolean, default: true },
+  interactive: { type: Boolean, default: false },
+  tooltipFormatter: { type: Function, default: null },
+  chartTitle: { type: String, default: "" },
+  methodology: { type: String, default: "" },
 });
+const emit = defineEmits(["select"]);
 
 const svgRef = ref(null);
 const tooltipRef = ref(null);
@@ -41,12 +52,23 @@ function styleAxis(group) {
     .style("font", `${RV_AXIS_FONT_SIZE}px ${font}`);
 }
 
-function formatValue(value, decimals = props.valueDecimals) {
-  const formatted = d3.format(`.${decimals}%`)(value);
-  return props.colorMode === "diverging" && value > 0 ? `+${formatted}` : formatted;
+function formatValue(value, decimals = props.valueDecimals, showPositiveSign = true) {
+  const displayedValue = props.valueFormat === "decimal" ? value : value * 100;
+  const roundsToZero = Math.abs(displayedValue) < 0.5 * 10 ** -decimals;
+  const normalizedValue = roundsToZero ? 0 : value;
+  const formatted = props.valueFormat === "decimal"
+    ? d3.format(`.${decimals}f`)(normalizedValue)
+    : d3.format(`.${decimals}%`)(normalizedValue);
+  return showPositiveSign
+    && props.showPositiveSign
+    && props.colorMode === "diverging"
+    && normalizedValue > props.divergingCenter
+    ? `+${formatted}`
+    : formatted;
 }
 
 function aggregateTooltip(row) {
+  if (props.tooltipFormatter) return props.tooltipFormatter(row);
   const values = (row.values || []).filter(Number.isFinite).sort(d3.ascending);
   const median = d3.quantileSorted(values, 0.5);
   const deviation = d3.deviation(values);
@@ -55,7 +77,7 @@ function aggregateTooltip(row) {
     `Mean  ${formatValue(row.average)}`,
     `Median  ${formatValue(median)}`,
     `Min / max  ${formatValue(values[0])} / ${formatValue(values.at(-1))}`,
-    `Std dev  ${Number.isFinite(deviation) ? formatValue(deviation) : "—"}`,
+    `Std dev  ${Number.isFinite(deviation) ? formatValue(deviation, props.valueDecimals, false) : "—"}`,
     `Observations  ${values.length.toLocaleString()}`,
   ].join("\n");
 }
@@ -101,17 +123,37 @@ function render() {
   const x = d3.scaleBand().domain(hours).range([0, gridWidth]);
   const y = d3.scaleBand().domain(weekdays).range([0, gridHeight]);
   const dataExtent = d3.extent(cells, (cell) => cell.average);
-  const maxAbsolute = Math.max(Math.abs(dataExtent[0]), Math.abs(dataExtent[1]));
+  const maxDeviation = Math.max(
+    Math.abs(dataExtent[0] - props.divergingCenter),
+    Math.abs(dataExtent[1] - props.divergingCenter),
+  );
   const extent = props.colorMode === "diverging"
-    ? [-maxAbsolute, maxAbsolute]
+    ? [props.divergingCenter - maxDeviation, props.divergingCenter + maxDeviation]
     : dataExtent;
   const color = props.colorMode === "diverging"
-    ? maxAbsolute === 0
+    ? maxDeviation === 0
       ? () => d3.interpolateRdBu(0.5)
-      : d3.scaleDiverging(d3.interpolateRdBu).domain([extent[0], 0, extent[1]]).clamp(true)
+      : d3.scaleDiverging(d3.interpolateRdBu).domain([extent[0], props.divergingCenter, extent[1]]).clamp(true)
     : extent[0] === extent[1]
       ? () => d3.interpolateReds(0.58)
       : d3.scaleSequential((value) => d3.interpolateReds(0.18 + value * 0.76)).domain(extent).clamp(true);
+  if (props.chartTitle) {
+    svg.append("text")
+      .attr("x", gridX)
+      .attr("y", 17)
+      .attr("fill", "#777d84")
+      .attr("letter-spacing", "1px")
+      .style("font", `${RV_CHART_TITLE_FONT_SIZE}px ${font}`)
+      .text(props.chartTitle);
+  }
+  if (props.methodology) {
+    svg.append("text")
+      .attr("x", gridX)
+      .attr("y", 39)
+      .attr("fill", "#9aa0a6")
+      .style("font", `${RV_CHART_DESCRIPTION_FONT_SIZE}px ${font}`)
+      .text(props.methodology);
+  }
   const chart = svg.append("g").attr("transform", `translate(${gridX},${gridY})`);
 
   chart.append("g").attr("transform", `translate(0,${gridHeight})`)
@@ -128,9 +170,18 @@ function render() {
     .attr("text-anchor", "middle").attr("fill", RV_AXIS_COLOR).style("font", `${RV_AXIS_FONT_SIZE}px ${font}`).text("Day of Week");
 
   const cell = chart.selectAll("g.heat-cell").data(cells, (row) => row.key).join("g")
-    .attr("class", "heat-cell").attr("transform", (row) => `translate(${x(row.hour)},${y(row.weekdayLabel)})`);
+    .attr("class", "heat-cell")
+    .attr("transform", (row) => `translate(${x(row.hour)},${y(row.weekdayLabel)})`)
+    .style("outline", "none")
+    .style("cursor", props.interactive ? "pointer" : null)
+    .on("mousedown", (event) => event.preventDefault())
+    .on("click", (_, row) => {
+      if (props.interactive) emit("select", row);
+    });
   cell.append("rect").attr("width", x.bandwidth()).attr("height", y.bandwidth())
-    .attr("fill", (row) => color(row.average)).attr("stroke", "#090a0d").attr("stroke-width", 1)
+    .attr("fill", (row) => color(row.average))
+    .attr("stroke", "#090a0d")
+    .attr("stroke-width", 1)
     .attr("aria-label", (row) => aggregateTooltip(row).replaceAll("\n", ". "))
     .on("mouseenter", function (event, row) {
       d3.select(this).attr("stroke", "#000000").attr("stroke-width", 2);
@@ -145,6 +196,19 @@ function render() {
       d3.select(this).attr("stroke", "#090a0d").attr("stroke-width", 1);
       if (tooltipRef.value) tooltipRef.value.hidden = true;
     });
+
+  if (props.showDataLabels) {
+    cell.append("text")
+      .attr("x", x.bandwidth() / 2)
+      .attr("y", y.bandwidth() / 2)
+      .attr("dy", "0.35em")
+      .attr("text-anchor", "middle")
+      .attr("fill", (row) => d3.lab(color(row.average)).l < 56 ? "#f4f5f7" : "#17191d")
+      .style("font", `500 8.5px ${font}`)
+      .style("font-variant-numeric", "tabular-nums")
+      .style("pointer-events", "none")
+      .text((row) => formatValue(row.average, 1));
+  }
 
   const legendHeight = Math.min(180, gridHeight * 0.58);
   const legendX = gridX + gridWidth + 24;
@@ -163,7 +227,23 @@ function render() {
   });
 }
 
-watch(() => [props.cells, props.loading, props.measureLabel, props.legendLabel, props.colorMode, props.legendDecimals, props.valueDecimals], render, { deep: true });
+watch(() => [
+  props.cells,
+  props.loading,
+  props.measureLabel,
+  props.legendLabel,
+  props.colorMode,
+  props.divergingCenter,
+  props.valueFormat,
+  props.legendDecimals,
+  props.valueDecimals,
+  props.showDataLabels,
+  props.showPositiveSign,
+  props.interactive,
+  props.tooltipFormatter,
+  props.chartTitle,
+  props.methodology,
+], render, { deep: true });
 onMounted(() => {
   render();
   resizeObserver = new ResizeObserver(render);
@@ -183,6 +263,11 @@ onBeforeUnmount(() => resizeObserver?.disconnect());
 .chartWrap { position: relative; }
 .chartWrap,
 .chartSvg { width: 100%; height: 100%; min-width: 0; min-height: 0; display: block; }
+.chartSvg :deep(.heat-cell),
+.chartSvg :deep(.heat-cell:focus),
+.chartSvg :deep(.heat-cell:focus-visible) {
+  outline: none;
+}
 .chartTooltip {
   position: absolute;
   z-index: 2;

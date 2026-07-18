@@ -894,13 +894,14 @@ const draw = () => {
     spark: margin.left + contentWidth * 0.07,
     optionPnl: margin.left + contentWidth * 0.36,
     hedgePnl: margin.left + contentWidth * 0.46,
-    entryIv: margin.left + contentWidth * 0.53,
-    entryDte: margin.left + contentWidth * 0.60,
-    sharpe: margin.left + contentWidth * 0.66,
-    drawdown: margin.left + contentWidth * 0.73,
-    calmar: margin.left + contentWidth * 0.80,
-    win: margin.left + contentWidth * 0.85,
-    profitFactor: margin.left + contentWidth * 0.91,
+    entryIv: margin.left + contentWidth * 0.52,
+    entryDte: margin.left + contentWidth * 0.58,
+    holdingPeriod: margin.left + contentWidth * 0.64,
+    sharpe: margin.left + contentWidth * 0.695,
+    drawdown: margin.left + contentWidth * 0.75,
+    calmar: margin.left + contentWidth * 0.81,
+    win: margin.left + contentWidth * 0.86,
+    profitFactor: margin.left + contentWidth * 0.915,
     cvar: margin.left + contentWidth * 0.97,
   };
   const headers = [
@@ -910,6 +911,7 @@ const draw = () => {
     { label: "HEDGE PNL", x: columnX.hedgePnl, anchor: "end", tooltip: "Cumulative perpetual-futures hedge PnL across completed cycles." },
     { label: "AVG ENTRY IV", x: columnX.entryIv, anchor: "end", tooltip: "Mean normalized entry implied volatility across selected option legs in completed cycles." },
     { label: "AVG DTE", x: columnX.entryDte, anchor: "end", tooltip: "Mean option days to expiry at entry across completed cycles. For Friday hourly sweeps, entries after the 08:00 UTC expiry use a shorter DTE and may be flat until the next entry slot." },
+    { label: "AVG HOLD", x: columnX.holdingPeriod, anchor: "end", tooltip: "Mean elapsed time from entry to exit across completed cycles. This can be shorter than the configured roll interval when the option expires first." },
     { label: "SHARPE", x: columnX.sharpe, anchor: "end", tooltip: "Annualized weekly Sharpe: average weekly PnL divided by weekly PnL volatility, multiplied by √52." },
     { label: "MAX DD", x: columnX.drawdown, anchor: "end", tooltip: "Largest peak-to-trough loss in cumulative PnL during the backtest." },
     { label: "CALMAR", x: columnX.calmar, anchor: "end", tooltip: "Annualized weekly PnL divided by absolute maximum drawdown. Higher means more return per unit of peak-to-trough loss." },
@@ -934,7 +936,7 @@ const draw = () => {
     .attr("class", "rank-row")
     .attr("role", "button")
     .attr("tabindex", 0)
-    .attr("aria-label", (row) => `${row.label}: average entry DTE ${Number.isFinite(Number(row.averageEntryDteDays)) ? formatDte(Number(row.averageEntryDteDays)) : "not available"}, option PnL ${formatUsd(Number(row.optionPnl) || 0)}, hedge PnL ${formatUsd(Number(row.hedgePnl) || 0)}, average entry IV ${Number.isFinite(Number(row.averageEntryIv)) ? formatIv(Number(row.averageEntryIv)) : "not available"}, Sharpe ${formatSharpe(Number(row.sharpe) || 0)}, Calmar ${Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "not available"}`)
+    .attr("aria-label", (row) => `${row.label}: average entry DTE ${Number.isFinite(Number(row.averageEntryDteDays)) ? formatDte(Number(row.averageEntryDteDays)) : "not available"}, average holding period ${Number.isFinite(Number(row.averageHoldingPeriodDays)) ? formatDte(Number(row.averageHoldingPeriodDays)) : "not available"}, option PnL ${formatUsd(Number(row.optionPnl) || 0)}, hedge PnL ${formatUsd(Number(row.hedgePnl) || 0)}, average entry IV ${Number.isFinite(Number(row.averageEntryIv)) ? formatIv(Number(row.averageEntryIv)) : "not available"}, Sharpe ${formatSharpe(Number(row.sharpe) || 0)}, Calmar ${Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "not available"}`)
     .style("cursor", "pointer")
     .on("click", (_, row) => emit("select", row));
 
@@ -968,6 +970,7 @@ const draw = () => {
     addValue(columnX.hedgePnl, formatCompactUsd(hedgePnl), hedgePnlColor(hedgePnl));
     addValue(columnX.entryIv, Number.isFinite(Number(row.averageEntryIv)) ? formatIv(Number(row.averageEntryIv)) : "—");
     addValue(columnX.entryDte, Number.isFinite(Number(row.averageEntryDteDays)) ? formatDte(Number(row.averageEntryDteDays)) : "—");
+    addValue(columnX.holdingPeriod, Number.isFinite(Number(row.averageHoldingPeriodDays)) ? formatDte(Number(row.averageHoldingPeriodDays)) : "—");
     addValue(columnX.sharpe, formatSharpe(Number(row.sharpe) || 0), sharpeTextColor(Number(row.sharpe) || 0));
     addValue(columnX.drawdown, formatCompactUsd(Number(row.maxDrawdown) || 0), drawdownColor(Number(row.maxDrawdown) || 0));
     addValue(columnX.calmar, Number.isFinite(row.calmar) ? formatSharpe(row.calmar) : "—");

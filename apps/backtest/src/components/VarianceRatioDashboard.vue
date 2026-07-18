@@ -5,9 +5,11 @@ import { exportChartToPng } from "../../../../lib/export-png.js";
 import {
   RV_AXIS_COLOR,
   RV_AXIS_FONT_SIZE,
-  RV_TERM_STRUCTURE_MAX_WIDTH,
+  RV_CHART_DESCRIPTION_FONT_SIZE,
+  RV_CHART_TITLE_FONT_SIZE,
   calculateRvPlotLayout,
 } from "../lib/rvChartLayout.js";
+import { RETURN_ADJUSTMENT } from "../lib/serialCorrelation.js";
 
 const props = defineProps({
   analysis: { type: Object, default: null },
@@ -86,11 +88,20 @@ function showTooltip(event, row, title = null) {
 function showMethodTooltip(event) {
   if (!tooltipRef.value) return;
   tooltipRef.value.classList.add("isMethod");
+  const forward = props.analysis?.anchorMode === "start";
+  const varianceStandardized = props.analysis?.returnAdjustment
+    === RETURN_ADJUSTMENT.VARIANCE_STANDARDIZED;
   tooltipRef.value.textContent = [
     "METHOD + LIMITS",
-    "VR(q) = 1 + 2Σ(1 − k/q)ρₖ. Line + cloud use complete selected-close days; the bootstrap resamples those days, never hours.",
-    "All horizons use one anchored estimator. The chart stops at 24h rather than joining a different weekly estimator at the daily cutoff.",
-    "There are 24 selectable close hours ≈ 24 tests; expect roughly one to clear 95% by chance, so one significant anchor is not evidence by itself.",
+    `VR(q) = 1 + 2Σ(1 − k/q)ρₖ. Line + cloud use complete ${forward ? "forward windows from the selected entry" : "selected-close days"}; the bootstrap resamples those windows, never hours.`,
+    `All horizons use one ${forward ? "forward-anchored" : "close-anchored"} estimator. The chart stops at 24h rather than joining a different weekly estimator at the daily cutoff.`,
+    "The denominator uses the one-hour variance pooled only from the 24 weekday-hour buckets inside the selected block, not from all hours globally.",
+    ...(varianceStandardized ? [
+      "Returns are additionally divided by an eight-harmonic Fourier estimate of the 168-bucket weekly volatility profile before the variance ratio is calculated.",
+    ] : []),
+    forward
+      ? "The weekday × hour screen contains 168 comparisons. Treat it as exploratory and confirm a selected interval out of sample; one significant cell is not evidence by itself."
+      : "There are 24 selectable close hours ≈ 24 tests; expect roughly one to clear 95% by chance, so one significant anchor is not evidence by itself.",
   ].join("\n\n");
   tooltipRef.value.hidden = false;
   positionTooltip(event);
@@ -107,7 +118,7 @@ function render() {
   svg.selectAll("*").remove();
   const host = svgRef.value.parentElement;
   const width = Math.max(760, host?.clientWidth || 1100);
-  const height = 620;
+  const height = 530;
   svg.attr("viewBox", `0 0 ${width} ${height}`);
 
   const analysis = props.analysis;
@@ -131,10 +142,7 @@ function render() {
     return;
   }
 
-  const { plotLeft, plotWidth } = calculateRvPlotLayout(
-    width,
-    RV_TERM_STRUCTURE_MAX_WIDTH,
-  );
+  const { plotLeft, plotWidth } = calculateRvPlotLayout(width);
   const margin = { left: plotLeft, right: width - plotLeft - plotWidth };
   const content = { left: plotLeft };
   const reversalIsSignificant =
@@ -147,14 +155,17 @@ function render() {
   const volatilityPoints = Math.abs(headline.volatilityDifferencePoints);
   const volatilityDirection =
     headline.volatilityDifferencePoints >= 0 ? "fewer" : "more";
+  const varianceStandardized = analysis.returnAdjustment
+    === RETURN_ADJUSTMENT.VARIANCE_STANDARDIZED;
   const marketVerdict = reversalIsSignificant
     ? "BTC reversal is statistically distinguishable in this sample."
     : extensionIsSignificant
       ? "BTC moves extend rather than reverse in this sample."
       : "This sample cannot rule out a pure random walk because 1 is inside the CI.";
+  const forward = analysis.anchorMode === "start";
 
-  const answerTop = 430;
-  const answerHeight = 82;
+  const answerTop = 65;
+  const answerHeight = 72;
   const answerCenterY = answerTop + answerHeight / 2;
   svg
     .append("text")
@@ -171,7 +182,7 @@ function render() {
     .attr("fill", "#d8dadd")
     .style("font", `400 11px ${font}`)
     .text(
-      `A day of BTC returns carries ~${d3.format(".0f")(varianceDifferencePct)}% ${varianceDirection} variance than independent hourly moves imply.`,
+      `${forward ? "The following 24h of BTC returns carry" : "A day of BTC returns carries"} ~${d3.format(".0f")(varianceDifferencePct)}% ${varianceDirection} variance than independent hourly moves imply.`,
     );
   svg
     .append("text")
@@ -180,7 +191,9 @@ function render() {
     .attr("fill", "#d8dadd")
     .style("font", `400 11px ${font}`)
     .text(
-      `In vol terms: ~${d3.format(".1f")(volatilityPoints)} ${volatilityDirection} points.`,
+      varianceStandardized
+        ? "Returns scaled by the smoothed 168-bucket weekly volatility profile."
+        : `In vol terms: ~${d3.format(".1f")(volatilityPoints)} ${volatilityDirection} points.`,
     );
   svg
     .append("text")
@@ -190,22 +203,22 @@ function render() {
     .style("font", `500 10px ${font}`)
     .text(marketVerdict);
   const chartHeaderY = 24;
-  const plotTop = 90;
-  const plotBottom = 365;
+  const plotTop = 165;
+  const plotBottom = 440;
   svg
     .append("text")
     .attr("x", content.left)
     .attr("y", chartHeaderY)
     .attr("fill", "#777d84")
     .attr("letter-spacing", "1px")
-    .style("font", `10px ${font}`)
-    .text("ANCHORED TERM STRUCTURE · VR(q), 1H–24H");
+    .style("font", `${RV_CHART_TITLE_FONT_SIZE}px ${font}`)
+    .text(`${forward ? "FORWARD" : "ANCHORED"} TERM STRUCTURE · VR(q), 1H–24H`);
   const readingGuide = svg
     .append("text")
     .attr("x", content.left)
     .attr("y", chartHeaderY + 22)
     .attr("fill", "#9aa0a6")
-    .style("font", `9px ${font}`);
+    .style("font", `${RV_CHART_DESCRIPTION_FONT_SIZE}px ${font}`);
   readingGuide
     .append("tspan")
     .text("Each point: variance of within-block q-hour returns ÷ q × hourly variance.  ");
@@ -260,9 +273,10 @@ function render() {
     .attr("stroke-dasharray", "5 4");
   svg
     .append("text")
-    .attr("x", margin.left + plotWidth - 3)
-    .attr("y", y(1) - 7)
-    .attr("text-anchor", "end")
+    .attr("x", margin.left + plotWidth + 10)
+    .attr("y", y(1))
+    .attr("dominant-baseline", "middle")
+    .attr("text-anchor", "start")
     .attr("fill", "#8f949b")
     .style("font", `9px ${font}`)
     .text("Random walk · VR = 1");
@@ -325,7 +339,11 @@ function render() {
     .attr("fill", highlightColor)
     .attr("stroke", "#090a0d")
     .style("cursor", "default")
-    .on("mouseenter", (event) => showTooltip(event, headline, `${String(analysis.closeHour).padStart(2, "0")}:00 UTC anchored daily estimate`))
+    .on("mouseenter", (event) => showTooltip(
+      event,
+      headline,
+      `${String(analysis.anchorHour ?? analysis.closeHour).padStart(2, "0")}:00 UTC ${forward ? "entry → +24h" : "anchored daily"} estimate`,
+    ))
     .on("mousemove", positionTooltip)
     .on("mouseleave", hideTooltip);
 

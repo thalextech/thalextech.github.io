@@ -16,6 +16,8 @@ const props = defineProps({
 });
 
 const svgRef = ref(null);
+const CHART_FONT_FAMILY =
+  '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
 
 const layout = {
   width: 1800,
@@ -28,9 +30,9 @@ const axisStyle = (axisG) => {
   axisG.selectAll("path").remove();
   axisG
     .selectAll("text")
-    .attr("fill", "#c0c0c0")
-    .style("font-size", "14px")
-    .style("font-family", "ui-sans-serif, system-ui");
+    .attr("fill", "#70767d")
+    .style("font-size", "12px")
+    .style("font-family", CHART_FONT_FAMILY);
 };
 
 function exportPng({ filename = "straddle-break-even.png", scale = 4, padding = 24 } = {}) {
@@ -61,17 +63,17 @@ function render() {
     .append("rect")
     .attr("width", width)
     .attr("height", height)
-    .attr("fill", "black");
+    .attr("fill", "#0a0b0e");
 
   svg
     .append("text")
     .attr("x", width / 2)
     .attr("y", 36)
     .attr("text-anchor", "middle")
-    .attr("fill", "white")
-    .style("font-size", "22px")
+    .attr("fill", "#e8eaed")
+    .style("font-size", "18px")
     .style("font-weight", 650)
-    .style("font-family", "ui-sans-serif, system-ui")
+    .style("font-family", CHART_FONT_FAMILY)
     .text(props.title);
 
   if (props.subtitle) {
@@ -80,9 +82,9 @@ function render() {
       .attr("x", width / 2)
       .attr("y", 62)
       .attr("text-anchor", "middle")
-      .attr("fill", "#a0a0a0")
-      .style("font-size", "18px")
-      .style("font-family", "ui-sans-serif, system-ui")
+      .attr("fill", "#70767d")
+      .style("font-size", "14px")
+      .style("font-family", CHART_FONT_FAMILY)
       .text(props.subtitle);
   }
 
@@ -96,9 +98,9 @@ function render() {
       .attr("x", width / 2)
       .attr("y", height / 2)
       .attr("text-anchor", "middle")
-      .attr("fill", "#c9c9cf")
-      .style("font-size", "14px")
-      .style("font-family", "ui-sans-serif, system-ui")
+      .attr("fill", "#70767d")
+      .style("font-size", "12px")
+      .style("font-family", CHART_FONT_FAMILY)
       .text(props.loading ? "Loading..." : "No data available.");
     return;
   }
@@ -162,8 +164,8 @@ function render() {
   g.append("path")
     .datum(actual)
     .attr("fill", "none")
-    .attr("stroke", "mistyrose")
-    .attr("stroke-width", 3)
+    .attr("stroke", "#f5f5f7")
+    .attr("stroke-width", 1.75)
     .attr("d", line);
 
   const projected = (props.projectedData || []).filter(
@@ -173,8 +175,8 @@ function render() {
     g.append("path")
       .datum(projected)
       .attr("fill", "none")
-      .attr("stroke", "mistyrose")
-      .attr("stroke-width", 3)
+      .attr("stroke", "#f5f5f7")
+      .attr("stroke-width", 1.75)
       .attr("stroke-dasharray", "6,4")
       .attr("opacity", 0.8)
       .attr("d", line);
@@ -187,7 +189,7 @@ function render() {
       .attr("y1", y(props.breakEvenLow))
       .attr("y2", y(props.breakEvenLow))
       .attr("stroke", "firebrick")
-      .attr("stroke-width", 3);
+      .attr("stroke-width", 2);
   }
   if (Number.isFinite(props.breakEvenHigh)) {
     g.append("line")
@@ -196,7 +198,7 @@ function render() {
       .attr("y1", y(props.breakEvenHigh))
       .attr("y2", y(props.breakEvenHigh))
       .attr("stroke", "forestgreen")
-      .attr("stroke-width", 3);
+      .attr("stroke-width", 2);
   }
 
   const rightX = innerWidth - 8;
@@ -206,8 +208,8 @@ function render() {
       .attr("y", y(props.breakEvenLow) - 10)
       .attr("text-anchor", "end")
       .attr("fill", "firebrick")
-      .style("font-size", "18px")
-      .style("font-family", "ui-sans-serif, system-ui")
+      .style("font-size", "14px")
+      .style("font-family", CHART_FONT_FAMILY)
       .text(`BE Low = ${d3.format(",.0f")(props.breakEvenLow)}`);
   }
   if (Number.isFinite(props.breakEvenHigh)) {
@@ -216,8 +218,8 @@ function render() {
       .attr("y", y(props.breakEvenHigh) - 10)
       .attr("text-anchor", "end")
       .attr("fill", "forestgreen")
-      .style("font-size", "18px")
-      .style("font-family", "ui-sans-serif, system-ui")
+      .style("font-size", "14px")
+      .style("font-family", CHART_FONT_FAMILY)
       .text(`BE High = ${d3.format(",.0f")(props.breakEvenHigh)}`);
   }
   if (Number.isFinite(props.currentIndex)) {
@@ -225,9 +227,9 @@ function render() {
       .attr("x", rightX)
       .attr("y", y(props.currentIndex) - 10)
       .attr("text-anchor", "end")
-      .attr("fill", "mistyrose")
-      .style("font-size", "18px")
-      .style("font-family", "ui-sans-serif, system-ui")
+      .attr("fill", "#f5f5f7")
+      .style("font-size", "14px")
+      .style("font-family", CHART_FONT_FAMILY)
       .text(`Current = ${d3.format(",.0f")(props.currentIndex)}`);
   }
 }
@@ -261,9 +263,9 @@ onMounted(() => render());
 <style scoped>
 .chartWrap {
   position: relative;
-  border-radius: 14px;
+  border-radius: 7px;
   overflow: hidden;
-  background: #000;
+  background: #0a0b0e;
 }
 
 .chartSvg {

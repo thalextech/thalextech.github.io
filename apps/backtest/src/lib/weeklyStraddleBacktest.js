@@ -930,6 +930,7 @@ const buildCycleSummary = ({
     endingEquityUsd += cyclePnlUsd;
     return {
       ...plan,
+      holdingPeriodDays: (plan.exitTs - plan.entryTs) / 86_400,
       shortOptionPnlUsd,
       hedgePnlUsd,
       ...realizedMetrics,
@@ -1098,6 +1099,9 @@ export const runWeeklyStraddleBacktest = ({
   const entryDtes = cycleSummary
     .map((row) => row.dteDays)
     .filter(Number.isFinite);
+  const holdingPeriods = closedCycles
+    .map((row) => row.holdingPeriodDays)
+    .filter(Number.isFinite);
   const cycleMeanReturn = mean(cycleReturns);
   const cycleReturnVol = sampleStdDev(cycleReturns);
   const firstEntryMs = closedCycles[0]?.entryTime?.getTime();
@@ -1127,6 +1131,7 @@ export const runWeeklyStraddleBacktest = ({
           : Number.NaN,
       annualizedCyclesPerYear,
       meanEntryDteDays: mean(entryDtes),
+      meanHoldingPeriodDays: mean(holdingPeriods),
       meanSampledRealizedVol: mean(sampledRealizedVols),
       cumulativeOptionPnlUsd,
       cumulativeHedgePnlUsd,

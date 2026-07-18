@@ -24,9 +24,10 @@ const RESOLUTION_CONFIG = {
   3600: { label: "1h", resolution: "1h", interval_seconds: 60 * 60 },
   86400: { label: "1d", resolution: "1d", interval_seconds: 24 * 60 * 60 },
 };
-const DEFAULT_HISTORY_POINT_LIMIT = 300;
+const DEFAULT_HISTORY_POINT_LIMIT = 1500;
 const MIN_HISTORY_POINT_LIMIT = 100;
 const MAX_HISTORY_POINT_LIMIT = 10000;
+const HISTORY_POINT_DEBOUNCE_MS = 350;
 const DEFAULT_CIRCLE_SIZE = 4;
 const MIN_CIRCLE_SIZE = 2;
 const MAX_CIRCLE_SIZE = 12;
@@ -63,6 +64,7 @@ const settingsOpen = ref(false);
 const isInitializing = ref(true);
 let prefetchedIndexForInitialLoad = null;
 let loadRequestId = 0;
+let maxPointsDebounceTimer = null;
 
 const maturityFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -74,7 +76,7 @@ const strikeFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
 
-const maxPointsToFetch = computed(() => {
+const requestedMaxPoints = computed(() => {
   const value = Math.floor(Number(ui.maxPoints));
   if (!Number.isFinite(value)) return DEFAULT_HISTORY_POINT_LIMIT;
   return Math.max(
@@ -82,6 +84,7 @@ const maxPointsToFetch = computed(() => {
     Math.min(MAX_HISTORY_POINT_LIMIT, value),
   );
 });
+const maxPointsToFetch = ref(DEFAULT_HISTORY_POINT_LIMIT);
 
 const chartCircleSize = computed(() => {
   const value = Number(ui.circleSize);
@@ -324,7 +327,14 @@ const optionInstrumentName = computed(() => {
   return `${callName}-STRADDLE`;
 });
 
-const breakEvenTitle = "BTC Straddle Break-Evens";
+const underlyingLabel = computed(
+  () =>
+    UNDERLYING_OPTIONS.find((option) => option.value === underlying.value)
+      ?.label || underlying.value,
+);
+const breakEvenTitle = computed(
+  () => `${underlyingLabel.value} Straddle Break-Evens`,
+);
 const breakEvenSubtitle = computed(() => {
   const expiryTs = selectedMaturityTs.value;
   const strike = selectedStrike.value;
@@ -634,6 +644,9 @@ const rebuildOptionInstruments = () => {
 const switchUnderlying = async (next) => {
   if (next === underlying.value) return;
   if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
+  loadRequestId += 1;
+  ui.loading = true;
+  ui.error = "";
   underlying.value = next;
   data.callMark = {};
   data.putMark = {};
@@ -683,11 +696,13 @@ const switchUnderlying = async (next) => {
     });
   } finally {
     isInitializing.value = false;
+    ui.loading = false;
   }
 };
 
 onMounted(async () => {
   document.addEventListener("pointerdown", handleDocumentPointerDown);
+  ui.loading = true;
   try {
     const { resolution, from, to } = getTimestampRange();
     const [fetchedInstruments, prefetchedIndex] = await Promise.all([
@@ -736,11 +751,21 @@ onMounted(async () => {
     });
   } finally {
     isInitializing.value = false;
+    ui.loading = false;
   }
 });
 
 onUnmounted(() => {
   document.removeEventListener("pointerdown", handleDocumentPointerDown);
+  if (maxPointsDebounceTimer) clearTimeout(maxPointsDebounceTimer);
+});
+
+watch(requestedMaxPoints, (pointLimit) => {
+  if (maxPointsDebounceTimer) clearTimeout(maxPointsDebounceTimer);
+  maxPointsDebounceTimer = setTimeout(() => {
+    maxPointsToFetch.value = pointLimit;
+    maxPointsDebounceTimer = null;
+  }, HISTORY_POINT_DEBOUNCE_MS);
 });
 
 watch(
@@ -808,12 +833,10 @@ watch(
 </script>
 
 <template>
-  <div class="app">
-    <header class="header">
-      <div class="titleRow">
-        <h1>Straddle Analyzer</h1>
-      </div>
-
+  <main class="app">
+    <header class="topBar">
+      <div class="wordmark">Straddle</div>
+      <div class="divider"></div>
       <div class="controls">
         <div class="underlyingToggle" role="group" aria-label="Underlying">
           <button
@@ -901,9 +924,9 @@ watch(
           Save PNG
         </button>
       </div>
-
-      <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
+
+    <div v-if="ui.error" class="error">{{ ui.error }}</div>
 
     <div class="chartPanel">
       <div class="settingsWrap settingsWrap--chart" ref="settingsMenuRef">
@@ -920,12 +943,13 @@ watch(
         <div v-if="settingsOpen" class="settingsDropdown">
           <div class="settingsTitle">Chart settings</div>
           <div class="settingsHint">
-            Historical data points: {{ maxPointsToFetch }}
+            Historical data points: {{ requestedMaxPoints.toLocaleString() }}
           </div>
           <input
             v-model.number="ui.maxPoints"
             class="settingsSlider"
             type="range"
+            aria-label="Historical data points"
             :min="MIN_HISTORY_POINT_LIMIT"
             :max="MAX_HISTORY_POINT_LIMIT"
             step="10"
@@ -942,6 +966,7 @@ watch(
               v-model.number="ui.circleSize"
               class="settingsSlider"
               type="range"
+              aria-label="Chart circle size"
               :min="MIN_CIRCLE_SIZE"
               :max="MAX_CIRCLE_SIZE"
               step="0.5"
@@ -977,12 +1002,122 @@ watch(
         :loading="ui.loading"
       />
     </div>
-  </div>
+  </main>
 </template>
 
 <style scoped>
+:global(:root) {
+  --color-bg: #0a0b0e;
+  --color-surface: #131316;
+  --color-text: #e8eaed;
+  --color-text-muted: #70767d;
+  --color-accent: #7dd3fc;
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border: rgba(255, 255, 255, 0.09);
+  --color-border-strong: rgba(255, 255, 255, 0.2);
+}
+
+:global(body) {
+  min-width: 320px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  color-scheme: dark;
+}
+
+.app {
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+}
+
+.topBar {
+  display: flex;
+  align-items: center;
+  min-height: 58px;
+  padding: 9px 28px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  gap: 20px;
+}
+
+.wordmark {
+  flex: none;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.divider {
+  flex: none;
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+}
+
+.field,
+.underlyingToggle,
+.modeToggle {
+  height: 36px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: transparent;
+}
+
+.field:hover,
+.underlyingToggle:hover,
+.modeToggle:hover {
+  border-color: var(--color-border-strong);
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+}
+
+.field label {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.field select {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  color-scheme: dark;
+}
+
+.field select option {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
 .chartPanel {
   position: relative;
+  min-height: 620px;
+  margin: 10px 36px 16px 28px;
+  border: 1px solid #23232a;
+  border-radius: 8px;
+  background: #08080a;
+  overflow: hidden;
 }
 
 .settingsWrap {
@@ -991,22 +1126,22 @@ watch(
 
 .settingsWrap--chart {
   position: absolute;
-  top: 10px;
-  right: 40px;
+  top: 12px;
+  right: 14px;
   z-index: 24;
 }
 
 .settingsButton {
   border: none;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(226, 232, 240, 0.7);
+  background: transparent;
+  color: var(--color-text-muted);
   cursor: pointer;
   box-shadow: none;
 }
 
 .settingsButton:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--color-accent);
 }
 
 .settingsButton:focus-visible {
@@ -1038,9 +1173,9 @@ watch(
   top: calc(100% + 8px);
   right: 0;
   width: min(240px, calc(100vw - 40px));
-  border: 0.4px solid rgba(255, 255, 255, 0.9);
-  background: #080a0f;
-  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--color-bg);
+  border-radius: 8px;
   padding: 10px 12px 12px;
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
   z-index: 20;
@@ -1131,25 +1266,21 @@ watch(
 
 .underlyingToggle {
   display: inline-flex;
-  border: 1px solid var(--border);
-  background: color-mix(in oklab, var(--panel), #1b1f2f 35%);
-  border-radius: 10px;
   overflow: hidden;
-  height: 40px;
 }
 
 .underlyingButton {
   border: 0;
   background: transparent;
-  color: var(--muted);
-  font-size: 13px;
-  padding: 0 16px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  padding: 0 13px;
   cursor: pointer;
   height: 100%;
 }
 
 .underlyingButton + .underlyingButton {
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--color-border);
 }
 
 .underlyingButton:disabled {
@@ -1158,7 +1289,89 @@ watch(
 }
 
 .underlyingButtonActive {
-  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.modeToggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+}
+
+.modeToggleButton {
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.modeToggleButton + .modeToggleButton {
+  border-left: 0;
+}
+
+.modeToggleButton.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--color-text);
+}
+
+.saveButton {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 11px;
   font-weight: 600;
+  cursor: pointer;
+}
+
+.saveButton:hover:not(:disabled) {
+  border-color: rgba(125, 211, 252, 0.3);
+  color: var(--color-accent);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.saveButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.error {
+  margin: 10px 28px 0;
+  color: #f87171;
+  font-size: 12px;
+}
+
+@media (max-width: 1080px) {
+  .topBar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .controls {
+    flex: 1 0 100%;
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 640px) {
+  .topBar {
+    padding: 12px 16px;
+    gap: 12px;
+  }
+
+  .chartPanel {
+    margin: 8px;
+    min-height: 0;
+  }
 }
 </style>
