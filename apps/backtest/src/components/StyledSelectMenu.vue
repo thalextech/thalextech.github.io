@@ -2,21 +2,56 @@
 import { computed, ref } from "vue";
 
 const props = defineProps({
-  modelValue: { type: [String, Number], required: true },
+  modelValue: { type: [String, Number, Array], required: true },
   label: { type: String, required: true },
   options: { type: Array, default: () => [] },
+  multiple: { type: Boolean, default: false },
+  allSelectedLabel: { type: String, default: "All" },
+  noneSelectedLabel: { type: String, default: "None" },
 });
 
 const emit = defineEmits(["update:modelValue"]);
 const open = ref(false);
-const selectedLabel = computed(() =>
-  props.options.find((option) => String(option.value) === String(props.modelValue))?.label
-  || String(props.modelValue)
-);
+
+const selectedValues = computed(() => {
+  if (!props.multiple) return [];
+  return Array.isArray(props.modelValue) ? props.modelValue.map(String) : [];
+});
+
+const isSelected = (option) => {
+  if (props.multiple) return selectedValues.value.includes(String(option.value));
+  return String(props.modelValue) === String(option.value);
+};
+
+const selectedLabel = computed(() => {
+  if (!props.multiple) {
+    return props.options.find((option) => String(option.value) === String(props.modelValue))?.label
+      || String(props.modelValue);
+  }
+
+  const selected = props.options.filter((option) => selectedValues.value.includes(String(option.value)));
+  if (!selected.length) return props.noneSelectedLabel;
+  if (selected.length === props.options.length) return props.allSelectedLabel;
+  if (selected.length <= 2) return selected.map((option) => option.label).join(", ");
+  return `${selected.length} selected`;
+});
 
 const selectOption = (option) => {
-  emit("update:modelValue", option.value);
-  open.value = false;
+  if (!props.multiple) {
+    emit("update:modelValue", option.value);
+    open.value = false;
+    return;
+  }
+
+  const valueKey = String(option.value);
+  const nextKeys = new Set(selectedValues.value);
+  if (nextKeys.has(valueKey)) nextKeys.delete(valueKey);
+  else nextKeys.add(valueKey);
+
+  const next = props.options
+    .filter((entry) => nextKeys.has(String(entry.value)))
+    .map((entry) => entry.value);
+  emit("update:modelValue", next);
 };
 
 const handleFocusout = (event) => {
@@ -46,19 +81,20 @@ const handleFocusout = (event) => {
       class="styledSelectMenu"
       role="listbox"
       :aria-label="label"
+      :aria-multiselectable="multiple || undefined"
     >
       <button
         v-for="option in options"
         :key="option.value"
         type="button"
         role="option"
-        :aria-selected="String(modelValue) === String(option.value)"
-        :class="{ active: String(modelValue) === String(option.value) }"
+        :aria-selected="isSelected(option)"
+        :class="{ active: isSelected(option) }"
         @click="selectOption(option)"
       >
         <span>{{ option.label }}</span>
         <span
-          v-if="String(modelValue) === String(option.value)"
+          v-if="isSelected(option)"
           class="styledSelectCheck"
           aria-hidden="true"
         >✓</span>

@@ -563,8 +563,8 @@ const draw = () => {
     .attr("cy", (row) => mapY(row.weeklyMean))
     .attr("r", 4.5)
     .attr("fill", (row) => row.mapColor)
-    .attr("stroke", "rgba(255,255,255,0.92)")
-    .attr("stroke-width", 0.8);
+    .attr("stroke", "#000000")
+    .attr("stroke-width", 0.2);
   mapPointGroups.append("text")
     .attr("x", (row) => mapLabelPlacements.get(row.key)?.center.x ?? mapX(row.weeklySigma) + 6)
     .attr("y", (row) => mapLabelPlacements.get(row.key)?.center.y ?? mapY(row.weeklyMean) - 5)
@@ -981,8 +981,8 @@ const draw = () => {
 
   const setHoveredRow = (key) => {
     mapPointGroups.select(".comparison-scatter-dot")
-      .attr("stroke", "rgba(255,255,255,0.92)")
-      .attr("stroke-width", (row) => row.key === key ? 1.4 : 0.8);
+      .attr("stroke", "#000000")
+      .attr("stroke-width", (row) => row.key === key ? 1.4 : 0.2);
     realizedGroups.attr("opacity", (row) => !key || row.key === key ? 1 : 0.3);
     distributionGroups.select(".distribution-hit-area")
       .attr("fill", (row, index) => row.key === key

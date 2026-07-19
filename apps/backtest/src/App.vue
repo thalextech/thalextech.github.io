@@ -7,6 +7,7 @@ import StyledSelectMenu from "./components/StyledSelectMenu.vue";
 import VarianceStandardizedVrHeatmap from "./components/VarianceStandardizedVrHeatmap.vue";
 import VarianceRatioDashboard from "./components/VarianceRatioDashboard.vue";
 import WeekdayHourHeatmap from "./components/WeekdayHourHeatmap.vue";
+import WeekdayRvBoxplot from "./components/WeekdayRvBoxplot.vue";
 import SweepResultsChart from "./components/SweepResultsChart.vue";
 import WeeklyBacktestChart from "./components/WeeklyBacktestChart.vue";
 import {
@@ -98,6 +99,21 @@ const HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) => ({
   value: hour,
   label: `${String(hour).padStart(2, "0")}:00`,
 }));
+const MONTH_OPTIONS = [
+  { value: 0, label: "Jan" },
+  { value: 1, label: "Feb" },
+  { value: 2, label: "Mar" },
+  { value: 3, label: "Apr" },
+  { value: 4, label: "May" },
+  { value: 5, label: "Jun" },
+  { value: 6, label: "Jul" },
+  { value: 7, label: "Aug" },
+  { value: 8, label: "Sep" },
+  { value: 9, label: "Oct" },
+  { value: 10, label: "Nov" },
+  { value: 11, label: "Dec" },
+];
+const ALL_MONTHS = MONTH_OPTIONS.map((month) => month.value);
 const SERIAL_ANCHOR_WEEKDAY_OPTIONS = [
   { value: -1, label: "All" },
   ...WEEKDAY_OPTIONS,
@@ -192,11 +208,13 @@ const ivRvAlignForward = ref(false);
 const ivRvRangeStart = ref(0);
 const ivRvRangeEnd = ref(100);
 const rvChartRef = ref(null);
+const rvBoxplotRef = ref(null);
 const standardizedVrHeatmapRef = ref(null);
 const showHeatmapDataLabels = ref(false);
 const varianceRatioRef = ref(null);
 const serialAnchorHour = ref(8);
 const serialAnchorWeekday = ref(5);
+const rvBoxplotMonths = ref([...ALL_MONTHS]);
 const rvRangeStart = ref(0);
 const rvRangeEnd = ref(100);
 const IV_RV_TENORS = [7, 14, 30];
@@ -283,6 +301,14 @@ const rvRangeLabel = computed(() => {
   return range ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}` : "No range";
 });
 const rvWeekdayGroups = computed(() => buildHourlyRvWeekdayGroups(rvFilteredRows.value));
+const rvBoxplotRows = computed(() => {
+  const selected = new Set((rvBoxplotMonths.value || []).map(Number));
+  if (selected.size === MONTH_OPTIONS.length) return rvFilteredRows.value;
+  return rvFilteredRows.value.filter((row) =>
+    row.date instanceof Date && selected.has(row.date.getUTCMonth()),
+  );
+});
+const rvBoxplotGroups = computed(() => buildHourlyRvWeekdayGroups(rvBoxplotRows.value));
 const rvHeatmapCells = computed(() => buildHourlyRvHeatmap(rvFilteredRows.value));
 const rvFilteredSourceRows = computed(() =>
   ivRvSourceRows.value.filter((row) => {
@@ -1080,6 +1106,15 @@ function saveRvHeatmap(date = new Date().toISOString().slice(0, 10)) {
   });
 }
 
+function saveRvBoxplot(date = new Date().toISOString().slice(0, 10)) {
+  if (!rvBoxplotRef.value || !rvWeekdayInsights.value) return;
+  rvBoxplotRef.value.exportPng({
+    filename: `rv-weekday-boxplot-${date}.png`,
+    scale: 4,
+    padding: 24,
+  });
+}
+
 function saveStandardizedVrHeatmap(date = new Date().toISOString().slice(0, 10)) {
   if (!standardizedVrHeatmapRef.value || !standardizedVrHeatmapCells.value.length) return;
   standardizedVrHeatmapRef.value.exportPng({
@@ -1335,17 +1370,17 @@ onMounted(loadBacktest);
         </button>
         <button
           type="button"
-          :class="['segment', { active: mode === 'iv-rv' }]"
-          @click="switchMode('iv-rv')"
-        >
-          RV - IV
-        </button>
-        <button
-          type="button"
           :class="['segment', { active: mode === 'rv' }]"
           @click="switchMode('rv')"
         >
           RV
+        </button>
+        <button
+          type="button"
+          :class="['segment', { active: mode === 'iv-rv' }]"
+          @click="switchMode('iv-rv')"
+        >
+          RV - IV
         </button>
       </div>
       <button class="saveButton topSaveButton" type="button" :disabled="mode === 'single' ? cycleDetailLoading : mode === 'sweep' ? (sweepRunning || !sweepResults.length) : mode === 'rv' ? (ivRvLoading || !rvWeekdayInsights) : (ivRvLoading || !ivRvRows.length)" @click="handleSavePng">
@@ -1590,6 +1625,37 @@ onMounted(loadBacktest);
                 :show-data-labels="showHeatmapDataLabels"
                 chart-title="HOURLY REALIZED VOLATILITY · WEEKDAY × UTC HOUR"
                 methodology="Method: mean annualized Parkinson RV within each UTC weekday/hour bucket; raw 1h observations."
+              />
+            </section>
+            <section class="rvChartSection rvBoxplotSection">
+              <div class="rvBoxplotToolbar">
+                <div class="rvSectionActions">
+                  <StyledSelectMenu
+                    v-model="rvBoxplotMonths"
+                    label="Months"
+                    :options="MONTH_OPTIONS"
+                    multiple
+                    all-selected-label="All"
+                  />
+                  <button
+                    class="rvScreenshotButton"
+                    type="button"
+                    :disabled="ivRvLoading || !rvWeekdayInsights"
+                    title="Save weekday RV boxplot as PNG"
+                    @click="saveRvBoxplot()"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                      <circle cx="12" cy="13" r="4" />
+                    </svg>
+                    Screenshot
+                  </button>
+                </div>
+              </div>
+              <WeekdayRvBoxplot
+                ref="rvBoxplotRef"
+                :groups="rvBoxplotGroups"
+                :loading="ivRvLoading"
               />
             </section>
             <section class="rvChartSection rvSecondaryAnalysisSection">
@@ -2506,6 +2572,28 @@ onMounted(loadBacktest);
 .rvHeatmapSection .rvSectionActions {
   grid-column: 3;
   justify-self: end;
+}
+
+.rvBoxplotSection {
+  height: 450px;
+  position: relative;
+  margin-top: 8px;
+}
+
+.rvBoxplotSection::before {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: 0;
+  right: 0;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+.rvBoxplotToolbar {
+  position: absolute;
+  z-index: 8;
+  top: 8px;
+  right: 12px;
 }
 
 .rvSecondaryAnalysisSection {
