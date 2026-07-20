@@ -85,6 +85,30 @@ test("conditional GBM uses the hedge grid without pinning realized variance", ()
   assert.ok(Math.abs(sampledRv - cycle.sigma) > 0.01);
 });
 
+test("null paths preserve the strategy's observed entry premium", () => {
+  const observedPremium = 1_234.56;
+  const rawCycle = {
+    ...buildCycle({ hedgeEnabled: false, entryIv: 0.55 }),
+    entryOptionCashflowUsd: observedPremium,
+    shortOptionPnlUsd: observedPremium,
+    legs: [{
+      optionType: "C",
+      strike: 150_000,
+      expirationTs: exitTs,
+      quantity: -1,
+      entryDelta: 0.05,
+      entryImpliedVol: 0.55,
+    }],
+  };
+  const cycle = buildFairValueCycleState(rawCycle);
+  assert.equal(cycle.entryCashflow, observedPremium);
+  assert.equal(cycle.premiumBasisUsd, observedPremium);
+  assert.notEqual(cycle.entryCashflow, cycle.fairEntryCashflow);
+
+  const outcome = simulateWeeklyCycleModes(cycle, () => -3, 0);
+  assert.equal(outcome.unhedged, observedPremium);
+});
+
 test("same internal seed reproduces weekly scenarios without mutating historical cycles", async () => {
   const cycles = buildSimulationCycles();
   const before = structuredClone(cycles);
@@ -100,14 +124,25 @@ test("same internal seed reproduces weekly scenarios without mutating historical
   assert.equal(first.returnNull.type, "conditional-gbm-drift-mixture");
   assert.equal(first.returnNull.volatility, "each cycle's entry IV");
   assert.equal(first.returnNull.realizedVariance, "unconstrained finite-sample GBM realization");
-  assert.deepEqual(first.returnNull.annualDriftVariants, [0, 1, -1]);
-  assert.deepEqual(first.returnNull.driftScenarioCounts, { "0": 7, "1": 7, "-1": 6 });
+  assert.deepEqual(first.returnNull.annualDriftVariants, [-1, 0, 1]);
+  assert.deepEqual(first.returnNull.driftScenarioCounts, { "-1": 7, "0": 7, "1": 6 });
   assert.equal(first.returnNull.pnlCenteredToFairValue, false);
   assert.equal(first.combined.terminalReturnOnPremium.length, 20);
+  assert.deepEqual(first.views.mu.map((group) => group.label), ["μ −100%", "μ 0%", "μ +100%"]);
+  assert.deepEqual(first.views.mu.map((group) => group.terminalPnl.length), [7, 7, 6]);
+  assert.ok(first.views.mu.every((group) => Number.isFinite(group.notionalReturnSummary.mean)));
+  assert.ok(first.views.mu.every((group) =>
+    Math.abs(group.notionalReturnSummary.actualPnl - 0.00125) < 1e-12));
+  assert.equal(first.weeklyOutcomes.length, EMPIRICAL_LOG_RETURNS.length);
+  assert.ok(first.weeklyOutcomes.every((week) =>
+    Number.isFinite(week.priceMove)
+      && Number.isFinite(week.entryIv)
+      && Number.isFinite(week.ivZScore)
+      && Number.isFinite(week.returnOnNotional)));
   assert.equal(first.bayesianEdge.draws, 5_000);
   assert.ok(first.bayesianEdge.probabilityEdgePositive >= 0);
   assert.ok(first.bayesianEdge.probabilityEdgePositive <= 1);
-  assert.equal(first.hitRateViews.time.length, 4);
+  assert.equal(first.hitRateViews.time.length, 3);
   assert.ok(first.hitRateViews.time.every((cohort) =>
     cohort.hitRates.length === 20
       && cohort.hitRates.every((rate) => rate >= 0 && rate <= 1)
@@ -201,7 +236,7 @@ test("simulation streams growing partial distributions", async () => {
   assert.equal(result.terminalPnl.length, 100);
 });
 
-test("92 ordered weeks split into four consecutive 23-week cohorts", async () => {
+test("92 ordered weeks split into three consecutive cohorts", async () => {
   const weeks = Array.from({ length: 92 }, (_, index) => {
     const cycle = buildCycle();
     cycle.cycle = index + 1;
@@ -215,18 +250,28 @@ test("92 ordered weeks split into four consecutive 23-week cohorts", async () =>
     return cycle;
   });
   const result = await runFairValueMonteCarlo({ cycles: weeks, simulations: 10, seed: 5 });
-  assert.deepEqual(result.cohorts.map((cohort) => cohort.weekCount), [23, 23, 23, 23]);
+  assert.deepEqual(result.cohorts.map((cohort) => cohort.weekCount), [31, 31, 30]);
   assert.equal(result.cohorts[0].startDate.getTime(), weeks[0].entryTime.getTime());
-  assert.equal(result.cohorts[3].endDate.getTime(), weeks.at(-1).exitTime.getTime());
+  assert.equal(result.cohorts[2].endDate.getTime(), weeks.at(-1).exitTime.getTime());
   assert.ok(result.cohorts.every((cohort) => cohort.terminalPnl.length === 10));
   assert.ok(result.cohorts.every((cohort) =>
     cohort.terminalReturnOnPremium.length === 10
       && Number.isFinite(cohort.returnSummary.p01)
       && Number.isFinite(cohort.returnSummary.p99),
   ));
+  result.cohorts.forEach((cohort) => {
+    const atOrAboveActual = cohort.terminalReturnOnPremium.filter(
+      (value) => value >= cohort.returnSummary.actualPnl,
+    ).length;
+    assert.equal(cohort.returnSummary.scenariosAtOrAboveActual, atOrAboveActual);
+    assert.equal(
+      cohort.returnSummary.probabilityAtOrAboveActual,
+      (atOrAboveActual + 1) / (cohort.terminalReturnOnPremium.length + 1),
+    );
+  });
 });
 
-test("entry IV z-score view groups weeks into low, medium, high, and extreme regimes", async () => {
+test("entry IV z-score view groups weeks into low, medium, and high regimes", async () => {
   const entryIvs = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.2];
   const weeks = entryIvs.map((entryIv, index) => {
     const cycle = buildCycle({ entryIv });
@@ -245,9 +290,9 @@ test("entry IV z-score view groups weeks into low, medium, high, and extreme reg
   assert.equal(result.defaultHedgeMode, "dynamic");
   assert.equal(result.hedgeMode, "dynamic");
   assert.deepEqual(result.views.iv.map((group) => group.label), [
-    "Low IV", "Medium IV", "High IV", "Extreme IV",
+    "Low IV", "Medium IV", "High IV",
   ]);
-  assert.deepEqual(result.views.iv.map((group) => group.weekCount), [3, 3, 1, 1]);
+  assert.deepEqual(result.views.iv.map((group) => group.weekCount), [1, 6, 1]);
   result.terminalPnl.forEach((total, simulation) => {
     const groupedTotal = result.views.iv.reduce(
       (sum, group) => sum + group.terminalPnl[simulation],

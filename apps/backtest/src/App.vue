@@ -616,6 +616,7 @@ const maxDdValue = computed(() => {
 const chartRef = ref(null);
 const sweepChartRef = ref(null);
 const chartMode = ref("weekly");
+const distributionViewMode = ref("time");
 const selectedCycle = ref(null);
 const cycleDetailRows = ref([]);
 const cycleBreakEvens = ref(null);
@@ -1614,6 +1615,7 @@ onMounted(loadBacktest);
         <FairValueDistributionPanel
           v-else-if="mode === 'single' && !selectedCycle && chartMode === 'distribution'"
           ref="chartRef"
+          v-model:view-mode="distributionViewMode"
           :rows="cycleRows"
           :hedge-enabled="ui.hedgeEnabled"
         />
@@ -1946,6 +1948,7 @@ onMounted(loadBacktest);
 
 .pillLabel {
   color: #70767d;
+  font-size: 14px;
 }
 
 .pillValue {
@@ -2618,6 +2621,9 @@ onMounted(loadBacktest);
   text-align: left;
 }
 
+.sweepHeader .chartTitle { font-size: 17px; }
+.sweepHeader .chartSubtitle { font-size: 15px; }
+
 .sweepControls {
   display: flex;
   align-items: center;
@@ -2643,7 +2649,7 @@ onMounted(loadBacktest);
   padding: 0 11px;
   background: transparent;
   color: #747a82;
-  font: 500 11px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  font: 500 12px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
@@ -2676,6 +2682,10 @@ onMounted(loadBacktest);
 .rvCombinedPanel {
   overflow: hidden;
 }
+
+.rvCombinedPanel :deep(.styledSelect) { font-size: 10px; }
+.rvCombinedPanel :deep(.styledSelectMenu button) { font-size: 11px; }
+.rvCombinedPanel :deep(.styledSelectCheck) { font-size: 12px; }
 
 .rvCombinedCharts {
   height: 100%;
@@ -2817,7 +2827,7 @@ onMounted(loadBacktest);
   background: rgba(255,255,255,0.025);
   color: #8f949b;
   font: inherit;
-  font-size: 10px;
+  font-size: 11.5px;
   cursor: pointer;
 }
 
@@ -2855,7 +2865,7 @@ onMounted(loadBacktest);
   display: grid;
   place-items: center;
   color: #666c73;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .sweepPerformance {
@@ -2866,7 +2876,7 @@ onMounted(loadBacktest);
   border-radius: 5px;
   background: rgba(10,11,14,0.88);
   color: #626870;
-  font-size: 9px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
@@ -2889,7 +2899,7 @@ onMounted(loadBacktest);
 
 .ivRvRangeLabel {
   color: #626870;
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -3043,7 +3053,7 @@ onMounted(loadBacktest);
 }
 
 .metricLabel {
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 1.2px;
   text-transform: uppercase;
   color: #70767d;
@@ -3062,7 +3072,7 @@ onMounted(loadBacktest);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 5px;
   flex: none;
 }
 
@@ -3076,13 +3086,15 @@ onMounted(loadBacktest);
 }
 
 .chartSubtitle {
-  font-size: 12px;
+  font-size: 14px;
+  line-height: 1.35;
   color: #70767d;
 }
 
 .chartSourceSubtitle {
-  font-size: 11px;
-  color: #565c63;
+  font-size: 14px;
+  line-height: 1.35;
+  color: #70767d;
 }
 
 .chartTitleRow {

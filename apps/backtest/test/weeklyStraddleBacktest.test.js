@@ -505,6 +505,11 @@ test("computeMaxDrawdown returns the largest peak-to-trough loss", () => {
   }));
 
   assert.equal(computeMaxDrawdown(rows), -50);
+  assert.equal(computeMaxDrawdown([
+    rows[0],
+    { endingEquityUsd: Number.NaN },
+    ...rows.slice(1),
+  ]), -50);
   assert.equal(computeMaxDrawdown(), 0);
 });
 

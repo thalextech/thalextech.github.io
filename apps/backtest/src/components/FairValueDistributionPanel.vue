@@ -18,36 +18,35 @@ const result = ref(null);
 const running = ref(false);
 const progress = ref(0);
 const error = ref("");
-const viewMode = ref("time");
+const viewMode = defineModel("viewMode", { type: String, default: "time" });
 const scenarioCount = ref(1_000);
 let resizeObserver;
 let runSequence = 0;
-
-const formatUsd = d3.format("$,.0f");
-const formatOrdinal = (value) => {
-  const rounded = Math.round(value);
-  const lastTwo = rounded % 100;
-  const suffix = lastTwo >= 11 && lastTwo <= 13
-    ? "th"
-    : rounded % 10 === 1
-      ? "st"
-      : rounded % 10 === 2
-        ? "nd"
-        : rounded % 10 === 3
-          ? "rd"
-          : "th";
-  return `${rounded}${suffix}`;
-};
 
 const modeResult = computed(() => result.value);
 const completedWeekCount = computed(() =>
   (modeResult.value?.cohorts || []).reduce((total, cohort) => total + cohort.weekCount, 0),
 );
-const displayedGroups = computed(() =>
-  modeResult.value?.views?.[viewMode.value] || modeResult.value?.cohorts || []);
+const displayedGroups = computed(() => {
+  const groups = modeResult.value?.views?.[viewMode.value] || modeResult.value?.cohorts || [];
+  return [
+    ...groups,
+    {
+      kind: "weekly-outcomes",
+      label: viewMode.value === "time"
+        ? "Actual weekly PnL over time"
+        : viewMode.value === "iv"
+          ? "Actual weekly PnL by entry IV z-score"
+          : "Actual weekly PnL by BTC move",
+      weeklyOutcomes: modeResult.value?.weeklyOutcomes || [],
+    },
+  ];
+});
 const viewTitle = computed(() => viewMode.value === "iv"
   ? "PnL distributions by entry IV z-score"
-  : "PnL distributions by cohort");
+  : viewMode.value === "mu"
+    ? "PnL distributions by drift assumption"
+    : "PnL distributions by cohort");
 const hedgeModeLabel = computed(() => {
   const mode = modeResult.value?.hedgeMode
     || modeResult.value?.defaultHedgeMode
@@ -58,8 +57,6 @@ const scenarioStatus = computed(() => {
   const completed = Number(modeResult.value?.simulations) || 0;
   return `${completed.toLocaleString()} scenarios completed · Conditional GBM · equal drift mix −100% / 0% / +100% · ${hedgeModeLabel.value}`;
 });
-
-
 const redraw = async () => {
   await nextTick();
   draw();
@@ -107,7 +104,7 @@ const styleAxis = (group) => {
   group.selectAll("line").attr("stroke", "rgba(255,255,255,0.08)");
   group.selectAll("text")
     .attr("fill", "rgba(255,255,255,0.44)")
-    .attr("font-size", 11)
+    .attr("font-size", 13)
     .attr("font-family", '"Helvetica Neue", Helvetica, sans-serif');
 };
 
@@ -124,20 +121,33 @@ const draw = () => {
   const rowGap = 48;
   const panelWidth = (width - outer.left - outer.right - columnGap) / 2;
   const panelHeight = (height - outer.top - outer.bottom - rowGap) / 2;
+  const scatterTooltip = d3.select(element).append("div")
+    .attr("class", "scatterTooltip")
+    .attr("role", "tooltip")
+    .attr("aria-hidden", "true");
   const svg = d3.select(element).append("svg")
     .attr("viewBox", `0 0 ${width} ${height}`)
     .attr("width", "100%").attr("height", height)
     .attr("font-family", '"Helvetica Neue", Helvetica, sans-serif')
     .attr("role", "img")
-    .attr("aria-label", `${viewMode.value === "iv" ? "Four entry IV regime" : "Four consecutive cohort"} PnL distributions`);
+    .attr("aria-label", `Three ${viewMode.value === "iv"
+      ? "entry IV regime"
+      : viewMode.value === "mu"
+        ? "drift-conditioned"
+        : "consecutive cohort"} PnL distributions and actual weekly PnL plotted by ${viewMode.value === "time"
+      ? "date"
+      : viewMode.value === "iv"
+        ? "entry IV z-score"
+        : "BTC return"}`);
 
-  const pnlCohorts = modeResult.value?.views?.[viewMode.value] || cohorts;
+  const pnlCohorts = cohorts.filter((cohort) => cohort.kind !== "weekly-outcomes");
   const globalMaxAbsPnl = d3.max(pnlCohorts.flatMap((cohort) => [
     ...(cohort.terminalReturnOnPremium || []).map(Math.abs),
     Math.abs(cohort.returnSummary?.actualPnl || 0),
   ])) || 1;
   const pnlColor = d3.scaleDiverging(d3.interpolateRdBu)
     .domain([-globalMaxAbsPnl, 0, globalMaxAbsPnl]);
+  const actualMarkerColorLimit = globalMaxAbsPnl * 0.65;
 
   const pooledPnlReturns = pnlCohorts
     .filter((cohort) => cohort.weekCount)
@@ -162,15 +172,30 @@ const draw = () => {
     svg.append("rect").attr("x", item.x).attr("y", 14).attr("width", 18).attr("height", 9)
       .attr("fill", item.fill);
     svg.append("text").attr("x", item.x + 24).attr("y", 22)
-      .attr("fill", "rgba(255,255,255,.42)").attr("font-size", 9).text(item.label);
+      .attr("fill", "rgba(255,255,255,.42)").attr("font-size", 11).text(item.label);
   });
   svg.append("line").attr("x1", legendX + 166).attr("x2", legendX + 166)
     .attr("y1", 12).attr("y2", 25).attr("stroke", "rgba(255,255,255,.7)").attr("stroke-width", 1.5);
   svg.append("text").attr("x", legendX + 175).attr("y", 22)
-    .attr("fill", "rgba(255,255,255,.42)").attr("font-size", 9).text("Historical");
+    .attr("fill", "rgba(255,255,255,.42)").attr("font-size", 11).text("Historical");
 
   const formatDate = d3.utcFormat("%b %Y");
+  const formatTooltipDate = d3.utcFormat("%d %b %Y");
   const formatPercent = d3.format(".1%");
+  const formatSignedPercent = d3.format("+.2%");
+  const formatSignedUsd = d3.format("+$,.0f");
+  const formatIv = d3.format(".1%");
+  const formatNullTailProbability = (stats, simulationCount) => {
+    if (!Number.isFinite(stats?.probabilityAtOrAboveActual) || !simulationCount) return "—";
+    if (stats.scenariosAtOrAboveActual === 0) {
+      return `<${formatPercent(1 / (simulationCount + 1))}`;
+    }
+    return formatPercent(stats.probabilityAtOrAboveActual);
+  };
+  const formatZScore = (value) => {
+    const rounded = Math.abs(value) < 0.05 ? 0 : value;
+    return `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}`;
+  };
   cohorts.forEach((cohort, cohortIndex) => {
     const column = cohortIndex % 2;
     const row = Math.floor(cohortIndex / 2);
@@ -178,8 +203,133 @@ const draw = () => {
     const panelY = outer.top + row * (panelHeight + rowGap);
     const plotTop = panelY + 78;
     const plotBottom = panelY + panelHeight - 27;
+    if (cohort.kind === "weekly-outcomes") {
+      const points = cohort.weeklyOutcomes || [];
+      svg.append("text").attr("x", panelX).attr("y", panelY + 13)
+        .attr("fill", "#dfe3e7").attr("font-size", 14).attr("font-weight", 600)
+        .text(cohort.label);
+      svg.append("text").attr("x", panelX).attr("y", panelY + 34)
+        .attr("fill", "rgba(255,255,255,.36)").attr("font-size", 12)
+        .text(`${points.length} historical weeks · each dot shows actual return on notional`);
+      if (!points.length) return;
+      const scatterLeft = panelX;
+      const scatterRight = panelX + panelWidth - 8;
+      const maxAbsReturn = d3.max(points, (point) => Math.abs(point.returnOnNotional)) || 0.01;
+      let scatterX;
+      let xValue;
+      let xTickFormat;
+      let xReference = null;
+      if (viewMode.value === "time") {
+        const [firstDate, lastDate] = d3.extent(points, (point) => point.entryDate);
+        const paddingMs = Math.max(3.5 * 86_400_000, (lastDate - firstDate) * 0.025);
+        scatterX = d3.scaleUtc()
+          .domain([new Date(firstDate.getTime() - paddingMs), new Date(lastDate.getTime() + paddingMs)])
+          .range([scatterLeft, scatterRight]);
+        xValue = (point) => point.entryDate;
+        xTickFormat = d3.utcFormat("%b %y");
+      } else if (viewMode.value === "iv") {
+        const [lowestZ, highestZ] = d3.extent(points, (point) => point.ivZScore);
+        const zSpan = Math.max(0.5, highestZ - lowestZ);
+        scatterX = d3.scaleLinear()
+          .domain([lowestZ - zSpan * 0.06, highestZ + zSpan * 0.06])
+          .nice(5)
+          .range([scatterLeft, scatterRight]);
+        xValue = (point) => point.ivZScore;
+        xTickFormat = formatZScore;
+        xReference = 0;
+      } else {
+        const maxAbsMove = d3.max(points, (point) => Math.abs(point.priceMove)) || 0.01;
+        scatterX = d3.scaleLinear().domain([-maxAbsMove * 1.08, maxAbsMove * 1.08]).nice(5)
+          .range([scatterLeft, scatterRight]);
+        xValue = (point) => point.priceMove;
+        xTickFormat = d3.format("+.0%");
+        xReference = 0;
+      }
+      const scatterY = d3.scaleLinear().domain([-maxAbsReturn * 1.12, maxAbsReturn * 1.12]).nice(5)
+        .range([plotBottom, plotTop]);
+      const scatterColor = d3.scaleDiverging(d3.interpolateRdBu)
+        .domain([-maxAbsReturn, 0, maxAbsReturn]);
+      if (xReference != null) {
+        svg.append("line")
+          .attr("x1", scatterX(xReference)).attr("x2", scatterX(xReference))
+          .attr("y1", plotTop).attr("y2", plotBottom)
+          .attr("stroke", "rgba(255,255,255,.13)");
+      }
+      svg.append("line")
+        .attr("x1", scatterLeft).attr("x2", scatterRight)
+        .attr("y1", scatterY(0)).attr("y2", scatterY(0))
+        .attr("stroke", "rgba(255,255,255,.13)");
+      const xAxis = svg.append("g").attr("transform", `translate(0,${plotBottom})`)
+        .call(d3.axisBottom(scatterX).ticks(5).tickFormat(xTickFormat).tickSize(0).tickPadding(9));
+      styleAxis(xAxis);
+      const pointDescription = (point) => {
+        return [
+          formatTooltipDate(point.entryDate),
+          `BTC move ${formatSignedPercent(point.priceMove)}`,
+          `Entry IV ${formatIv(point.entryIv)} · z-score ${formatZScore(point.ivZScore)}`,
+          `Strategy PnL ${formatSignedUsd(point.pnlUsd)}`,
+          `${formatSignedPercent(point.returnOnNotional)} of notional`,
+        ];
+      };
+      const showPointTooltip = (event, point) => {
+        scatterTooltip
+          .html(`
+            <strong>${formatTooltipDate(point.entryDate)}</strong>
+            <span><b>BTC move</b><em>${formatSignedPercent(point.priceMove)}</em></span>
+            <span><b>Entry IV</b><em>${formatIv(point.entryIv)} · z ${formatZScore(point.ivZScore)}</em></span>
+            <span><b>Strategy PnL</b><em>${formatSignedUsd(point.pnlUsd)}</em></span>
+            <span><b>Return on notional</b><em>${formatSignedPercent(point.returnOnNotional)}</em></span>
+          `)
+          .attr("aria-hidden", "false")
+          .classed("isVisible", true);
+        const markBounds = event.currentTarget.getBoundingClientRect();
+        const containerBounds = element.getBoundingClientRect();
+        const tooltipNode = scatterTooltip.node();
+        const tooltipWidth = tooltipNode.offsetWidth;
+        const tooltipHeight = tooltipNode.offsetHeight;
+        const markCenterX = markBounds.left - containerBounds.left + markBounds.width / 2;
+        const left = Math.max(8, Math.min(
+          containerBounds.width - tooltipWidth - 8,
+          markCenterX - tooltipWidth / 2,
+        ));
+        const above = markBounds.top - containerBounds.top - tooltipHeight - 10;
+        const top = above >= 8
+          ? above
+          : markBounds.bottom - containerBounds.top + 10;
+        scatterTooltip.style("left", `${left}px`).style("top", `${top}px`);
+        d3.select(event.currentTarget).attr("r", 4.8).attr("stroke-width", 1.1);
+      };
+      const clearPointTooltip = () => {
+        scatterTooltip.attr("aria-hidden", "true").classed("isVisible", false);
+        svg.selectAll("circle.weekly-outcome").attr("r", 3.6).attr("stroke-width", .7);
+      };
+      const hidePointTooltip = (event) => {
+        clearPointTooltip();
+        d3.select(event.currentTarget).attr("r", 3.6).attr("stroke-width", .7);
+      };
+      svg.on("click.scatter-tooltip", clearPointTooltip);
+      svg.selectAll("circle.weekly-outcome").data(points).join("circle")
+        .attr("class", "weekly-outcome")
+        .attr("cx", (point) => scatterX(xValue(point)))
+        .attr("cy", (point) => scatterY(point.returnOnNotional))
+        .attr("r", 3.6)
+        .attr("fill", (point) => scatterColor(point.returnOnNotional))
+        .attr("stroke", "rgba(255,255,255,.36)")
+        .attr("stroke-width", .7)
+        .attr("opacity", .94)
+        .attr("tabindex", 0)
+        .attr("aria-label", (point) => pointDescription(point).join(", "))
+        .on("pointerenter focus", showPointTooltip)
+        .on("pointerleave blur", hidePointTooltip)
+        .on("click", (event, point) => {
+          event.stopPropagation();
+          showPointTooltip(event, point);
+        });
+      return;
+    }
     const values = cohort.terminalReturnOnPremium;
     const stats = cohort.returnSummary;
+    const notionalStats = cohort.notionalReturnSummary;
     let domainLow = sharedPnlLow;
     let domainHigh = sharedPnlHigh;
     if (domainLow === domainHigh) {
@@ -199,30 +349,21 @@ const draw = () => {
     const y = d3.scaleLinear().domain([0, d3.max(bins, (bin) => bin.length) || 1]).nice()
       .range([plotBottom, plotTop]);
 
-    const panelTitle = viewMode.value === "iv"
+    const panelTitle = viewMode.value === "iv" || viewMode.value === "mu"
       ? `${cohort.label} · ${cohort.rangeLabel}`
       : `${cohort.label} · ${formatDate(cohort.startDate)} – ${formatDate(cohort.endDate)}`;
-    const resultSummary = `historical ${formatUsd(cohort.summary.actualPnl)} · null mean ${formatPercent(stats.mean)} of entry option value · ${formatOrdinal(stats.actualPercentile)} percentile`;
-    const panelSubtitle = viewMode.value === "iv"
-      ? cohort.weekCount
-        ? `${cohort.weekCount} weeks · avg entry IV ${formatPercent(cohort.meanEntryIv)} · ${resultSummary}`
-        : "0 weeks"
-      : `${cohort.weekCount} weeks · ${resultSummary}`;
+    const panelSubtitle = cohort.weekCount
+      ? `${cohort.weekCount} weeks · actual avg ${formatSignedPercent(notionalStats.actualPnl)} of notional/week · null avg ${formatSignedPercent(notionalStats.mean)}`
+      : "0 weeks";
     svg.append("text").attr("x", panelX).attr("y", panelY + 13)
-      .attr("fill", "#dfe3e7").attr("font-size", 12).attr("font-weight", 600)
+      .attr("fill", "#dfe3e7").attr("font-size", 14).attr("font-weight", 600)
       .text(panelTitle);
-    svg.append("text").attr("x", panelX).attr("y", panelY + 32)
-      .attr("fill", "rgba(255,255,255,.36)").attr("font-size", 11)
+    svg.append("text").attr("x", panelX).attr("y", panelY + 34)
+      .attr("fill", "rgba(255,255,255,.36)").attr("font-size", 12)
       .text(panelSubtitle);
-    if (cohort.bayesianEdge) {
-      svg.append("text").attr("x", panelX).attr("y", panelY + 50)
-        .attr("fill", "rgba(255,255,255,.36)").attr("font-size", 11)
-        .text(`Bayesian bootstrap · P(observed mean edge > 0) ${formatPercent(cohort.bayesianEdge.probabilityEdgePositive)}`);
-    }
-
     if (!cohort.weekCount) {
       svg.append("text").attr("x", panelX + panelWidth / 2).attr("y", (plotTop + plotBottom) / 2)
-        .attr("text-anchor", "middle").attr("fill", "rgba(255,255,255,.3)").attr("font-size", 11)
+        .attr("text-anchor", "middle").attr("fill", "rgba(255,255,255,.3)").attr("font-size", 13)
         .text("No completed weeks in this IV regime");
       return;
     }
@@ -255,7 +396,11 @@ const draw = () => {
       .attr("stroke", "rgba(226,232,240,.8)").attr("stroke-width", 1)
       .attr("stroke-dasharray", "3 3");
 
-    const actualColor = d3.color(pnlColor(actualValue)).brighter(.45).formatHex();
+    const readableActualValue = Math.max(
+      -actualMarkerColorLimit,
+      Math.min(actualMarkerColorLimit, actualValue),
+    );
+    const actualColor = d3.color(pnlColor(readableActualValue)).brighter(.45).formatHex();
     svg.append("line").attr("x1", actualX).attr("x2", actualX)
       .attr("y1", plotTop).attr("y2", plotBottom)
       .attr("stroke", actualColor).attr("stroke-width", 1.5);
@@ -264,11 +409,11 @@ const draw = () => {
       .attr("x", actualX)
       .attr("y", plotTop - 6)
       .attr("text-anchor", anchorActualLabelRight ? "end" : actualLeft ? "start" : "middle")
-      .attr("fill", actualColor).attr("font-size", 11).attr("font-weight", 600)
-      .text(`Actual ${formatPercent(actualValue)} of entry option value${actualRight || actualLeft ? " · off scale" : ""}`);
+      .attr("fill", actualColor).attr("font-size", 13).attr("font-weight", 600)
+      .text(`P(null ≥ actual) ${formatNullTailProbability(stats, values.length)}`);
 
     const axis = svg.append("g").attr("transform", `translate(0,${plotBottom})`)
-      .call(d3.axisBottom(x).ticks(6).tickFormat(d3.format(".0%")).tickSize(0).tickPadding(7));
+      .call(d3.axisBottom(x).ticks(6).tickFormat(d3.format(".0%")).tickSize(0).tickPadding(9));
     styleAxis(axis);
   });
 };
@@ -323,40 +468,37 @@ defineExpose({ exportPng });
                 </h2>
                 <div id="distribution-methodology-tooltip" class="methodologyTooltip" role="tooltip">
                   <p>
-                    <strong>Paths, volatility, and drift.</strong>
-                    Every completed week keeps its actual entry spot, option structure, holding period, and entry IV. We then
-                    draw an independent GBM path on that strategy's hedge grid using constant volatility equal to entry IV.
-                    Realized volatility is not forced back to IV: it varies naturally from path to path through finite-sample
-                    diffusion noise. Scenarios are allocated as evenly as possible between −100%, 0%, and +100% annual drift.
-                    Zero drift is the fair-value null; the two drift variants cheaply include the strategy's residual beta risk.
+                    <strong>This tab asks whether the strategy's realized returns look unusually good in a no-edge market.</strong>
+                    We compare the actual result in each cohort with outcomes generated by a fair-value null. A small
+                    P(null ≥ actual) means few null scenarios performed at least as well as the strategy; a large probability
+                    means the result is readily explained by the null.
                   </p>
                   <p>
-                    <strong>Hedging.</strong>
-                    <template v-if="props.hedgeEnabled">
-                      The option is repriced at constant entry IV and delta is recalculated at every configured hedge time on
-                      the GBM path. The hedge follows the strategy's schedule and tolerance, includes configured execution
-                      costs, and closes at the historical exit time. This matches the dynamic hedge settings from the run.
-                    </template>
-                    <template v-else>
-                      No underlying hedge is opened or simulated because the strategy run is unhedged. Each scenario contains
-                      only the fairly valued option position's PnL from entry to exit. The historical comparison likewise
-                      excludes hedge PnL, keeping the observed and simulated results directly comparable.
-                    </template>
+                    <strong>The null assumes each week's implied volatility equals its expected realized volatility.</strong>
+                    Every week keeps its actual entry conditions and gets fresh GBM paths with volatility set to that week's
+                    entry IV; realized volatility still varies naturally across individual paths. We split scenarios equally
+                    between −100%, 0%, and +100% annual drift and pool them, so the comparison averages over strong bearish,
+                    driftless, and strong bullish price environments.
                   </p>
                   <p>
-                    <strong>Reading the charts.</strong>
+                    <strong>Read the actual marker against the simulated distribution and its empirical ranges.</strong>
                     <template v-if="viewMode === 'time'">
-                      The {{ completedWeekCount }} completed weeks are split into four consecutive periods.
-                    </template>
-                    <template v-else>
-                      Entry IV is standardized into Low, Medium, High, and Extreme regimes across the
+                      The {{ completedWeekCount }} completed weeks are split into three consecutive periods.
+                    </template><template v-else-if="viewMode === 'iv'">
+                      Entry IV is standardized into Low, Medium, and High regimes across the
                       {{ completedWeekCount }} completed weeks.
+                    </template><template v-else>
+                      The first three panels hold all completed weeks fixed and separate the −100%, 0%, and +100% annual
+                      drift assumptions.
                     </template>
+                    The fourth panel follows the selected view: actual weekly PnL over calendar time for T, against entry-IV
+                    z-score for σ, or against the week's BTC return for μ.
                     Bars show simulated PnL divided by the total option value paid or received when the trades in that
-                    panel were opened. This makes differently sized cohorts comparable; it is not return on the strategy's
-                    $100k notional. The brighter inner band is the empirical 5th–95th percentile range; the fainter outer
-                    band is the empirical 1st–99th percentile range. The Bayesian number is calculated separately from
-                    observed weekly PnLs using a Dirichlet bootstrap; it is not fed back into the GBM simulator.
+                    panel were opened, which makes differently sized cohorts comparable; it is not return on the strategy's
+                    $100k notional. The brighter band contains the middle 90% of null outcomes and the fainter band contains
+                    the middle 98%. P(null ≥ actual) is the one-sided Monte Carlo probability of obtaining the actual result
+                    or a better one under that panel's null. We apply the standard add-one correction, and show the simulation
+                    resolution as an upper bound when no scenario reaches the actual result.
                   </p>
                 </div>
               </div>
@@ -367,8 +509,9 @@ defineExpose({ exportPng });
             <div class="controlRow">
               <span>Panels</span>
               <div class="groupingToggle" role="group" aria-label="Group distributions by">
-                <button type="button" :aria-pressed="viewMode === 'time'" @click="viewMode = 'time'">Time</button>
-                <button type="button" :aria-pressed="viewMode === 'iv'" @click="viewMode = 'iv'">Entry IV</button>
+                <button type="button" :aria-pressed="viewMode === 'time'" title="Time cohorts" @click="viewMode = 'time'">T</button>
+                <button type="button" :aria-pressed="viewMode === 'iv'" title="Entry IV" @click="viewMode = 'iv'">σ</button>
+                <button type="button" :aria-pressed="viewMode === 'mu'" title="Drift" @click="viewMode = 'mu'">μ</button>
               </div>
             </div>
             <div class="controlRow">
@@ -376,7 +519,6 @@ defineExpose({ exportPng });
                 <details :class="['scenarioSelect', { disabled: running }]" @click.capture="running && $event.preventDefault()">
                   <summary aria-label="Number of Monte Carlo scenarios" :aria-disabled="running">
                     {{ scenarioCount.toLocaleString() }} sims
-                    <span aria-hidden="true">⌄</span>
                   </summary>
                   <div class="scenarioMenu" role="listbox" aria-label="Number of Monte Carlo scenarios">
                     <button
@@ -412,11 +554,45 @@ defineExpose({ exportPng });
 }
 .progressTrack { height: 3px; margin: 2px 11px 0; background: rgba(255,255,255,.05); }
 .progressTrack span { display: block; height: 100%; background: #38bdf8; transition: width .12s linear; }
-.state { display: grid; min-height: 420px; place-items: center; color: #69717a; font-size: 12px; }
+.state { display: grid; min-height: 420px; place-items: center; color: #69717a; font-size: 14px; }
 .state.error { color: #fb7185; }
 .distributionContent { min-width: 1100px; }
-.distributionChart { margin-top: 12px; }
+.distributionChart { position: relative; margin-top: 12px; }
 .distributionChart :deep(svg) { display: block; }
+.distributionChart :deep(.scatterTooltip) {
+  position: absolute;
+  z-index: 8;
+  display: grid;
+  gap: 6px;
+  min-width: 205px;
+  box-sizing: border-box;
+  padding: 11px 12px;
+  border: 1px solid rgba(255,255,255,.13);
+  border-radius: 5px;
+  background: #111318;
+  box-shadow: 0 10px 28px rgba(0,0,0,.44);
+  color: #dfe3e7;
+  font-size: 12px;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .08s ease;
+}
+.distributionChart :deep(.scatterTooltip.isVisible) { opacity: 1; visibility: visible; }
+.distributionChart :deep(.scatterTooltip strong) { font-size: 13px; font-weight: 600; }
+.distributionChart :deep(.scatterTooltip span) {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+}
+.distributionChart :deep(.scatterTooltip b) { color: #858d95; font-weight: 500; }
+.distributionChart :deep(.scatterTooltip em) {
+  color: #dfe3e7;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .distributionIntro {
   display: flex;
   align-items: flex-start;
@@ -424,10 +600,14 @@ defineExpose({ exportPng });
   gap: 24px;
   margin: 20px 28px 0 54px;
 }
+.distributionIntro > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .distributionIntro h2 {
   margin: 0;
   color: #e8eaed;
-  font-size: 15px;
+  font-size: 18px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -456,7 +636,7 @@ defineExpose({ exportPng });
   margin: 0;
   min-width: 0;
   color: rgba(255,255,255,.42);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.3;
 }
 .methodologyTooltip {
@@ -465,11 +645,11 @@ defineExpose({ exportPng });
   top: calc(100% + 9px);
   left: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 32px;
-  width: min(940px, calc(100vw - 120px));
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  width: min(720px, calc(100vw - 120px));
   box-sizing: border-box;
-  padding: 16px 18px;
+  padding: 18px 20px;
   border: 1px solid rgba(255,255,255,.11);
   border-radius: 5px;
   background: #111318;
@@ -487,32 +667,33 @@ defineExpose({ exportPng });
 .distributionIntro .methodologyTooltip p {
   margin: 0;
   color: #7c838b;
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.5;
   text-align: left;
 }
 .methodologyTooltip strong {
-  display: block;
-  margin-bottom: 4px;
+  display: inline;
+  margin-right: 3px;
   color: #aeb4bb;
   font-weight: 600;
 }
 .distributionControls {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: flex-end;
-  gap: 16px;
+  gap: 26px;
   margin-top: -5px;
 }
 .controlRow {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 7px;
+  gap: 10px;
 }
 .controlRow > span {
   color: #6a727a;
-  font-size: 11px;
+  font-size: 13px;
 }
 .groupingToggle {
   display: inline-flex;
@@ -522,14 +703,14 @@ defineExpose({ exportPng });
   background: rgba(255,255,255,.045);
 }
 .groupingToggle button {
-  height: 24px;
-  padding: 0 9px;
+  height: 28px;
+  padding: 0 11px;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: #69717a;
   font: inherit;
-  font-size: 11px;
+  font-size: 13px;
   cursor: pointer;
 }
 .groupingToggle button[aria-pressed="true"] {
@@ -539,7 +720,7 @@ defineExpose({ exportPng });
 .scenarioRunner {
   display: inline-flex;
   flex: none;
-  gap: 5px;
+  gap: 10px;
 }
 .scenarioSelect summary,
 .scenarioRunner button {
@@ -549,23 +730,25 @@ defineExpose({ exportPng });
   background: transparent;
   color: #777e86;
   font: inherit;
-  font-size: 11px;
+  font-size: 13px;
 }
 .scenarioSelect {
   position: relative;
-  width: 88px;
+  width: 112px;
 }
 .scenarioSelect summary {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   width: 100%;
   box-sizing: border-box;
   padding: 0 8px;
   cursor: pointer;
   list-style: none;
+  white-space: nowrap;
 }
 .scenarioSelect summary::-webkit-details-marker { display: none; }
+.scenarioSelect summary::marker { content: ""; }
 .scenarioSelect[open] summary {
   color: #c5c9ce;
   border-color: rgba(255,255,255,.20);
@@ -589,10 +772,12 @@ defineExpose({ exportPng });
 .scenarioMenu button {
   display: block;
   width: 100%;
-  height: 25px;
-  padding: 0 6px;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 0 9px;
   border: 0;
   text-align: left;
+  white-space: nowrap;
 }
 .scenarioMenu button:hover,
 .scenarioMenu button[aria-selected="true"] {
@@ -602,7 +787,9 @@ defineExpose({ exportPng });
 .scenarioRunner button {
   padding: 0 9px;
   cursor: pointer;
+  white-space: nowrap;
 }
+.scenarioRunner > button { min-width: 82px; }
 .scenarioRunner button:hover:not(:disabled) {
   color: #c5c9ce;
   border-color: rgba(255,255,255,.20);

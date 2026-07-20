@@ -133,7 +133,7 @@ function render() {
       .attr("y", height / 2)
       .attr("text-anchor", "middle")
       .attr("fill", "#666c73")
-      .style("font", `12px ${font}`)
+      .style("font", `13px ${font}`)
       .text(
         props.loading
           ? "Loading hourly returns…"
@@ -173,14 +173,14 @@ function render() {
     .attr("y", answerCenterY)
     .attr("dominant-baseline", "middle")
     .attr("fill", statusColor)
-    .style("font", `300 33px ${font}`)
+    .style("font", `300 35px ${font}`)
     .text(formatRatio(headline.ratio));
   svg
     .append("text")
     .attr("x", content.left + 150)
     .attr("y", answerCenterY - 20)
     .attr("fill", "#d8dadd")
-    .style("font", `400 11px ${font}`)
+    .style("font", `400 12.5px ${font}`)
     .text(
       `${forward ? "The following 24h of BTC returns carry" : "A day of BTC returns carries"} ~${d3.format(".0f")(varianceDifferencePct)}% ${varianceDirection} variance than independent hourly moves imply.`,
     );
@@ -189,7 +189,7 @@ function render() {
     .attr("x", content.left + 150)
     .attr("y", answerCenterY)
     .attr("fill", "#d8dadd")
-    .style("font", `400 11px ${font}`)
+    .style("font", `400 12.5px ${font}`)
     .text(
       varianceStandardized
         ? "Returns scaled by the smoothed 168-bucket weekly volatility profile."
@@ -200,7 +200,7 @@ function render() {
     .attr("x", content.left + 150)
     .attr("y", answerCenterY + 23)
     .attr("fill", statusColor)
-    .style("font", `500 10px ${font}`)
+    .style("font", `500 11.5px ${font}`)
     .text(marketVerdict);
   const chartHeaderY = 24;
   const plotTop = 165;
@@ -278,7 +278,7 @@ function render() {
     .attr("dominant-baseline", "middle")
     .attr("text-anchor", "start")
     .attr("fill", "#8f949b")
-    .style("font", `9px ${font}`)
+    .style("font", `10.5px ${font}`)
     .text("Random walk · VR = 1");
 
   svg
@@ -376,7 +376,7 @@ function render() {
       .attr("y", labelY - 13)
       .attr("text-anchor", "end")
       .attr("fill", highlightColor)
-      .style("font", `500 9px ${font}`);
+      .style("font", `500 10.5px ${font}`);
     troughText.append("tspan").text(`Maximum reversal near ${trough.horizon}h`);
     troughText
       .append("tspan")
@@ -404,7 +404,7 @@ function render() {
         .attr("y", recoveryY)
         .attr("text-anchor", "end")
         .attr("fill", highlightColor)
-        .style("font", `500 9px ${font}`);
+        .style("font", `500 10.5px ${font}`);
       recoveryText.append("tspan").text("Recovery into 24h");
       recoveryText
         .append("tspan")
@@ -508,7 +508,7 @@ onBeforeUnmount(() => resizeObserver?.disconnect());
   background: rgba(8, 9, 12, 0.97);
   color: #f2f3f5;
   font:
-    11px/1.55 "Helvetica Neue",
+    12px/1.55 "Helvetica Neue",
     Helvetica,
     -apple-system,
     sans-serif;

@@ -130,7 +130,8 @@ export const computeMaxDrawdown = (rows = []) => {
   let peak = 0;
   let drawdown = 0;
   for (const row of rows) {
-    const equity = row.endingEquityUsd;
+    const equity = Number(row.endingEquityUsd);
+    if (!Number.isFinite(equity)) continue;
     peak = Math.max(peak, equity);
     drawdown = Math.min(drawdown, equity - peak);
   }
@@ -1003,7 +1004,10 @@ const buildCycleSummary = ({
     const realizedMetrics = realizedMetricsByCycle.get(plan.cycle) || {};
     const greekAttribution = greekAttributionByCycle?.get(plan.cycle) || {};
     const cyclePnlUsd = shortOptionPnlUsd + hedgePnlUsd;
-    endingEquityUsd += cyclePnlUsd;
+    const closed = Number.isFinite(settlementIndexPrice)
+      && legExitValues.every(Number.isFinite)
+      && Number.isFinite(cyclePnlUsd);
+    if (closed) endingEquityUsd += cyclePnlUsd;
     return {
       ...plan,
       exitIndexPrice: settlementIndexPrice,
@@ -1015,7 +1019,7 @@ const buildCycleSummary = ({
       cyclePnlUsd,
       cycleReturnOnNotional: cyclePnlUsd / plan.investmentUsd,
       endingEquityUsd,
-      closed: Number.isFinite(settlementIndexPrice) && legExitValues.every(Number.isFinite),
+      closed,
     };
   });
 };
@@ -1197,7 +1201,7 @@ export const runWeeklyStraddleBacktest = ({
     Number.isFinite(observedYears) && observedYears > 0
       ? cycleReturns.length / observedYears
       : Number.NaN;
-  const finalEquityUsd = cycleSummary.at(-1)?.endingEquityUsd ?? Number.NaN;
+  const finalEquityUsd = closedCycles.at(-1)?.endingEquityUsd ?? Number.NaN;
 
   return {
     dataEnd,

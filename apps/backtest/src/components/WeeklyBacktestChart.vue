@@ -60,8 +60,8 @@ const draw = () => {
 
   // Normalize y to actual data range (include 0)
   const allValues = rows.flatMap(r => [
-    r.cyclePnlUsd || 0,
-    r.endingEquityUsd || 0,
+    Number.isFinite(r.cyclePnlUsd) ? r.cyclePnlUsd : 0,
+    Number.isFinite(r.endingEquityUsd) ? r.endingEquityUsd : 0,
     0
   ]);
   let [dataMin, dataMax] = d3.extent(allValues);
@@ -102,7 +102,7 @@ const draw = () => {
       .attr("y", gy + 3)
       .attr("text-anchor", "end")
       .attr("fill", "rgba(255,255,255,0.32)")
-      .attr("font-size", 11)
+      .attr("font-size", 13)
       .text(formatUsd(v));
   });
 
@@ -142,8 +142,9 @@ const draw = () => {
   });
 
   const cumulativeLine = d3.line()
+    .defined((row) => Number.isFinite(row.endingEquityUsd))
     .x((_, index) => x(index))
-    .y((row) => y(row.endingEquityUsd || 0))
+    .y((row) => y(row.endingEquityUsd))
     .curve(d3.curveStepBefore);
 
   svg.append("path")
@@ -168,7 +169,7 @@ const draw = () => {
       .attr("y", height - 6)
       .attr("text-anchor", "middle")
       .attr("fill", "rgba(255,255,255,0.28)")
-      .attr("font-size", 10)
+      .attr("font-size", 12)
       .text(formatAxisDate(entryDate(rows[idx])));
   });
 };

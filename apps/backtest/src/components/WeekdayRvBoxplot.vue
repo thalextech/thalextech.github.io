@@ -102,7 +102,7 @@ function render() {
       .attr("y", height / 2)
       .attr("text-anchor", "middle")
       .attr("fill", "#666c73")
-      .style("font", `12px ${font}`)
+      .style("font", `13px ${font}`)
       .text(props.loading ? "Loading weekday realized volatility…" : "No weekday realized-volatility observations.");
     return;
   }
@@ -238,7 +238,7 @@ onBeforeUnmount(() => resizeObserver?.disconnect());
   border-radius: 6px;
   background: rgba(8,9,12,0.96);
   color: #f2f3f5;
-  font: 11px/1.55 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  font: 12px/1.55 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
   white-space: pre-line;
   pointer-events: none;
   box-shadow: 0 8px 24px rgba(0,0,0,0.32);

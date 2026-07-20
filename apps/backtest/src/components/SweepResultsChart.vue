@@ -390,7 +390,7 @@ const draw = () => {
       .attr("width", tooltipWidth).attr("height", tooltipHeight).attr("rx", 4)
       .attr("fill", "#17191e").attr("stroke", "rgba(255,255,255,0.18)");
     const text = group.append("text").attr("x", 9).attr("y", 15)
-      .attr("fill", "rgba(255,255,255,0.88)").attr("font-size", 10);
+      .attr("fill", "rgba(255,255,255,0.88)").attr("font-size", 11);
     lines.forEach((line, index) => text.append("tspan")
       .attr("x", 9).attr("dy", index === 0 ? 0 : 14).text(line));
   };
@@ -399,13 +399,13 @@ const draw = () => {
       .attr("x", margin.left).attr("y", y);
     heading.append("tspan")
       .attr("fill", "rgba(255,255,255,0.64)")
-      .attr("font-size", 11)
+      .attr("font-size", 12)
       .attr("font-weight", 500)
       .text(title);
     heading.append("tspan")
       .attr("dx", 10)
       .attr("fill", "rgba(255,255,255,0.36)")
-      .attr("font-size", 9)
+      .attr("font-size", 10)
       .attr("font-weight", 400)
       .text(subtitle);
   };
@@ -502,7 +502,7 @@ const draw = () => {
       .attr("x", labelX).attr("y", mapY(labelMean) - 5)
       .attr("text-anchor", "start")
       .attr("fill", "rgba(255,255,255,0.42)")
-      .attr("font-size", 8.5)
+      .attr("font-size", 9.5)
       .text(`S ${sharpe}`);
   });
 
@@ -510,7 +510,7 @@ const draw = () => {
     .attr("transform", `translate(0,${mapPlotBottom})`)
     .call(d3.axisBottom(mapX).tickValues(mapXTicks).tickSize(0).tickPadding(15).tickFormat(formatCompactUsd));
   mapXAxis.select(".domain").remove();
-  mapXAxis.selectAll("text").attr("fill", UI_AXIS_LABEL_COLOR).attr("font-size", 9);
+  mapXAxis.selectAll("text").attr("fill", UI_AXIS_LABEL_COLOR).attr("font-size", 10);
   const mapYAxis = svg.append("g")
     .attr("class", "export-y-axis")
     .attr("transform", `translate(${mapPlotLeft},0)`)
@@ -520,11 +520,11 @@ const draw = () => {
     .attr("x", margin.left - mapPlotLeft)
     .attr("text-anchor", "start")
     .attr("fill", UI_AXIS_LABEL_COLOR)
-    .attr("font-size", 9);
+    .attr("font-size", 10);
   svg.append("text")
     .attr("x", (mapPlotLeft + mapPlotRight) / 2).attr("y", mapPlotBottom + 37)
     .attr("text-anchor", "middle")
-    .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 9)
+    .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 10)
     .text("WEEKLY PNL σ");
 
   const mapLabelPlacements = layoutScatterLabels({
@@ -571,7 +571,7 @@ const draw = () => {
     .attr("text-anchor", "middle")
     .attr("dominant-baseline", "central")
     .attr("fill", "rgba(255,255,255,0.58)")
-    .attr("font-size", 8.5)
+    .attr("font-size", 9.5)
     .attr("stroke", "#090a0d")
     .attr("stroke-width", 2.2)
     .attr("paint-order", "stroke")
@@ -632,7 +632,7 @@ const draw = () => {
       .attr("x", margin.left - realizedPlotLeft)
       .attr("text-anchor", "start")
       .attr("fill", UI_AXIS_LABEL_COLOR)
-      .attr("font-size", 9);
+      .attr("font-size", 10);
     const realizedXAxis = svg.append("g")
       .attr("transform", `translate(0,${realizedAxisY})`)
       .call(d3.axisBottom(realizedX)
@@ -642,7 +642,7 @@ const draw = () => {
     realizedXAxis.select(".domain").remove();
     realizedXAxis.selectAll("text")
       .attr("fill", UI_AXIS_LABEL_COLOR)
-      .attr("font-size", 8.5);
+      .attr("font-size", 9.5);
 
     realizedGroups = svg.selectAll("g.realized-vol-setting")
       .data(realizedRows, (row) => row.key)
@@ -691,7 +691,7 @@ const draw = () => {
     svg.append("text")
       .attr("x", realizedPlotLeft).attr("y", realizedPlotTop + 24)
       .attr("fill", "rgba(255,255,255,0.38)")
-      .attr("font-size", 9)
+      .attr("font-size", 10)
       .text("NO REALIZED-VOL METRICS AVAILABLE");
   }
 
@@ -726,7 +726,7 @@ const draw = () => {
     .attr("transform", `translate(0,${distributionAxisY})`)
     .call(d3.axisTop(distributionX).ticks(7).tickSize(0).tickPadding(6).tickFormat(formatCompactUsd));
   distributionAxis.select(".domain").remove();
-  distributionAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.42)").attr("font-size", 9);
+  distributionAxis.selectAll("text").attr("fill", "rgba(255,255,255,0.42)").attr("font-size", 10);
   svg.append("rect")
     .attr("x", distributionPlotLeft)
     .attr("y", distributionAxisY)
@@ -752,7 +752,7 @@ const draw = () => {
   distributionSummaryColumns.forEach((column) => {
     const header = svg.append("text")
       .attr("x", column.x).attr("y", distributionAxisY - 7).attr("text-anchor", "end")
-      .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 9)
+      .attr("fill", "rgba(255,255,255,0.38)").attr("font-size", 10)
       .text(column.label);
     header
       .on("mouseenter", () => showHeaderTooltip(column.x, distributionAxisY - 7, column.tooltip, "end"))
@@ -810,11 +810,11 @@ const draw = () => {
     }
     group.append("text")
       .attr("x", margin.left).attr("y", center).attr("dy", "0.32em")
-      .attr("fill", "rgba(255,255,255,0.28)").attr("font-size", 8.5)
+      .attr("fill", "rgba(255,255,255,0.28)").attr("font-size", 9.5)
       .text(String(row.distributionRank).padStart(2, "0"));
     group.append("text")
       .attr("x", margin.left + 24).attr("y", center).attr("dy", "0.32em")
-      .attr("fill", UI_AXIS_LABEL_COLOR).attr("font-size", 10).attr("font-weight", 500)
+      .attr("fill", UI_AXIS_LABEL_COLOR).attr("font-size", 11).attr("font-weight", 500)
       .text(row.label);
 
     const q10 = d3.quantileSorted(row.sortedWeeks, 0.10) ?? 0;
@@ -869,7 +869,7 @@ const draw = () => {
     });
     distributionSummaryColumns.forEach((column) => group.append("text")
       .attr("x", column.x).attr("y", center).attr("dy", "0.32em").attr("text-anchor", "end")
-      .attr("fill", "rgba(255,255,255,0.72)").attr("font-size", 9.5)
+      .attr("fill", "rgba(255,255,255,0.72)").attr("font-size", 10.5)
       .text(column.value(row)));
   });
 
@@ -923,7 +923,7 @@ const draw = () => {
     const header = svg.append("text")
       .attr("x", x).attr("y", rankedColumnsY).attr("text-anchor", anchor)
       .attr("fill", label === "SETTING" ? UI_AXIS_LABEL_COLOR : "rgba(255,255,255,0.45)")
-      .attr("font-size", 9).text(label);
+      .attr("font-size", 10).text(label);
     header
       .on("mouseenter", () => showHeaderTooltip(x, rankedColumnsY, tooltip, anchor))
       .on("mouseleave", hideHeaderTooltip);
@@ -950,7 +950,7 @@ const draw = () => {
     group.append("line").attr("x1", margin.left).attr("x2", margin.left + contentWidth)
       .attr("y1", top).attr("y2", top).attr("stroke", "rgba(255,255,255,0.05)");
     group.append("text").attr("x", columnX.setting).attr("y", center).attr("dy", "0.32em")
-      .attr("fill", UI_AXIS_LABEL_COLOR).attr("font-size", 10).attr("font-weight", 500).text(row.label);
+      .attr("fill", UI_AXIS_LABEL_COLOR).attr("font-size", 11).attr("font-weight", 500).text(row.label);
 
     const [cumMin, cumMax] = d3.extent(row.cumulative);
     const sparkX = d3.scaleLinear().domain([0, Math.max(1, row.cumulative.length - 1)]).range([columnX.spark, columnX.spark + sparkWidth]);
@@ -963,7 +963,7 @@ const draw = () => {
 
     const addValue = (x, value, color = "rgba(255,255,255,0.7)") => group.append("text")
       .attr("x", x).attr("y", center).attr("dy", "0.32em").attr("text-anchor", "end")
-      .attr("fill", color).attr("font-size", 9.5).text(value);
+      .attr("fill", color).attr("font-size", 10.5).text(value);
     const optionPnl = Number(row.optionPnl) || 0;
     const hedgePnl = Number(row.hedgePnl) || 0;
     addValue(columnX.optionPnl, formatCompactUsd(optionPnl), optionPnlColor(optionPnl));
@@ -1200,7 +1200,7 @@ defineExpose({ exportPng });
   border-radius: 4px;
   background: transparent;
   color: #777d84;
-  font: 500 9px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  font: 500 10px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
   cursor: pointer;
 }
 
@@ -1220,7 +1220,7 @@ defineExpose({ exportPng });
   border-radius: 5px;
   background: rgba(10, 11, 14, 0.78);
   color: #777d84;
-  font: 500 9px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  font: 500 10px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
   backdrop-filter: blur(6px);
 }
 
@@ -1280,7 +1280,7 @@ defineExpose({ exportPng });
   padding: 0 8px;
   background: transparent;
   color: #9ba0a7;
-  font: 500 10px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  font: 500 11px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
   text-align: left;
   cursor: pointer;
 }
@@ -1299,7 +1299,7 @@ defineExpose({ exportPng });
 
 .distributionSortCheck {
   color: #d8dadd;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .panelExportButton {

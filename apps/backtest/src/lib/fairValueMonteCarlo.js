@@ -5,7 +5,7 @@ import { mean } from "./statistics.js";
 const SECONDS_PER_YEAR = 365 * 86_400;
 const EPSILON = 1e-12;
 export const HEDGE_MODES = ["unhedged", "dynamic"];
-export const ANNUAL_DRIFT_VARIANTS = [0, 1, -1];
+export const ANNUAL_DRIFT_VARIANTS = [-1, 0, 1];
 
 const quantile = (values, probability) => {
   if (!values.length) return Number.NaN;
@@ -23,10 +23,9 @@ const populationStdDev = (values) => {
 };
 
 const IV_REGIMES = [
-  { label: "Low IV", rangeLabel: "z < −0.5", accepts: (zScore) => zScore < -0.5 },
-  { label: "Medium IV", rangeLabel: "−0.5 ≤ z < +0.5", accepts: (zScore) => zScore >= -0.5 && zScore < 0.5 },
-  { label: "High IV", rangeLabel: "+0.5 ≤ z < +1.5", accepts: (zScore) => zScore >= 0.5 && zScore < 1.5 },
-  { label: "Extreme IV", rangeLabel: "z ≥ +1.5", accepts: (zScore) => zScore >= 1.5 },
+  { label: "Low IV", rangeLabel: "z < −1", accepts: (zScore) => zScore < -1 },
+  { label: "Medium IV", rangeLabel: "−1 ≤ z < +1", accepts: (zScore) => zScore >= -1 && zScore < 1 },
+  { label: "High IV", rangeLabel: "z ≥ +1", accepts: (zScore) => zScore >= 1 },
 ];
 
 export const createSeededRandom = (seed = 1) => {
@@ -116,6 +115,10 @@ export const buildFairValueCycleState = (cycle) => {
   const fairEntryOptionValue = legs.reduce((total, leg) =>
     total + leg.quantity * modelLeg(leg, entrySpot, entryTs, sigma),
   0);
+  const observedEntryCashflow = Number(cycle.entryOptionCashflowUsd);
+  const entryCashflow = Number.isFinite(observedEntryCashflow)
+    ? observedEntryCashflow
+    : -fairEntryOptionValue;
   const entryPortfolioDelta = legs.reduce((total, leg) => {
     const delta = Number.isFinite(leg.entryDelta)
       ? leg.entryDelta
@@ -141,8 +144,13 @@ export const buildFairValueCycleState = (cycle) => {
     exitSpot,
     sigma,
     legs,
+    entryCashflow,
     fairEntryCashflow: -fairEntryOptionValue,
-    premiumBasisUsd: Math.max(EPSILON, Math.abs(fairEntryOptionValue)),
+    premiumBasisUsd: Math.max(EPSILON, Math.abs(entryCashflow)),
+    notionalBasisUsd: Math.max(
+      EPSILON,
+      Number(cycle.investmentUsd) || Number(cycle.notionalUsd) || 100_000,
+    ),
     hedgeEnabled: cycle.hedgeEnabled !== false,
     hedgeIntervalHours: Math.max(1, Number(cycle.hedgeIntervalHours) || 24),
     hedgeDeltaTolerance: Math.max(0, Number(cycle.hedgeDeltaTolerance) || 0),
@@ -157,7 +165,7 @@ export const buildFairValueCycleState = (cycle) => {
   return state;
 };
 
-const optionPnlAt = (cycle, spot, ts) => cycle.fairEntryCashflow
+const optionPnlAt = (cycle, spot, ts) => cycle.entryCashflow
   + cycle.legs.reduce((total, leg) =>
     total + leg.quantity * modelLeg(leg, spot, ts, cycle.sigma), 0);
 
@@ -235,6 +243,7 @@ export const simulateWeeklyCycleModes = (
 const summarizeDistribution = (values, actualPnl) => {
   const count = values.length;
   const belowOrEqual = values.filter((value) => value <= actualPnl).length;
+  const atOrAboveActual = values.filter((value) => value >= actualPnl).length;
   return {
     actualPnl,
     mean: mean(values),
@@ -245,6 +254,10 @@ const summarizeDistribution = (values, actualPnl) => {
     p95: quantile(values, 0.95),
     p99: quantile(values, 0.99),
     actualPercentile: count ? 100 * belowOrEqual / count : Number.NaN,
+    scenariosAtOrAboveActual: atOrAboveActual,
+    probabilityAtOrAboveActual: count
+      ? (atOrAboveActual + 1) / (count + 1)
+      : Number.NaN,
     probabilityExceedsActual: count
       ? values.filter((value) => value > actualPnl).length / count
       : Number.NaN,
@@ -258,7 +271,7 @@ export const summarizeBayesianEdge = ({
   draws = 5_000,
 }) => {
   const observations = cycles.map((cycle) =>
-    cycle.actualPnlByMode[hedgeMode] / Math.max(EPSILON, cycle.premiumBasisUsd));
+    cycle.actualPnlByMode[hedgeMode] / Math.max(EPSILON, cycle.notionalBasisUsd));
   if (!observations.length) {
     return {
       draws: 0,
@@ -304,7 +317,12 @@ const summarizeGroups = (
     (sum, cycle) => sum + cycle.premiumBasisUsd,
     0,
   ));
+  const notionalBasisUsd = Math.max(EPSILON, group.cycles.reduce(
+    (sum, cycle) => sum + cycle.notionalBasisUsd,
+    0,
+  ));
   const terminalReturnOnPremium = samples[index].map((value) => value / premiumBasisUsd);
+  const terminalReturnOnNotional = samples[index].map((value) => value / notionalBasisUsd);
   return {
     index,
     label: group.label,
@@ -314,12 +332,18 @@ const summarizeGroups = (
     weekCount: group.cycles.length,
     meanEntryIv: group.cycles.length ? mean(group.cycles.map((cycle) => cycle.sigma)) : Number.NaN,
     premiumBasisUsd,
+    notionalBasisUsd,
     terminalPnl: [...samples[index]],
     terminalReturnOnPremium,
+    terminalReturnOnNotional,
     summary: summarizeDistribution(samples[index], actualPnl),
     returnSummary: summarizeDistribution(
       terminalReturnOnPremium,
       actualPnl / premiumBasisUsd,
+    ),
+    notionalReturnSummary: summarizeDistribution(
+      terminalReturnOnNotional,
+      actualPnl / notionalBasisUsd,
     ),
     bayesianEdge: bayesianGroups[index] || null,
   };
@@ -388,6 +412,9 @@ const summarizeMode = ({
   cycles,
   timeGroups,
   ivGroups,
+  muGroups,
+  ivMean,
+  ivStandardDeviation,
   bayesianEdge,
 }) => {
   const terminalPnl = samples.terminalPnl;
@@ -411,6 +438,12 @@ const summarizeMode = ({
     samples.iv,
     hedgeMode,
     bayesianEdge.iv,
+  );
+  const muRegimes = summarizeGroups(
+    muGroups,
+    samples.mu,
+    hedgeMode,
+    muGroups.map(() => bayesianEdge.combined),
   );
   const combinedHitRate = summarizeHitRateGroups(
     combinedGroups,
@@ -440,9 +473,21 @@ const summarizeMode = ({
     combinedHitRate,
     bayesianEdge: bayesianEdge.combined,
     weeklyNullRanks: summarizeWeeklyNullRanks(cycles, samples.weekly, hedgeMode),
+    weeklyOutcomes: cycles.map((cycle) => ({
+      cycle: cycle.cycle,
+      entryDate: new Date(cycle.entryTs * 1000),
+      entryIv: cycle.sigma,
+      ivZScore: ivStandardDeviation > EPSILON
+        ? (cycle.sigma - ivMean) / ivStandardDeviation
+        : 0,
+      priceMove: cycle.exitSpot / cycle.entrySpot - 1,
+      pnlUsd: cycle.actualPnlByMode[hedgeMode],
+      returnOnNotional: cycle.actualPnlByMode[hedgeMode] / cycle.notionalBasisUsd,
+    })),
     views: {
       time: timeCohorts,
       iv: ivRegimes,
+      mu: muRegimes,
     },
     hitRateViews: {
       time: timeHitRates,
@@ -458,6 +503,7 @@ const summarize = ({
   cycles,
   timeGroups,
   ivGroups,
+  muGroups,
   ivMean,
   ivStandardDeviation,
   path,
@@ -474,6 +520,9 @@ const summarize = ({
       cycles,
       timeGroups,
       ivGroups,
+      muGroups,
+      ivMean,
+      ivStandardDeviation,
       bayesianEdge: bayesianByMode[hedgeMode],
     }),
   ]));
@@ -514,6 +563,7 @@ export const runFairValueMonteCarlo = async ({
     pathGrid: "scheduled hedge times and exit",
     realizedVariance: "unconstrained finite-sample GBM realization",
     annualDriftVariants: [...ANNUAL_DRIFT_VARIANTS],
+    entryCashflow: "observed strategy premium",
     driftScenarioCounts: Object.fromEntries(ANNUAL_DRIFT_VARIANTS.map((drift, variantIndex) => [
       `${drift}`,
       Math.max(0, Math.floor((count - 1 - variantIndex) / ANNUAL_DRIFT_VARIANTS.length) + 1),
@@ -522,7 +572,7 @@ export const runFairValueMonteCarlo = async ({
     zeroDriftIsPrimaryNull: true,
     pnlCenteredToFairValue: false,
   };
-  const cohortCount = Math.min(4, states.length);
+  const cohortCount = Math.min(3, states.length);
   const baseCohortSize = Math.floor(states.length / cohortCount);
   const remainder = states.length % cohortCount;
   const timeGroups = [];
@@ -545,6 +595,12 @@ export const runFairValueMonteCarlo = async ({
     rangeLabel: regime.rangeLabel,
     cycles: states.filter((cycle) => regime.accepts(zScoreFor(cycle))),
   }));
+  const muGroups = ANNUAL_DRIFT_VARIANTS.map((annualDrift) => ({
+    label: `μ ${annualDrift < 0 ? "−100%" : annualDrift > 0 ? "+100%" : "0%"}`,
+    rangeLabel: "annual drift",
+    annualDrift,
+    cycles: states,
+  }));
   const timeGroupByCycle = new Map();
   timeGroups.forEach((group, groupIndex) => {
     group.cycles.forEach((cycle) => timeGroupByCycle.set(cycle, groupIndex));
@@ -558,6 +614,7 @@ export const runFairValueMonteCarlo = async ({
     weekly: states.map(() => []),
     time: timeGroups.map(() => []),
     iv: ivGroups.map(() => []),
+    mu: muGroups.map(() => []),
   }]));
   const bayesianByMode = Object.fromEntries(hedgeModes.map((hedgeMode, modeIndex) => {
     const baseSeed = (Number(seed) + 0x9e3779b9 + modeIndex * 10_000) >>> 0;
@@ -584,6 +641,7 @@ export const runFairValueMonteCarlo = async ({
 
   for (let simulation = 0; simulation < count; simulation += 1) {
     const annualDrift = ANNUAL_DRIFT_VARIANTS[simulation % ANNUAL_DRIFT_VARIANTS.length];
+    const driftIndex = ANNUAL_DRIFT_VARIANTS.indexOf(annualDrift);
     const terminalPnl = Object.fromEntries(hedgeModes.map((mode) => [mode, 0]));
     const timePnl = Object.fromEntries(hedgeModes.map((mode) => [mode, timeGroups.map(() => 0)]));
     const ivPnl = Object.fromEntries(hedgeModes.map((mode) => [mode, ivGroups.map(() => 0)]));
@@ -600,6 +658,7 @@ export const runFairValueMonteCarlo = async ({
       modeSamples[hedgeMode].terminalPnl.push(terminalPnl[hedgeMode]);
       timePnl[hedgeMode].forEach((pnl, index) => modeSamples[hedgeMode].time[index].push(pnl));
       ivPnl[hedgeMode].forEach((pnl, index) => modeSamples[hedgeMode].iv[index].push(pnl));
+      modeSamples[hedgeMode].mu[driftIndex].push(terminalPnl[hedgeMode]);
     }
     const completed = simulation + 1;
     if (completed % updateStride === 0 || completed === count) {
@@ -613,6 +672,7 @@ export const runFairValueMonteCarlo = async ({
           cycles: states,
           timeGroups,
           ivGroups,
+          muGroups,
           ivMean,
           ivStandardDeviation,
           path,
@@ -634,6 +694,7 @@ export const runFairValueMonteCarlo = async ({
     cycles: states,
     timeGroups,
     ivGroups,
+    muGroups,
     ivMean,
     ivStandardDeviation,
     path,

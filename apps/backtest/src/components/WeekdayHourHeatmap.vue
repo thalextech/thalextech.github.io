@@ -101,14 +101,14 @@ function render() {
   const host = svgRef.value.parentElement;
   const width = Math.max(620, host?.clientWidth || 1100);
   const height = Math.max(440, host?.clientHeight || 620);
-  const margin = { top: 34, right: RV_PLOT_GUTTERS.right, bottom: 70, left: RV_PLOT_GUTTERS.left };
+  const margin = { top: 60, right: RV_PLOT_GUTTERS.right, bottom: 70, left: RV_PLOT_GUTTERS.left };
   const innerHeight = height - margin.top - margin.bottom;
   svg.attr("viewBox", `0 0 ${width} ${height}`);
 
   const cells = (props.cells || []).filter((cell) => Number.isFinite(cell.average));
   if (!cells.length) {
     svg.append("text").attr("x", width / 2).attr("y", height / 2).attr("text-anchor", "middle")
-      .attr("fill", "#666c73").style("font", `12px ${font}`)
+      .attr("fill", "#666c73").style("font", `13px ${font}`)
       .text(props.loading ? props.loadingMessage : props.emptyMessage);
     return;
   }
@@ -204,7 +204,7 @@ function render() {
       .attr("dy", "0.35em")
       .attr("text-anchor", "middle")
       .attr("fill", (row) => d3.lab(color(row.average)).l < 56 ? "#f4f5f7" : "#17191d")
-      .style("font", `500 8.5px ${font}`)
+      .style("font", `500 10px ${font}`)
       .style("font-variant-numeric", "tabular-nums")
       .style("pointer-events", "none")
       .text((row) => formatValue(row.average, 1));
@@ -277,7 +277,7 @@ onBeforeUnmount(() => resizeObserver?.disconnect());
   border-radius: 6px;
   background: rgba(8,9,12,0.96);
   color: #f2f3f5;
-  font: 11px/1.55 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  font: 12px/1.55 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
   font-variant-numeric: tabular-nums;
   white-space: pre;
   pointer-events: none;
