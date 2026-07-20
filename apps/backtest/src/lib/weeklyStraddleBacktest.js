@@ -7,6 +7,9 @@ import {
 import { advanceHedgePosition, buildDecisionTimes } from "./hedgeLifecycle.js";
 import { mean, sampleStdDev } from "./statistics.js";
 
+/** Enter at the configured hour on every weekday (daily roll). */
+export const ENTRY_WEEKDAY_EVERY_DAY = -1;
+
 export const DEFAULT_BACKTEST_CONFIG = {
   start: new Date("2024-10-07T09:00:00Z"),
   end: new Date(),
@@ -33,6 +36,20 @@ export const DEFAULT_BACKTEST_CONFIG = {
   includeGreekAttribution: false,
 };
 
+export const collectScheduleEntryCandidates = (entryCandidatesBySchedule, config) => {
+  const schedule = entryCandidatesBySchedule || new Map();
+  const hour = Number(config.entryHourUtc);
+  if (config.entryWeekday === ENTRY_WEEKDAY_EVERY_DAY) {
+    const merged = [];
+    for (let weekday = 0; weekday < 7; weekday += 1) {
+      const bucket = schedule.get(weekday * 24 + hour);
+      if (bucket?.length) merged.push(...bucket);
+    }
+    return merged.sort((a, b) => a.ts - b.ts);
+  }
+  return schedule.get(Number(config.entryWeekday) * 24 + hour) || [];
+};
+
 export const normalizeBacktestConfig = (input = {}) => {
   const config = { ...DEFAULT_BACKTEST_CONFIG, ...input };
   const entryHour = Number(config.entryHourUtc);
@@ -46,7 +63,8 @@ export const normalizeBacktestConfig = (input = {}) => {
 
   const entryWeekday = Number(config.entryWeekday);
   config.entryWeekday =
-    Number.isInteger(entryWeekday) && entryWeekday >= 0 && entryWeekday <= 6
+    entryWeekday === ENTRY_WEEKDAY_EVERY_DAY
+    || (Number.isInteger(entryWeekday) && entryWeekday >= 0 && entryWeekday <= 6)
       ? entryWeekday
       : DEFAULT_BACKTEST_CONFIG.entryWeekday;
   config.hedgeEnabled = config.hedgeEnabled !== false;
@@ -439,7 +457,12 @@ const buildEntryPlan = ({
     const expirationMs = entry.expirationTs * 1000;
     const entryDate = new Date(entryTimeMs);
     if (entryDate.getUTCHours() !== config.entryHourUtc) continue;
-    if (entryDate.getUTCDay() !== config.entryWeekday) continue;
+    if (
+      config.entryWeekday !== ENTRY_WEEKDAY_EVERY_DAY
+      && entryDate.getUTCDay() !== config.entryWeekday
+    ) {
+      continue;
+    }
     // This is a single-position strategy. Skip candidate entries while the
     // previously accepted trade is still open. A same-timestamp close/reopen
     // is allowed.
@@ -1092,12 +1115,13 @@ export const runWeeklyStraddleBacktest = ({
     instrumentNamesById = [],
   } = p;
   const indexes = p.indexes || buildBacktestIndexes(p);
-  const entryScheduleKey = c.entryWeekday * 24 + c.entryHourUtc;
-  // The configured entry schedule applies to every cycle. Letting fixed-day
-  // rolls fall through to another weekday makes weekday sweeps converge onto
-  // the same trades whenever the intended re-entry timestamp is unavailable.
-  const entryCandidates =
-    indexes.quoteGroups.entryCandidatesBySchedule.get(entryScheduleKey) || [];
+  // Fixed weekday/hour (or every day at that hour). Do not fall through to
+  // another weekday when a slot is missing — weekday sweeps would otherwise
+  // converge onto the same trades.
+  const entryCandidates = collectScheduleEntryCandidates(
+    indexes.quoteGroups.entryCandidatesBySchedule,
+    c,
+  );
 
   const entryExpirations = buildEntryExpirations({
     entryCandidates,

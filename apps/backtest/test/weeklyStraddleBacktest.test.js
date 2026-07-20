@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildCycleDetail,
   computeMaxDrawdown,
+  ENTRY_WEEKDAY_EVERY_DAY,
   nextWeeklyExitTs,
   normalizeBacktestConfig,
   prepareBacktestData,
@@ -234,6 +235,10 @@ test("normalizeBacktestConfig applies defaults and coerces external input once",
   assert.equal(config.exitHoldDays, 14);
   assert.equal(config.targetDelta, 0.35);
   assert.equal(config.sizingMode, "notional");
+  assert.equal(
+    normalizeBacktestConfig({ entryWeekday: ENTRY_WEEKDAY_EVERY_DAY }).entryWeekday,
+    ENTRY_WEEKDAY_EVERY_DAY,
+  );
   assert.equal(requiredQuoteDteDays({ maxWeeklyDteDays: 28 }), 28);
   assert.equal(
     requiredQuoteDteDays({ maxWeeklyDteDays: 10, farTargetDteDays: 30 }),
@@ -336,6 +341,90 @@ test("1D maturity selects daily options instead of rolling a 7D option after one
   assert.ok(dailyRollOfSevenDayResult.cycleSummary[0].legs.every(
     (leg) => leg.expirationTs === fixture.sevenDayExpirationTs,
   ));
+});
+
+test("every-day entry rolls a 1D straddle across consecutive days at the same hour", () => {
+  const startDay = Date.UTC(2025, 5, 6, 8) / 1000; // Friday 08:00 UTC
+  const instruments = [];
+  const indexRows = [];
+  const quoteSnapshots = [];
+  for (let day = 0; day < 4; day += 1) {
+    const entryTs = startDay + day * DAY_SECONDS;
+    const expirationTs = entryTs + DAY_SECONDS;
+    const callId = day * 2;
+    const putId = day * 2 + 1;
+    instruments.push(
+      {
+        instrumentId: callId,
+        name: `BTC-D${day}-C`,
+        expirationTs,
+        strike: 100_000,
+        optionType: "C",
+      },
+      {
+        instrumentId: putId,
+        name: `BTC-D${day}-P`,
+        expirationTs,
+        strike: 100_000,
+        optionType: "P",
+      },
+    );
+    indexRows.push({ ts: entryTs, indexPrice: 100_000 + day * 200 });
+    if (day === 3) {
+      indexRows.push({ ts: expirationTs, indexPrice: 100_800 });
+    }
+    const liveInstruments = instruments.slice(-2);
+    quoteSnapshots.push([
+      entryTs,
+      liveInstruments.map((instrument) => [
+        instrument.instrumentId,
+        1_200 - day * 20,
+        0.5,
+        (instrument.optionType === "C" ? 0.52 : -0.48) * PRECOMPUTED_DELTA_SCALE,
+      ]),
+    ]);
+  }
+
+  const config = normalizeBacktestConfig({
+    start: new Date(startDay * 1000),
+    end: new Date((startDay + 4 * DAY_SECONDS) * 1000),
+    entryWeekday: ENTRY_WEEKDAY_EVERY_DAY,
+    entryHourUtc: 8,
+    hourlyOffset: 8,
+    exitMode: "after_days",
+    exitHoldDays: 1,
+    hedgeEnabled: false,
+    targetDteDays: 1,
+    minWeeklyDteDays: 0.25,
+    maxWeeklyDteDays: 1.5,
+  });
+  const result = runWeeklyStraddleBacktest({
+    indexRows,
+    quoteSnapshots,
+    instruments,
+    config,
+  });
+
+  assert.equal(result.counts.closedCycles, 4);
+  assert.deepEqual(
+    result.cycleSummary.map((cycle) => cycle.entryTs),
+    [
+      startDay,
+      startDay + DAY_SECONDS,
+      startDay + 2 * DAY_SECONDS,
+      startDay + 3 * DAY_SECONDS,
+    ],
+  );
+  assert.ok(result.cycleSummary.every((cycle) =>
+    new Date(cycle.entryTs * 1000).getUTCHours() === 8
+    && cycle.holdingPeriodDays === 1
+    && cycle.dteDays === 1
+  ));
+  // Friday through Monday — not Friday-only weekly entries.
+  assert.deepEqual(
+    result.cycleSummary.map((cycle) => new Date(cycle.entryTs * 1000).getUTCDay()),
+    [5, 6, 0, 1],
+  );
 });
 
 test("fixed-day entry-hour sweeps preserve the selected hour across expiries", () => {

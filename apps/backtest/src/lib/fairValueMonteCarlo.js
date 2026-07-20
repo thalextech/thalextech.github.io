@@ -504,8 +504,9 @@ export const runFairValueMonteCarlo = async ({
 
   const uniformRandom = createSeededRandom(seed);
   const normalRandom = createNormalRandom(uniformRandom);
+  // Follow the strategy run settings: only simulate the hedge mode used in the backtest.
   const defaultHedgeMode = states.some((cycle) => cycle.hedgeEnabled) ? "dynamic" : "unhedged";
-  const hedgeModes = defaultHedgeMode === "dynamic" ? HEDGE_MODES : ["unhedged"];
+  const hedgeModes = [defaultHedgeMode];
   const returnNull = {
     type: "conditional-gbm-drift-mixture",
     conditionalCycles: states.length,

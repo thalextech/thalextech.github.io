@@ -95,6 +95,11 @@ const WEEKDAY_OPTIONS = [
   { value: 6, label: "Saturday" },
   { value: 0, label: "Sunday" },
 ];
+const ENTRY_WEEKDAY_EVERY_DAY = -1;
+const ENTRY_WEEKDAY_OPTIONS = [
+  { value: ENTRY_WEEKDAY_EVERY_DAY, label: "Every day" },
+  ...WEEKDAY_OPTIONS,
+];
 
 const HOUR_OPTIONS = Array.from({ length: 24 }, (_, hour) => ({
   value: hour,
@@ -169,6 +174,20 @@ const openMenu = ref(null);
 
 function toggleMenu(name) {
   openMenu.value = openMenu.value === name ? null : name;
+}
+
+function selectMaturity(value) {
+  const previous = ui.maturityDays;
+  ui.maturityDays = value;
+  // 1D strategies default to a true daily roll at the entry hour.
+  if (Number(value) === 1) {
+    ui.entryWeekday = ENTRY_WEEKDAY_EVERY_DAY;
+    if (ui.exitMode === "after_days") ui.exitHoldDays = 1;
+    return;
+  }
+  if (Number(previous) === 1 && Number(ui.entryWeekday) === ENTRY_WEEKDAY_EVERY_DAY) {
+    ui.entryWeekday = 5;
+  }
 }
 
 // Close menu on outside click
@@ -491,16 +510,27 @@ const sweepInsights = computed(() => {
   };
 });
 
+const entryWeekdayOption = computed(() =>
+  ENTRY_WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.entryWeekday))
+  || WEEKDAY_OPTIONS[4],
+);
+
 const exitModeExplanation = computed(() => {
-  const entryWeekday = WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
+  const entryWeekday = entryWeekdayOption.value;
   const exitWeekday = WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.exitWeekday)) || WEEKDAY_OPTIONS[0];
-  const entryTime = `${entryWeekday.label.slice(0, 3)} ${String(ui.entryHourUtc).padStart(2, "0")}:00`;
+  const hourLabel = `${String(ui.entryHourUtc).padStart(2, "0")}:00`;
+  const entryTime = entryWeekday.value === ENTRY_WEEKDAY_EVERY_DAY
+    ? `daily ${hourLabel}`
+    : `${entryWeekday.label.slice(0, 3)} ${hourLabel}`;
   const exitTime = `${exitWeekday.label.slice(0, 3)} ${String(ui.exitHourUtc).padStart(2, "0")}:00`;
 
   if (ui.exitMode === "expiry") {
     return `Keep each position open until its option expiry. Re-enter only at the first ${entryTime} UTC entry after it has closed.`;
   }
   if (ui.exitMode === "weekly_schedule") {
+    if (entryWeekday.value === ENTRY_WEEKDAY_EVERY_DAY) {
+      return `Close at the next ${exitTime} UTC after entry, then re-enter at the next daily ${hourLabel} UTC slot. If the option expires first, close at expiry.`;
+    }
     const entryHourOfWeek = Number(ui.entryWeekday) * 24 + Number(ui.entryHourUtc);
     const exitHourOfWeek = Number(ui.exitWeekday) * 24 + Number(ui.exitHourUtc);
     let holdingHours = (exitHourOfWeek - entryHourOfWeek + 7 * 24) % (7 * 24);
@@ -510,7 +540,10 @@ const exitModeExplanation = computed(() => {
     const duration = [days ? `${days}d` : "", hours ? `${hours}h` : ""].filter(Boolean).join(" ");
     return `Close at the next ${exitTime} UTC after entry (${duration} later), then stay in cash until the next ${entryTime} entry. If the option expires first, close at expiry.`;
   }
-  return `Target a roll every ${ui.exitHoldDays} calendar day${ui.exitHoldDays === 1 ? "" : "s"} at the configured entry hour. If the option expires first, close at expiry and wait until that entry hour before reopening.`;
+  if (entryWeekday.value === ENTRY_WEEKDAY_EVERY_DAY) {
+    return `Target a roll every ${ui.exitHoldDays} calendar day${ui.exitHoldDays === 1 ? "" : "s"} at ${hourLabel} UTC every day. If the option expires first, close at expiry and reopen at the next daily entry hour.`;
+  }
+  return `Target a roll every ${ui.exitHoldDays} calendar day${ui.exitHoldDays === 1 ? "" : "s"} at the configured entry hour, re-entering only on ${entryWeekday.label}s. If the option expires first, close at expiry and wait until that entry hour before reopening.`;
 });
 
 const strategyLabels = computed(() => {
@@ -521,9 +554,7 @@ const strategyLabels = computed(() => {
   const delta =
     DELTA_OPTIONS.find((option) => option.value === Number(ui.targetDelta)) ||
     DEFAULT_DELTA_OPTION;
-  const weekday =
-    WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.entryWeekday)) ||
-    WEEKDAY_OPTIONS[4];
+  const weekday = entryWeekdayOption.value;
   const side = ui.longOption ? "Long" : "Short";
   const hour = String(ui.entryHourUtc).padStart(2, "0");
   const exitWeekday =
@@ -531,6 +562,9 @@ const strategyLabels = computed(() => {
     WEEKDAY_OPTIONS[0];
   const exitHour = String(ui.exitHourUtc).padStart(2, "0");
   const option = showDelta.value ? `${delta.label} ${structure.label}` : "ATM";
+  const entryLabel = weekday.value === ENTRY_WEEKDAY_EVERY_DAY
+    ? `Daily ${hour}:00`
+    : `${weekday.label.slice(0, 3)} ${hour}:00`;
 
   let chartStrategy = `${side} straddle ${maturity.label}`;
   if (ui.structure === "strangle") {
@@ -545,7 +579,7 @@ const strategyLabels = computed(() => {
 
   return {
     instrument: `BTC · ${side} ${structure.label} · ${maturity.label} ${option} · ${ui.investmentMode === "btc" ? "1 BTC" : "$100k"}`,
-    entry: `${weekday.label.slice(0, 3)} ${hour}:00`,
+    entry: entryLabel,
     weekday: weekday.label,
     hedge: !ui.hedgeEnabled
       ? "Off"
@@ -631,7 +665,7 @@ const chartSubtitle = computed(() => {
     }
     return legs;
   }
-  const weekday = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.entryWeekday)) || WEEKDAY_OPTIONS[4];
+  const weekday = entryWeekdayOption.value;
   const entryTime = `${String(ui.entryHourUtc).padStart(2, "0")}:00 UTC`;
   const exitWeekday = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.exitWeekday)) || WEEKDAY_OPTIONS[0];
   const exit = ui.exitMode === "expiry"
@@ -640,7 +674,8 @@ const chartSubtitle = computed(() => {
       ? `Exited ${exitWeekday.label} at ${String(ui.exitHourUtc).padStart(2, "0")}:00 UTC; cash until next entry`
       : `Rolled every ${ui.exitHoldDays}D at ${entryTime}; expiry-first gaps allowed`;
   const sizing = ui.investmentMode === "btc" ? "1 BTC per leg" : "$100k notional";
-  return `Entered ${weekday.label} at ${entryTime} · ${exit} · ${sizing}`;
+  const entryDay = weekday.value === ENTRY_WEEKDAY_EVERY_DAY ? "every day" : weekday.label;
+  return `Entered ${entryDay} at ${entryTime} · ${exit} · ${sizing}`;
 });
 
 const chartSourceSubtitle = computed(() => {
@@ -1210,7 +1245,7 @@ onMounted(loadBacktest);
                   v-for="m in maturityOptions"
                   :key="m.value"
                   :class="['inst-choice', { active: String(ui.maturityDays) === String(m.value) }]"
-                  @click="ui.maturityDays = m.value"
+                  @click="selectMaturity(m.value)"
                 >
                   {{ m.label }}
                 </div>
@@ -1254,15 +1289,15 @@ onMounted(loadBacktest);
           <span class="pillLabel">Entry</span>
           <span class="pillValue">{{ strategyLabels.entry }}</span>
           <div v-if="openMenu === 'entry'" class="dropdown entry-dropdown" @click.stop>
-            <label class="inst-label" style="margin-bottom: 3px;">Weekday</label>
+            <label class="inst-label" style="margin-bottom: 3px;">Entry days</label>
             <div class="inst-choices weekday-choices">
               <div
-                v-for="w in WEEKDAY_OPTIONS"
+                v-for="w in ENTRY_WEEKDAY_OPTIONS"
                 :key="w.value"
                 :class="['inst-choice', { active: Number(ui.entryWeekday) === w.value }]"
                 @click="ui.entryWeekday = w.value"
               >
-                {{ w.label.slice(0,3) }}
+                {{ w.value === ENTRY_WEEKDAY_EVERY_DAY ? "Daily" : w.label.slice(0, 3) }}
               </div>
             </div>
             <div class="entry-picker">

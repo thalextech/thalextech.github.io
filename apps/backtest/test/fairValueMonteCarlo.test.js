@@ -148,6 +148,16 @@ test("an unhedged strategy only simulates and exposes the unhedged null", async 
   assert.equal(result.weeklyNullRanks.length, EMPIRICAL_LOG_RETURNS.length);
 });
 
+test("a hedged strategy only simulates the dynamic hedge null from run settings", async () => {
+  const result = await runFairValueMonteCarlo({
+    cycles: buildSimulationCycles({ hedgeEnabled: true }), simulations: 20, seed: 17,
+  });
+  assert.equal(result.defaultHedgeMode, "dynamic");
+  assert.equal(result.hedgeMode, "dynamic");
+  assert.deepEqual(Object.keys(result.modes), ["dynamic"]);
+  assert.equal(result.terminalPnl.length, 20);
+});
+
 test("dynamic hedge is path-dependent while unhedged PnL depends only on the endpoint", () => {
   const cycle = buildFairValueCycleState(buildCycle());
   const sequence = (values) => {
@@ -231,7 +241,9 @@ test("entry IV z-score view groups weeks into low, medium, high, and extreme reg
     return cycle;
   });
   const result = await runFairValueMonteCarlo({ cycles: weeks, simulations: 12, seed: 13 });
-  assert.deepEqual(Object.keys(result.modes), ["unhedged", "dynamic"]);
+  assert.deepEqual(Object.keys(result.modes), ["dynamic"]);
+  assert.equal(result.defaultHedgeMode, "dynamic");
+  assert.equal(result.hedgeMode, "dynamic");
   assert.deepEqual(result.views.iv.map((group) => group.label), [
     "Low IV", "Medium IV", "High IV", "Extreme IV",
   ]);
