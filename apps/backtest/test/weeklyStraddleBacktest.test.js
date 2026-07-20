@@ -489,6 +489,8 @@ test("aggregate preparation keeps delta-only risk while detail preparation filte
   assert.equal(Number.isFinite(detail.quotes[0].gamma), true);
   assert.equal(Number.isFinite(detail.quotes[0].vega), true);
   assert.equal(Number.isFinite(detail.quotes[0].theta), true);
+  assert.equal(Number.isFinite(detail.quotes[0].vanna), true);
+  assert.equal(Number.isFinite(detail.quotes[0].volga), true);
   assert.equal(detail.quotes[0].impliedVol, 0.55);
 });
 
@@ -525,6 +527,7 @@ test("batch runs match independent runs across entry hours", () => {
   ));
 
   const selectedPlan = batch[0].cycleSummary[0];
+  assert.ok(Number.isFinite(selectedPlan.exitIndexPrice));
   assert.ok(selectedPlan.legs.every((leg) =>
     Number.isInteger(leg.instrumentId) && leg.instrumentName.startsWith("BTC-")
   ));
@@ -534,8 +537,6 @@ test("batch runs match independent runs across entry hours", () => {
     return variance + sampledReturn ** 2;
   }, 0);
   const expectedSampledVol = Math.sqrt(sampledVariance / (7 / 365));
-  const expectedEndpointVol = Math.abs(Math.log(sampledPrices.at(-1) / sampledPrices[0])) /
-    Math.sqrt(7 / 365);
   assert.ok(Math.abs(selectedPlan.sampledRealizedVol - expectedSampledVol) < 1e-12);
   assert.ok(Math.abs(batch[0].summary.meanSampledRealizedVol - expectedSampledVol) < 1e-12);
 
@@ -546,9 +547,10 @@ test("batch runs match independent runs across entry hours", () => {
   assert.ok(
     Math.abs(
       unhedged.cycleSummary[0].sampledRealizedVol -
-      expectedEndpointVol,
+      expectedSampledVol,
     ) < 1e-12,
   );
+  assert.equal(unhedged.cycleSummary[0].sampledPathIntervalHours, 24);
 
   const detailPrepared = prepareCycleDetailData({
     indexRows,
@@ -575,4 +577,25 @@ test("batch runs match independent runs across entry hours", () => {
     hourlyDetailRows.filter((row) => row.hedgeTrade).length
       > detailRows.filter((row) => row.hedgeTrade).length,
   );
+
+  const attributed = runWeeklyStraddleBacktest({
+    preparedData,
+    config: { ...configs[0], includeGreekAttribution: true },
+  });
+  const attributedCycle = attributed.cycleSummary[0];
+  assert.deepEqual(Object.keys(attributedCycle.greekPnl), [
+    "netDelta", "theta", "gamma", "vega", "vanna", "volga", "residual",
+  ]);
+  assert.ok(attributedCycle.attributionSteps > 0);
+  const attributedTotal = Object.values(attributedCycle.greekPnl)
+    .reduce((sum, value) => sum + value, 0);
+  assert.ok(Math.abs(attributedTotal - attributedCycle.cyclePnlUsd) < 1e-9);
+  assert.ok(attributedCycle.greekPnlTimeline.length > 1);
+  assert.equal(attributedCycle.greekPnlTimeline[0].intervalPnlUsd, 0);
+  const timelineTotal = attributedCycle.greekPnlTimeline
+    .reduce((sum, point) => sum + point.intervalPnlUsd, 0);
+  const timelineResidual = attributedCycle.greekPnlTimeline
+    .reduce((sum, point) => sum + point.residualPnlUsd, 0);
+  assert.ok(Math.abs(timelineTotal - attributedCycle.cyclePnlUsd) < 1e-9);
+  assert.ok(Math.abs(timelineResidual - attributedCycle.greekPnl.residual) < 1e-9);
 });

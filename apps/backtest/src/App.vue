@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import CycleDetailChart from "./components/CycleDetailChart.vue";
+import FairValueDistributionPanel from "./components/FairValueDistributionPanel.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
 import IvRvChart from "./components/IvRvChart.vue";
 import StyledSelectMenu from "./components/StyledSelectMenu.vue";
@@ -674,6 +675,7 @@ const buildConfig = (overrides = {}) => {
     longOption: ui.longOption,
     sizingMode: ui.investmentMode,
     btcQuantity: 1,
+    includeGreekAttribution: false,
     ...overrides,
   });
 };
@@ -696,7 +698,7 @@ const runSweep = async () => {
   const cells = sweepConfigs.value;
   const sweepEnd = new Date();
   const configs = cells.map((cell) =>
-    buildConfig({ ...cell.overrides, end: sweepEnd }),
+    buildConfig({ ...cell.overrides, end: sweepEnd, includeGreekAttribution: false }),
   );
   const sweepHours = [...new Set(configs.flatMap((config) =>
     hoursFor(
@@ -817,12 +819,22 @@ const switchMode = (nextMode) => {
   mode.value = nextMode;
   selectedCycle.value = null;
   if (nextMode === "single") {
-    scheduleBacktest();
+    if (!result.value) scheduleBacktest();
   } else if (nextMode === "sweep" && previousMode !== "sweep") {
     void runSweep();
   } else if (["iv-rv", "rv"].includes(nextMode) && !ivRvSourceRows.value.length) {
     loadIvRv();
   }
+};
+
+const selectSingleView = (nextChartMode) => {
+  chartMode.value = nextChartMode;
+  mode.value = "single";
+  selectedCycle.value = null;
+  if (!result.value) scheduleBacktest();
+  requestAnimationFrame(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
 };
 
 const loadIvRv = async () => {
@@ -1012,7 +1024,12 @@ watch(
     if (!showDelta.value && sweepDimension.value === "delta_band") {
       sweepDimension.value = "entry_hour";
     }
-    if (!ui.hedgeEnabled) chartMode.value = "weekly";
+    if (!ui.hedgeEnabled && chartMode.value === "hedge") {
+      chartMode.value = "weekly";
+    }
+    if (chartMode.value === "greeks") {
+      chartMode.value = "weekly";
+    }
 
     const uiKey = [
       ui.maturityDays,
@@ -1031,8 +1048,13 @@ watch(
     ].join("|");
     if (uiKey === scheduledUiKey) return;
     scheduledUiKey = uiKey;
-    if (mode.value === "sweep") scheduleSweep();
-    else scheduleBacktest();
+    if (mode.value === "sweep") {
+      scheduleSweep();
+    } else if (mode.value === "single") {
+      scheduleBacktest();
+    } else {
+      result.value = null;
+    }
   },
 );
 
@@ -1076,6 +1098,8 @@ function handleSavePng() {
 
   const filename = selectedCycle.value
     ? `cycle-detail-${date}.png`
+    : chartMode.value === "distribution"
+    ? `fair-value-distribution-${date}.png`
     : chartMode.value === "hedge"
     ? `hedge-performance-${date}.png`
     : `backtest-${date}.png`;
@@ -1085,7 +1109,7 @@ function handleSavePng() {
     title: chartTitle.value,
     subtitle: chartSubtitle.value,
     source: chartSourceSubtitle.value,
-    metrics: selectedCycle.value || chartMode.value === "hedge"
+    metrics: selectedCycle.value || chartMode.value !== "weekly"
       ? []
       : [
           { label: "FINAL PNL", value: finalPnlValue.value },
@@ -1354,13 +1378,26 @@ onMounted(loadBacktest);
       <div class="spacer"></div>
 
       <div class="segmented">
-        <button
-          type="button"
-          :class="['segment', { active: mode === 'single' }]"
-          @click="switchMode('single')"
-        >
-          Single run
-        </button>
+        <div class="singleRunMenu">
+          <button
+            type="button"
+            :class="['segment', 'singleRunTrigger', { active: mode === 'single' }]"
+            aria-haspopup="menu"
+            @click="mode !== 'single' && switchMode('single')"
+          >
+            <span>Single run</span>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+          <div class="singleRunDropdown" role="menu" aria-label="Single run view">
+            <div class="singleRunDropdownSurface">
+              <button type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'weekly' }" @click="selectSingleView('weekly')">PnL by cycle</button>
+              <button v-if="ui.hedgeEnabled" type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'hedge' }" @click="selectSingleView('hedge')">Hedge performance</button>
+              <button type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'distribution' }" @click="selectSingleView('distribution')">Distribution</button>
+            </div>
+          </div>
+        </div>
         <button
           type="button"
           :class="['segment', { active: mode === 'sweep' }]"
@@ -1534,10 +1571,16 @@ onMounted(loadBacktest);
           @select="handleCycleSelect"
         />
         <HedgePerformanceChart
-          v-else-if="mode === 'single' && !selectedCycle"
+          v-else-if="mode === 'single' && !selectedCycle && chartMode === 'hedge'"
           ref="chartRef"
           :rows="cycleRows"
           @select="handleCycleSelect"
+        />
+        <FairValueDistributionPanel
+          v-else-if="mode === 'single' && !selectedCycle && chartMode === 'distribution'"
+          ref="chartRef"
+          :rows="cycleRows"
+          :hedge-enabled="ui.hedgeEnabled"
         />
         <div v-else-if="mode === 'single' && cycleDetailLoading" class="cycleDetailState">Loading hourly detail…</div>
         <div v-else-if="mode === 'single' && cycleDetailError" class="cycleDetailState error">{{ cycleDetailError }}</div>
@@ -1723,24 +1766,6 @@ onMounted(loadBacktest);
           </div>
         </div>
 
-        <div v-if="mode === 'single' && ui.hedgeEnabled && !selectedCycle" class="chartModeToggle" role="group" aria-label="Chart view">
-          <button
-            type="button"
-            :class="{ active: chartMode === 'weekly' }"
-            :aria-pressed="chartMode === 'weekly'"
-            @click="chartMode = 'weekly'"
-          >
-            PnL by cycle
-          </button>
-          <button
-            type="button"
-            :class="{ active: chartMode === 'hedge' }"
-            :aria-pressed="chartMode === 'hedge'"
-            @click="chartMode = 'hedge'"
-          >
-            Hedge perf
-          </button>
-        </div>
       </div>
     </div>
   </main>
@@ -2464,6 +2489,86 @@ onMounted(loadBacktest);
   color: #e8eaed;
 }
 
+.singleRunMenu {
+  position: relative;
+  height: 26px;
+}
+
+.singleRunTrigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.singleRunTrigger svg {
+  color: #70767d;
+  transition: transform 120ms ease;
+}
+
+.singleRunMenu:hover .singleRunTrigger svg,
+.singleRunMenu:focus-within .singleRunTrigger svg {
+  transform: rotate(180deg);
+}
+
+.singleRunDropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: 184px;
+  padding-top: 8px;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition: opacity 100ms ease, transform 100ms ease, visibility 100ms;
+  z-index: 30;
+}
+
+.singleRunMenu:hover .singleRunDropdown,
+.singleRunMenu:focus-within .singleRunDropdown {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.singleRunDropdownSurface {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 8px;
+  background: #0f0f12;
+  box-shadow: 0 16px 38px rgba(0,0,0,0.58);
+}
+
+.singleRunDropdown button {
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #8b9198;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.singleRunDropdown button:hover,
+.singleRunDropdown button:focus-visible {
+  background: rgba(255,255,255,0.06);
+  color: #e8eaed;
+  outline: none;
+}
+
+.singleRunDropdown button.active {
+  background: rgba(255,255,255,0.10);
+  color: #e8eaed;
+}
+
 .sweepHeader {
   display: flex;
   align-items: center;
@@ -2975,33 +3080,6 @@ onMounted(loadBacktest);
   color: #7dd3fc;
   border-color: rgba(125, 211, 252, 0.3);
   background: rgba(255, 255, 255, 0.03);
-}
-
-.chartModeToggle {
-  align-self: center;
-  display: flex;
-  flex: none;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 7px;
-  background: rgba(255,255,255,0.05);
-}
-
-.chartModeToggle button {
-  padding: 5px 12px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: #70767d;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.chartModeToggle button.active {
-  background: rgba(255,255,255,0.1);
-  color: #e8eaed;
 }
 
 .saveButton {

@@ -47,17 +47,23 @@ export const blackScholesGreeks = (args) => {
       gamma: Number.NaN,
       vega: Number.NaN,
       theta: Number.NaN,
+      vanna: Number.NaN,
+      volga: Number.NaN,
       impliedVol: normalizeVol(args.impliedVol),
     };
   }
   const { sigma, rootT, d1 } = inputs;
+  const d2 = d1 - sigma * rootT;
   const callDelta = normCdf(d1);
   const density = normalPdf(d1);
+  const vega = args.spot * density * rootT;
   return {
     delta: args.optionType === "C" ? callDelta : callDelta - 1,
     gamma: density / (args.spot * sigma * rootT),
-    vega: args.spot * density * rootT,
+    vega,
     theta: -(args.spot * density * sigma) / (2 * rootT),
+    vanna: -(density * d2) / sigma,
+    volga: vega * d1 * d2 / sigma,
     impliedVol: sigma,
   };
 };

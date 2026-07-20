@@ -2,6 +2,7 @@
 import * as d3 from "d3";
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import { exportTitledChart } from "../lib/exportTitledChart.js";
+import StyledSelectMenu from "./StyledSelectMenu.vue";
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
@@ -9,10 +10,16 @@ const props = defineProps({
 const emit = defineEmits(["select"]);
 
 const chartRef = ref(null);
-const sortMode = ref("pnl");
+const sortMode = ref("total");
 let resizeObserver;
 
 const CHART_FONT_FAMILY = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
+const SORT_MODES = [
+  { value: "total", label: "Total hi–lo", key: "cyclePnlUsd" },
+  { value: "hedge", label: "Hedge hi–lo", key: "hedgePnlUsd" },
+  { value: "option", label: "Option hi–lo", key: "shortOptionPnlUsd" },
+  { value: "time", label: "Chronological", key: null },
+];
 const formatUsd = d3.format("$,.2f");
 const formatEntryDate = d3.utcFormat("%d %b %y");
 const valueFor = (row, key) => Number(row[key]) || 0;
@@ -26,10 +33,11 @@ const draw = () => {
   if (!element) return;
   element.innerHTML = "";
 
+  const sortKey = SORT_MODES.find((mode) => mode.value === sortMode.value)?.key;
   const rows = [...(props.rows || [])]
     .filter((row) => row.closed !== false)
-    .sort((a, b) => sortMode.value === "pnl"
-      ? valueFor(b, "cyclePnlUsd") - valueFor(a, "cyclePnlUsd")
+    .sort((a, b) => sortKey
+      ? valueFor(b, sortKey) - valueFor(a, sortKey)
         || new Date(a.entryTime) - new Date(b.entryTime)
       : new Date(a.entryTime) - new Date(b.entryTime));
 
@@ -170,9 +178,9 @@ const draw = () => {
       .attr("font-size", 11);
 
     group.append("text")
-      .attr("x", 0)
+      .attr("x", panelWidth / 2)
       .attr("y", -32)
-      .attr("text-anchor", "start")
+      .attr("text-anchor", "middle")
       .attr("fill", "rgba(255,255,255,0.68)")
       .attr("font-size", 12)
       .attr("font-weight", 500)
@@ -238,23 +246,12 @@ defineExpose({ exportPng });
 <template>
   <div class="chartWrap">
     <div ref="chartRef" class="chart"></div>
-    <div class="sortToggle" role="group" aria-label="Hedge performance row order">
-      <button
-        type="button"
-        :class="{ active: sortMode === 'time' }"
-        :aria-pressed="sortMode === 'time'"
-        @click="sortMode = 'time'"
-      >
-        Time
-      </button>
-      <button
-        type="button"
-        :class="{ active: sortMode === 'pnl' }"
-        :aria-pressed="sortMode === 'pnl'"
-        @click="sortMode = 'pnl'"
-      >
-        PnL high–low
-      </button>
+    <div class="sortControl">
+      <StyledSelectMenu
+        v-model="sortMode"
+        label="Sort"
+        :options="SORT_MODES"
+      />
     </div>
   </div>
 </template>
@@ -286,38 +283,10 @@ defineExpose({ exportPng });
   margin-top: 2px;
 }
 
-.sortToggle {
+.sortControl {
   position: absolute;
   top: 8px;
   right: 14px;
-  z-index: 2;
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
-  background: rgba(10, 11, 14, 0.82);
-  backdrop-filter: blur(6px);
-}
-
-.sortToggle button {
-  height: 22px;
-  border: 0;
-  border-radius: 4px;
-  padding: 0 9px;
-  background: transparent;
-  color: #777d84;
-  font: 500 9px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
-  cursor: pointer;
-}
-
-.sortToggle button:hover {
-  color: #d8dadd;
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.sortToggle button.active {
-  color: #f2f3f5;
-  background: rgba(255, 255, 255, 0.1);
+  z-index: 8;
 }
 </style>

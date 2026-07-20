@@ -4,6 +4,7 @@ import {
   OPTION_PRICING_DAYS_PER_YEAR,
   PRECOMPUTED_DELTA_SCALE,
 } from "./optionRisk.js";
+import { advanceHedgePosition, buildDecisionTimes } from "./hedgeLifecycle.js";
 import { mean, sampleStdDev } from "./statistics.js";
 
 export const DEFAULT_BACKTEST_CONFIG = {
@@ -29,6 +30,7 @@ export const DEFAULT_BACKTEST_CONFIG = {
   btcQuantity: 1,
   structure: "straddle",
   targetDelta: 0.25,
+  includeGreekAttribution: false,
 };
 
 export const normalizeBacktestConfig = (input = {}) => {
@@ -80,6 +82,7 @@ export const normalizeBacktestConfig = (input = {}) => {
   config.targetDelta = Math.abs(
     Number(config.targetDelta) || DEFAULT_BACKTEST_CONFIG.targetDelta,
   );
+  config.includeGreekAttribution = config.includeGreekAttribution === true;
   return config;
 };
 
@@ -541,52 +544,6 @@ const buildEntryPlan = ({
   }));
 };
 
-const buildDecisionTimes = (plan, config) => {
-  const times = new Set();
-  const intervalMs =
-    Math.max(1, Math.min(24, Math.round(config.hedgeIntervalHours))) *
-    3_600_000;
-  for (
-    let hedgeMs = plan.entryTime.getTime();
-    hedgeMs < plan.exitTime.getTime();
-    hedgeMs += intervalMs
-  ) {
-    const hedgeTime = new Date(hedgeMs);
-    if (hedgeTime < plan.exitTime) {
-      times.add(hedgeTime.getTime());
-    }
-  }
-  times.add(plan.exitTime.getTime());
-  return [...times].sort((a, b) => a - b).map((ms) => new Date(ms));
-};
-
-const advanceHedgePosition = ({
-  quantity,
-  previousPrice,
-  pnlUsd,
-  indexPrice,
-  targetQuantity,
-}) => {
-  const nextPnlUsd =
-    previousPrice != null && Number.isFinite(quantity) && Number.isFinite(indexPrice)
-      ? pnlUsd + quantity * (indexPrice - previousPrice)
-      : pnlUsd;
-  const tradeQuantity = targetQuantity - quantity;
-  return {
-    quantity: targetQuantity,
-    previousPrice: indexPrice,
-    pnlUsd: nextPnlUsd,
-    trade:
-      Math.abs(tradeQuantity) > 1e-10
-        ? {
-            side: tradeQuantity > 0 ? "buy" : "sell",
-            quantity: Math.abs(tradeQuantity),
-            price: indexPrice,
-          }
-        : null,
-  };
-};
-
 export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
   if (!plan || !preparedData) return [];
   const config = normalizeBacktestConfig(inc);
@@ -607,15 +564,29 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
   let cumulativeThetaPnlUsd = 0;
   let cumulativeGammaPnlUsd = 0;
   let cumulativeVegaPnlUsd = 0;
+  let cumulativeVannaPnlUsd = 0;
+  let cumulativeVolgaPnlUsd = 0;
   let cumulativeNetDeltaMtmUsd = 0;
   let cumulativeResidualPnlUsd = 0;
 
   return indexRows.map((indexRow) => {
     const isExit = indexRow.ts === plan.exitTs;
-    const legQuotes = plan.legs.map((leg) => ({
-      leg,
-      quote: quoteAt(quoteByTsInstrumentId, indexRow.ts, leg.instrumentId),
-    }));
+    const legQuotes = plan.legs.map((leg) => {
+      const quote = quoteAt(quoteByTsInstrumentId, indexRow.ts, leg.instrumentId);
+      if (!quote || Number.isFinite(quote.gamma) && Number.isFinite(quote.vanna)) {
+        return { leg, quote };
+      }
+      const yearsToExpiry = (leg.expirationTs - indexRow.ts) /
+        (OPTION_PRICING_DAYS_PER_YEAR * 86_400);
+      const risk = blackScholesGreeks({
+        spot: indexRow.indexPrice,
+        strike: leg.strike,
+        yearsToExpiry,
+        impliedVol: quote.impliedVol,
+        optionType: leg.optionType,
+      });
+      return { leg, quote: { ...risk, ...quote } };
+    });
     const intervalHedgeQuantity = hedgeQuantity;
 
     const optionDeltaBtc = isExit
@@ -665,6 +636,8 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
     let thetaPnlIncrementUsd = 0;
     let gammaPnlIncrementUsd = 0;
     let vegaPnlIncrementUsd = 0;
+    let vannaPnlIncrementUsd = 0;
+    let volgaPnlIncrementUsd = 0;
     let deltaPnlIncrementUsd = 0;
     if (
       previousIndexPrice != null &&
@@ -694,13 +667,24 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
         }
         const previousVol = previousQuote?.impliedVol;
         const currentVol = currentQuote?.impliedVol;
-        if (Number.isFinite(previousQuote?.vega) && Number.isFinite(previousVol) && Number.isFinite(currentVol)) {
-          vegaPnlIncrementUsd += leg.quantity * previousQuote.vega * (currentVol - previousVol);
+        if (Number.isFinite(previousVol) && Number.isFinite(currentVol)) {
+          const dVol = currentVol - previousVol;
+          if (Number.isFinite(previousQuote?.vega)) {
+            vegaPnlIncrementUsd += leg.quantity * previousQuote.vega * dVol;
+          }
+          if (Number.isFinite(previousQuote?.vanna)) {
+            vannaPnlIncrementUsd += leg.quantity * previousQuote.vanna * dS * dVol;
+          }
+          if (Number.isFinite(previousQuote?.volga)) {
+            volgaPnlIncrementUsd += leg.quantity * 0.5 * previousQuote.volga * dVol ** 2;
+          }
         }
       });
       cumulativeThetaPnlUsd += thetaPnlIncrementUsd;
       cumulativeGammaPnlUsd += gammaPnlIncrementUsd;
       cumulativeVegaPnlUsd += vegaPnlIncrementUsd;
+      cumulativeVannaPnlUsd += vannaPnlIncrementUsd;
+      cumulativeVolgaPnlUsd += volgaPnlIncrementUsd;
       cumulativeNetDeltaMtmUsd += deltaPnlIncrementUsd;
       if (Number.isFinite(previousTotalPnlUsd) && Number.isFinite(totalPnlUsd)) {
         cumulativeResidualPnlUsd +=
@@ -726,12 +710,71 @@ export const buildCycleDetail = ({ plan, preparedData, config: inc = {} }) => {
       cumulativeThetaPnlUsd,
       cumulativeGammaPnlUsd,
       cumulativeVegaPnlUsd,
+      cumulativeVannaPnlUsd,
+      cumulativeVolgaPnlUsd,
       cumulativeNetDeltaMtmUsd,
       cumulativeResidualPnlUsd,
       hedgeQuantity,
       hedgeTrade,
     };
   });
+};
+
+const buildGreekAttributionByCycle = ({ entryPlan, preparedData, config }) => {
+  const attributionByCycle = new Map();
+  for (const plan of entryPlan) {
+    const rows = buildCycleDetail({ plan, preparedData, config });
+    const last = rows.at(-1);
+    if (!last || !Number.isFinite(last.totalPnlUsd)) continue;
+    const greekPnl = {
+      netDelta: Number(last.cumulativeNetDeltaMtmUsd) || 0,
+      theta: Number(last.cumulativeThetaPnlUsd) || 0,
+      gamma: Number(last.cumulativeGammaPnlUsd) || 0,
+      vega: Number(last.cumulativeVegaPnlUsd) || 0,
+      vanna: Number(last.cumulativeVannaPnlUsd) || 0,
+      volga: Number(last.cumulativeVolgaPnlUsd) || 0,
+    };
+    const explainedPnl = Object.values(greekPnl).reduce((sum, value) => sum + value, 0);
+    greekPnl.residual = last.totalPnlUsd - explainedPnl;
+    const greekPnlTimeline = rows.map((row, index) => {
+      const previous = rows[index - 1];
+      const difference = (key) => previous
+        ? (Number(row[key]) || 0) - (Number(previous[key]) || 0)
+        : 0;
+      const intervalPnlUsd = previous
+        ? (Number(row.totalPnlUsd) || 0) - (Number(previous.totalPnlUsd) || 0)
+        : 0;
+      const netDeltaPnlUsd = difference("cumulativeNetDeltaMtmUsd");
+      const gammaThetaPnlUsd = difference("cumulativeGammaPnlUsd")
+        + difference("cumulativeThetaPnlUsd");
+      const vegaPnlUsd = difference("cumulativeVegaPnlUsd");
+      const vannaPnlUsd = difference("cumulativeVannaPnlUsd");
+      const volgaPnlUsd = difference("cumulativeVolgaPnlUsd");
+      const residualPnlUsd = intervalPnlUsd - netDeltaPnlUsd - gammaThetaPnlUsd
+        - vegaPnlUsd - vannaPnlUsd - volgaPnlUsd;
+      return {
+        ts: row.ts,
+        indexPrice: row.indexPrice,
+        intervalPnlUsd,
+        netDeltaPnlUsd,
+        gammaThetaPnlUsd,
+        vegaPnlUsd,
+        vannaPnlUsd,
+        volgaPnlUsd,
+        residualPnlUsd,
+      };
+    });
+    const attributionSteps = Math.max(0, rows.length - 1);
+    attributionByCycle.set(plan.cycle, {
+      greekPnl,
+      greekPnlTimeline,
+      attributionSteps,
+      meanAttributionIntervalHours: attributionSteps
+        ? (rows.at(-1).ts - rows[0].ts) / 3_600 / attributionSteps
+        : Number.NaN,
+    });
+  }
+  return attributionByCycle;
 };
 
 export function computeBreakEvens(plan) {
@@ -839,9 +882,16 @@ const buildPathMetricsByCycle = ({
     : null;
 
   for (const plan of entryPlan) {
-    const decisions = config.hedgeEnabled
-      ? buildDecisionTimes(plan, config)
-      : [plan.entryTime, plan.exitTime];
+    // Sample realized variance on the same grid used by the strategy. The
+    // distribution benchmark only consumes the resulting cycle state, not the
+    // historical path itself.
+    const pathIntervalHours = config.hedgeEnabled
+      ? config.hedgeIntervalHours
+      : 24;
+    const decisions = buildDecisionTimes(plan, {
+      ...config,
+      hedgeIntervalHours: pathIntervalHours,
+    });
     let hedgeState = { quantity: 0, previousPrice: null, pnlUsd: 0 };
     let previousSamplePrice = null;
     let sampledRealizedVariance = 0;
@@ -889,6 +939,7 @@ const buildPathMetricsByCycle = ({
           ? Math.sqrt(sampledRealizedVariance / holdingYears)
           : Number.NaN,
       sampledReturnCount,
+      sampledPathIntervalHours: pathIntervalHours,
     });
     hedgePnlByCycle.set(plan.cycle, hedgeState.pnlUsd);
   }
@@ -899,6 +950,7 @@ const buildCycleSummary = ({
   entryPlan,
   hedgePnlByCycle,
   realizedMetricsByCycle,
+  greekAttributionByCycle,
   indexRows,
   quotes,
   config,
@@ -926,14 +978,17 @@ const buildCycleSummary = ({
       plan.entryOptionCashflowUsd + optionSettlementValueUsd;
     const hedgePnlUsd = hedgePnlByCycle.get(plan.cycle) ?? 0;
     const realizedMetrics = realizedMetricsByCycle.get(plan.cycle) || {};
+    const greekAttribution = greekAttributionByCycle?.get(plan.cycle) || {};
     const cyclePnlUsd = shortOptionPnlUsd + hedgePnlUsd;
     endingEquityUsd += cyclePnlUsd;
     return {
       ...plan,
+      exitIndexPrice: settlementIndexPrice,
       holdingPeriodDays: (plan.exitTs - plan.entryTs) / 86_400,
       shortOptionPnlUsd,
       hedgePnlUsd,
       ...realizedMetrics,
+      ...greekAttribution,
       cyclePnlUsd,
       cycleReturnOnNotional: cyclePnlUsd / plan.investmentUsd,
       endingEquityUsd,
@@ -1064,10 +1119,14 @@ export const runWeeklyStraddleBacktest = ({
     indexByTs: indexes.indexByTs,
     quoteByTsInstrumentId: indexes.quoteByTsInstrumentId,
   });
+  const greekAttributionByCycle = c.includeGreekAttribution
+    ? buildGreekAttributionByCycle({ entryPlan, preparedData: p, config: c })
+    : new Map();
   const cycleSummary = buildCycleSummary({
     entryPlan,
     hedgePnlByCycle,
     realizedMetricsByCycle,
+    greekAttributionByCycle,
     indexRows: pi,
     quotes,
     config: c,
