@@ -62,3 +62,57 @@ test("worker engine loads and prepares once, then streams sweep results", async 
   assert.equal(secondMessages.at(-1).timing.reusedPreparedData, true);
   assert.equal(secondMessages.at(-1).result.marker, 8);
 });
+
+test("attribution reuses prepared data and is only calculated on its own request", async () => {
+  let loadCalls = 0;
+  const runConfigs = [];
+  const engine = createBacktestWorkerEngine({
+    loadThalexHistory: async () => {
+      loadCalls += 1;
+      return {
+        indexRows: [{ ts: 1 }],
+        quoteSnapshots: [],
+        artifact: { instruments: [] },
+      };
+    },
+    prepareBacktestData: () => ({ prepared: true }),
+    runWeeklyStraddleBacktest: ({ config }) => {
+      runConfigs.push(config);
+      return { cycleSummary: [{ id: config.id }] };
+    },
+    buildPortfolioAttributionTimeline: (cycles) => [{ cycleId: cycles[0].id }],
+    buildCycleAttributionRows: (cycles) => [{ summaryCycleId: cycles[0].id }],
+  });
+
+  const singleMessages = [];
+  await engine.handleRequest({
+    requestId: 1,
+    type: "run-single",
+    datasetKey: "shared",
+    loadRequest: { hourlyOffsets: [8] },
+    config: { id: "single", includeGreekAttribution: false },
+  }, (message) => singleMessages.push(message));
+
+  assert.equal(loadCalls, 1);
+  assert.equal(runConfigs.length, 1);
+  assert.equal(runConfigs[0].includeGreekAttribution, false);
+
+  const attributionMessages = [];
+  await engine.handleRequest({
+    requestId: 2,
+    type: "run-attribution",
+    datasetKey: "shared",
+    config: { id: "attribution", includeGreekAttribution: false },
+  }, (message) => attributionMessages.push(message));
+
+  assert.equal(loadCalls, 1);
+  assert.equal(runConfigs.length, 2);
+  assert.equal(runConfigs[1].includeGreekAttribution, true);
+  assert.deepEqual(attributionMessages.at(-1).result.timeline, [
+    { cycleId: "attribution" },
+  ]);
+  assert.deepEqual(attributionMessages.at(-1).result.cycles, [
+    { summaryCycleId: "attribution" },
+  ]);
+  assert.equal(attributionMessages.at(-1).timing.reusedPreparedData, true);
+});

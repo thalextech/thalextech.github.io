@@ -20,6 +20,24 @@ const emit = defineEmits(["update:resolutionKey", "update:timeAnchorTs"]);
 const svgRef = ref(null);
 const SVG_FONT_FAMILY =
   'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"';
+const CHART_COLORS = Object.freeze({
+  primaryText: "#ffffff",
+  secondaryText: "#d7dae4",
+  axisText: "#f0f1f6",
+  index: "#ffe4e8",
+  positive: "#32e68a",
+  negative: "#ff5c6c",
+  gammaTheta: "#ff3b8d",
+  vega: "#ffa45f",
+  vanna: "#2dd4bf",
+  charm: "#a3e635",
+  vomma: "#ff8a3d",
+  total: "#f4f6fb",
+  residual: "#71ddff",
+  delta: "#149dff",
+  hedgeRealized: "#3ce8a0",
+  hedgeUnrealized: "#ffb52e",
+});
 
 let brushedDomain = null;
 let hiddenDetailSeriesKeys = new Set();
@@ -51,59 +69,59 @@ const DETAIL_SERIES_ORDER = [
   {
     key: "gammaTheta",
     label: "Gamma + Theta",
-    color: "#e91e63",
-    strokeWidth: 0.9,
+    color: CHART_COLORS.gammaTheta,
+    strokeWidth: 1.15,
     areaOpacity: 0,
   },
   {
     key: "vega",
     label: "Vega",
-    color: "#d88b5d",
-    strokeWidth: 0.9,
+    color: CHART_COLORS.vega,
+    strokeWidth: 1.15,
     areaOpacity: 0,
   },
   {
     key: "vanna",
     label: "Vanna",
-    color: "#14b8a6",
-    strokeWidth: 0.9,
+    color: CHART_COLORS.vanna,
+    strokeWidth: 1.15,
     areaOpacity: 0,
   },
   {
     key: "charm",
     label: "Charm",
-    color: "#65a30d",
-    strokeWidth: 0.9,
+    color: CHART_COLORS.charm,
+    strokeWidth: 1.15,
     areaOpacity: 0,
   },
   {
     key: "vomma",
     label: "Volga",
-    color: "#f97316",
-    strokeWidth: 0.9,
+    color: CHART_COLORS.vomma,
+    strokeWidth: 1.15,
     areaOpacity: 0,
   },
   {
     key: "total",
     label: "Total",
-    color: "#d4d5db",
-    strokeWidth: 0.9,
+    color: CHART_COLORS.total,
+    strokeWidth: 1.3,
     strokeDasharray: null,
     areaOpacity: 0,
   },
   {
     key: "residual",
     label: "Residual",
-    color: "#8ed6f6",
-    strokeWidth: 0.9,
+    color: CHART_COLORS.residual,
+    strokeWidth: 1.15,
     areaOpacity: 0,
   },
   {
     key: "delta",
     label: "Delta (Net)",
-    color: "#0b7de3",
-    strokeWidth: 0.9,
-    areaOpacity: 0.28,
+    color: CHART_COLORS.delta,
+    strokeWidth: 1.35,
+    areaOpacity: 0.4,
   },
 ];
 const DETAIL_SERIES_CONFIG = DETAIL_SERIES_ORDER.map((series) => ({ ...series }));
@@ -208,7 +226,9 @@ const buildMarkTrendSegments = (points, baselineMark) => {
   };
 
   const colorForPoint = (point) =>
-    point.mark_price_close > baselineMark ? "#22c55e" : "#ef4444";
+    point.mark_price_close > baselineMark
+      ? CHART_COLORS.positive
+      : CHART_COLORS.negative;
 
   for (let i = 0; i < validPoints.length - 1; i += 1) {
     const start = validPoints[i];
@@ -255,7 +275,7 @@ const axisStyle = (axisG) => {
   axisG.selectAll("path").remove();
   axisG
     .selectAll("text")
-    .attr("fill", "#d6d7de")
+    .attr("fill", CHART_COLORS.axisText)
     .style("font-size", "10px")
     .style("font-family", SVG_FONT_FAMILY);
 };
@@ -329,7 +349,7 @@ function drawExportPageTitle({ ctx, width, padding, pageTitle }) {
     ctx.fillText(line, width / 2 + padding, startY + index * lineHeight);
   });
   if (hasSubtitle) {
-    ctx.fillStyle = "#c9c9cf";
+    ctx.fillStyle = CHART_COLORS.secondaryText;
     ctx.font = `400 13px ${SVG_FONT_FAMILY}`;
     ctx.fillText(
       truncateCanvasText(ctx, subtitle, maxWidth),
@@ -430,7 +450,7 @@ const drawResolutionControl = (svg) => {
     .attr("y", buttonHeight / 2 + 0.5)
     .attr("text-anchor", "middle")
     .attr("dominant-baseline", "middle")
-    .attr("fill", "#a9abb6")
+    .attr("fill", CHART_COLORS.secondaryText)
     .style("font-size", "10px")
     .style("font-weight", 600)
     .text(label);
@@ -479,7 +499,7 @@ const drawResolutionControl = (svg) => {
         d3.select(this).select("rect").attr("fill", rowRectFillDefault);
         d3.select(this)
           .select("text")
-          .attr("fill", "#a9abb6")
+          .attr("fill", CHART_COLORS.secondaryText)
           .style("font-weight", 600);
       })
       .on("click", (event) => {
@@ -512,7 +532,7 @@ const drawResolutionControl = (svg) => {
       .attr("y", rowHeight / 2 + 0.5)
       .attr("text-anchor", "middle")
       .attr("dominant-baseline", "middle")
-      .attr("fill", "#a9abb6")
+      .attr("fill", CHART_COLORS.secondaryText)
       .style("font-size", "10px")
       .style("font-weight", 600)
       .text(option?.label ?? "");
@@ -557,7 +577,10 @@ const drawLowerModeToggle = (group) => {
       .attr("y", 12.5)
       .attr("text-anchor", "middle")
       .attr("dominant-baseline", "middle")
-      .attr("fill", isActive ? "#f2f4ff" : "#a9abb6")
+      .attr(
+        "fill",
+        isActive ? CHART_COLORS.primaryText : CHART_COLORS.secondaryText,
+      )
       .style("font-size", "10px")
       .style("font-weight", 600)
       .text(option.label);
@@ -653,7 +676,7 @@ const render = () => {
       .attr("x", layout.width / 2)
       .attr("y", totalHeight / 2)
       .attr("text-anchor", "middle")
-      .attr("fill", "#c9c9cf")
+      .attr("fill", CHART_COLORS.secondaryText)
       .style("font-size", "14px")
       .text(props.loading ? "Loading..." : "No data for this range.");
     return;
@@ -675,7 +698,7 @@ const render = () => {
     .attr("x", layout.width / 2)
     .attr("y", 36)
     .attr("text-anchor", "middle")
-    .attr("fill", "#c9c9cf")
+    .attr("fill", CHART_COLORS.secondaryText)
     .style("font-size", "12px")
     .text(props.subtitle || "");
 
@@ -718,7 +741,7 @@ const render = () => {
     .attr("x", innerWidth / 2)
     .attr("y", topInnerHeight + 42)
     .attr("text-anchor", "middle")
-    .attr("fill", "#d6d7de")
+    .attr("fill", CHART_COLORS.axisText)
     .style("font-size", "10px")
     .style("font-weight", 700)
     .text("Date (UTC)");
@@ -729,7 +752,7 @@ const render = () => {
     .attr("x", -topInnerHeight / 2)
     .attr("y", -62)
     .attr("text-anchor", "middle")
-    .attr("fill", "#d6d7de")
+    .attr("fill", CHART_COLORS.axisText)
     .style("font-size", "10px")
     .style("font-weight", 700)
     .text("Index Price (Close)");
@@ -744,8 +767,8 @@ const render = () => {
     .append("path")
     .datum(index)
     .attr("fill", "none")
-    .attr("stroke", "mistyrose")
-    .attr("stroke-width", 1.2)
+    .attr("stroke", CHART_COLORS.index)
+    .attr("stroke-width", 1.5)
     .attr("d", topLine);
 
   const bottomPanelGroup = svg
@@ -783,7 +806,7 @@ const render = () => {
         .attr("x", innerWidth / 2)
         .attr("y", bottomInnerHeight / 2)
         .attr("text-anchor", "middle")
-        .attr("fill", "#c9c9cf")
+        .attr("fill", CHART_COLORS.secondaryText)
         .style("font-size", "10px")
         .text(emptyMessageByMode[bottomMode] || "No data in selected range");
       return;
@@ -844,7 +867,7 @@ const render = () => {
         .attr("x", layout.width / 2)
         .attr("y", 44)
         .attr("text-anchor", "middle")
-        .attr("fill", "#a9abb6")
+        .attr("fill", CHART_COLORS.secondaryText)
         .style("font-size", "12px")
         .text(subtitle);
 
@@ -854,7 +877,7 @@ const render = () => {
           .attr("x", innerWidth / 2)
           .attr("y", bottomInnerHeight / 2)
           .attr("text-anchor", "middle")
-          .attr("fill", "#c9c9cf")
+          .attr("fill", CHART_COLORS.secondaryText)
           .style("font-size", "10px")
           .text("No mark data in selected range");
         return;
@@ -902,7 +925,7 @@ const render = () => {
         .attr("x", innerWidth / 2)
         .attr("y", bottomInnerHeight + 42)
         .attr("text-anchor", "middle")
-        .attr("fill", "#d6d7de")
+        .attr("fill", CHART_COLORS.axisText)
         .style("font-size", "10px")
         .style("font-weight", 700)
         .text("Date (UTC)");
@@ -913,7 +936,7 @@ const render = () => {
         .attr("x", -bottomInnerHeight / 2)
         .attr("y", -62)
         .attr("text-anchor", "middle")
-        .attr("fill", "#d6d7de")
+        .attr("fill", CHART_COLORS.axisText)
         .style("font-size", "10px")
         .style("font-weight", 700)
         .text("Mark Price");
@@ -939,18 +962,18 @@ const render = () => {
       gradientAbove
         .append("stop")
         .attr("offset", "0%")
-        .attr("stop-color", "#22c55e")
-        .attr("stop-opacity", 0.3);
+        .attr("stop-color", CHART_COLORS.positive)
+        .attr("stop-opacity", 0.42);
       gradientAbove
         .append("stop")
         .attr("offset", "55%")
-        .attr("stop-color", "#22c55e")
-        .attr("stop-opacity", 0.14);
+        .attr("stop-color", CHART_COLORS.positive)
+        .attr("stop-opacity", 0.22);
       gradientAbove
         .append("stop")
         .attr("offset", "100%")
-        .attr("stop-color", "#22c55e")
-        .attr("stop-opacity", 0.03);
+        .attr("stop-color", CHART_COLORS.positive)
+        .attr("stop-opacity", 0.06);
 
       const gradientBelow = defs
         .append("linearGradient")
@@ -962,18 +985,18 @@ const render = () => {
       gradientBelow
         .append("stop")
         .attr("offset", "0%")
-        .attr("stop-color", "#ef4444")
-        .attr("stop-opacity", 0.03);
+        .attr("stop-color", CHART_COLORS.negative)
+        .attr("stop-opacity", 0.06);
       gradientBelow
         .append("stop")
         .attr("offset", "45%")
-        .attr("stop-color", "#ef4444")
-        .attr("stop-opacity", 0.14);
+        .attr("stop-color", CHART_COLORS.negative)
+        .attr("stop-opacity", 0.22);
       gradientBelow
         .append("stop")
         .attr("offset", "100%")
-        .attr("stop-color", "#ef4444")
-        .attr("stop-opacity", 0.3);
+        .attr("stop-color", CHART_COLORS.negative)
+        .attr("stop-opacity", 0.42);
 
       const areaAbove = d3
         .area()
@@ -1029,7 +1052,7 @@ const render = () => {
         .attr("class", "mark-trend-line")
         .attr("fill", "none")
         .attr("stroke", (segment) => segment.color)
-        .attr("stroke-width", 1.25)
+        .attr("stroke-width", 1.5)
         .attr("stroke-linecap", "round")
         .attr("stroke-linejoin", "round")
         .attr("d", (segment) => line(segment.points));
@@ -1047,7 +1070,8 @@ const render = () => {
           BOTTOM_TOP_INSET + 10,
           Math.min(bottomInnerHeight - 6, yBottom(baselineMark) - 6),
         );
-        const deltaColor = markDelta >= 0 ? "#22c55e" : "#ef4444";
+        const deltaColor =
+          markDelta >= 0 ? CHART_COLORS.positive : CHART_COLORS.negative;
 
         plotGroup
           .append("text")
@@ -1141,7 +1165,7 @@ const render = () => {
         .attr("x", layout.width / 2)
         .attr("y", 44)
         .attr("text-anchor", "middle")
-        .attr("fill", "#a9abb6")
+        .attr("fill", CHART_COLORS.secondaryText)
         .style("font-size", "12px")
         .text(subtitle);
 
@@ -1187,7 +1211,7 @@ const render = () => {
         .attr("x", innerWidth / 2)
         .attr("y", bottomInnerHeight + 42)
         .attr("text-anchor", "middle")
-        .attr("fill", "#d6d7de")
+        .attr("fill", CHART_COLORS.axisText)
         .style("font-size", "10px")
         .style("font-weight", 700)
         .text("Date (UTC)");
@@ -1198,7 +1222,7 @@ const render = () => {
         .attr("x", -bottomInnerHeight / 2)
         .attr("y", -62)
         .attr("text-anchor", "middle")
-        .attr("fill", "#d6d7de")
+        .attr("fill", CHART_COLORS.axisText)
         .style("font-size", "10px")
         .style("font-weight", 700)
         .text("Cumulative Hedge P&L ($)");
@@ -1213,7 +1237,7 @@ const render = () => {
         {
           key: "realized",
           label: "Realized",
-          color: "#34d399",
+          color: CHART_COLORS.hedgeRealized,
           strokeDasharray: null,
           values: rebasedHedgePoints.map((point) => ({
             date: point.date,
@@ -1223,7 +1247,7 @@ const render = () => {
         {
           key: "unrealized",
           label: "Unrealized",
-          color: "#f59e0b",
+          color: CHART_COLORS.hedgeUnrealized,
           strokeDasharray: null,
           values: rebasedHedgePoints.map((point) => ({
             date: point.date,
@@ -1233,7 +1257,7 @@ const render = () => {
         {
           key: "total",
           label: "Total",
-          color: "#d4d5db",
+          color: CHART_COLORS.total,
           strokeDasharray: null,
           values: rebasedHedgePoints.map((point) => ({
             date: point.date,
@@ -1250,7 +1274,7 @@ const render = () => {
         .attr("class", "hedge-line")
         .attr("fill", "none")
         .attr("stroke", (series) => series.color)
-        .attr("stroke-width", 1.1)
+        .attr("stroke-width", 1.35)
         .attr("stroke-linecap", "round")
         .attr("stroke-linejoin", "round")
         .attr("stroke-dasharray", (series) => series.strokeDasharray)
@@ -1284,7 +1308,7 @@ const render = () => {
         .attr("x2", legendLineLength)
         .attr("y2", 0)
         .attr("stroke", (d) => d.color)
-        .attr("stroke-width", 1.1)
+        .attr("stroke-width", 1.35)
         .attr("stroke-dasharray", (d) => d.strokeDasharray)
         .attr("stroke-linecap", "round");
 
@@ -1292,7 +1316,7 @@ const render = () => {
         .append("text")
         .attr("x", legendLineLength + legendLabelOffset)
         .attr("y", 3)
-        .attr("fill", "#a9abb6")
+        .attr("fill", CHART_COLORS.secondaryText)
         .style("font-size", "11px")
         .style("font-family", SVG_FONT_FAMILY)
         .style("font-weight", 500)
@@ -1404,7 +1428,7 @@ const render = () => {
         .attr("x", innerWidth / 2)
         .attr("y", bottomInnerHeight / 2)
         .attr("text-anchor", "middle")
-        .attr("fill", "#c9c9cf")
+        .attr("fill", CHART_COLORS.secondaryText)
         .style("font-size", "10px")
         .text("No Greeks P&L data in selected range");
       return;
@@ -1449,7 +1473,7 @@ const render = () => {
       .attr("x", innerWidth / 2)
       .attr("y", bottomInnerHeight + 42)
       .attr("text-anchor", "middle")
-      .attr("fill", "#d6d7de")
+      .attr("fill", CHART_COLORS.axisText)
       .style("font-size", "10px")
       .style("font-weight", 700)
       .text("Date (UTC)");
@@ -1460,7 +1484,7 @@ const render = () => {
       .attr("x", -bottomInnerHeight / 2)
       .attr("y", -62)
       .attr("text-anchor", "middle")
-      .attr("fill", "#d6d7de")
+      .attr("fill", CHART_COLORS.axisText)
       .style("font-size", "10px")
       .style("font-weight", 700)
       .text("Cumulative P&L ($)");
@@ -1487,22 +1511,22 @@ const render = () => {
       .attr("x2", "0%")
       .attr("y1", "0%")
       .attr("y2", "100%");
-    const deltaColor = deltaSeries?.color || "#0b7de3";
+    const deltaColor = deltaSeries?.color || CHART_COLORS.delta;
     deltaGradient
       .append("stop")
       .attr("offset", "0%")
       .attr("stop-color", deltaColor)
-      .attr("stop-opacity", 0.38);
+      .attr("stop-opacity", 0.52);
     deltaGradient
       .append("stop")
       .attr("offset", "55%")
       .attr("stop-color", deltaColor)
-      .attr("stop-opacity", 0.2);
+      .attr("stop-opacity", 0.3);
     deltaGradient
       .append("stop")
       .attr("offset", "100%")
       .attr("stop-color", deltaColor)
-      .attr("stop-opacity", 0.06);
+      .attr("stop-opacity", 0.1);
 
     const deltaArea = d3
       .area()
@@ -1560,7 +1584,7 @@ const render = () => {
       .attr("x", layout.width / 2)
       .attr("y", 44)
       .attr("text-anchor", "middle")
-      .attr("fill", "#a9abb6")
+      .attr("fill", CHART_COLORS.secondaryText)
       .style("font-size", "12px")
       .text(subtitle);
 
@@ -1611,7 +1635,7 @@ const render = () => {
       .select("text")
       .attr("x", legendLineLength + legendLabelOffset)
       .attr("y", 3)
-      .attr("fill", "#a9abb6")
+      .attr("fill", CHART_COLORS.secondaryText)
       .style("font-size", "11px")
       .style("font-family", SVG_FONT_FAMILY)
       .style("font-weight", 500)

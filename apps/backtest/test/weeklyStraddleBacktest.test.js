@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildCycleDetail,
+  buildCycleAttributionRows,
+  buildPortfolioAttributionTimeline,
   computeMaxDrawdown,
   ENTRY_WEEKDAY_EVERY_DAY,
   nextWeeklyExitTs,
@@ -511,6 +513,94 @@ test("computeMaxDrawdown returns the largest peak-to-trough loss", () => {
     ...rows.slice(1),
   ]), -50);
   assert.equal(computeMaxDrawdown(), 0);
+});
+
+test("portfolio attribution sums overlapping closed cycles and stays reconciled", () => {
+  const cycle = (closed, points) => ({ closed, greekPnlTimeline: points });
+  const point = (ts, indexPrice, total, delta, gammaTheta, vega, vanna, volga) => ({
+    ts,
+    indexPrice,
+    intervalPnlUsd: total,
+    netDeltaPnlUsd: delta,
+    gammaThetaPnlUsd: gammaTheta,
+    vegaPnlUsd: vega,
+    vannaPnlUsd: vanna,
+    volgaPnlUsd: volga,
+    residualPnlUsd: total - delta - gammaTheta - vega - vanna - volga,
+  });
+  const rows = buildPortfolioAttributionTimeline([
+    cycle(true, [
+      point(1, 100, 0, 0, 0, 0, 0, 0),
+      point(2, 101, 10, 2, 3, 1, 1, 1),
+    ]),
+    cycle(true, [
+      point(2, 101, 4, 1, 1, 1, 0, 0),
+      point(3, 102, -2, -1, 0, 0, 0, 0),
+    ]),
+    cycle(false, [point(3, 102, 999, 999, 0, 0, 0, 0)]),
+  ]);
+
+  assert.deepEqual(rows.map(({ ts, cumulativeTotalPnlUsd }) => ({
+    ts,
+    cumulativeTotalPnlUsd,
+  })), [
+    { ts: 1, cumulativeTotalPnlUsd: 0 },
+    { ts: 2, cumulativeTotalPnlUsd: 14 },
+    { ts: 3, cumulativeTotalPnlUsd: 12 },
+  ]);
+  for (const row of rows) {
+    assert.equal(
+      row.cumulativeTotalPnlUsd,
+      row.cumulativeNetDeltaPnlUsd
+        + row.cumulativeGammaThetaPnlUsd
+        + row.cumulativeVegaPnlUsd
+        + row.cumulativeVannaPnlUsd
+        + row.cumulativeVolgaPnlUsd
+        + row.cumulativeResidualPnlUsd,
+    );
+  }
+});
+
+test("cycle attribution rows expose compact reconciled component outcomes", () => {
+  const rows = buildCycleAttributionRows([
+    {
+      cycle: 2,
+      entryTs: 10,
+      exitTs: 20,
+      closed: true,
+      cyclePnlUsd: 15,
+      greekPnl: {
+        netDelta: 2,
+        gamma: 3,
+        theta: 4,
+        vega: 1,
+        vanna: -1,
+        volga: 2,
+        residual: 999,
+      },
+    },
+    {
+      cycle: 3,
+      entryTs: 20,
+      exitTs: 30,
+      closed: false,
+      cyclePnlUsd: 999,
+      greekPnl: { netDelta: 999 },
+    },
+  ]);
+
+  assert.deepEqual(rows, [{
+    cycle: 2,
+    entryTs: 10,
+    exitTs: 20,
+    totalPnlUsd: 15,
+    netDeltaPnlUsd: 2,
+    gammaThetaPnlUsd: 7,
+    vegaPnlUsd: 1,
+    vannaPnlUsd: -1,
+    volgaPnlUsd: 2,
+    residualPnlUsd: 4,
+  }]);
 });
 
 test("prepareBacktestData retains the index lookup used during preparation", () => {

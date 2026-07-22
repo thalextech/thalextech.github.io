@@ -81,18 +81,28 @@ export function buildIvRvChartRows({
   let withRv = addTrailingParkinsonRv(rows, tenorDays).map((row) => ({
     ...row,
     iv: finite(row.ivByTenor?.[tenorDays]),
+    rvTs: row.ts,
   }));
   if (alignForwardRv) {
     const shiftSeconds = Number(tenorDays) * DAY_SECONDS;
     const rvByTs = new Map(withRv.map((row) => [row.ts, row.rv]));
-    withRv = withRv.map((row) => ({
-      ...row,
-      rv: finite(rvByTs.get(row.ts + shiftSeconds)),
-    }));
+    withRv = withRv.map((row) => {
+      const rvTs = row.ts + shiftSeconds;
+      return {
+        ...row,
+        rv: finite(rvByTs.get(rvTs)),
+        rvTs: rvByTs.has(rvTs) ? rvTs : null,
+      };
+    });
   }
   return resampleIvRvRows(withRv, resolutionHours)
     .filter((row) => Number.isFinite(row.iv) || Number.isFinite(row.rv))
-    .map((row) => ({ ...row, date: new Date(row.ts * 1000) }));
+    .map((row) => ({
+      ...row,
+      date: new Date(row.ts * 1000),
+      ivDate: new Date(row.ts * 1000),
+      rvDate: Number.isFinite(row.rvTs) ? new Date(row.rvTs * 1000) : null,
+    }));
 }
 
 export function summarizeIvRvRows(rows = []) {

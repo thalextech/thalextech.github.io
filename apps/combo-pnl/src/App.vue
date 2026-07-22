@@ -1126,22 +1126,32 @@ watch(
 <template>
   <div class="appRoot">
     <div class="underlyingRow">
-      <div class="underlyingToggle" role="group" aria-label="Underlying">
-        <button
-          v-for="opt in UNDERLYING_OPTIONS"
-          :key="opt.value"
-          type="button"
-          class="underlyingButton"
-          :class="{ underlyingButtonActive: underlying === opt.value }"
-          :disabled="ui.loading && underlying !== opt.value"
-          @click="switchUnderlying(opt.value)"
-        >
-          {{ opt.label }}
-        </button>
+      <div class="underlyingActions">
+        <div class="underlyingToggle" role="group" aria-label="Underlying">
+          <button
+            v-for="opt in UNDERLYING_OPTIONS"
+            :key="opt.value"
+            type="button"
+            class="underlyingButton"
+            :class="{ underlyingButtonActive: underlying === opt.value }"
+            :disabled="ui.loading && underlying !== opt.value"
+            @click="switchUnderlying(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
+        <a v-if="thalexUrl" :href="thalexUrl" class="tradeThalexButton" target="_blank" rel="noopener">
+          Trade on Thalex
+        </a>
       </div>
-      <a v-if="thalexUrl" :href="thalexUrl" class="tradeThalexButton" target="_blank" rel="noopener">
-        Trade on Thalex
-      </a>
+      <button
+        class="savePngButton"
+        type="button"
+        @click="handleSavePng"
+        :disabled="ui.loading || !comboSeries.length"
+      >
+        Save PNG
+      </button>
     </div>
     <div class="builderRow">
       <div class="builderMain">
@@ -1195,14 +1205,6 @@ watch(
     </div>
 
     <div class="chartBlock" ref="chartBlockRef">
-      <button
-        class="savePngButton"
-        type="button"
-        @click="handleSavePng"
-        :disabled="ui.loading || !comboSeries.length"
-      >
-        Save PNG
-      </button>
       <div
         class="settingsWrap settingsWrap--chart"
         ref="topSettingsMenuRef"
@@ -1297,10 +1299,19 @@ watch(
 .underlyingRow {
   --top-control-height: 31px;
   display: flex;
-  justify-content: flex-start;
+  justify-content: space-between;
   align-items: center;
   gap: 8px;
+  width: min(100%, 960px);
+  margin-left: 8px;
   margin-bottom: 12px;
+}
+
+.underlyingActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .underlyingToggle {
@@ -1433,24 +1444,23 @@ watch(
 }
 
 .savePngButton {
-  position: absolute;
-  top: 5px;
-  right: 40px;
-  z-index: 24;
-  height: 22px;
-  padding: 0 10px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  height: var(--top-control-height);
+  padding: 0 16px;
   border-radius: 999px;
-  border: none;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(226, 232, 240, 0.7);
-  font-size: 10px;
+  border: 1px solid #3d3d42;
+  background: #11141a;
+  color: #f0f1f4;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   box-shadow: none;
 }
 
 .savePngButton:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.15);
+  background: #1c2029;
+  border-color: #596171;
   color: #fff;
 }
 
@@ -1738,6 +1748,10 @@ watch(
   .builderRow {
     flex-direction: column;
     gap: 10px;
+  }
+
+  .underlyingRow {
+    margin-left: 0;
   }
 
   .chartBlock {

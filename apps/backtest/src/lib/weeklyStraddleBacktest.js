@@ -801,6 +801,91 @@ const buildGreekAttributionByCycle = ({ entryPlan, preparedData, config }) => {
   return attributionByCycle;
 };
 
+const PORTFOLIO_ATTRIBUTION_FIELDS = [
+  ["intervalPnlUsd", "cumulativeTotalPnlUsd"],
+  ["netDeltaPnlUsd", "cumulativeNetDeltaPnlUsd"],
+  ["gammaThetaPnlUsd", "cumulativeGammaThetaPnlUsd"],
+  ["vegaPnlUsd", "cumulativeVegaPnlUsd"],
+  ["vannaPnlUsd", "cumulativeVannaPnlUsd"],
+  ["volgaPnlUsd", "cumulativeVolgaPnlUsd"],
+  ["residualPnlUsd", "cumulativeResidualPnlUsd"],
+];
+
+export const buildPortfolioAttributionTimeline = (cycleSummary = []) => {
+  const incrementsByTs = new Map();
+  for (const cycle of cycleSummary) {
+    if (!cycle?.closed) continue;
+    for (const point of cycle.greekPnlTimeline || []) {
+      const ts = Number(point?.ts);
+      if (!Number.isFinite(ts)) continue;
+      let bucket = incrementsByTs.get(ts);
+      if (!bucket) {
+        bucket = {
+          ts,
+          indexPrice: Number.NaN,
+          ...Object.fromEntries(
+            PORTFOLIO_ATTRIBUTION_FIELDS.map(([incrementKey]) => [incrementKey, 0]),
+          ),
+        };
+        incrementsByTs.set(ts, bucket);
+      }
+      if (Number.isFinite(point.indexPrice)) bucket.indexPrice = Number(point.indexPrice);
+      for (const [incrementKey] of PORTFOLIO_ATTRIBUTION_FIELDS) {
+        bucket[incrementKey] += Number(point[incrementKey]) || 0;
+      }
+    }
+  }
+
+  const cumulative = Object.fromEntries(
+    PORTFOLIO_ATTRIBUTION_FIELDS.map(([, cumulativeKey]) => [cumulativeKey, 0]),
+  );
+  return [...incrementsByTs.values()]
+    .sort((first, second) => first.ts - second.ts)
+    .map((bucket) => {
+      for (const [incrementKey, cumulativeKey] of PORTFOLIO_ATTRIBUTION_FIELDS) {
+        cumulative[cumulativeKey] += bucket[incrementKey];
+      }
+      return {
+        ts: bucket.ts,
+        indexPrice: bucket.indexPrice,
+        ...cumulative,
+      };
+    });
+};
+
+export const buildCycleAttributionRows = (cycleSummary = []) =>
+  cycleSummary
+    .filter((cycle) => (
+      cycle?.closed
+      && Number.isFinite(cycle.exitTs)
+      && Number.isFinite(cycle.cyclePnlUsd)
+      && cycle.greekPnl
+    ))
+    .map((cycle) => {
+      const netDeltaPnlUsd = Number(cycle.greekPnl.netDelta) || 0;
+      const gammaThetaPnlUsd = (Number(cycle.greekPnl.gamma) || 0)
+        + (Number(cycle.greekPnl.theta) || 0);
+      const vegaPnlUsd = Number(cycle.greekPnl.vega) || 0;
+      const vannaPnlUsd = Number(cycle.greekPnl.vanna) || 0;
+      const volgaPnlUsd = Number(cycle.greekPnl.volga) || 0;
+      const totalPnlUsd = Number(cycle.cyclePnlUsd);
+      const residualPnlUsd = totalPnlUsd - netDeltaPnlUsd - gammaThetaPnlUsd
+        - vegaPnlUsd - vannaPnlUsd - volgaPnlUsd;
+      return {
+        cycle: cycle.cycle,
+        entryTs: Number(cycle.entryTs),
+        exitTs: Number(cycle.exitTs),
+        totalPnlUsd,
+        netDeltaPnlUsd,
+        gammaThetaPnlUsd,
+        vegaPnlUsd,
+        vannaPnlUsd,
+        volgaPnlUsd,
+        residualPnlUsd,
+      };
+    })
+    .sort((first, second) => first.exitTs - second.exitTs);
+
 export function computeBreakEvens(plan) {
   if (!plan || !Array.isArray(plan.legs) || plan.legs.length === 0) return null;
   const cashflow = plan.entryOptionCashflowUsd;

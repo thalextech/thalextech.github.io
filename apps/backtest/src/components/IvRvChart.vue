@@ -117,16 +117,20 @@ function render() {
         hover.append("rect").attr("x", xpos - 3).attr("y", y2(row.close) - 3)
           .attr("width", 6).attr("height", 6).attr("fill", "#f2f3f5").attr("stroke", "#090a0d");
       }
-      const boxWidth = 185;
-      const boxX = xpos > innerWidth - boxWidth - 12 ? xpos - boxWidth - 12 : xpos + 12;
+      const formatSourceDate = (date) => date instanceof Date && Number.isFinite(date.getTime())
+        ? d3.utcFormat("%Y-%m-%d %H:%M UTC")(date)
+        : "—";
+      const boxWidth = 292;
+      const preferredBoxX = xpos > innerWidth / 2 ? xpos - boxWidth - 12 : xpos + 12;
+      const boxX = Math.max(0, Math.min(innerWidth - boxWidth, preferredBoxX));
       const box = hover.append("g").attr("transform", `translate(${boxX},12)`);
       box.append("rect").attr("width", boxWidth).attr("height", y2 ? 95 : 76).attr("rx", 6)
         .attr("fill", "rgba(8,9,12,.95)").attr("stroke", "rgba(255,255,255,.12)");
       box.append("text").attr("x", 11).attr("y", 20).attr("fill", "#d7dade").style("font", `11px ${font}`)
-        .text(d3.utcFormat("%Y-%m-%d %H:%M UTC")(row.date));
-      [["iv", "ATM IV"], ["rv", "Parkinson RV"]].forEach(([key, label], index) => {
+        .text(`Chart: ${formatSourceDate(row.date)}`);
+      [["iv", "ivDate", "ATM IV"], ["rv", "rvDate", "Parkinson RV"]].forEach(([key, dateKey, label], index) => {
         box.append("text").attr("x", 11).attr("y", 42 + index * 19).attr("fill", colors[key]).style("font", `11px ${font}`)
-          .text(`${label}: ${Number.isFinite(row[key]) ? d3.format(".2%")(row[key]) : "—"}`);
+          .text(`${label} · ${formatSourceDate(row[dateKey])}: ${Number.isFinite(row[key]) ? d3.format(".2%")(row[key]) : "—"}`);
       });
       if (y2) {
         box.append("text").attr("x", 11).attr("y", 80).attr("fill", "#f2f3f5").style("font", `11px ${font}`)

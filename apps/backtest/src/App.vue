@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import CycleDetailChart from "./components/CycleDetailChart.vue";
 import FairValueDistributionPanel from "./components/FairValueDistributionPanel.vue";
+import GreekPnlChart from "./components/GreekPnlChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
 import IvRvChart from "./components/IvRvChart.vue";
 import StyledSelectMenu from "./components/StyledSelectMenu.vue";
@@ -13,6 +14,7 @@ import SweepResultsChart from "./components/SweepResultsChart.vue";
 import WeeklyBacktestChart from "./components/WeeklyBacktestChart.vue";
 import {
   hasWorkerDataset,
+  runAttributionInWorker,
   runSingleInWorker,
   runSweepInWorker,
 } from "./lib/backtestWorkerClient.js";
@@ -617,6 +619,12 @@ const chartRef = ref(null);
 const sweepChartRef = ref(null);
 const chartMode = ref("weekly");
 const distributionViewMode = ref("time");
+const attributionRows = ref([]);
+const attributionCycleRows = ref([]);
+const attributionLoading = ref(false);
+const attributionError = ref("");
+let attributionResult = null;
+let currentAttributionSequence = 0;
 const selectedCycle = ref(null);
 const cycleDetailRows = ref([]);
 const cycleBreakEvens = ref(null);
@@ -626,6 +634,15 @@ const cycleDetailError = ref("");
 const cycleDetailCache = new Map();
 let currentCycleDetailSequence = 0;
 const cycleRows = computed(() => result.value?.cycleSummary || []);
+
+const clearAttribution = () => {
+  currentAttributionSequence += 1;
+  attributionRows.value = [];
+  attributionCycleRows.value = [];
+  attributionLoading.value = false;
+  attributionError.value = "";
+  attributionResult = null;
+};
 
 const clearCycleDetail = ({ clearCache = false } = {}) => {
   currentCycleDetailSequence += 1;
@@ -868,6 +885,7 @@ const selectSingleView = (nextChartMode) => {
   mode.value = "single";
   selectedCycle.value = null;
   if (!result.value) scheduleBacktest();
+  else if (nextChartMode === "greeks") void loadAttribution();
   requestAnimationFrame(() => {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
@@ -893,6 +911,7 @@ const runCurrent = async () => {
   }
   const runSequence = ++currentRunSequence;
   clearCycleDetail({ clearCache: true });
+  clearAttribution();
   result.value = null;
   const config = buildConfig();
   state.progress = "Running strategy";
@@ -907,10 +926,40 @@ const runCurrent = async () => {
     if (runSequence !== currentRunSequence) return;
     result.value = response.result;
     state.progress = "";
+    if (chartMode.value === "greeks") void loadAttribution();
   } catch (error) {
     if (runSequence !== currentRunSequence) return;
     state.error = error?.message || "Backtest failed";
     state.progress = "";
+  }
+};
+
+const loadAttribution = async () => {
+  const sourceResult = result.value;
+  if (!sourceResult || attributionLoading.value) return;
+  if (attributionResult === sourceResult && attributionRows.value.length) return;
+  const attributionSequence = ++currentAttributionSequence;
+  attributionLoading.value = true;
+  attributionError.value = "";
+  try {
+    const response = await runAttributionInWorker({
+      datasetKey: loadedDataKey || requiredDataKey.value,
+      config: buildConfig(),
+    });
+    if (
+      attributionSequence !== currentAttributionSequence
+      || sourceResult !== result.value
+    ) return;
+    attributionRows.value = response.result?.timeline || [];
+    attributionCycleRows.value = response.result?.cycles || [];
+    attributionResult = sourceResult;
+  } catch (error) {
+    if (attributionSequence !== currentAttributionSequence) return;
+    attributionError.value = error?.message || "Unable to calculate PnL attribution";
+  } finally {
+    if (attributionSequence === currentAttributionSequence) {
+      attributionLoading.value = false;
+    }
   }
 };
 
@@ -982,6 +1031,7 @@ const handleCycleSelect = async (cycle) => {
 const loadBacktest = async () => {
   const runSequence = ++currentRunSequence;
   clearCycleDetail({ clearCache: true });
+  clearAttribution();
   result.value = null;
   state.error = "";
   state.progress = "Loading data";
@@ -1005,6 +1055,7 @@ const loadBacktest = async () => {
     loadedDataKey = datasetKey;
     result.value = response.result;
     state.progress = "";
+    if (chartMode.value === "greeks") void loadAttribution();
   } catch (error) {
     if (runSequence !== currentRunSequence) return;
     state.error = error?.message || "Backtest failed";
@@ -1063,10 +1114,6 @@ watch(
     if (!ui.hedgeEnabled && chartMode.value === "hedge") {
       chartMode.value = "weekly";
     }
-    if (chartMode.value === "greeks") {
-      chartMode.value = "weekly";
-    }
-
     const uiKey = [
       ui.maturityDays,
       ui.structure,
@@ -1134,6 +1181,8 @@ function handleSavePng() {
 
   const filename = selectedCycle.value
     ? `cycle-detail-${date}.png`
+    : chartMode.value === "greeks"
+    ? `pnl-attribution-${date}.png`
     : chartMode.value === "distribution"
     ? `fair-value-distribution-${date}.png`
     : chartMode.value === "hedge"
@@ -1429,6 +1478,7 @@ onMounted(loadBacktest);
           <div class="singleRunDropdown" role="menu" aria-label="Single run view">
             <div class="singleRunDropdownSurface">
               <button type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'weekly' }" @click="selectSingleView('weekly')">PnL by cycle</button>
+              <button type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'greeks' }" @click="selectSingleView('greeks')">PnL attribution</button>
               <button v-if="ui.hedgeEnabled" type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'hedge' }" @click="selectSingleView('hedge')">Hedge performance</button>
               <button type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'distribution' }" @click="selectSingleView('distribution')">Distribution</button>
             </div>
@@ -1456,7 +1506,7 @@ onMounted(loadBacktest);
           RV - IV
         </button>
       </div>
-      <button class="saveButton topSaveButton" type="button" :disabled="mode === 'single' ? cycleDetailLoading : mode === 'sweep' ? (sweepRunning || !sweepResults.length) : mode === 'rv' ? (ivRvLoading || !rvWeekdayInsights) : (ivRvLoading || !ivRvRows.length)" @click="handleSavePng">
+      <button class="saveButton topSaveButton" type="button" :disabled="mode === 'single' ? (cycleDetailLoading || attributionLoading) : mode === 'sweep' ? (sweepRunning || !sweepResults.length) : mode === 'rv' ? (ivRvLoading || !rvWeekdayInsights) : (ivRvLoading || !ivRvRows.length)" @click="handleSavePng">
         Save PNG
       </button>
     </div>
@@ -1611,6 +1661,14 @@ onMounted(loadBacktest);
           ref="chartRef"
           :rows="cycleRows"
           @select="handleCycleSelect"
+        />
+        <div v-else-if="mode === 'single' && !selectedCycle && chartMode === 'greeks' && attributionLoading" class="cycleDetailState">Calculating PnL attribution…</div>
+        <div v-else-if="mode === 'single' && !selectedCycle && chartMode === 'greeks' && attributionError" class="cycleDetailState error">{{ attributionError }}</div>
+        <GreekPnlChart
+          v-else-if="mode === 'single' && !selectedCycle && chartMode === 'greeks'"
+          ref="chartRef"
+          :rows="attributionRows"
+          :cycle-rows="attributionCycleRows"
         />
         <FairValueDistributionPanel
           v-else-if="mode === 'single' && !selectedCycle && chartMode === 'distribution'"

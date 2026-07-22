@@ -2,6 +2,8 @@ export const createBacktestWorkerEngine = ({
   loadThalexHistory,
   prepareBacktestData,
   runWeeklyStraddleBacktest,
+  buildPortfolioAttributionTimeline,
+  buildCycleAttributionRows,
   now = () => performance.now(),
 }) => {
   const preparedDatasets = new Map();
@@ -128,6 +130,43 @@ export const createBacktestWorkerEngine = ({
         requestId,
         datasetKey,
         result,
+        timing: {
+          loadMs: preparation.loadMs,
+          prepareMs: preparation.prepareMs,
+          runMs: now() - runStartedAt,
+          reusedPreparedData: preparation.reusedPreparedData,
+        },
+      });
+      return;
+    }
+
+    if (type === "run-attribution") {
+      const preparation = await ensurePreparedData({
+        requestId,
+        datasetKey,
+        loadRequest,
+        config,
+        emit,
+      });
+      emit({
+        type: "progress",
+        requestId,
+        phase: "run",
+        message: "Calculating PnL attribution",
+      });
+      const runStartedAt = now();
+      const result = runWeeklyStraddleBacktest({
+        preparedData: preparation.preparedData,
+        config: { ...config, includeGreekAttribution: true },
+      });
+      emit({
+        type: "complete",
+        requestId,
+        datasetKey,
+        result: {
+          timeline: buildPortfolioAttributionTimeline(result.cycleSummary),
+          cycles: buildCycleAttributionRows(result.cycleSummary),
+        },
         timing: {
           loadMs: preparation.loadMs,
           prepareMs: preparation.prepareMs,

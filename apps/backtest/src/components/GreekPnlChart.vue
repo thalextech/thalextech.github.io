@@ -2,64 +2,66 @@
 import * as d3 from "d3";
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { exportTitledChart } from "../lib/exportTitledChart.js";
+import { calculateRvPlotLayout } from "../lib/rvChartLayout.js";
+import { varianceContribution } from "../lib/statistics.js";
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
-  showIndex: { type: Boolean, default: false },
+  cycleRows: { type: Array, default: () => [] },
 });
-const emit = defineEmits(["update:showIndex"]);
 
 const chartRef = ref(null);
 let resizeObserver;
+let brushedDomain = null;
 
 const FONT = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
-const DAY_SECONDS = 86_400;
 const formatUsd = d3.format("$,.0f");
-const formatIndex = d3.format("$,.0f");
 const formatDate = d3.utcFormat("%d %b %Y");
+const INDEX_COLOR = "#a4a8ae";
+const TOTAL_COLOR = "#f1f2f4";
 const SERIES = [
-  { key: "intervalPnlUsd", label: "Total", color: "#f1f2f4", width: 1.8 },
-  { key: "netDeltaPnlUsd", label: "Net delta", color: "#d73027", width: 1.05 },
-  { key: "gammaThetaPnlUsd", label: "Gamma–theta", color: "#f46d43", width: 1.05 },
-  { key: "vegaPnlUsd", label: "Vega", color: "#fee090", width: 1.05 },
-  { key: "vannaPnlUsd", label: "Vanna", color: "#abd9e9", width: 1.05 },
-  { key: "volgaPnlUsd", label: "Volga", color: "#74add1", width: 1.05 },
-  { key: "residualPnlUsd", label: "Residual", color: "#4575b4", width: 1.05 },
+  { key: "cumulativeGammaThetaPnlUsd", cycleKey: "gammaThetaPnlUsd", label: "Gamma–theta", color: "#6f9fe8", width: 1.15 },
+  { key: "cumulativeNetDeltaPnlUsd", cycleKey: "netDeltaPnlUsd", label: "Net delta", color: "#f47a43", width: 1.15 },
+  { key: "cumulativeVegaPnlUsd", cycleKey: "vegaPnlUsd", label: "Vega", color: "#71c7c9", width: 1.15 },
+  { key: "cumulativeVannaPnlUsd", cycleKey: "vannaPnlUsd", label: "Vanna", color: "#e5c76b", width: 1.15 },
+  { key: "cumulativeVolgaPnlUsd", cycleKey: "volgaPnlUsd", label: "Volga", color: "#a883d1", width: 1.15 },
+  { key: "cumulativeResidualPnlUsd", cycleKey: "residualPnlUsd", label: "Residual", color: "#8f949c", width: 1.15 },
+  { key: "cumulativeTotalPnlUsd", cycleKey: "totalPnlUsd", label: "Total", color: TOTAL_COLOR, width: 2 },
 ];
+const TOTAL_SERIES = SERIES.at(-1);
 
-function aggregateDaily(rows) {
-  const buckets = new Map();
-  for (const point of rows.flatMap((row) => row.greekPnlTimeline || [])) {
-    if (!Number.isFinite(point.ts) || !Number.isFinite(point.indexPrice)) continue;
-    const ts = Math.floor(point.ts / DAY_SECONDS) * DAY_SECONDS;
-    let bucket = buckets.get(ts);
-    if (!bucket) {
-      bucket = {
-        ts,
-        latestTs: point.ts,
-        indexPrice: point.indexPrice,
-        ...Object.fromEntries(SERIES.map(({ key }) => [key, 0])),
-      };
-      buckets.set(ts, bucket);
-    }
-    if (point.ts >= bucket.latestTs) {
-      bucket.latestTs = point.ts;
-      bucket.indexPrice = point.indexPrice;
-    }
-    for (const { key } of SERIES) bucket[key] += Number(point[key]) || 0;
+function normalizeRows(rows) {
+  return (rows || [])
+    .map((row) => ({
+      ...row,
+      ts: Number(row?.ts),
+      date: new Date(Number(row?.ts) * 1000),
+    }))
+    .filter((row) => Number.isFinite(row.ts) && !Number.isNaN(row.date.getTime()))
+    .sort((first, second) => first.ts - second.ts);
+}
+
+function normalizeCycleRows(rows) {
+  return (rows || [])
+    .map((row) => ({
+      ...row,
+      exitTs: Number(row?.exitTs),
+      exitDate: new Date(Number(row?.exitTs) * 1000),
+    }))
+    .filter((row) => Number.isFinite(row.exitTs) && !Number.isNaN(row.exitDate.getTime()))
+    .sort((first, second) => first.exitTs - second.exitTs);
+}
+
+function paddedDomain(values, ratio = 0.07) {
+  const finite = values.filter(Number.isFinite);
+  if (!finite.length) return [-1, 1];
+  let [low, high] = d3.extent(finite);
+  if (low === high) {
+    const padding = Math.max(1, Math.abs(low) * ratio);
+    return [low - padding, high + padding];
   }
-
-  const cumulative = Object.fromEntries(SERIES.map(({ key }) => [key, 0]));
-  return [...buckets.values()]
-    .sort((first, second) => first.ts - second.ts)
-    .map((bucket) => {
-      for (const { key } of SERIES) cumulative[key] += bucket[key];
-      return {
-        ...bucket,
-        date: new Date(bucket.ts * 1000),
-        ...Object.fromEntries(SERIES.map(({ key }) => [key, cumulative[key]])),
-      };
-    });
+  const padding = Math.max(1, (high - low) * ratio);
+  return [low - padding, high + padding];
 }
 
 function styleAxis(group) {
@@ -69,17 +71,58 @@ function styleAxis(group) {
     .style("font", `11px ${FONT}`);
 }
 
+function addLegendItem(group, series, x) {
+  const item = group.append("g")
+    .attr("transform", `translate(${x},0)`);
+  item.append("line")
+    .attr("x2", 20)
+    .attr("stroke", series.color)
+    .attr("stroke-width", series.width)
+    .attr("stroke-dasharray", series.dasharray || null);
+  item.append("text")
+    .attr("x", 27).attr("y", 4)
+    .attr("fill", "#c5c8cd")
+    .style("font", `11px ${FONT}`)
+    .text(series.label);
+  return Math.max(82, series.label.length * 6.2 + 46);
+}
+
+function summarize(values) {
+  const sorted = values.filter(Number.isFinite).sort(d3.ascending);
+  if (!sorted.length) return null;
+  const worstCount = Math.max(1, Math.ceil(sorted.length * 0.1));
+  return {
+    median: d3.quantileSorted(sorted, 0.5),
+    q10: d3.quantileSorted(sorted, 0.1),
+    q25: d3.quantileSorted(sorted, 0.25),
+    q75: d3.quantileSorted(sorted, 0.75),
+    q90: d3.quantileSorted(sorted, 0.9),
+    winRate: d3.mean(sorted, (value) => value > 0 ? 1 : 0),
+    worst10Average: d3.mean(sorted.slice(0, worstCount)),
+    sum: d3.sum(sorted),
+  };
+}
+
 function draw() {
   const host = chartRef.value;
   if (!host) return;
   host.innerHTML = "";
-  const rows = aggregateDaily(props.rows || []);
+  const rows = normalizeRows(props.rows);
+  const cycleRows = normalizeCycleRows(props.cycleRows);
   const bounds = host.getBoundingClientRect();
-  const width = Math.max(720, bounds.width || 1200);
-  const height = Math.max(500, window.innerHeight - bounds.top - 34);
-  const margin = { top: 54, right: props.showIndex ? 78 : 34, bottom: 56, left: 82 };
-  const innerWidth = width - margin.left - margin.right;
-  const innerHeight = height - margin.top - margin.bottom;
+  const width = Math.max(860, bounds.width || 1200);
+  const height = Math.max(720, bounds.height || window.innerHeight - bounds.top - 18);
+  const { plotLeft, plotWidth } = calculateRvPlotLayout(width);
+  const margin = {
+    top: 34,
+    right: width - plotLeft - plotWidth,
+    bottom: 26,
+    left: plotLeft,
+  };
+  const gap = Math.round(Math.max(72, Math.min(112, height * 0.105)));
+  const overviewHeight = Math.round(Math.max(260, Math.min(360, height * 0.36)));
+  const detailTop = margin.top + overviewHeight + gap;
+  const innerWidth = plotWidth;
 
   const svg = d3.select(host).append("svg")
     .attr("viewBox", `0 0 ${width} ${height}`)
@@ -87,135 +130,317 @@ function draw() {
     .attr("height", height)
     .attr("font-family", FONT)
     .attr("role", "img")
-    .attr("aria-label", `Daily cumulative Greek PnL${props.showIndex ? " with BTC index" : ""}`);
+    .attr("aria-label", "Strategy PnL and BTC index overview with brushed Greek contribution summary table");
 
   if (!rows.length) {
     svg.append("text")
       .attr("x", width / 2).attr("y", height / 2).attr("text-anchor", "middle")
       .attr("fill", "#777c84").attr("font-size", 13)
-      .text("Calculating daily Greek attribution…");
+      .text("No attribution data");
     return;
   }
 
-  let dateDomain = d3.extent(rows, (row) => row.date);
-  if (+dateDomain[0] === +dateDomain[1]) {
-    dateDomain = [new Date(+dateDomain[0] - 43_200_000), new Date(+dateDomain[1] + 43_200_000)];
+  let fullDateDomain = d3.extent(rows, (row) => row.date);
+  if (+fullDateDomain[0] === +fullDateDomain[1]) {
+    fullDateDomain = [
+      new Date(+fullDateDomain[0] - 43_200_000),
+      new Date(+fullDateDomain[1] + 43_200_000),
+    ];
   }
-  const pnlValues = rows.flatMap((row) => SERIES.map(({ key }) => row[key]));
-  let [pnlLow, pnlHigh] = d3.extent([...pnlValues, 0]);
-  const pnlPadding = Math.max(1, (pnlHigh - pnlLow) * 0.07);
-  pnlLow -= pnlPadding;
-  pnlHigh += pnlPadding;
+  const xOverview = d3.scaleUtc().domain(fullDateDomain).range([0, innerWidth]);
+  const yOverview = d3.scaleLinear()
+    .domain(paddedDomain([
+      0,
+      ...rows.map((row) => row.cumulativeTotalPnlUsd),
+    ]))
+    .nice(5)
+    .range([overviewHeight, 0]);
+  const indexRows = rows.filter((row) => Number.isFinite(row.indexPrice));
+  const yIndex = d3.scaleLinear()
+    .domain(paddedDomain(indexRows.map((row) => row.indexPrice)))
+    .nice(5)
+    .range([overviewHeight, 0]);
+  const overview = svg.append("g")
+    .attr("transform", `translate(${margin.left},${margin.top})`);
 
-  const x = d3.scaleUtc().domain(dateDomain).range([0, innerWidth]);
-  const y = d3.scaleLinear().domain([pnlLow, pnlHigh]).nice(5).range([innerHeight, 0]);
-  const indexRows = props.showIndex ? rows.filter((row) => Number.isFinite(row.indexPrice)) : [];
-  const indexExtent = d3.extent(indexRows, (row) => row.indexPrice);
-  const indexPadding = indexRows.length
-    ? Math.max(1, (indexExtent[1] - indexExtent[0]) * 0.07)
-    : 0;
-  const yIndex = indexRows.length
-    ? d3.scaleLinear()
-      .domain([indexExtent[0] - indexPadding, indexExtent[1] + indexPadding])
-      .nice(5).range([innerHeight, 0])
-    : null;
-  const chart = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
-
-  chart.append("g").attr("transform", `translate(0,${innerHeight})`)
-    .call(d3.axisBottom(x).ticks(width < 900 ? 5 : 9).tickFormat(d3.utcFormat("%b %y")).tickPadding(14))
+  overview.append("text")
+    .attr("x", 0).attr("y", -18)
+    .attr("fill", "#8f949c").style("font", `10px ${FONT}`)
+    .text("OVERVIEW · DRAG TO SELECT A PERIOD");
+  overview.append("g")
+    .call(d3.axisLeft(yOverview).ticks(4).tickFormat(formatUsd).tickPadding(12))
     .call(styleAxis);
-  chart.append("g")
-    .call(d3.axisLeft(y).ticks(5).tickFormat(formatUsd).tickPadding(14))
+  overview.append("g")
+    .attr("transform", `translate(${innerWidth},0)`)
+    .call(d3.axisRight(yIndex).ticks(4).tickFormat(d3.format("~s")).tickPadding(12))
     .call(styleAxis);
-  if (yIndex) {
-    chart.append("g").attr("transform", `translate(${innerWidth},0)`)
-      .call(d3.axisRight(yIndex).ticks(5).tickFormat(d3.format("~s")).tickPadding(12))
-      .call(styleAxis);
-  }
-  chart.append("text")
-    .attr("transform", "rotate(-90)")
-    .attr("x", -innerHeight / 2).attr("y", -63).attr("text-anchor", "middle")
-    .attr("fill", "#8f949c").style("font", `11px ${FONT}`).text("CUMULATIVE P&L ($)");
+  overview.append("g")
+    .attr("transform", `translate(0,${overviewHeight})`)
+    .call(d3.axisBottom(xOverview).ticks(width < 960 ? 5 : 9).tickFormat(d3.utcFormat("%b %y")).tickPadding(12))
+    .call(styleAxis);
 
-  const legend = chart.append("g").attr("transform", "translate(0,-28)");
-  const legendItems = [
-    ...SERIES,
-    ...(yIndex ? [{ key: "indexPrice", label: "Index", color: "#a4a8ae", width: 1 }] : []),
-  ];
-  let legendX = 0;
-  legendItems.forEach((item) => {
-    const group = legend.append("g").attr("transform", `translate(${legendX},0)`);
-    group.append("line")
-      .attr("x2", 22).attr("stroke", item.color).attr("stroke-width", item.width)
-      .attr("stroke-dasharray", item.key === "indexPrice" ? "3 4" : null);
-    group.append("text")
-      .attr("x", 30).attr("y", 4).attr("fill", "#c5c8cd")
-      .style("font", `11px ${FONT}`).text(item.label);
-    legendX += item.label.length * 6.4 + 54;
-  });
+  const overviewLegend = overview.append("g")
+    .attr("transform", "translate(260,-18)");
+  addLegendItem(overviewLegend, TOTAL_SERIES, 0);
+  addLegendItem(overviewLegend, {
+    key: "indexPrice",
+    label: "BTC index",
+    color: INDEX_COLOR,
+    width: 1,
+    dasharray: "3 4",
+  }, 94);
 
-  const line = (key, scale = y) => d3.line()
-    .defined((row) => Number.isFinite(row[key]))
-    .x((row) => x(row.date)).y((row) => scale(row[key]))
+  const overviewLine = d3.line()
+    .defined((row) => Number.isFinite(row.cumulativeTotalPnlUsd))
+    .x((row) => xOverview(row.date))
+    .y((row) => yOverview(row.cumulativeTotalPnlUsd))
+    .curve(d3.curveStepAfter);
+  overview.append("path")
+    .datum(rows)
+    .attr("fill", "none").attr("stroke", TOTAL_COLOR).attr("stroke-width", 1.7)
+    .attr("d", overviewLine);
+
+  const indexLine = d3.line()
+    .defined((row) => Number.isFinite(row.indexPrice))
+    .x((row) => xOverview(row.date))
+    .y((row) => yIndex(row.indexPrice))
     .curve(d3.curveLinear);
-  for (const series of SERIES) {
-    chart.append("path").datum(rows)
-      .attr("fill", "none").attr("stroke", series.color)
-      .attr("stroke-width", series.width).attr("stroke-linejoin", "round")
-      .attr("d", line(series.key));
-  }
-  if (yIndex) {
-    chart.append("path").datum(indexRows)
-      .attr("fill", "none").attr("stroke", "#a4a8ae").attr("stroke-opacity", 0.72)
-      .attr("stroke-width", 1).attr("stroke-dasharray", "3 4")
-      .attr("d", line("indexPrice", yIndex));
-  }
+  overview.append("path")
+    .datum(indexRows)
+    .attr("fill", "none").attr("stroke", INDEX_COLOR).attr("stroke-width", 1)
+    .attr("stroke-opacity", 0.72).attr("stroke-dasharray", "3 4")
+    .attr("d", indexLine);
 
-  const hover = chart.append("g").style("pointer-events", "none");
-  const bisect = d3.bisector((row) => row.ts).center;
-  chart.append("rect")
-    .attr("width", innerWidth).attr("height", innerHeight).attr("fill", "transparent")
-    .on("mousemove", (event) => {
-      hover.selectAll("*").remove();
-      const [pointerX] = d3.pointer(event);
-      const ts = x.invert(pointerX).getTime() / 1000;
-      const row = rows[Math.max(0, Math.min(rows.length - 1, bisect(rows, ts)))];
-      const xpos = x(row.date);
-      hover.append("line")
-        .attr("x1", xpos).attr("x2", xpos).attr("y2", innerHeight)
-        .attr("stroke", "rgba(255,255,255,.20)");
-      SERIES.forEach((series) => {
-        hover.append("circle")
-          .attr("cx", xpos).attr("cy", y(row[series.key])).attr("r", 3)
-          .attr("fill", series.color).attr("stroke", "#090a0d");
-      });
-      if (yIndex) {
-        hover.append("circle")
-          .attr("cx", xpos).attr("cy", yIndex(row.indexPrice)).attr("r", 3)
-          .attr("fill", "#a4a8ae").attr("stroke", "#090a0d");
+  const detail = svg.append("g")
+    .attr("transform", `translate(${margin.left},${detailTop})`);
+
+  const drawDetail = (domain = null) => {
+    detail.selectAll("*").remove();
+    const from = domain?.[0] || fullDateDomain[0];
+    const to = domain?.[1] || fullDateDomain[1];
+    const selectedCycles = cycleRows.filter(
+      (row) => row.exitDate >= from && row.exitDate <= to,
+    );
+    const rangeText = `${formatDate(from)} – ${formatDate(to)}`;
+
+    detail.append("text")
+      .attr("x", 0).attr("y", -10)
+      .attr("fill", "#8f949c").style("font", `11px ${FONT}`)
+      .text(`Distribution across ${selectedCycles.length} closed cycles · exits ${rangeText}`);
+
+    if (!selectedCycles.length) {
+      detail.append("text")
+        .attr("x", innerWidth / 2).attr("y", 150).attr("text-anchor", "middle")
+        .attr("fill", "#777c84").style("font", `12px ${FONT}`)
+        .text("No closed cycles in the selected period");
+      return;
+    }
+
+    const totalOutcomes = selectedCycles.map((row) => Number(row.totalPnlUsd));
+    const totalPnl = d3.sum(totalOutcomes);
+    const summaries = SERIES.map((series) => {
+      const outcomes = selectedCycles.map((row) => Number(row[series.cycleKey]));
+      const stats = summarize(outcomes);
+      return {
+        ...series,
+        ...stats,
+        share: series.cycleKey === "totalPnlUsd"
+          ? 1
+          : Math.abs(totalPnl) > 1e-9 ? stats.sum / totalPnl : Number.NaN,
+        varianceShare: varianceContribution(outcomes, totalOutcomes),
+      };
+    });
+    const componentX = 0;
+    const medianX = innerWidth * 0.19;
+    const distributionStart = innerWidth * 0.25;
+    const distributionEnd = innerWidth * 0.50;
+    const distributionMid = (distributionStart + distributionEnd) / 2;
+    const contributionX = innerWidth * 0.59;
+    const shareX = innerWidth * 0.69;
+    const varianceX = innerWidth * 0.79;
+    const winX = innerWidth * 0.87;
+    const worstX = innerWidth - 4;
+    const headerY = 24;
+    const rowStart = 49;
+    const rowHeight = height < 840 ? 36 : height < 920 ? 39 : 43;
+    const maxDistributionMagnitude = Math.max(
+      1,
+      ...summaries.flatMap((row) => [Math.abs(row.q10), Math.abs(row.q90)]),
+    );
+    const distributionX = d3.scaleLinear()
+      .domain([-maxDistributionMagnitude, maxDistributionMagnitude])
+      .range([distributionStart, distributionEnd]);
+
+    const header = (text, x, anchor = "middle") => detail.append("text")
+      .attr("x", x).attr("y", headerY).attr("text-anchor", anchor)
+      .attr("fill", "#aeb2b8").style("font", `11px ${FONT}`).text(text);
+    header("Component", componentX, "start");
+    header("Median", medianX, "end");
+    header("IQR (25%–75%)", distributionMid);
+    header("Total P&L", contributionX);
+    header("% of total P&L", shareX);
+    header("Variance %", varianceX).append("title")
+      .text("Covariance of component and total P&L divided by variance of total P&L");
+    header("Win %", winX);
+    header("Worst 10% avg", worstX, "end");
+    detail.append("line")
+      .attr("x1", 0).attr("x2", innerWidth).attr("y1", 34).attr("y2", 34)
+      .attr("stroke", "rgba(255,255,255,.13)");
+    detail.append("line")
+      .attr("x1", distributionX(0)).attr("x2", distributionX(0))
+      .attr("y1", rowStart - 11).attr("y2", rowStart + (summaries.length - 1) * rowHeight + 11)
+      .attr("stroke", "rgba(255,255,255,.12)");
+
+    summaries.forEach((row, index) => {
+      const y = rowStart + index * rowHeight;
+      const isTotal = row.cycleKey === "totalPnlUsd";
+      if (isTotal) {
+        detail.append("line")
+          .attr("x1", 0).attr("x2", innerWidth).attr("y1", y - 22).attr("y2", y - 22)
+          .attr("stroke", "rgba(255,255,255,.24)");
       }
-      const boxWidth = 204;
-      const boxHeight = yIndex ? 188 : 169;
-      const boxX = xpos > innerWidth - boxWidth - 12 ? xpos - boxWidth - 12 : xpos + 12;
-      const box = hover.append("g").attr("transform", `translate(${boxX},12)`);
-      box.append("rect")
-        .attr("width", boxWidth).attr("height", boxHeight).attr("rx", 6)
-        .attr("fill", "rgba(8,9,12,.96)").attr("stroke", "rgba(255,255,255,.12)");
-      box.append("text")
-        .attr("x", 11).attr("y", 20).attr("fill", "#d7dade")
-        .style("font", `11px ${FONT}`).text(formatDate(row.date));
-      SERIES.forEach((series, index) => {
-        box.append("text")
-          .attr("x", 11).attr("y", 42 + index * 19).attr("fill", series.color)
-          .style("font", `11px ${FONT}`).text(`${series.label}: ${formatUsd(row[series.key])}`);
-      });
-      if (yIndex) {
-        box.append("text")
-          .attr("x", 11).attr("y", 42 + SERIES.length * 19).attr("fill", "#a4a8ae")
-          .style("font", `11px ${FONT}`).text(`Index: ${formatIndex(row.indexPrice)}`);
+      const rowGroup = detail.append("g");
+      if (!isTotal) {
+        rowGroup.append("circle")
+          .attr("cx", componentX + 4).attr("cy", y - 1).attr("r", 4)
+          .attr("fill", row.color);
       }
+      rowGroup.append("text")
+        .attr("x", componentX + (isTotal ? 0 : 16)).attr("y", y + 3)
+        .attr("fill", "#e3e5e8").style("font", `${isTotal ? 500 : 400} 12px ${FONT}`)
+        .text(row.label);
+      rowGroup.append("text")
+        .attr("x", medianX).attr("y", y + 3).attr("text-anchor", "end")
+        .attr("fill", row.median < 0 ? "#f47a43" : "#d7dade")
+        .style("font", `${isTotal ? 500 : 400} 12px ${FONT}`)
+        .text(formatUsd(row.median));
+
+      const boxplot = rowGroup.append("g");
+      boxplot.append("line")
+        .attr("x1", distributionX(row.q10)).attr("x2", distributionX(row.q90))
+        .attr("y1", y).attr("y2", y).attr("stroke", row.color).attr("stroke-opacity", 0.8);
+      [row.q10, row.q90].forEach((value) => {
+        boxplot.append("line")
+          .attr("x1", distributionX(value)).attr("x2", distributionX(value))
+          .attr("y1", y - 4).attr("y2", y + 4).attr("stroke", row.color);
+      });
+      boxplot.append("rect")
+        .attr("x", distributionX(row.q25))
+        .attr("y", y - 7)
+        .attr("width", Math.max(2, distributionX(row.q75) - distributionX(row.q25)))
+        .attr("height", 14).attr("fill", row.color).attr("fill-opacity", 0.72);
+      boxplot.append("line")
+        .attr("x1", distributionX(row.median)).attr("x2", distributionX(row.median))
+        .attr("y1", y - 10).attr("y2", y + 10)
+        .attr("stroke", "#f3f4f6").attr("stroke-width", 1.2);
+      boxplot.append("title").text(
+        `10th ${formatUsd(row.q10)} · 25th ${formatUsd(row.q25)} · Median ${formatUsd(row.median)} · 75th ${formatUsd(row.q75)} · 90th ${formatUsd(row.q90)}`,
+      );
+
+      rowGroup.append("text")
+        .attr("x", shareX).attr("y", y + 3).attr("text-anchor", "middle")
+        .attr("fill", row.share < 0 ? "#f47a43" : "#d7dade")
+        .style("font", `${isTotal ? 500 : 400} 12px ${FONT}`)
+        .text(Number.isFinite(row.share) ? d3.format(".0%")(row.share) : "—");
+      rowGroup.append("text")
+        .attr("x", contributionX).attr("y", y + 3).attr("text-anchor", "middle")
+        .attr("fill", row.sum < 0 ? "#f47a43" : "#d7dade")
+        .style("font", `${isTotal ? 500 : 400} 12px ${FONT}`)
+        .text(formatUsd(row.sum));
+      rowGroup.append("text")
+        .attr("x", varianceX).attr("y", y + 3).attr("text-anchor", "middle")
+        .attr("fill", row.varianceShare < 0 ? "#f47a43" : "#d7dade")
+        .style("font", `${isTotal ? 500 : 400} 12px ${FONT}`)
+        .text(Number.isFinite(row.varianceShare) ? d3.format(".0%")(row.varianceShare) : "—");
+      rowGroup.append("text")
+        .attr("x", winX).attr("y", y + 3).attr("text-anchor", "middle")
+        .attr("fill", "#d7dade").style("font", `12px ${FONT}`)
+        .text(d3.format(".0%")(row.winRate));
+      rowGroup.append("text")
+        .attr("x", worstX).attr("y", y + 3).attr("text-anchor", "end")
+        .attr("fill", row.worst10Average < 0 ? "#f47a43" : "#d7dade")
+        .style("font", `12px ${FONT}`).text(formatUsd(row.worst10Average));
+      rowGroup.append("line")
+        .attr("x1", 0).attr("x2", innerWidth).attr("y1", y + 21).attr("y2", y + 21)
+        .attr("stroke", "rgba(255,255,255,.07)");
+    });
+
+    const footerY = rowStart + summaries.length * rowHeight + 2;
+    detail.append("text")
+      .attr("x", 0).attr("y", footerY)
+      .attr("fill", "#777c84").style("font", `10px ${FONT}`)
+      .text("IQR = middle 50% · whiskers = 10th–90th percentile · worst 10% = bottom-decile average");
+    detail.append("text")
+      .attr("x", innerWidth).attr("y", footerY).attr("text-anchor", "end")
+      .attr("fill", "#777c84").style("font", `10px ${FONT}`)
+      .text("% of total P&L = aggregate component contribution ÷ aggregate strategy P&L");
+    detail.append("text")
+      .attr("x", innerWidth).attr("y", footerY + 15).attr("text-anchor", "end")
+      .attr("fill", "#777c84").style("font", `10px ${FONT}`)
+      .text("Variance % = Cov(component P&L, strategy P&L) ÷ Var(strategy P&L)");
+  };
+
+  let brushBorders;
+  const updateBrushBorders = (selection) => {
+    brushBorders?.selectAll("*").remove();
+    if (!selection || !brushBorders) return;
+    const [fromX, toX] = selection;
+    for (const y of [0.5, overviewHeight - 0.5]) {
+      brushBorders.append("line")
+        .attr("x1", fromX).attr("x2", toX)
+        .attr("y1", y).attr("y2", y)
+        .attr("stroke", "#93c5fd")
+        .attr("stroke-opacity", 0.72)
+        .attr("stroke-width", 1);
+    }
+  };
+
+  const brush = d3.brushX()
+    .extent([[0, 0], [innerWidth, overviewHeight]])
+    .filter((event) => !event.ctrlKey && !event.button)
+    .on("brush", (event) => {
+      updateBrushBorders(event.selection);
+      if (!event.selection) {
+        drawDetail(null);
+        return;
+      }
+      const [from, to] = event.selection.map(xOverview.invert);
+      drawDetail(from <= to ? [from, to] : [to, from]);
     })
-    .on("mouseleave", () => hover.selectAll("*").remove());
+    .on("end", (event) => {
+      updateBrushBorders(event.selection);
+      if (!event.selection) {
+        brushedDomain = null;
+        drawDetail(null);
+        return;
+      }
+      const [from, to] = event.selection.map(xOverview.invert);
+      brushedDomain = from <= to ? [from, to] : [to, from];
+      drawDetail(brushedDomain);
+    });
+  const brushGroup = overview.append("g").attr("class", "brush").call(brush);
+  brushGroup.selectAll(".selection")
+    .attr("fill", "#93c5fd").attr("fill-opacity", 0.16)
+    .attr("stroke", "none");
+  brushGroup.selectAll(".handle")
+    .attr("fill", "transparent")
+    .attr("stroke", "none");
+  brushBorders = overview.append("g")
+    .attr("class", "brush-borders")
+    .attr("pointer-events", "none");
+  if (Array.isArray(brushedDomain) && brushedDomain.length === 2) {
+    const clamped = [
+      new Date(Math.max(+fullDateDomain[0], +brushedDomain[0])),
+      new Date(Math.min(+fullDateDomain[1], +brushedDomain[1])),
+    ];
+    if (+clamped[0] < +clamped[1]) {
+      brushedDomain = clamped;
+      brushGroup.call(brush.move, clamped.map(xOverview));
+    } else {
+      brushedDomain = null;
+    }
+  }
+  if (!brushedDomain) drawDetail(null);
 }
 
 onMounted(() => {
@@ -224,7 +449,10 @@ onMounted(() => {
   if (chartRef.value) resizeObserver.observe(chartRef.value);
 });
 onBeforeUnmount(() => resizeObserver?.disconnect());
-watch(() => [props.rows, props.showIndex], draw, { deep: true });
+watch(() => [props.rows, props.cycleRows], () => {
+  brushedDomain = null;
+  draw();
+});
 
 function exportPng({
   filename = "greek-pnl-attribution.png",
@@ -246,85 +474,23 @@ defineExpose({ exportPng });
 </script>
 
 <template>
-  <div class="greekPanel">
-    <div class="greekHeader">
-      <div>
-        <h2>Cumulative Greek attribution</h2>
-        <p>Daily contributions across the full backtest.</p>
-      </div>
-      <div class="overlayControl" role="group" aria-label="Chart overlays">
-        <span>Overlay</span>
-        <button
-          type="button"
-          :class="{ active: showIndex }"
-          :aria-pressed="showIndex"
-          @click="emit('update:showIndex', !showIndex)"
-        >Index</button>
-      </div>
-    </div>
-    <div ref="chartRef" class="greekChart"></div>
-  </div>
+  <div ref="chartRef" class="greekChart"></div>
 </template>
 
 <style scoped>
-.greekPanel {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  flex-direction: column;
-  padding: 2px 18px 10px;
-}
-.greekHeader {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  margin: 18px 36px 0 64px;
-}
-.greekHeader h2 {
-  margin: 0 0 4px;
-  color: #fff;
-  font-size: 18px;
-  font-weight: 650;
-}
-.greekHeader p {
-  margin: 0;
-  color: #8f949c;
-  font-size: 12px;
-}
-.overlayControl {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.overlayControl > span {
-  color: #8f949c;
-  font-size: 11px;
-}
-.overlayControl button {
-  height: 27px;
-  padding: 0 11px;
-  border: 1px solid rgba(255,255,255,.10);
-  border-radius: 5px;
-  background: rgba(255,255,255,.035);
-  color: #9ba0a7;
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-}
-.overlayControl button:hover,
-.overlayControl button.active {
-  border-color: rgba(255,255,255,.18);
-  background: rgba(255,255,255,.09);
-  color: #fff;
-}
 .greekChart {
   position: relative;
+  display: flex;
   flex: 1;
-  min-height: 500px;
+  min-height: 720px;
   min-width: 0;
+  overflow: hidden;
+  background: #0a0b0e;
 }
 .greekChart :deep(svg) {
   display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
 }
 </style>

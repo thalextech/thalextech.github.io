@@ -12,6 +12,24 @@ export const sampleStdDev = (values) => {
   return Math.sqrt(variance);
 };
 
+export const varianceContribution = (componentValues, totalValues) => {
+  const pairs = componentValues
+    .map((component, index) => [Number(component), Number(totalValues[index])])
+    .filter(([component, total]) => Number.isFinite(component) && Number.isFinite(total));
+  if (pairs.length < 2) return Number.NaN;
+  const componentMean = mean(pairs.map(([component]) => component));
+  const totalMean = mean(pairs.map(([, total]) => total));
+  let covarianceNumerator = 0;
+  let varianceNumerator = 0;
+  for (const [component, total] of pairs) {
+    covarianceNumerator += (component - componentMean) * (total - totalMean);
+    varianceNumerator += (total - totalMean) ** 2;
+  }
+  return varianceNumerator > 1e-12
+    ? covarianceNumerator / varianceNumerator
+    : Number.NaN;
+};
+
 export const normCdf = (value) =>
   0.5 * (1 + erf(Number(value) / Math.SQRT2));
 

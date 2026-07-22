@@ -71,6 +71,21 @@ export const runSingleInWorker = ({
   { onProgress },
 );
 
+export const runAttributionInWorker = ({
+  datasetKey,
+  loadRequest,
+  config,
+  onProgress,
+}) => requestWorker(
+  {
+    type: "run-attribution",
+    datasetKey,
+    loadRequest,
+    config,
+  },
+  { onProgress },
+);
+
 export const runSweepInWorker = ({
   datasetKey,
   loadRequest,

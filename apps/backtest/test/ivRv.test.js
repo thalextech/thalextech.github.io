@@ -68,6 +68,8 @@ test("forward alignment compares IV with RV realized over the following tenor", 
   const trailingFuture = trailing.find((row) => row.ts === 24 * HOUR_SECONDS);
   const forwardNow = forward.find((row) => row.ts === 0);
   assert.equal(forwardNow.rv, trailingFuture.rv);
+  assert.equal(forwardNow.ivDate.getTime(), 0);
+  assert.equal(forwardNow.rvDate.getTime(), 24 * HOUR_SECONDS * 1000);
 });
 
 test("aggregate IV/RV statistics use paired observations", () => {

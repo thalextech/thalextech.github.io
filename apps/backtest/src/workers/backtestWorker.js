@@ -1,4 +1,6 @@
 import {
+  buildCycleAttributionRows,
+  buildPortfolioAttributionTimeline,
   prepareBacktestData,
   runWeeklyStraddleBacktest,
 } from "../lib/weeklyStraddleBacktest.js";
@@ -9,6 +11,8 @@ const engine = createBacktestWorkerEngine({
   loadThalexHistory,
   prepareBacktestData,
   runWeeklyStraddleBacktest,
+  buildPortfolioAttributionTimeline,
+  buildCycleAttributionRows,
 });
 
 self.addEventListener("message", async ({ data }) => {
