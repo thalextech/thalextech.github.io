@@ -261,10 +261,10 @@ const closestByDelta = ({ rows, targetDelta, indexPrice }) => {
   return selected?.row || null;
 };
 
-const quantityForStrike = (config, strike) =>
+const quantityForSpot = (config, spot) =>
   config.sizingMode === "btc"
     ? Math.max(0, Number(config.btcQuantity) || 1)
-    : config.notionalUsd / strike;
+    : config.notionalUsd / spot;
 
 const selectLegs = ({ group, entryIndexPrice, config }) => {
   if (config.structure === "straddle") {
@@ -282,7 +282,7 @@ const selectLegs = ({ group, entryIndexPrice, config }) => {
       }
     }
     if (!selected) return null;
-    const qty = quantityForStrike(config, selected.call.strike);
+    const qty = quantityForSpot(config, entryIndexPrice);
     return {
       legs: [
         { quote: selected.call, quantity: -qty },
@@ -318,7 +318,9 @@ const selectLegs = ({ group, entryIndexPrice, config }) => {
   if (config.structure === "call") {
     if (!call) return null;
     return {
-      legs: [{ quote: call, quantity: -quantityForStrike(config, call.strike) }],
+      legs: [
+        { quote: call, quantity: -quantityForSpot(config, entryIndexPrice) },
+      ],
       sizingStrike: call.strike,
       selectionMetric: Math.abs(call.delta - targetDelta),
     };
@@ -326,14 +328,16 @@ const selectLegs = ({ group, entryIndexPrice, config }) => {
   if (config.structure === "put") {
     if (!put) return null;
     return {
-      legs: [{ quote: put, quantity: -quantityForStrike(config, put.strike) }],
+      legs: [
+        { quote: put, quantity: -quantityForSpot(config, entryIndexPrice) },
+      ],
       sizingStrike: put.strike,
       selectionMetric: Math.abs(put.delta + targetDelta),
     };
   }
   if (!call || !put) return null;
-  const callQty = -quantityForStrike(config, call.strike);
-  const putAbsQty = quantityForStrike(config, put.strike);
+  const callQty = -quantityForSpot(config, entryIndexPrice);
+  const putAbsQty = quantityForSpot(config, entryIndexPrice);
   return {
     legs: [
       { quote: call, quantity: callQty },
@@ -358,7 +362,7 @@ const selectCalendarLegs = ({ nearGroup, farGroup, entryIndexPrice, config }) =>
     }
   }
   if (!selected) return null;
-  const quantity = quantityForStrike(config, selected.nearCall.strike);
+  const quantity = quantityForSpot(config, entryIndexPrice);
   return {
     // Base orientation is the short calendar. The Side toggle reverses all legs.
     legs: [

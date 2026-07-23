@@ -3072,7 +3072,7 @@ onMounted(loadBacktest);
 
 .rvHeatmapSection {
   --heatmap-plot-left: max(84px, calc((100% - 1186px) / 2));
-  height: 480px;
+  height: 544px;
   position: relative;
 }
 
@@ -3112,7 +3112,7 @@ onMounted(loadBacktest);
 
 .rvHeatmapSection .rvHeatmapRange {
   position: absolute;
-  top: 52px;
+  top: 60px;
   left: var(--heatmap-plot-left);
   margin: 0;
   pointer-events: auto;

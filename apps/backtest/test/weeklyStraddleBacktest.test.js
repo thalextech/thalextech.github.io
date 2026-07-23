@@ -256,6 +256,18 @@ test("normalizeBacktestConfig applies defaults and coerces external input once",
   );
 });
 
+test("notional sizing uses entry spot instead of option strike", () => {
+  const fixture = buildParityFixture();
+  const result = runWeeklyStraddleBacktest(fixture);
+  const cycle = result.cycleSummary[0];
+  const expectedQuantity = fixture.config.notionalUsd / cycle.entryIndexPrice;
+
+  assert.notEqual(cycle.entryIndexPrice, cycle.strike);
+  assert.ok(cycle.legs.every(
+    (leg) => Math.abs(Math.abs(leg.quantity) - expectedQuantity) < 1e-12,
+  ));
+});
+
 test("weekly exit schedule chooses the next UTC occurrence after entry", () => {
   const friday20 = Date.UTC(2025, 5, 6, 20) / 1000;
   assert.equal(
