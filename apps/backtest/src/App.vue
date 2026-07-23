@@ -21,6 +21,9 @@ import {
 import { loadThalexHistory } from "./lib/thalexParquet.js";
 import {
   buildIvRvChartRows,
+  buildHourlyIvHeatmap,
+  buildHourlyIvRows,
+  buildHourlyIvWeekdayGroups,
   buildHourlyParkinsonRows,
   buildHourlyRvHeatmap,
   buildHourlyRvWeekdayGroups,
@@ -30,6 +33,10 @@ import {
 } from "./lib/ivRv.js";
 import { blackScholesPrice } from "./lib/optionPricing.js";
 import { computeZeroMtmContours } from "./lib/zeroMtmContours.js";
+import {
+  buildWeeklyPnlCsv,
+  downloadCsv,
+} from "./lib/weeklyPnlCsv.js";
 import {
   buildForwardVarianceRatioSeasonality,
   calculateVarianceRatioDashboard,
@@ -230,15 +237,23 @@ const ivRvAlignForward = ref(false);
 const ivRvRangeStart = ref(0);
 const ivRvRangeEnd = ref(100);
 const rvChartRef = ref(null);
+const ivChartRef = ref(null);
+const ivBoxplotRef = ref(null);
 const rvBoxplotRef = ref(null);
 const standardizedVrHeatmapRef = ref(null);
 const showHeatmapDataLabels = ref(false);
+const showIvHeatmapDataLabels = ref(false);
+const rvHeatmapMetric = ref("average");
+const ivHeatmapMetric = ref("average");
 const varianceRatioRef = ref(null);
 const serialAnchorHour = ref(8);
 const serialAnchorWeekday = ref(5);
 const rvBoxplotMonths = ref([...ALL_MONTHS]);
+const ivBoxplotMonths = ref([...ALL_MONTHS]);
 const rvRangeStart = ref(0);
 const rvRangeEnd = ref(100);
+const ivRangeStart = ref(0);
+const ivRangeEnd = ref(100);
 const IV_RV_TENORS = [7, 14, 30];
 const IV_RV_RESOLUTIONS = [1, 4, 8, 24];
 const fullIvRvRows = computed(() => buildIvRvChartRows({
@@ -287,6 +302,81 @@ const ivRvRangeLabel = computed(() => {
 });
 const ivRvStats = computed(() => summarizeIvRvRows(ivRvRows.value));
 const formatVol = (value) => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+const aggregateVol = (values, metric) => {
+  const sorted = values.filter(Number.isFinite).sort((first, second) => first - second);
+  if (!sorted.length) return Number.NaN;
+  if (metric !== "median") {
+    return sorted.reduce((sum, value) => sum + value, 0) / sorted.length;
+  }
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2
+    ? sorted[middle]
+    : (sorted[middle - 1] + sorted[middle]) / 2;
+};
+const ivHourlyRows = computed(() => buildHourlyIvRows(
+  ivRvSourceRows.value,
+  ivRvTenor.value,
+));
+const ivExtent = computed(() => ivHourlyRows.value.length
+  ? { min: ivHourlyRows.value[0].ts, max: ivHourlyRows.value.at(-1).ts }
+  : null);
+const ivSelectedRange = computed(() => {
+  const extent = ivExtent.value;
+  if (!extent) return null;
+  const span = extent.max - extent.min;
+  return {
+    start: extent.min + span * ivRangeStart.value / 100,
+    end: extent.min + span * ivRangeEnd.value / 100,
+  };
+});
+const ivFilteredRows = computed(() => {
+  const range = ivSelectedRange.value;
+  return range
+    ? ivHourlyRows.value.filter((row) => row.ts >= range.start && row.ts <= range.end)
+    : ivHourlyRows.value;
+});
+const ivRangeStartModel = computed({
+  get: () => ivRangeStart.value,
+  set: (value) => { ivRangeStart.value = Math.min(Number(value), ivRangeEnd.value - 0.1); },
+});
+const ivRangeEndModel = computed({
+  get: () => ivRangeEnd.value,
+  set: (value) => { ivRangeEnd.value = Math.max(Number(value), ivRangeStart.value + 0.1); },
+});
+const ivRangeStyle = computed(() => ({
+  "--range-start": `${ivRangeStart.value}%`,
+  "--range-end": `${ivRangeEnd.value}%`,
+}));
+const ivRangeLabel = computed(() => {
+  const range = ivSelectedRange.value;
+  return range ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}` : "No range";
+});
+const ivHeatmapCells = computed(() => buildHourlyIvHeatmap(ivFilteredRows.value, {
+  metric: ivHeatmapMetric.value,
+}));
+const ivMeasureLabel = computed(() => `${ivRvTenor.value}D constant-maturity IV`);
+const ivHeatmapMethodology = "Method: exact total-variance interpolation · open/open marks.";
+const ivBoxplotRows = computed(() => {
+  const selected = new Set((ivBoxplotMonths.value || []).map(Number));
+  if (selected.size === MONTH_OPTIONS.length) return ivFilteredRows.value;
+  return ivFilteredRows.value.filter((row) =>
+    row.date instanceof Date && selected.has(row.date.getUTCMonth()),
+  );
+});
+const ivBoxplotGroups = computed(() => buildHourlyIvWeekdayGroups(ivBoxplotRows.value));
+const ivWeekdayInsights = computed(() => summarizeRvWeekdayGroups(ivBoxplotGroups.value));
+const ivHeatmapInsights = computed(() => {
+  const rows = ivFilteredRows.value.filter((row) => Number.isFinite(row.iv));
+  const cells = ivHeatmapCells.value.filter((cell) => Number.isFinite(cell.average));
+  if (!rows.length || !cells.length) return null;
+  const ranked = cells.slice().sort((first, second) => first.average - second.average);
+  return {
+    average: aggregateVol(rows.map((row) => row.iv), ivHeatmapMetric.value),
+    lowest: ranked[0],
+    highest: ranked.at(-1),
+    count: rows.length,
+  };
+});
 const rvHourlyRows = computed(() => buildHourlyParkinsonRows(ivRvSourceRows.value));
 const rvExtent = computed(() => rvHourlyRows.value.length
   ? { min: rvHourlyRows.value[0].ts, max: rvHourlyRows.value.at(-1).ts }
@@ -331,7 +421,9 @@ const rvBoxplotRows = computed(() => {
   );
 });
 const rvBoxplotGroups = computed(() => buildHourlyRvWeekdayGroups(rvBoxplotRows.value));
-const rvHeatmapCells = computed(() => buildHourlyRvHeatmap(rvFilteredRows.value));
+const rvHeatmapCells = computed(() => buildHourlyRvHeatmap(rvFilteredRows.value, {
+  metric: rvHeatmapMetric.value,
+}));
 const rvFilteredSourceRows = computed(() =>
   ivRvSourceRows.value.filter((row) => {
     const range = rvSelectedRange.value;
@@ -623,7 +715,10 @@ const attributionRows = ref([]);
 const attributionCycleRows = ref([]);
 const attributionLoading = ref(false);
 const attributionError = ref("");
+const csvExporting = ref(false);
 let attributionResult = null;
+let attributionLoadPromise = null;
+let attributionLoadResult = null;
 let currentAttributionSequence = 0;
 const selectedCycle = ref(null);
 const cycleDetailRows = ref([]);
@@ -642,6 +737,8 @@ const clearAttribution = () => {
   attributionLoading.value = false;
   attributionError.value = "";
   attributionResult = null;
+  attributionLoadPromise = null;
+  attributionLoadResult = null;
 };
 
 const clearCycleDetail = ({ clearCache = false } = {}) => {
@@ -875,7 +972,7 @@ const switchMode = (nextMode) => {
     if (!result.value) scheduleBacktest();
   } else if (nextMode === "sweep" && previousMode !== "sweep") {
     void runSweep();
-  } else if (["iv-rv", "rv"].includes(nextMode) && !ivRvSourceRows.value.length) {
+  } else if (["iv-rv", "rv", "iv"].includes(nextMode) && !ivRvSourceRows.value.length) {
     loadIvRv();
   }
 };
@@ -886,6 +983,14 @@ const selectSingleView = (nextChartMode) => {
   selectedCycle.value = null;
   if (!result.value) scheduleBacktest();
   else if (nextChartMode === "greeks") void loadAttribution();
+  requestAnimationFrame(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
+};
+
+const STUDY_MODES = ["rv", "iv", "iv-rv"];
+const selectStudy = (nextMode) => {
+  switchMode(nextMode);
   requestAnimationFrame(() => {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   });
@@ -934,33 +1039,50 @@ const runCurrent = async () => {
   }
 };
 
-const loadAttribution = async () => {
+const loadAttribution = () => {
   const sourceResult = result.value;
-  if (!sourceResult || attributionLoading.value) return;
-  if (attributionResult === sourceResult && attributionRows.value.length) return;
+  if (!sourceResult) return Promise.resolve();
+  if (attributionResult === sourceResult && attributionRows.value.length) {
+    return Promise.resolve();
+  }
+  if (attributionLoadPromise && attributionLoadResult === sourceResult) {
+    return attributionLoadPromise;
+  }
+
   const attributionSequence = ++currentAttributionSequence;
   attributionLoading.value = true;
   attributionError.value = "";
-  try {
-    const response = await runAttributionInWorker({
-      datasetKey: loadedDataKey || requiredDataKey.value,
-      config: buildConfig(),
-    });
-    if (
-      attributionSequence !== currentAttributionSequence
-      || sourceResult !== result.value
-    ) return;
-    attributionRows.value = response.result?.timeline || [];
-    attributionCycleRows.value = response.result?.cycles || [];
-    attributionResult = sourceResult;
-  } catch (error) {
-    if (attributionSequence !== currentAttributionSequence) return;
-    attributionError.value = error?.message || "Unable to calculate PnL attribution";
-  } finally {
-    if (attributionSequence === currentAttributionSequence) {
-      attributionLoading.value = false;
+  attributionLoadResult = sourceResult;
+  const request = (async () => {
+    try {
+      const response = await runAttributionInWorker({
+        datasetKey: loadedDataKey || requiredDataKey.value,
+        config: buildConfig(),
+      });
+      if (
+        attributionSequence !== currentAttributionSequence
+        || sourceResult !== result.value
+      ) return;
+      attributionRows.value = response.result?.timeline || [];
+      attributionCycleRows.value = response.result?.cycles || [];
+      attributionResult = sourceResult;
+    } catch (error) {
+      if (attributionSequence !== currentAttributionSequence) return;
+      attributionError.value = error?.message || "Unable to calculate PnL attribution";
+    } finally {
+      if (attributionSequence === currentAttributionSequence) {
+        attributionLoading.value = false;
+      }
     }
-  }
+  })();
+  attributionLoadPromise = request;
+  request.finally(() => {
+    if (attributionLoadPromise === request) {
+      attributionLoadPromise = null;
+      attributionLoadResult = null;
+    }
+  });
+  return request;
 };
 
 const closeCycleDetail = () => {
@@ -1145,6 +1267,25 @@ watch(sweepDimension, () => {
   scheduleSweep();
 });
 
+async function handleExportCsv() {
+  const sourceResult = result.value;
+  if (!sourceResult?.cycleSummary?.length || csvExporting.value) return;
+  csvExporting.value = true;
+  try {
+    await loadAttribution();
+    if (sourceResult !== result.value) return;
+    const csv = buildWeeklyPnlCsv(
+      sourceResult.cycleSummary,
+      attributionResult === sourceResult ? attributionCycleRows.value : [],
+    );
+    if (!csv) return;
+    const date = new Date().toISOString().slice(0, 10);
+    downloadCsv({ csv, filename: `backtest-weekly-pnl-${date}.csv` });
+  } finally {
+    csvExporting.value = false;
+  }
+}
+
 function handleSavePng() {
   const date = new Date().toISOString().slice(0, 10);
 
@@ -1160,6 +1301,11 @@ function handleSavePng() {
 
   if (mode.value === "rv") {
     saveRvHeatmap(date);
+    return;
+  }
+
+  if (mode.value === "iv") {
+    saveIvHeatmap(date);
     return;
   }
 
@@ -1210,6 +1356,24 @@ function saveRvHeatmap(date = new Date().toISOString().slice(0, 10)) {
   if (!chart) return;
   chart.exportPng({
     filename: `rv-hourly-heatmap-${date}.png`,
+    scale: 4,
+    padding: 24,
+  });
+}
+
+function saveIvHeatmap(date = new Date().toISOString().slice(0, 10)) {
+  if (!ivHeatmapInsights.value || !ivChartRef.value) return;
+  ivChartRef.value.exportPng({
+    filename: `iv-${ivRvTenor.value}d-hourly-heatmap-${date}.png`,
+    scale: 4,
+    padding: 24,
+  });
+}
+
+function saveIvBoxplot(date = new Date().toISOString().slice(0, 10)) {
+  if (!ivBoxplotRef.value || !ivWeekdayInsights.value) return;
+  ivBoxplotRef.value.exportPng({
+    filename: `iv-${ivRvTenor.value}d-weekday-boxplot-${date}.png`,
     scale: 4,
     padding: 24,
   });
@@ -1463,10 +1627,10 @@ onMounted(loadBacktest);
       <div class="spacer"></div>
 
       <div class="segmented">
-        <div class="singleRunMenu">
+        <div class="viewMenu">
           <button
             type="button"
-            :class="['segment', 'singleRunTrigger', { active: mode === 'single' }]"
+            :class="['segment', 'viewMenuTrigger', { active: mode === 'single' }]"
             aria-haspopup="menu"
             @click="mode !== 'single' && switchMode('single')"
           >
@@ -1475,8 +1639,8 @@ onMounted(loadBacktest);
               <path d="M6 9l6 6 6-6" />
             </svg>
           </button>
-          <div class="singleRunDropdown" role="menu" aria-label="Single run view">
-            <div class="singleRunDropdownSurface">
+          <div class="viewDropdown" role="menu" aria-label="Single run view">
+            <div class="viewDropdownSurface">
               <button type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'weekly' }" @click="selectSingleView('weekly')">PnL by cycle</button>
               <button type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'greeks' }" @click="selectSingleView('greeks')">PnL attribution</button>
               <button v-if="ui.hedgeEnabled" type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'hedge' }" @click="selectSingleView('hedge')">Hedge performance</button>
@@ -1491,24 +1655,42 @@ onMounted(loadBacktest);
         >
           Sweep
         </button>
+        <div class="viewMenu">
+          <button
+            type="button"
+            :class="['segment', 'viewMenuTrigger', { active: STUDY_MODES.includes(mode) }]"
+            aria-haspopup="menu"
+            @click="!STUDY_MODES.includes(mode) && switchMode('rv')"
+          >
+            <span>Study</span>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+          <div class="viewDropdown" role="menu" aria-label="Study view">
+            <div class="viewDropdownSurface">
+              <button type="button" role="menuitem" :class="{ active: mode === 'rv' }" @click="selectStudy('rv')">RV</button>
+              <button type="button" role="menuitem" :class="{ active: mode === 'iv' }" @click="selectStudy('iv')">IV</button>
+              <button type="button" role="menuitem" :class="{ active: mode === 'iv-rv' }" @click="selectStudy('iv-rv')">IV-RV</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="topActions">
         <button
+          v-if="mode === 'single'"
+          class="saveButton topSaveButton"
           type="button"
-          :class="['segment', { active: mode === 'rv' }]"
-          @click="switchMode('rv')"
+          :disabled="csvExporting || attributionLoading || !cycleRows.length"
+          title="Export one attribution-ready row per closed cycle"
+          @click="handleExportCsv"
         >
-          RV
+          {{ csvExporting ? 'Preparing CSV…' : 'Export CSV' }}
         </button>
-        <button
-          type="button"
-          :class="['segment', { active: mode === 'iv-rv' }]"
-          @click="switchMode('iv-rv')"
-        >
-          RV - IV
+        <button class="saveButton topSaveButton" type="button" :disabled="mode === 'single' ? (cycleDetailLoading || attributionLoading) : mode === 'sweep' ? (sweepRunning || !sweepResults.length) : mode === 'rv' ? (ivRvLoading || !rvWeekdayInsights) : mode === 'iv' ? (ivRvLoading || !ivHeatmapInsights) : (ivRvLoading || !ivRvRows.length)" @click="handleSavePng">
+          Save PNG
         </button>
       </div>
-      <button class="saveButton topSaveButton" type="button" :disabled="mode === 'single' ? (cycleDetailLoading || attributionLoading) : mode === 'sweep' ? (sweepRunning || !sweepResults.length) : mode === 'rv' ? (ivRvLoading || !rvWeekdayInsights) : (ivRvLoading || !ivRvRows.length)" @click="handleSavePng">
-        Save PNG
-      </button>
     </div>
 
     <div class="main">
@@ -1568,6 +1750,20 @@ onMounted(loadBacktest);
           <div class="metric">
             <div class="metricValue">{{ rvWeekdayInsights.highest.label }}</div>
             <div class="metricLabel">HIGHEST MEDIAN · {{ formatVol(rvWeekdayInsights.highest.median) }}</div>
+          </div>
+        </template>
+        <template v-else-if="mode === 'iv' && ivHeatmapInsights">
+          <div class="metric">
+            <div class="metricValue">{{ formatVol(ivHeatmapInsights.average) }}</div>
+            <div class="metricLabel">{{ ivHeatmapMetric === 'median' ? 'MEDIAN' : 'AVERAGE' }} {{ ivMeasureLabel }}</div>
+          </div>
+          <div class="metric">
+            <div class="metricValue">{{ ivHeatmapInsights.lowest.weekdayLabel }} {{ String(ivHeatmapInsights.lowest.hour).padStart(2, '0') }}:00</div>
+            <div class="metricLabel">LOWEST BUCKET · {{ formatVol(ivHeatmapInsights.lowest.average) }}</div>
+          </div>
+          <div class="metric">
+            <div class="metricValue">{{ ivHeatmapInsights.highest.weekdayLabel }} {{ String(ivHeatmapInsights.highest.hour).padStart(2, '0') }}:00</div>
+            <div class="metricLabel">HIGHEST BUCKET · {{ formatVol(ivHeatmapInsights.highest.average) }}</div>
           </div>
         </template>
       </div>
@@ -1719,7 +1915,111 @@ onMounted(loadBacktest);
           />
         </div>
 
-        <div v-else class="sweepPanel rvCombinedPanel">
+        <div v-else-if="mode === 'iv'" class="sweepPanel rvCombinedPanel">
+          <div v-if="ivRvError" class="sweepEmpty">{{ ivRvError }}</div>
+          <div v-else class="rvCombinedCharts">
+            <section class="rvChartSection rvHeatmapSection">
+            <div class="rvSectionHeader">
+              <div class="sweepDimensionControl" role="group" aria-label="IV tenor">
+                <button
+                  v-for="tenor in IV_RV_TENORS"
+                  :key="tenor"
+                  type="button"
+                  :class="{ active: ivRvTenor === tenor }"
+                  @click="ivRvTenor = tenor"
+                >{{ tenor }}D</button>
+              </div>
+              <div class="ivRvRangeInline rvHeatmapRange">
+                <span class="ivRvRangeLabel">{{ ivRangeLabel }}</span>
+                <div class="ivRvRangeControl">
+                  <div class="dateRangeSlider" :style="ivRangeStyle">
+                    <span class="dateRangeTrack" aria-hidden="true"></span>
+                    <span class="dateRangeSelection" aria-hidden="true"></span>
+                    <input v-model.number="ivRangeStartModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="IV data period start" />
+                    <input v-model.number="ivRangeEndModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="IV data period end" />
+                  </div>
+                </div>
+              </div>
+              <div class="rvSectionActions">
+                <div class="sweepDimensionControl heatmapMetricControl" role="group" aria-label="IV heatmap metric">
+                  <button type="button" :class="{ active: ivHeatmapMetric === 'average' }" @click="ivHeatmapMetric = 'average'">Avg</button>
+                  <button type="button" :class="{ active: ivHeatmapMetric === 'median' }" @click="ivHeatmapMetric = 'median'">Median</button>
+                </div>
+                <button
+                  class="rvScreenshotButton rvDataLabelsButton"
+                  :class="{ active: showIvHeatmapDataLabels }"
+                  type="button"
+                  :aria-pressed="showIvHeatmapDataLabels"
+                  title="Show IV values in each heatmap cell"
+                  @click="showIvHeatmapDataLabels = !showIvHeatmapDataLabels"
+                >
+                  Data labels
+                </button>
+                <button class="rvScreenshotButton" type="button" :disabled="ivRvLoading || !ivHeatmapInsights" title="Save IV heatmap as PNG" @click="saveIvHeatmap()">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                    <circle cx="12" cy="13" r="4" />
+                  </svg>
+                  Screenshot
+                </button>
+              </div>
+            </div>
+            <WeekdayHourHeatmap
+              ref="ivChartRef"
+              :cells="ivHeatmapCells"
+              :loading="ivRvLoading"
+              :aggregate-label="ivHeatmapMetric === 'median' ? 'Median' : 'Mean'"
+              :legend-label="`${ivHeatmapMetric === 'median' ? 'Median' : 'Avg'} ${ivRvTenor}D IV`"
+              loading-message="Loading hourly implied volatility…"
+              empty-message="No hourly implied-volatility observations."
+              :aria-label="`${ivMeasureLabel} by weekday and UTC hour`"
+              gradient-id="iv-hourly-red-gradient"
+              :show-data-labels="showIvHeatmapDataLabels"
+              :chart-title="`BTC ${ivMeasureLabel.toUpperCase()} · WEEKDAY × UTC HOUR`"
+              :methodology="ivHeatmapMethodology"
+            />
+            </section>
+            <section class="rvChartSection rvBoxplotSection">
+              <div class="rvBoxplotToolbar">
+                <div class="rvSectionActions">
+                  <StyledSelectMenu
+                    v-model="ivBoxplotMonths"
+                    label="Months"
+                    :options="MONTH_OPTIONS"
+                    multiple
+                    all-selected-label="All"
+                  />
+                  <button
+                    class="rvScreenshotButton"
+                    type="button"
+                    :disabled="ivRvLoading || !ivWeekdayInsights"
+                    title="Save weekday IV boxplot as PNG"
+                    @click="saveIvBoxplot()"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                      <circle cx="12" cy="13" r="4" />
+                    </svg>
+                    Screenshot
+                  </button>
+                </div>
+              </div>
+              <WeekdayRvBoxplot
+                ref="ivBoxplotRef"
+                :groups="ivBoxplotGroups"
+                :loading="ivRvLoading"
+                :chart-title="`BTC ${ivMeasureLabel.toUpperCase()} · DISTRIBUTION BY WEEKDAY`"
+                methodology="Box = middle 50% · line = median · whiskers = 1.5× IQR · fill = mean IV"
+                :y-axis-label="ivMeasureLabel"
+                loading-message="Loading weekday implied volatility…"
+                empty-message="No weekday implied-volatility observations."
+                :aria-label="`${ivMeasureLabel} distribution by weekday`"
+              />
+            </section>
+          </div>
+        </div>
+
+        <div v-else-if="mode === 'rv'" class="sweepPanel rvCombinedPanel">
           <div v-if="ivRvError" class="sweepEmpty">{{ ivRvError }}</div>
           <div v-else class="rvCombinedCharts">
             <section class="rvChartSection rvHeatmapSection">
@@ -1736,6 +2036,10 @@ onMounted(loadBacktest);
                   </div>
                 </div>
                 <div class="rvSectionActions">
+                  <div class="sweepDimensionControl heatmapMetricControl" role="group" aria-label="RV heatmap metric">
+                    <button type="button" :class="{ active: rvHeatmapMetric === 'average' }" @click="rvHeatmapMetric = 'average'">Avg</button>
+                    <button type="button" :class="{ active: rvHeatmapMetric === 'median' }" @click="rvHeatmapMetric = 'median'">Median</button>
+                  </div>
                   <button
                     class="rvScreenshotButton rvDataLabelsButton"
                     :class="{ active: showHeatmapDataLabels }"
@@ -1759,10 +2063,12 @@ onMounted(loadBacktest);
                 ref="rvChartRef"
                 :cells="rvHeatmapCells"
                 :loading="ivRvLoading"
-                measure-label="Mean annualized hourly RV"
+                :aggregate-label="rvHeatmapMetric === 'median' ? 'Median' : 'Mean'"
+                :legend-label="rvHeatmapMetric === 'median' ? 'Median RV (ann.)' : 'Avg RV (ann.)'"
+                :measure-label="`${rvHeatmapMetric === 'median' ? 'Median' : 'Mean'} annualized hourly RV`"
                 :show-data-labels="showHeatmapDataLabels"
                 chart-title="HOURLY REALIZED VOLATILITY · WEEKDAY × UTC HOUR"
-                methodology="Method: mean annualized Parkinson RV within each UTC weekday/hour bucket; raw 1h observations."
+                :methodology="`Method: ${rvHeatmapMetric === 'median' ? 'median' : 'mean'} annualized Parkinson RV within each UTC weekday/hour bucket; raw 1h observations.`"
               />
             </section>
             <section class="rvChartSection rvBoxplotSection">
@@ -2585,28 +2891,28 @@ onMounted(loadBacktest);
   color: #e8eaed;
 }
 
-.singleRunMenu {
+.viewMenu {
   position: relative;
   height: 26px;
 }
 
-.singleRunTrigger {
+.viewMenuTrigger {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
-.singleRunTrigger svg {
+.viewMenuTrigger svg {
   color: #70767d;
   transition: transform 120ms ease;
 }
 
-.singleRunMenu:hover .singleRunTrigger svg,
-.singleRunMenu:focus-within .singleRunTrigger svg {
+.viewMenu:hover .viewMenuTrigger svg,
+.viewMenu:focus-within .viewMenuTrigger svg {
   transform: rotate(180deg);
 }
 
-.singleRunDropdown {
+.viewDropdown {
   position: absolute;
   top: 100%;
   right: 0;
@@ -2620,15 +2926,15 @@ onMounted(loadBacktest);
   z-index: 30;
 }
 
-.singleRunMenu:hover .singleRunDropdown,
-.singleRunMenu:focus-within .singleRunDropdown {
+.viewMenu:hover .viewDropdown,
+.viewMenu:focus-within .viewDropdown {
   visibility: visible;
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
 }
 
-.singleRunDropdownSurface {
+.viewDropdownSurface {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -2639,7 +2945,7 @@ onMounted(loadBacktest);
   box-shadow: 0 16px 38px rgba(0,0,0,0.58);
 }
 
-.singleRunDropdown button {
+.viewDropdown button {
   width: 100%;
   padding: 8px 10px;
   border: 0;
@@ -2653,14 +2959,14 @@ onMounted(loadBacktest);
   cursor: pointer;
 }
 
-.singleRunDropdown button:hover,
-.singleRunDropdown button:focus-visible {
+.viewDropdown button:hover,
+.viewDropdown button:focus-visible {
   background: rgba(255,255,255,0.06);
   color: #e8eaed;
   outline: none;
 }
 
-.singleRunDropdown button.active {
+.viewDropdown button.active {
   background: rgba(255,255,255,0.10);
   color: #e8eaed;
 }
@@ -2746,10 +3052,14 @@ onMounted(loadBacktest);
 .rvCombinedPanel :deep(.styledSelectCheck) { font-size: 12px; }
 
 .rvCombinedCharts {
+  --study-edge-x: 18px;
+  --study-edge-y: 16px;
+  --study-section-gap: 24px;
+  --study-divider-offset: 12px;
   height: 100%;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px 10px 18px;
+  padding: var(--study-edge-y) var(--study-edge-x) 28px;
 }
 
 .rvChartSection {
@@ -2761,37 +3071,63 @@ onMounted(loadBacktest);
 }
 
 .rvHeatmapSection {
+  --heatmap-plot-left: max(84px, calc((100% - 1186px) / 2));
   height: 480px;
+  position: relative;
 }
 
 .rvHeatmapSection :deep(.chartWrap) {
-  margin-top: 12px;
+  margin-top: 0;
 }
 
 .rvHeatmapSection .rvSectionHeader {
+  position: absolute;
+  z-index: 8;
+  top: 0;
+  right: 0;
+  left: 0;
+  min-height: 0;
+  padding: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  grid-template-columns: auto auto;
+  grid-template-rows: 30px 24px;
+  justify-content: end;
+  align-items: center;
+  column-gap: 7px;
+  row-gap: 8px;
+  pointer-events: none;
 }
 
-.rvHeatmapSection .rvHeatmapRange {
-  grid-column: 2;
+.rvHeatmapSection .rvSectionHeader > .sweepDimensionControl {
+  grid-column: 1;
+  grid-row: 1;
+  pointer-events: auto;
 }
 
 .rvHeatmapSection .rvSectionActions {
-  grid-column: 3;
-  justify-self: end;
+  grid-column: 2;
+  grid-row: 1;
+  pointer-events: auto;
+}
+
+.rvHeatmapSection .rvHeatmapRange {
+  position: absolute;
+  top: 52px;
+  left: var(--heatmap-plot-left);
+  margin: 0;
+  pointer-events: auto;
 }
 
 .rvBoxplotSection {
   height: 450px;
   position: relative;
-  margin-top: 8px;
+  margin-top: var(--study-section-gap);
 }
 
 .rvBoxplotSection::before {
   content: "";
   position: absolute;
-  top: -4px;
+  top: calc(-1 * var(--study-divider-offset));
   left: 0;
   right: 0;
   border-top: 1px solid rgba(255,255,255,0.08);
@@ -2800,23 +3136,23 @@ onMounted(loadBacktest);
 .rvBoxplotToolbar {
   position: absolute;
   z-index: 8;
-  top: 8px;
-  right: 12px;
+  top: 0;
+  right: 0;
 }
 
 .rvSecondaryAnalysisSection {
   height: auto;
   min-height: 750px;
   position: relative;
-  margin-top: 16px;
+  margin-top: var(--study-section-gap);
 }
 
 .rvSecondaryAnalysisSection::before {
   content: "";
   position: absolute;
-  top: -8px;
-  left: -10px;
-  right: -10px;
+  top: calc(-1 * var(--study-divider-offset));
+  left: 0;
+  right: 0;
   border-top: 1px solid rgba(255,255,255,0.08);
 }
 
@@ -2830,6 +3166,10 @@ onMounted(loadBacktest);
   padding: 0 12px;
 }
 
+.rvSecondaryHeatmapBlock {
+  position: relative;
+}
+
 .rvSecondaryHeatmap {
   display: flex;
   flex: 0 0 486px;
@@ -2839,22 +3179,26 @@ onMounted(loadBacktest);
 }
 
 .rvSecondaryHeatmapToolbar {
-  min-height: 30px;
+  position: absolute;
+  z-index: 8;
+  top: 0;
+  right: 0;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding: 0 12px 4px;
+  padding: 0;
 }
 
 .rvTermStructureBlock {
   position: relative;
-  margin-top: 16px;
+  margin-top: var(--study-section-gap);
 }
 
 .rvTermStructureBlock::before {
   content: "";
   position: absolute;
-  top: -8px;
+  top: calc(-1 * var(--study-divider-offset));
   left: 0;
   right: 0;
   border-top: 1px solid rgba(255,255,255,0.08);
@@ -2865,7 +3209,7 @@ onMounted(loadBacktest);
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding: 0 12px 4px;
+  padding: 0 0 8px;
 }
 
 .rvSectionActions {
@@ -3211,6 +3555,12 @@ onMounted(loadBacktest);
   box-sizing: border-box;
   padding: 0 12px;
   border-radius: 6px;
+}
+
+.topActions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .saveButton:disabled {

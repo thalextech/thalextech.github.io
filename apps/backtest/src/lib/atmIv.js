@@ -7,12 +7,25 @@ function interpolateAtZero(nodes) {
   const below = sorted.filter((node) => node.x <= 0).at(-1);
   const above = sorted.find((node) => node.x >= 0);
   if (!below || !above) return null;
-  if (below.x === above.x) return below.iv;
+  if (below.x === above.x) {
+    return {
+      iv: below.iv,
+      lowerStrike: below.strike,
+      upperStrike: above.strike,
+      quoteCount: below.quoteCount,
+    };
+  }
   const weight = (0 - below.x) / (above.x - below.x);
-  return below.iv + weight * (above.iv - below.iv);
+  return {
+    iv: below.iv + weight * (above.iv - below.iv),
+    lowerStrike: below.strike,
+    upperStrike: above.strike,
+    quoteCount: below.quoteCount + above.quoteCount,
+  };
 }
 
-function atmIvByExpiry(quotes, spot, ts) {
+export function buildAtmIvTermStructure({ quotes = [], spot, ts } = {}) {
+  if (![spot, ts].every(Number.isFinite) || spot <= 0) return [];
   const valuesByExpiryStrike = new Map();
   for (const quote of quotes || []) {
     const expirationTs = finite(quote?.expirationTs);
@@ -25,23 +38,45 @@ function atmIvByExpiry(quotes, spot, ts) {
     valuesByStrike.get(strike).push(iv);
   }
 
-  return [...valuesByExpiryStrike].map(([expirationTs, valuesByStrike]) => ({
-    expirationTs,
-    iv: interpolateAtZero([...valuesByStrike].map(([strike, values]) => ({
+  return [...valuesByExpiryStrike].map(([expirationTs, valuesByStrike]) => {
+    const atm = interpolateAtZero([...valuesByStrike].map(([strike, values]) => ({
       x: Math.log(strike / spot),
+      strike,
       iv: values.reduce((sum, value) => sum + value, 0) / values.length,
-    }))),
-  })).filter((row) => Number.isFinite(row.iv)).sort((a, b) => a.expirationTs - b.expirationTs);
+      quoteCount: values.length,
+    })));
+    return atm ? { expirationTs, ...atm } : null;
+  }).filter((row) => Number.isFinite(row?.iv))
+    .sort((a, b) => a.expirationTs - b.expirationTs);
 }
 
-export function interpolateAtmIv({ quotes = [], spot, ts, targetDays = 7 } = {}) {
+export function interpolateAtmIvWithDiagnostics({
+  quotes = [],
+  termStructure = null,
+  spot,
+  ts,
+  targetDays = 7,
+} = {}) {
   if (![spot, ts, targetDays].every(Number.isFinite) || spot <= 0 || targetDays <= 0) return null;
   const targetTs = ts + targetDays * DAY_SECONDS;
-  const expiries = atmIvByExpiry(quotes, spot, ts);
+  const expiries = Array.isArray(termStructure)
+    ? termStructure
+    : buildAtmIvTermStructure({ quotes, spot, ts });
   const below = expiries.filter((row) => row.expirationTs <= targetTs).at(-1);
   const above = expiries.find((row) => row.expirationTs >= targetTs);
   if (!below || !above) return null;
-  if (below.expirationTs === above.expirationTs) return below.iv;
+  if (below.expirationTs === above.expirationTs) {
+    return {
+      iv: below.iv,
+      lowerExpiryTs: below.expirationTs,
+      upperExpiryTs: above.expirationTs,
+      weight: 0,
+      lowerIv: below.iv,
+      upperIv: above.iv,
+      lowerQuoteCount: below.quoteCount,
+      upperQuoteCount: above.quoteCount,
+    };
+  }
 
   const belowDuration = below.expirationTs - ts;
   const aboveDuration = above.expirationTs - ts;
@@ -50,5 +85,18 @@ export function interpolateAtmIv({ quotes = [], spot, ts, targetDays = 7 } = {})
   const aboveVariance = above.iv ** 2 * aboveDuration;
   const weight = (targetDuration - belowDuration) / (aboveDuration - belowDuration);
   const targetVariance = belowVariance + weight * (aboveVariance - belowVariance);
-  return targetVariance >= 0 ? Math.sqrt(targetVariance / targetDuration) : null;
+  return targetVariance >= 0 ? {
+    iv: Math.sqrt(targetVariance / targetDuration),
+    lowerExpiryTs: below.expirationTs,
+    upperExpiryTs: above.expirationTs,
+    weight,
+    lowerIv: below.iv,
+    upperIv: above.iv,
+    lowerQuoteCount: below.quoteCount,
+    upperQuoteCount: above.quoteCount,
+  } : null;
+}
+
+export function interpolateAtmIv(args = {}) {
+  return interpolateAtmIvWithDiagnostics(args)?.iv ?? null;
 }

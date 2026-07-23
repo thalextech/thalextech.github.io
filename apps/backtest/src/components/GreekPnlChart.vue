@@ -29,6 +29,7 @@ const SERIES = [
   { key: "cumulativeTotalPnlUsd", cycleKey: "totalPnlUsd", label: "Total", color: TOTAL_COLOR, width: 2 },
 ];
 const TOTAL_SERIES = SERIES.at(-1);
+let selectedSeriesKey = TOTAL_SERIES.key;
 
 function normalizeRows(rows) {
   return (rows || [])
@@ -90,7 +91,6 @@ function addLegendItem(group, series, x) {
 function summarize(values) {
   const sorted = values.filter(Number.isFinite).sort(d3.ascending);
   if (!sorted.length) return null;
-  const worstCount = Math.max(1, Math.ceil(sorted.length * 0.1));
   return {
     median: d3.quantileSorted(sorted, 0.5),
     q10: d3.quantileSorted(sorted, 0.1),
@@ -98,9 +98,21 @@ function summarize(values) {
     q75: d3.quantileSorted(sorted, 0.75),
     q90: d3.quantileSorted(sorted, 0.9),
     winRate: d3.mean(sorted, (value) => value > 0 ? 1 : 0),
-    worst10Average: d3.mean(sorted.slice(0, worstCount)),
     sum: d3.sum(sorted),
   };
+}
+
+function sumComponent(cycles, key) {
+  return d3.sum(cycles, (row) => {
+    const value = Number(row[key]);
+    return Number.isFinite(value) ? value : 0;
+  });
+}
+
+function selectOverviewSeries(key) {
+  if (selectedSeriesKey === key) return;
+  selectedSeriesKey = key;
+  draw();
 }
 
 function draw() {
@@ -109,6 +121,7 @@ function draw() {
   host.innerHTML = "";
   const rows = normalizeRows(props.rows);
   const cycleRows = normalizeCycleRows(props.cycleRows);
+  const activeSeries = SERIES.find((series) => series.key === selectedSeriesKey) || TOTAL_SERIES;
   const bounds = host.getBoundingClientRect();
   const width = Math.max(860, bounds.width || 1200);
   const height = Math.max(720, bounds.height || window.innerHeight - bounds.top - 18);
@@ -130,7 +143,7 @@ function draw() {
     .attr("height", height)
     .attr("font-family", FONT)
     .attr("role", "img")
-    .attr("aria-label", "Strategy PnL and BTC index overview with brushed Greek contribution summary table");
+    .attr("aria-label", `${activeSeries.label} PnL and BTC index overview with brushed Greek contribution summary table`);
 
   if (!rows.length) {
     svg.append("text")
@@ -151,7 +164,7 @@ function draw() {
   const yOverview = d3.scaleLinear()
     .domain(paddedDomain([
       0,
-      ...rows.map((row) => row.cumulativeTotalPnlUsd),
+      ...rows.map((row) => row[activeSeries.key]),
     ]))
     .nice(5)
     .range([overviewHeight, 0]);
@@ -181,23 +194,23 @@ function draw() {
 
   const overviewLegend = overview.append("g")
     .attr("transform", "translate(260,-18)");
-  addLegendItem(overviewLegend, TOTAL_SERIES, 0);
+  const activeLegendWidth = addLegendItem(overviewLegend, activeSeries, 0);
   addLegendItem(overviewLegend, {
     key: "indexPrice",
     label: "BTC index",
     color: INDEX_COLOR,
     width: 1,
     dasharray: "3 4",
-  }, 94);
+  }, activeLegendWidth);
 
   const overviewLine = d3.line()
-    .defined((row) => Number.isFinite(row.cumulativeTotalPnlUsd))
+    .defined((row) => Number.isFinite(row[activeSeries.key]))
     .x((row) => xOverview(row.date))
-    .y((row) => yOverview(row.cumulativeTotalPnlUsd))
+    .y((row) => yOverview(row[activeSeries.key]))
     .curve(d3.curveStepAfter);
   overview.append("path")
     .datum(rows)
-    .attr("fill", "none").attr("stroke", TOTAL_COLOR).attr("stroke-width", 1.7)
+    .attr("fill", "none").attr("stroke", activeSeries.color).attr("stroke-width", activeSeries.width)
     .attr("d", overviewLine);
 
   const indexLine = d3.line()
@@ -226,7 +239,7 @@ function draw() {
     detail.append("text")
       .attr("x", 0).attr("y", -10)
       .attr("fill", "#8f949c").style("font", `11px ${FONT}`)
-      .text(`Distribution across ${selectedCycles.length} closed cycles · exits ${rangeText}`);
+      .text(`Distribution across ${selectedCycles.length} closed cycles · exits ${rangeText} · click a component to plot it above`);
 
     if (!selectedCycles.length) {
       detail.append("text")
@@ -238,6 +251,12 @@ function draw() {
 
     const totalOutcomes = selectedCycles.map((row) => Number(row.totalPnlUsd));
     const totalPnl = d3.sum(totalOutcomes);
+    const rankedCycles = selectedCycles
+      .filter((row) => Number.isFinite(Number(row.totalPnlUsd)))
+      .sort((first, second) => Number(first.totalPnlUsd) - Number(second.totalPnlUsd));
+    const extremeCount = Math.min(5, rankedCycles.length);
+    const worstCycles = rankedCycles.slice(0, extremeCount);
+    const bestCycles = rankedCycles.slice(-extremeCount);
     const summaries = SERIES.map((series) => {
       const outcomes = selectedCycles.map((row) => Number(row[series.cycleKey]));
       const stats = summarize(outcomes);
@@ -248,18 +267,21 @@ function draw() {
           ? 1
           : Math.abs(totalPnl) > 1e-9 ? stats.sum / totalPnl : Number.NaN,
         varianceShare: varianceContribution(outcomes, totalOutcomes),
+        worstExtremeSum: sumComponent(worstCycles, series.cycleKey),
+        bestExtremeSum: sumComponent(bestCycles, series.cycleKey),
       };
     });
     const componentX = 0;
-    const medianX = innerWidth * 0.19;
-    const distributionStart = innerWidth * 0.25;
-    const distributionEnd = innerWidth * 0.50;
+    const medianX = innerWidth * 0.16;
+    const distributionStart = innerWidth * 0.21;
+    const distributionEnd = innerWidth * 0.43;
     const distributionMid = (distributionStart + distributionEnd) / 2;
-    const contributionX = innerWidth * 0.59;
-    const shareX = innerWidth * 0.69;
-    const varianceX = innerWidth * 0.79;
-    const winX = innerWidth * 0.87;
-    const worstX = innerWidth - 4;
+    const contributionX = innerWidth * 0.51;
+    const shareX = innerWidth * 0.61;
+    const varianceX = innerWidth * 0.70;
+    const winX = innerWidth * 0.78;
+    const worstX = innerWidth * 0.90;
+    const bestX = innerWidth - 4;
     const headerY = 24;
     const rowStart = 49;
     const rowHeight = height < 840 ? 36 : height < 920 ? 39 : 43;
@@ -282,7 +304,10 @@ function draw() {
     header("Variance %", varianceX).append("title")
       .text("Covariance of component and total P&L divided by variance of total P&L");
     header("Win %", winX);
-    header("Worst 10% avg", worstX, "end");
+    header(`Worst ${extremeCount} sum`, worstX, "end").append("title")
+      .text(`Dollar sum for this component across the ${extremeCount} cycles with the lowest total strategy P&L`);
+    header(`Best ${extremeCount} sum`, bestX, "end").append("title")
+      .text(`Dollar sum for this component across the ${extremeCount} cycles with the highest total strategy P&L`);
     detail.append("line")
       .attr("x1", 0).attr("x2", innerWidth).attr("y1", 34).attr("y2", 34)
       .attr("stroke", "rgba(255,255,255,.13)");
@@ -299,7 +324,23 @@ function draw() {
           .attr("x1", 0).attr("x2", innerWidth).attr("y1", y - 22).attr("y2", y - 22)
           .attr("stroke", "rgba(255,255,255,.24)");
       }
-      const rowGroup = detail.append("g");
+      const isSelected = row.key === activeSeries.key;
+      const rowGroup = detail.append("g")
+        .attr("role", "button")
+        .attr("tabindex", 0)
+        .attr("aria-label", `Show cumulative ${row.label} P&L in the overview`)
+        .attr("aria-pressed", isSelected ? "true" : "false")
+        .style("cursor", "pointer")
+        .on("click", () => selectOverviewSeries(row.key))
+        .on("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          selectOverviewSeries(row.key);
+        });
+      rowGroup.append("rect")
+        .attr("x", -6).attr("y", y - 14)
+        .attr("width", innerWidth + 12).attr("height", 35).attr("rx", 4)
+        .attr("fill", isSelected ? "rgba(255,255,255,.055)" : "transparent");
       if (!isTotal) {
         rowGroup.append("circle")
           .attr("cx", componentX + 4).attr("cy", y - 1).attr("r", 4)
@@ -358,8 +399,12 @@ function draw() {
         .text(d3.format(".0%")(row.winRate));
       rowGroup.append("text")
         .attr("x", worstX).attr("y", y + 3).attr("text-anchor", "end")
-        .attr("fill", row.worst10Average < 0 ? "#f47a43" : "#d7dade")
-        .style("font", `12px ${FONT}`).text(formatUsd(row.worst10Average));
+        .attr("fill", row.worstExtremeSum < 0 ? "#f47a43" : "#d7dade")
+        .style("font", `12px ${FONT}`).text(formatUsd(row.worstExtremeSum));
+      rowGroup.append("text")
+        .attr("x", bestX).attr("y", y + 3).attr("text-anchor", "end")
+        .attr("fill", row.bestExtremeSum < 0 ? "#f47a43" : "#d7dade")
+        .style("font", `12px ${FONT}`).text(formatUsd(row.bestExtremeSum));
       rowGroup.append("line")
         .attr("x1", 0).attr("x2", innerWidth).attr("y1", y + 21).attr("y2", y + 21)
         .attr("stroke", "rgba(255,255,255,.07)");
@@ -369,7 +414,7 @@ function draw() {
     detail.append("text")
       .attr("x", 0).attr("y", footerY)
       .attr("fill", "#777c84").style("font", `10px ${FONT}`)
-      .text("IQR = middle 50% · whiskers = 10th–90th percentile · worst 10% = bottom-decile average");
+      .text(`IQR = middle 50% · whiskers = 10th–90th percentile · extremes = component sums across the same ${extremeCount} worst/best strategy cycles`);
     detail.append("text")
       .attr("x", innerWidth).attr("y", footerY).attr("text-anchor", "end")
       .attr("fill", "#777c84").style("font", `10px ${FONT}`)

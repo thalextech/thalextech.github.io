@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   addTrailingParkinsonRv,
+  buildHourlyIvHeatmap,
+  buildHourlyIvRows,
+  buildHourlyIvWeekdayGroups,
   buildHourlyParkinsonRows,
   buildHourlyRvHeatmap,
   buildHourlyRvWeekdayGroups,
@@ -14,20 +17,31 @@ import {
 test("decodes the compact IV/RV artifact by tenor", () => {
   const rows = decodeIvRvArtifact({
     schema: "thalex-iv-rv",
-    version: 1,
+    version: 2,
     tenors: [7, 14],
-    rows: [[100, 90, 110, 80, 100, 0.5, 0.6]],
+    rows: [[
+      100,
+      90,
+      110,
+      80,
+      100,
+      [
+        [0.5, 100 + 5 * 86_400, 100 + 9 * 86_400, 0.5, 0.45, 0.55, 4, 6],
+        [0.6, 100 + 12 * 86_400, 100 + 19 * 86_400, 2 / 7, 0.57, 0.65, 5, 5],
+      ],
+    ]],
   });
   assert.deepEqual(rows[0].ivByTenor, { 7: 0.5, 14: 0.6 });
   assert.equal(rows[0].high, 110);
+  assert.equal(rows[0].constantMaturityByTenor[7].weight, 0.5);
 });
 
 test("keeps missing artifact values out of the chart instead of coercing them to zero", () => {
   const rows = decodeIvRvArtifact({
     schema: "thalex-iv-rv",
-    version: 1,
+    version: 2,
     tenors: [7],
-    rows: [[100, 90, 110, 80, 100, null]],
+    rows: [[100, 90, 110, 80, 100, [null]]],
   });
   assert.equal(rows[0].ivByTenor[7], null);
   assert.equal(buildIvRvChartRows({ rows, tenorDays: 7 }).length, 0);
@@ -101,6 +115,51 @@ test("weekday RV groups use annualized single-hour observations", () => {
   const heatmap = buildHourlyRvHeatmap(rows);
   assert.equal(heatmap.length, 7 * 24);
   assert.equal(heatmap.find((cell) => cell.weekdayLabel === "Mon" && cell.hour === 8).values.length, 2);
+});
+
+test("weekday-hour IV heatmap uses the selected hourly ATM tenor", () => {
+  const startTs = Date.UTC(2026, 0, 5, 8) / 1000; // Monday
+  const source = Array.from({ length: 8 * 24 }, (_, index) => ({
+    ts: startTs + index * HOUR_SECONDS,
+    ivByTenor: {
+      7: 0.4 + index / 10_000,
+      14: 0.6 + index / 10_000,
+    },
+  }));
+  source[0].ivByTenor[14] = null;
+
+  const rows = buildHourlyIvRows(source, 14);
+  const heatmap = buildHourlyIvHeatmap(rows);
+  const groups = buildHourlyIvWeekdayGroups(rows);
+  const mondayAtEight = heatmap.find(
+    (cell) => cell.weekdayLabel === "Mon" && cell.hour === 8,
+  );
+
+  assert.equal(rows.length, source.length - 1);
+  assert.equal(heatmap.length, 7 * 24);
+  assert.equal(groups[0].label, "Mon");
+  assert.equal(groups.reduce((count, group) => count + group.values.length, 0), rows.length);
+  assert.equal(mondayAtEight.values.length, 1);
+  assert.ok(mondayAtEight.values.every((value) => value >= 0.6));
+});
+
+test("IV and RV heatmaps can display the cell median instead of its mean", () => {
+  const date = new Date(Date.UTC(2026, 0, 5, 8));
+  const ivRows = [0.4, 0.5, 1.5].map((iv) => ({ date, iv }));
+  const rvRows = [0.3, 0.4, 1.4].map((rv) => ({ date, rv }));
+  const ivAverage = buildHourlyIvHeatmap(ivRows).find((cell) => cell.values.length);
+  const ivMedian = buildHourlyIvHeatmap(ivRows, { metric: "median" })
+    .find((cell) => cell.values.length);
+  const rvAverage = buildHourlyRvHeatmap(rvRows).find((cell) => cell.values.length);
+  const rvMedian = buildHourlyRvHeatmap(rvRows, { metric: "median" })
+    .find((cell) => cell.values.length);
+
+  assert.ok(Math.abs(ivAverage.average - 0.8) < 1e-12);
+  assert.equal(ivMedian.average, 0.5);
+  assert.ok(Math.abs(ivMedian.mean - 0.8) < 1e-12);
+  assert.equal(ivMedian.median, 0.5);
+  assert.ok(Math.abs(rvAverage.average - 0.7) < 1e-12);
+  assert.equal(rvMedian.average, 0.4);
 });
 
 test("RV heatmap can winsorize period-wide outliers before averaging cells", () => {

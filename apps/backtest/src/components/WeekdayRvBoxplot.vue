@@ -13,6 +13,21 @@ import {
 const props = defineProps({
   groups: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
+  chartTitle: {
+    type: String,
+    default: "HOURLY REALIZED VOLATILITY · DISTRIBUTION BY WEEKDAY",
+  },
+  methodology: {
+    type: String,
+    default: "Box = middle 50% · line = median · whiskers = 1.5× IQR · fill = mean RV",
+  },
+  yAxisLabel: { type: String, default: "Annualized hourly RV" },
+  loadingMessage: { type: String, default: "Loading weekday realized volatility…" },
+  emptyMessage: { type: String, default: "No weekday realized-volatility observations." },
+  ariaLabel: {
+    type: String,
+    default: "Hourly realized volatility distribution by weekday",
+  },
 });
 
 const svgRef = ref(null);
@@ -103,7 +118,7 @@ function render() {
       .attr("text-anchor", "middle")
       .attr("fill", "#666c73")
       .style("font", `13px ${font}`)
-      .text(props.loading ? "Loading weekday realized volatility…" : "No weekday realized-volatility observations.");
+      .text(props.loading ? props.loadingMessage : props.emptyMessage);
     return;
   }
 
@@ -128,13 +143,13 @@ function render() {
     .attr("fill", "#777d84")
     .attr("letter-spacing", "1px")
     .style("font", `${RV_CHART_TITLE_FONT_SIZE}px ${font}`)
-    .text("HOURLY REALIZED VOLATILITY · DISTRIBUTION BY WEEKDAY");
+    .text(props.chartTitle);
   svg.append("text")
     .attr("x", margin.left)
     .attr("y", 40)
     .attr("fill", "#9aa0a6")
     .style("font", `${RV_CHART_DESCRIPTION_FONT_SIZE}px ${font}`)
-    .text("Box = middle 50% · line = median · whiskers = 1.5× IQR · fill = mean RV");
+    .text(props.methodology);
 
   const chart = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
   chart.append("g")
@@ -153,7 +168,7 @@ function render() {
     .attr("text-anchor", "middle")
     .attr("fill", RV_AXIS_COLOR)
     .style("font", `${RV_AXIS_FONT_SIZE}px ${font}`)
-    .text("Annualized hourly RV");
+    .text(props.yAxisLabel);
 
   const averageExtent = d3.extent(rows, (row) => row.average);
   const fill = averageExtent[0] === averageExtent[1]
@@ -210,7 +225,15 @@ function render() {
     .on("mouseleave", () => { if (tooltipRef.value) tooltipRef.value.hidden = true; });
 }
 
-watch(() => [props.groups, props.loading], render, { deep: true });
+watch(() => [
+  props.groups,
+  props.loading,
+  props.chartTitle,
+  props.methodology,
+  props.yAxisLabel,
+  props.loadingMessage,
+  props.emptyMessage,
+], render, { deep: true });
 onMounted(() => {
   render();
   resizeObserver = new ResizeObserver(render);
@@ -221,7 +244,7 @@ onBeforeUnmount(() => resizeObserver?.disconnect());
 
 <template>
   <div class="boxplotWrap">
-    <svg ref="svgRef" class="boxplotSvg" role="img" aria-label="Hourly realized volatility distribution by weekday"></svg>
+    <svg ref="svgRef" class="boxplotSvg" role="img" :aria-label="ariaLabel"></svg>
     <div ref="tooltipRef" class="chartTooltip" hidden></div>
   </div>
 </template>

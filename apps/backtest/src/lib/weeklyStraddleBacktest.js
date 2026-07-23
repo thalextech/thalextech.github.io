@@ -534,6 +534,7 @@ const buildEntryPlan = ({
         exitWeekday: config.exitWeekday,
         exitHourUtc: config.exitHourUtc,
         structure: config.structure,
+        longOption: config.longOption,
         targetDelta: config.targetDelta,
         entryTime,
         entryTs: entry.entryTs,
@@ -863,8 +864,9 @@ export const buildCycleAttributionRows = (cycleSummary = []) =>
     ))
     .map((cycle) => {
       const netDeltaPnlUsd = Number(cycle.greekPnl.netDelta) || 0;
-      const gammaThetaPnlUsd = (Number(cycle.greekPnl.gamma) || 0)
-        + (Number(cycle.greekPnl.theta) || 0);
+      const gammaPnlUsd = Number(cycle.greekPnl.gamma) || 0;
+      const thetaPnlUsd = Number(cycle.greekPnl.theta) || 0;
+      const gammaThetaPnlUsd = gammaPnlUsd + thetaPnlUsd;
       const vegaPnlUsd = Number(cycle.greekPnl.vega) || 0;
       const vannaPnlUsd = Number(cycle.greekPnl.vanna) || 0;
       const volgaPnlUsd = Number(cycle.greekPnl.volga) || 0;
@@ -877,11 +879,15 @@ export const buildCycleAttributionRows = (cycleSummary = []) =>
         exitTs: Number(cycle.exitTs),
         totalPnlUsd,
         netDeltaPnlUsd,
+        gammaPnlUsd,
+        thetaPnlUsd,
         gammaThetaPnlUsd,
         vegaPnlUsd,
         vannaPnlUsd,
         volgaPnlUsd,
         residualPnlUsd,
+        attributionSteps: cycle.attributionSteps,
+        meanAttributionIntervalHours: cycle.meanAttributionIntervalHours,
       };
     })
     .sort((first, second) => first.exitTs - second.exitTs);
@@ -1071,16 +1077,21 @@ const buildCycleSummary = ({
   let endingEquityUsd = 0;
   return entryPlan.map((plan) => {
     const settlementIndexPrice = indexMap.get(plan.exitTs)?.indexPrice ?? Number.NaN;
-    const legExitValues = plan.legs.map((leg) => {
+    const legs = plan.legs.map((leg) => {
       const expiresAtExit = leg.expirationTs === plan.exitTs;
       const payoff = leg.optionType === "C"
         ? Math.max(settlementIndexPrice - leg.strike, 0)
         : Math.max(leg.strike - settlementIndexPrice, 0);
       const quote = quoteAt(quoteMap, plan.exitTs, leg.instrumentId);
-      return expiresAtExit ? payoff : quote?.markPrice ?? Number.NaN;
+      return {
+        ...leg,
+        exitPrice: expiresAtExit ? payoff : quote?.markPrice ?? Number.NaN,
+        exitImpliedVol: expiresAtExit ? Number.NaN : quote?.impliedVol ?? Number.NaN,
+        exitDelta: expiresAtExit ? Number.NaN : quote?.delta ?? Number.NaN,
+      };
     });
-    const optionSettlementValueUsd = plan.legs.reduce(
-      (value, leg, index) => value + leg.quantity * legExitValues[index],
+    const optionSettlementValueUsd = legs.reduce(
+      (value, leg) => value + leg.quantity * leg.exitPrice,
       0,
     );
     const shortOptionPnlUsd =
@@ -1090,12 +1101,16 @@ const buildCycleSummary = ({
     const greekAttribution = greekAttributionByCycle?.get(plan.cycle) || {};
     const cyclePnlUsd = shortOptionPnlUsd + hedgePnlUsd;
     const closed = Number.isFinite(settlementIndexPrice)
-      && legExitValues.every(Number.isFinite)
+      && legs.every((leg) => Number.isFinite(leg.exitPrice))
       && Number.isFinite(cyclePnlUsd);
     if (closed) endingEquityUsd += cyclePnlUsd;
     return {
       ...plan,
+      legs,
       exitIndexPrice: settlementIndexPrice,
+      exitStructureMark: legs.reduce((total, leg) => total + leg.exitPrice, 0),
+      entryOptionMarketValueUsd: -plan.entryOptionCashflowUsd,
+      exitOptionMarketValueUsd: optionSettlementValueUsd,
       holdingPeriodDays: (plan.exitTs - plan.entryTs) / 86_400,
       shortOptionPnlUsd,
       hedgePnlUsd,

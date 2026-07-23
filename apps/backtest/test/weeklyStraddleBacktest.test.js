@@ -578,6 +578,8 @@ test("cycle attribution rows expose compact reconciled component outcomes", () =
         volga: 2,
         residual: 999,
       },
+      attributionSteps: 10,
+      meanAttributionIntervalHours: 6,
     },
     {
       cycle: 3,
@@ -595,11 +597,15 @@ test("cycle attribution rows expose compact reconciled component outcomes", () =
     exitTs: 20,
     totalPnlUsd: 15,
     netDeltaPnlUsd: 2,
+    gammaPnlUsd: 3,
+    thetaPnlUsd: 4,
     gammaThetaPnlUsd: 7,
     vegaPnlUsd: 1,
     vannaPnlUsd: -1,
     volgaPnlUsd: 2,
     residualPnlUsd: 4,
+    attributionSteps: 10,
+    meanAttributionIntervalHours: 6,
   }]);
 });
 
@@ -723,6 +729,23 @@ test("batch runs match independent runs across entry hours", () => {
   const expectedSampledVol = Math.sqrt(sampledVariance / (7 / 365));
   assert.ok(Math.abs(selectedPlan.sampledRealizedVol - expectedSampledVol) < 1e-12);
   assert.ok(Math.abs(batch[0].summary.meanSampledRealizedVol - expectedSampledVol) < 1e-12);
+
+  const earlyExit = runWeeklyStraddleBacktest({
+    preparedData,
+    config: {
+      ...configs[0],
+      exitMode: "after_days",
+      holdToExpiry: false,
+      exitHoldDays: 2,
+    },
+  }).cycleSummary[0];
+  assert.ok(earlyExit.legs.every((leg) => Number.isFinite(leg.exitPrice)));
+  assert.ok(earlyExit.legs.every((leg) => leg.exitImpliedVol === 0.55));
+  assert.ok(earlyExit.legs.every((leg) => Number.isFinite(leg.exitDelta)));
+  assert.equal(
+    earlyExit.exitOptionMarketValueUsd,
+    earlyExit.legs.reduce((value, leg) => value + leg.quantity * leg.exitPrice, 0),
+  );
 
   const unhedged = runWeeklyStraddleBacktest({
     preparedData,

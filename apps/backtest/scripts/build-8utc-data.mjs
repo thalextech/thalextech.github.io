@@ -6,7 +6,10 @@ import {
   OPTION_PRICING_DAYS_PER_YEAR,
   PRECOMPUTED_DELTA_SCALE,
 } from "../src/lib/optionRisk.js";
-import { interpolateAtmIv } from "../src/lib/atmIv.js";
+import {
+  buildAtmIvTermStructure,
+  interpolateAtmIvWithDiagnostics,
+} from "../src/lib/atmIv.js";
 
 const ARTIFACT_VERSION = 3;
 const ARTIFACT_SCHEMA = "thalex-option-backtest";
@@ -208,18 +211,19 @@ const instrumentIdByName = new Map(
   instruments.map((instrument, instrumentId) => [instrument.name, instrumentId]),
 );
 
-const interpolatedAtmIv = (quotes, spot, ts, targetDays) => {
+const atmTermStructure = (quotes, spot, ts) => {
   const surfaceQuotes = [];
-  for (const [, instrumentName, , ivOpen, , ivClose] of quotes || []) {
+  for (const [, instrumentName, , ivOpen] of quotes || []) {
     const instrument = instrumentByName.get(instrumentName);
     if (!instrument || instrument.expirationTs <= ts) continue;
     surfaceQuotes.push({
       expirationTs: instrument.expirationTs,
       strike: instrument.strike,
-      iv: Number.isFinite(ivClose) ? ivClose : ivOpen,
+      // The index and mark rows are both timestamped at the beginning of the hour.
+      iv: ivOpen,
     });
   }
-  return interpolateAtmIv({ quotes: surfaceQuotes, spot, ts, targetDays });
+  return buildAtmIvTermStructure({ quotes: surfaceQuotes, spot, ts });
 };
 
 const quotesByTs = new Map();
@@ -230,29 +234,67 @@ for (const hourlyRows of quoteRowsByHour.values()) {
     quotesByTs.get(ts).push(quote);
   }
 }
-const ivRvRows = [...indexOhlcByTs.values()]
-  .sort((a, b) => a.ts - b.ts)
-  .map((row) => [
+const indexRows = [...indexOhlcByTs.values()].sort((a, b) => a.ts - b.ts);
+const termStructureByTs = new Map(indexRows.map((row) => [
+  row.ts,
+  atmTermStructure(quotesByTs.get(row.ts), row.open, row.ts),
+]));
+const compactConstantMaturity = (row) => row ? [
+  row.iv,
+  row.lowerExpiryTs,
+  row.upperExpiryTs,
+  row.weight,
+  row.lowerIv,
+  row.upperIv,
+  row.lowerQuoteCount,
+  row.upperQuoteCount,
+] : null;
+const ivRvRows = indexRows.map((row) => {
+  const termStructure = termStructureByTs.get(row.ts) || [];
+  const constantMaturity = IV_RV_TENORS.map((tenor) =>
+    compactConstantMaturity(interpolateAtmIvWithDiagnostics({
+      termStructure,
+      spot: row.open,
+      ts: row.ts,
+      targetDays: tenor,
+    }))
+  );
+  return [
     row.ts,
     row.open,
     row.high,
     row.low,
     row.close,
-    ...IV_RV_TENORS.map((tenor) => interpolatedAtmIv(quotesByTs.get(row.ts), row.open, row.ts, tenor)),
-  ]);
+    constantMaturity,
+  ];
+});
 await fs.writeFile(
   path.join(RUNTIME_DATA_DIR, IV_RV_FILENAME),
   JSON.stringify({
     schema: "thalex-iv-rv",
-    version: 1,
+    version: 2,
     resolutionSeconds: 3_600,
     tenors: IV_RV_TENORS,
+    timestampBasis: {
+      index: "open",
+      optionIv: "open",
+    },
     ivInterpolation: {
       strike: "linear-log-moneyness",
       maturity: "linear-total-variance",
       requiresBracketingNodes: true,
     },
-    fields: ["ts", "open", "high", "low", "close", ...IV_RV_TENORS.map((tenor) => `iv${tenor}`)],
+    fields: ["ts", "open", "high", "low", "close", "constantMaturity"],
+    constantMaturityFields: [
+      "iv",
+      "lowerExpiryTs",
+      "upperExpiryTs",
+      "weight",
+      "lowerIv",
+      "upperIv",
+      "lowerQuoteCount",
+      "upperQuoteCount",
+    ],
     rows: ivRvRows,
   }),
 );

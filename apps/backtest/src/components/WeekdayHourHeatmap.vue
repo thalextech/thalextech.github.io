@@ -15,6 +15,7 @@ const props = defineProps({
   cells: { type: Array, default: () => [] },
   loading: { type: Boolean, default: false },
   measureLabel: { type: String, default: "Mean annualized hourly RV" },
+  aggregateLabel: { type: String, default: "Mean" },
   legendLabel: { type: String, default: "Avg RV (ann.)" },
   loadingMessage: { type: String, default: "Loading hourly realized volatility…" },
   emptyMessage: { type: String, default: "No hourly realized-volatility observations." },
@@ -70,12 +71,15 @@ function formatValue(value, decimals = props.valueDecimals, showPositiveSign = t
 function aggregateTooltip(row) {
   if (props.tooltipFormatter) return props.tooltipFormatter(row);
   const values = (row.values || []).filter(Number.isFinite).sort(d3.ascending);
-  const median = d3.quantileSorted(values, 0.5);
+  const mean = Number.isFinite(row.mean) ? row.mean : d3.mean(values);
+  const median = Number.isFinite(row.median) ? row.median : d3.quantileSorted(values, 0.5);
   const deviation = d3.deviation(values);
   return [
     `${row.weekdayLabel} ${String(row.hour).padStart(2, "0")}:00 UTC`,
-    `Mean  ${formatValue(row.average)}`,
-    `Median  ${formatValue(median)}`,
+    `${props.aggregateLabel}  ${formatValue(row.average)}`,
+    ...(props.aggregateLabel === "Median"
+      ? [`Mean  ${formatValue(mean)}`]
+      : [`Median  ${formatValue(median)}`]),
     `Min / max  ${formatValue(values[0])} / ${formatValue(values.at(-1))}`,
     `Std dev  ${Number.isFinite(deviation) ? formatValue(deviation, props.valueDecimals, false) : "—"}`,
     `Observations  ${values.length.toLocaleString()}`,
@@ -231,6 +235,7 @@ watch(() => [
   props.cells,
   props.loading,
   props.measureLabel,
+  props.aggregateLabel,
   props.legendLabel,
   props.colorMode,
   props.divergingCenter,

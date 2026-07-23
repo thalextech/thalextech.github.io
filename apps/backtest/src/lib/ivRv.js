@@ -4,7 +4,7 @@ export const SECONDS_PER_YEAR = 365.25 * DAY_SECONDS;
 
 const DATA_FILENAME = "prepared_iv_rv_1h.json";
 const DATA_SCHEMA = "thalex-iv-rv";
-const DATA_VERSION = 1;
+const DATA_VERSION = 2;
 
 const finite = (value) => {
   if (value == null || value === "") return null;
@@ -18,15 +18,46 @@ export function decodeIvRvArtifact(payload) {
   }
 
   const tenors = (payload.tenors || []).map(Number);
+  const decodeConstantMaturity = (values) => {
+    if (!Array.isArray(values)) return null;
+    const [
+      iv,
+      lowerExpiryTs,
+      upperExpiryTs,
+      weight,
+      lowerIv,
+      upperIv,
+      lowerQuoteCount,
+      upperQuoteCount,
+    ] = values;
+    return {
+      iv: finite(iv),
+      lowerExpiryTs: finite(lowerExpiryTs),
+      upperExpiryTs: finite(upperExpiryTs),
+      weight: finite(weight),
+      lowerIv: finite(lowerIv),
+      upperIv: finite(upperIv),
+      lowerQuoteCount: finite(lowerQuoteCount),
+      upperQuoteCount: finite(upperQuoteCount),
+    };
+  };
   return (payload.rows || []).map((values) => {
-    const [ts, open, high, low, close, ...ivs] = values;
+    const [ts, open, high, low, close, constantMaturity] = values;
+    const constantMaturityByTenor = Object.fromEntries(tenors.map((tenor, index) => [
+      tenor,
+      decodeConstantMaturity(constantMaturity?.[index]),
+    ]));
     return {
       ts: Number(ts),
       open: finite(open),
       high: finite(high),
       low: finite(low),
       close: finite(close),
-      ivByTenor: Object.fromEntries(tenors.map((tenor, index) => [tenor, finite(ivs[index])])),
+      ivByTenor: Object.fromEntries(tenors.map((tenor) => [
+        tenor,
+        finite(constantMaturityByTenor[tenor]?.iv),
+      ])),
+      constantMaturityByTenor,
     };
   }).filter((row) => Number.isFinite(row.ts));
 }
@@ -150,11 +181,35 @@ export function buildHourlyParkinsonRows(rows = []) {
   });
 }
 
-export function buildHourlyRvWeekdayGroups(rows = []) {
+export function buildHourlyIvRows(rows = [], tenorDays = 7) {
+  return rows.map((row) => {
+    if (!Number.isFinite(row?.ts)) return null;
+    const constantMaturity = row.constantMaturityByTenor?.[tenorDays] || null;
+    const iv = finite(constantMaturity?.iv ?? row.ivByTenor?.[tenorDays]);
+    if (!Number.isFinite(iv)) return null;
+    return {
+      ts: row.ts,
+      date: new Date(row.ts * 1000),
+      iv,
+      lowerDteDays: Number.isFinite(constantMaturity?.lowerExpiryTs)
+        ? (constantMaturity.lowerExpiryTs - row.ts) / DAY_SECONDS
+        : null,
+      upperDteDays: Number.isFinite(constantMaturity?.upperExpiryTs)
+        ? (constantMaturity.upperExpiryTs - row.ts) / DAY_SECONDS
+        : null,
+      interpolationWeight: finite(constantMaturity?.weight),
+      lowerQuoteCount: finite(constantMaturity?.lowerQuoteCount),
+      upperQuoteCount: finite(constantMaturity?.upperQuoteCount),
+    };
+  }).filter(Boolean);
+}
+
+function buildHourlyWeekdayGroups(rows, valueKey) {
   const valuesByWeekday = new Map(WEEKDAYS.map(({ value }) => [value, []]));
   for (const row of rows) {
-    if (!Number.isFinite(row?.rv) || !(row.date instanceof Date)) continue;
-    valuesByWeekday.get(row.date.getUTCDay())?.push(row.rv);
+    const value = row?.[valueKey];
+    if (!Number.isFinite(value) || !(row.date instanceof Date)) continue;
+    valuesByWeekday.get(row.date.getUTCDay())?.push(value);
   }
   return WEEKDAYS.map(({ value, label }) => ({
     key: value,
@@ -163,28 +218,46 @@ export function buildHourlyRvWeekdayGroups(rows = []) {
   }));
 }
 
-function buildWeekdayHourHeatmap(rows, valueForRow, dateForRow) {
+export function buildHourlyRvWeekdayGroups(rows = []) {
+  return buildHourlyWeekdayGroups(rows, "rv");
+}
+
+export function buildHourlyIvWeekdayGroups(rows = []) {
+  return buildHourlyWeekdayGroups(rows, "iv");
+}
+
+function buildWeekdayHourHeatmap(rows, valueForRow, dateForRow, metric = "average") {
   const valuesByCell = new Map();
+  const observationsByCell = new Map();
   for (const row of rows) {
     const value = valueForRow(row);
     const date = dateForRow(row);
     if (!Number.isFinite(value) || !(date instanceof Date) || !Number.isFinite(date.getTime())) continue;
     const key = `${date.getUTCDay()}-${date.getUTCHours()}`;
     if (!valuesByCell.has(key)) valuesByCell.set(key, []);
+    if (!observationsByCell.has(key)) observationsByCell.set(key, []);
     valuesByCell.get(key).push(value);
+    observationsByCell.get(key).push(row);
   }
   return WEEKDAYS.flatMap(({ value: weekday, label }) =>
     Array.from({ length: 24 }, (_, hour) => {
       const values = valuesByCell.get(`${weekday}-${hour}`) || [];
+      const sorted = values.slice().sort((a, b) => a - b);
+      const mean = values.length
+        ? values.reduce((sum, value) => sum + value, 0) / values.length
+        : null;
+      const median = quantileSorted(sorted, 0.5);
       return {
         key: `${weekday}-${hour}`,
         weekday,
         weekdayLabel: label,
         hour,
         values,
-        average: values.length
-          ? values.reduce((sum, value) => sum + value, 0) / values.length
-          : null,
+        observations: observationsByCell.get(`${weekday}-${hour}`) || [],
+        mean,
+        median,
+        // `average` remains the chart's display-value contract for compatibility.
+        average: metric === "median" ? median : mean,
       };
     }),
   );
@@ -198,9 +271,12 @@ function quantileSorted(values, probability) {
   return values[lower] + (values[Math.min(lower + 1, values.length - 1)] - values[lower]) * weight;
 }
 
-export function buildHourlyRvHeatmap(rows = [], { winsorizeOutliers = false } = {}) {
+export function buildHourlyRvHeatmap(
+  rows = [],
+  { winsorizeOutliers = false, metric = "average" } = {},
+) {
   if (!winsorizeOutliers) {
-    return buildWeekdayHourHeatmap(rows, (row) => row?.rv, (row) => row?.date);
+    return buildWeekdayHourHeatmap(rows, (row) => row?.rv, (row) => row?.date, metric);
   }
   const values = rows.map((row) => row?.rv).filter(Number.isFinite).sort((a, b) => a - b);
   const lower = quantileSorted(values, 0.01);
@@ -209,7 +285,12 @@ export function buildHourlyRvHeatmap(rows = [], { winsorizeOutliers = false } = 
     rows,
     (row) => Number.isFinite(row?.rv) ? Math.max(lower, Math.min(upper, row.rv)) : null,
     (row) => row?.date,
+    metric,
   );
+}
+
+export function buildHourlyIvHeatmap(rows = [], { metric = "average" } = {}) {
+  return buildWeekdayHourHeatmap(rows, (row) => row?.iv, (row) => row?.date, metric);
 }
 
 export function summarizeRvWeekdayGroups(groups = []) {
