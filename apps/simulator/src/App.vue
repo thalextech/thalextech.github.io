@@ -89,16 +89,6 @@ type OptionPricingInput = {
   expirationTs: number | null;
 };
 
-type ChartSummaryStats = {
-  meanPayoff: number;
-  medianPayoff: number;
-  breakEvenPrices: number[];
-  maxLoss: number;
-  maxPayoff: number;
-};
-
-const chartStats = ref<ChartSummaryStats | null>(null);
-
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 const roundTo = (value: number, decimals: number): number => {
@@ -115,13 +105,16 @@ const applyParams = (): void => {
 };
 
 const SVG_EXPORT_STYLE = `
-  svg { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  svg { font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif; }
   .mu-guide line { stroke: #fff; }
   .mu-cone-fill { opacity: 1; }
   .mu-cone-edge { fill: none; stroke: rgba(255, 255, 255, 0.55); stroke-width: 1.5; }
-  .axis text { fill: rgba(148, 163, 184, 0.86); font-size: 10px; }
+  .axis text { fill: rgba(148, 163, 184, 0.86); font-size: 11px; }
   .axis path, .axis line, .hist-baseline { stroke: rgba(255, 255, 255, 0.18); }
-  .forward-value-label { fill: rgba(148, 163, 184, 0.88); font-size: 10px; font-variant-numeric: tabular-nums; }
+  .break-even-band { fill: rgba(100, 116, 139, 0.12); }
+  .break-even-region text { fill: rgba(148, 163, 184, 0.92); stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-size: 11px; }
+  .axis .average-payoff-guide { stroke: rgba(226, 232, 240, 0.55); stroke-width: 1; stroke-dasharray: 3 5; }
+  .forward-value-label { fill: rgba(148, 163, 184, 0.88); font-size: 11px; font-variant-numeric: tabular-nums; }
 `;
 
 const isVisibleForExport = (element: Element): boolean => {
@@ -418,29 +411,6 @@ const guideRows = computed(() =>
     appliedParams.rows,
   ),
 );
-const formatUsd = (
-  value: number | null | undefined,
-  forceSign = false,
-): string => {
-  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
-  const numeric = value;
-  const abs = Math.abs(numeric);
-  const fractionDigits = abs >= 1000 ? 0 : abs >= 100 ? 1 : 2;
-  const sign = numeric < 0 ? "-" : forceSign && numeric > 0 ? "+" : "";
-  return `${sign}$${abs.toLocaleString("en-US", {
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits,
-  })}`;
-};
-const formatPrice = (value: number): string => {
-  if (!Number.isFinite(value)) return "—";
-  return `$${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
-};
-const breakEvenSummary = computed(() => {
-  const values = chartStats.value?.breakEvenPrices ?? [];
-  if (!values.length) return "—";
-  return values.map((value) => formatPrice(value)).join(" | ");
-});
 const horizonDaysLabel = computed(() => {
   const days = Math.round(appliedParams.T * 365.25);
   return `T+${days}d`;
@@ -647,9 +617,6 @@ const handleNPopoverMouseLeave = (): void => {
 const updateGuide = (payload: { mu: number; vol: number }): void => {
   guideMu.value = payload.mu;
   guideVol.value = payload.vol;
-};
-const updateStats = (payload: ChartSummaryStats): void => {
-  chartStats.value = payload;
 };
 const parseExpiryToSeconds = (expiry?: string): number | null => {
   if (!expiry) return null;
@@ -1332,136 +1299,118 @@ watch(
 
 <template>
   <main ref="appMainRef" class="app-main">
-    <div class="underlying-row">
-      <div class="underlying-toggle" role="group" aria-label="Underlying">
+    <header class="top-bar">
+      <div class="top-bar-content">
+        <div class="wordmark">Simulator</div>
+        <div class="top-divider" aria-hidden="true"></div>
+        <div class="underlying-toggle" role="group" aria-label="Underlying">
+          <button
+            v-for="opt in UNDERLYING_OPTIONS"
+            :key="opt.value"
+            type="button"
+            class="underlying-button"
+            :class="{ 'underlying-button--active': underlying === opt.value }"
+            @click="switchUnderlying(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
+        <div class="top-spacer"></div>
         <button
-          v-for="opt in UNDERLYING_OPTIONS"
-          :key="opt.value"
           type="button"
-          class="underlying-button"
-          :class="{ 'underlying-button--active': underlying === opt.value }"
-          @click="switchUnderlying(opt.value)"
+          class="save-png-button"
+          :disabled="exportInProgress"
+          @click="handleSavePng"
         >
-          {{ opt.label }}
+          {{ exportInProgress ? "Saving..." : "Save PNG" }}
         </button>
+        <a
+          v-if="thalexUrl"
+          :href="thalexUrl"
+          class="trade-thalex-button"
+          target="_blank"
+          rel="noopener"
+        >
+          Trade on Thalex
+        </a>
       </div>
-      <a v-if="thalexUrl" :href="thalexUrl" class="trade-thalex-button" target="_blank" rel="noopener">
-        Trade on Thalex
-      </a>
-    </div>
-    <section class="builder-section">
-      <PositionBuilder
-        v-model:legs="positionLegs"
-        :spot="appliedParams.s0"
-        :vol="appliedParams.vol"
-        :T="appliedParams.T"
-        :instruments="instruments"
-        :tickerByInstrument="tickerByInstrument"
-        :indexName="activeIndexName"
-        :indexPrice="indexDisplay?.price ?? null"
-        :indexFetchedAt="activeIndexSnapshot?.fetchedAt ?? null"
-      />
-    </section>
+    </header>
 
-    <section ref="chartSectionRef" class="chart-section">
-      <div class="chart-header">
-        <div class="chart-header-left">
-          <button
-            type="button"
-            class="sim-settings-btn"
-            :aria-expanded="settingsOpen"
-            aria-label="Simulation settings"
-            @mouseenter="showSimSettings"
-            @mouseleave="scheduleSimSettingsHide"
-            @click="toggleSimSettings"
-          >
-            ⚙
-          </button>
-          <div class="chart-meta">
-            <span class="chart-meta-key">μ</span>
-            <span class="chart-meta-value">{{ guideMuPercent }}%</span>
-            <span class="chart-meta-key">σ</span>
-            <span class="chart-meta-value">{{ guideVolPercent }}%</span>
-            <span
-              ref="nLabelRef"
-              class="chart-meta-n"
-              @pointerenter="handleNLabelEnter"
-              @pointerleave="handleNLabelLeave"
-            >
-              <span class="chart-meta-key">n</span>
-              <span class="chart-meta-value">{{ guideRows }}</span>
-            </span>
-            <span class="chart-horizon-label">{{ horizonDaysLabel }}</span>
+    <div class="workspace-container">
+      <section class="builder-section">
+        <PositionBuilder
+          v-model:legs="positionLegs"
+          :spot="appliedParams.s0"
+          :vol="appliedParams.vol"
+          :T="appliedParams.T"
+          :instruments="instruments"
+          :tickerByInstrument="tickerByInstrument"
+          :indexName="activeIndexName"
+          :indexPrice="indexDisplay?.price ?? null"
+          :indexFetchedAt="activeIndexSnapshot?.fetchedAt ?? null"
+        />
+      </section>
+
+      <div class="simulation-main">
+        <section ref="chartSectionRef" class="chart-section">
+          <div class="chart-header">
+            <div class="chart-header-left">
+              <button
+                type="button"
+                class="sim-settings-btn"
+                :aria-expanded="settingsOpen"
+                aria-label="Simulation settings"
+                @mouseenter="showSimSettings"
+                @mouseleave="scheduleSimSettingsHide"
+                @click="toggleSimSettings"
+              >
+                ⚙
+              </button>
+              <div class="chart-meta">
+                <span class="chart-meta-key">μ</span>
+                <span class="chart-meta-value">{{ guideMuPercent }}%</span>
+                <span class="chart-meta-key">σ</span>
+                <span class="chart-meta-value">{{ guideVolPercent }}%</span>
+                <span
+                  ref="nLabelRef"
+                  class="chart-meta-n"
+                  @pointerenter="handleNLabelEnter"
+                  @pointerleave="handleNLabelLeave"
+                >
+                  <span class="chart-meta-key">n</span>
+                  <span class="chart-meta-value">{{ guideRows }}</span>
+                </span>
+                <span class="chart-horizon-label">{{ horizonDaysLabel }}</span>
+              </div>
+            </div>
           </div>
-          <button
-            class="save-png-button"
-            type="button"
-            @click="handleSavePng"
-            :disabled="exportInProgress"
-          >
-            {{ exportInProgress ? "Saving..." : "Save PNG" }}
-          </button>
-        </div>
-      </div>
-      <div class="sim-stats-card" aria-live="polite">
-        <div class="sim-stats-row">
-          <span class="sim-stats-label">Avg PnL</span>
-          <span class="sim-stats-value">{{
-            formatUsd(chartStats?.meanPayoff ?? null, true)
-          }}</span>
-        </div>
-        <div class="sim-stats-row">
-          <span class="sim-stats-label">Median PnL</span>
-          <span class="sim-stats-value">{{
-            formatUsd(chartStats?.medianPayoff ?? null, true)
-          }}</span>
-        </div>
-        <div class="sim-stats-row">
-          <span class="sim-stats-label">Break-even</span>
-          <span class="sim-stats-value sim-stats-value--break-even">{{
-            breakEvenSummary
-          }}</span>
-        </div>
-        <div class="sim-stats-row">
-          <span class="sim-stats-label">Max Loss</span>
-          <span class="sim-stats-value">{{
-            formatUsd(chartStats?.maxLoss ?? null, false)
-          }}</span>
-        </div>
-        <div class="sim-stats-row">
-          <span class="sim-stats-label">Max Payoff</span>
-          <span class="sim-stats-value">{{
-            formatUsd(chartStats?.maxPayoff ?? null, true)
-          }}</span>
-        </div>
-      </div>
-      <div class="histogram-toggle" role="group" aria-label="Histogram view">
-        <button
-          type="button"
-          :class="{ 'is-active': histogramMode === 'price' }"
-          :aria-pressed="histogramMode === 'price'"
-          @click="histogramMode = 'price'"
-        >
-          Price
-        </button>
-        <button
-          type="button"
-          :class="{ 'is-active': histogramMode === 'payoff' }"
-          :aria-pressed="histogramMode === 'payoff'"
-          @click="histogramMode = 'payoff'"
-        >
-          Pnl
-        </button>
-        <button
-          type="button"
-          :class="{ 'is-active': histogramMode === 'prob' }"
-          :aria-pressed="histogramMode === 'prob'"
-          @click="histogramMode = 'prob'"
-        >
-          Prob
-        </button>
-      </div>
-      <div
+          <div class="histogram-toggle" role="group" aria-label="Histogram view">
+            <button
+              type="button"
+              :class="{ 'is-active': histogramMode === 'price' }"
+              :aria-pressed="histogramMode === 'price'"
+              @click="histogramMode = 'price'"
+            >
+              Price
+            </button>
+            <button
+              type="button"
+              :class="{ 'is-active': histogramMode === 'payoff' }"
+              :aria-pressed="histogramMode === 'payoff'"
+              @click="histogramMode = 'payoff'"
+            >
+              Pnl
+            </button>
+            <button
+              type="button"
+              :class="{ 'is-active': histogramMode === 'prob' }"
+              :aria-pressed="histogramMode === 'prob'"
+              @click="histogramMode = 'prob'"
+            >
+              Prob
+            </button>
+          </div>
+          <div
         v-if="settingsOpen"
         class="sim-settings-popover"
         ref="settingsPopoverRef"
@@ -1608,7 +1557,7 @@ watch(
           <span>{{ ROWS_MAX }}</span>
         </div>
       </div>
-      <CloudChart
+          <CloudChart
         :seed="seed"
         :params="appliedParams"
         :valuationTs="quoteValuationTs"
@@ -1626,24 +1575,46 @@ watch(
         @set-mu="setMuFromChart"
         @set-vol="setVolFromChart"
         @guide-update="updateGuide"
-        @stats-update="updateStats"
-      />
-    </section>
+          />
+        </section>
+      </div>
+    </div>
   </main>
 </template>
 
 <style scoped>
+:global(:root) {
+  --color-bg: #0a0b0e;
+  --color-surface: #131316;
+  --color-text: #e8eaed;
+  --color-text-muted: #70767d;
+  --color-border: rgba(255, 255, 255, 0.09);
+  --color-border-strong: rgba(255, 255, 255, 0.2);
+}
+
+:global(body) {
+  min-width: 320px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  color-scheme: dark;
+}
+
 .app-main {
-  --text-primary: var(--text);
-  --text-muted: var(--muted);
+  /*
+   * Scale continuously from 1080px to 1920px of usable content. Avoid a
+   * breakpoint jump when browser zoom changes the CSS viewport width.
+   */
+  --workspace-max-width: clamp(1136px, calc(100vw - 584px), 1976px);
+  --text-primary: var(--color-text);
+  --text-muted: var(--color-text-muted);
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  max-width: 1200px;
+  gap: 0;
   width: 100%;
-  margin: 32px auto 64px;
-  padding: 0 16px;
   min-height: 100vh;
+  background: var(--color-bg);
+  font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
 }
 
 :deep(input),
@@ -1669,15 +1640,49 @@ watch(
 .builder-section {
   width: 100%;
   min-width: 0;
+  /* Place the first fixed-width combo control on the shared workspace grid. */
+  padding: 20px 0 8px max(0px, calc(3.035714% - 8px));
   overflow-x: auto;
 }
 
-.underlying-row {
-  --top-control-height: 31px;
+.top-bar {
+  --top-control-height: 32px;
+  width: 100%;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-shrink: 0;
+}
+
+.top-bar-content {
   display: flex;
-  justify-content: flex-start;
   align-items: center;
-  gap: 8px;
+  width: 100%;
+  height: 58px;
+  margin: 0 auto;
+  padding: 0 28px;
+  gap: 20px;
+}
+
+.workspace-container {
+  width: 100%;
+  max-width: var(--workspace-max-width);
+  margin: 0 auto;
+  padding: 0 28px 28px;
+}
+
+.wordmark {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.top-divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.top-spacer {
+  flex: 1;
 }
 
 .underlying-toggle {
@@ -1685,47 +1690,52 @@ watch(
   height: var(--top-control-height);
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: transparent;
 }
 
 .underlying-button {
   box-sizing: border-box;
-  height: calc(var(--top-control-height) - 4px);
+  height: 100%;
   background: transparent;
-  color: rgba(226, 232, 240, 0.55);
-  font-size: 11px;
-  font-weight: 600;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 500;
   line-height: 1;
-  letter-spacing: 0.02em;
   padding: 0 14px;
-  border-radius: 999px;
+  border-radius: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
+.underlying-button + .underlying-button {
+  border-left: 1px solid var(--color-border);
+}
+
 .underlying-button:hover:not(.underlying-button--active) {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.08);
+  color: var(--color-text);
+  background: var(--color-surface);
 }
 
 .underlying-button--active {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-weight: 600;
 }
 
 .trade-thalex-button {
   box-sizing: border-box;
   height: var(--top-control-height);
-  padding: 0 16px;
-  border: 1px solid #3d3d42;
-  border-radius: 999px;
-  background: #050506;
-  color: #f0f1f4;
-  font-size: 11px;
+  padding: 0 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 12px;
   font-weight: 600;
   display: inline-flex;
   align-items: center;
@@ -1735,11 +1745,20 @@ watch(
   white-space: nowrap;
 }
 
+.trade-thalex-button:hover {
+  border-color: var(--color-border-strong);
+}
+
+.simulation-main {
+  display: block;
+}
+
 .chart-header {
   display: flex;
   align-items: center;
   height: var(--chart-header-height);
-  padding: 0 8px;
+  /* Align settings with the first combo control. */
+  padding: 0 8px 0 3.035714%;
   position: relative;
   z-index: 8;
 }
@@ -1755,15 +1774,19 @@ watch(
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .chart-meta-key {
   color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
 }
 
 .chart-meta-value {
   color: rgba(148, 163, 184, 0.95);
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1784,7 +1807,8 @@ watch(
 .chart-horizon-label {
   color: var(--text-muted);
   font-size: 10px;
-  letter-spacing: 0.24em;
+  font-weight: 600;
+  letter-spacing: 0.5px;
   text-transform: uppercase;
 }
 
@@ -1810,21 +1834,22 @@ watch(
 }
 
 .save-png-button {
+  box-sizing: border-box;
   flex-shrink: 0;
-  padding: 5px 9px;
-  border-radius: 7px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(15, 23, 42, 0.72);
-  color: rgba(226, 232, 240, 0.92);
-  font-size: 10px;
+  height: var(--top-control-height);
+  padding: 0 13px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text);
+  font-size: 12px;
   font-weight: 600;
   line-height: 1;
 }
 
 .save-png-button:hover:not(:disabled) {
-  border-color: rgba(226, 232, 240, 0.48);
-  background: rgba(30, 41, 59, 0.86);
-  color: #ffffff;
+  border-color: var(--color-border-strong);
+  background: var(--color-surface);
 }
 
 .save-png-button:disabled {
@@ -1839,9 +1864,9 @@ watch(
   z-index: 12;
   width: 220px;
   padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(9, 13, 20, 0.96);
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
   display: grid;
   gap: 8px;
@@ -1852,19 +1877,20 @@ watch(
   grid-template-columns: 1fr auto;
   align-items: center;
   column-gap: 10px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
 }
 
 .sim-settings-input {
   width: 92px;
-  padding: 3px 6px;
-  border-radius: 7px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(0, 0, 0, 0.32);
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-strong);
+  background: #111114;
   color: var(--text-primary);
-  font-size: 10px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   text-align: right;
   appearance: textfield;
@@ -1877,61 +1903,16 @@ watch(
   margin: 0;
 }
 
-.sim-stats-card {
-  position: absolute;
-  top: calc(var(--chart-header-height) + 8px);
-  left: 8px;
-  z-index: 4;
-  width: min(270px, calc(100% - 16px));
-  padding: 9px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(9, 13, 20, 0.68);
-  backdrop-filter: blur(3px);
-  display: grid;
-  gap: 5px;
-  pointer-events: none;
-}
-
-.sim-stats-row {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: baseline;
-  column-gap: 10px;
-}
-
-.sim-stats-label {
-  color: rgba(148, 163, 184, 0.88);
-  font-size: 8px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.sim-stats-value {
-  justify-self: end;
-  color: rgba(241, 245, 249, 0.96);
-  font-size: 9px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  white-space: nowrap;
-}
-
-.sim-stats-value--break-even {
-  white-space: normal;
-  line-height: 1.2;
-}
-
 .chart-section {
   position: relative;
   width: 100%;
-  max-width: 980px;
+  max-width: var(--workspace-max-width);
   min-width: 0;
   margin: 0;
-  margin-right: auto;
   --chart-header-height: 40px;
-  height: min(70vh, 620px);
-  min-height: 520px;
+  height: auto;
+  min-height: 0;
+  aspect-ratio: 2 / 1;
 }
 
 .chart-section svg {
@@ -2055,7 +2036,7 @@ watch(
 .histogram-toggle {
   position: absolute;
   top: 8px;
-  left: 86%;
+  left: 50%;
   transform: translateX(-50%);
   z-index: 9;
   display: inline-flex;
@@ -2070,9 +2051,10 @@ watch(
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
   padding: 3px 8px;
   border-radius: 999px;
   cursor: pointer;
@@ -2084,23 +2066,69 @@ watch(
 }
 
 @media (max-width: 900px) {
-  .app-main {
-    margin: 24px auto 48px;
-    padding: 0 12px;
+  .top-bar-content {
+    padding: 0 16px;
+    gap: 12px;
   }
 
+  .builder-section {
+    padding-left: max(0px, calc(3.035714% - 8px));
+  }
+
+  .workspace-container {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
 }
 
 @media (max-width: 640px) {
-  .chart-section {
-    height: 460px;
-    --chart-header-height: 36px;
+  .top-bar-content {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 58px;
+    padding-top: 10px;
+    padding-bottom: 10px;
   }
 
-  .sim-stats-card {
-    top: calc(var(--chart-header-height) + 6px);
-    padding: 7px 8px;
-    gap: 4px;
+  .top-divider {
+    display: none;
   }
+
+  .top-spacer {
+    display: none;
+  }
+
+  .trade-thalex-button {
+    margin-left: 0;
+  }
+
+  .workspace-container {
+    display: block;
+    padding: 0 16px 28px;
+  }
+
+  .builder-section {
+    padding-right: 0;
+    padding-left: max(0px, calc(3.035714% - 8px));
+  }
+
+  .simulation-main {
+    display: block;
+  }
+
+  .chart-section {
+    height: auto;
+    min-height: 0;
+    aspect-ratio: 1.9 / 1;
+    flex: none;
+    width: 100%;
+    --chart-header-height: 36px;
+  }
+}
+</style>
+
+<style>
+body {
+  font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
 }
 </style>

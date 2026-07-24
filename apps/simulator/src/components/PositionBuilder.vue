@@ -813,33 +813,34 @@ const totalMarkPrice = computed<number | null>(() => {
   gap: 8px;
   padding: 0;
   background: transparent;
-  font-size: 11px;
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  font-size: 12px;
+  font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
 }
 
 .index-summary {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  font-size: 11px;
-  color: rgba(148, 163, 184, 0.9);
+  font-size: 12px;
+  color: #70767d;
   margin-left: 8px;
 }
 
 .index-label {
   text-transform: uppercase;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.5px;
   font-size: 10px;
+  font-weight: 600;
 }
 
 .index-value {
-  font-weight: 600;
-  color: #f8fafc;
+  font-weight: 500;
+  color: #e8eaed;
 }
 
 .index-time {
-  color: rgba(148, 163, 184, 0.8);
-  font-size: 10px;
+  color: #70767d;
+  font-size: 11px;
 }
 
 .legs-section {
@@ -848,14 +849,14 @@ const totalMarkPrice = computed<number | null>(() => {
   gap: 3px;
   --row-pad-y: 3px;
   --row-pad-x: 8px;
-  --layout-gap: 6px;
+  --layout-gap: 9px;
   --col-side: 86px;
   --col-qty: 60px;
   --col-type: 68px;
   --col-expiry: 108px;
   --col-tte: 0px;
   --strike-width: 84px;
-  --strike-greeks-gap: 8px;
+  --strike-greeks-gap: 12px;
   --strike-greeks-gap-extra: 0px;
   --greek-iv: 74px;
   --greek-mark: 106px;
@@ -864,8 +865,8 @@ const totalMarkPrice = computed<number | null>(() => {
   --greek-theta: 72px;
   --greek-vega: 56px;
   --greek-remove: 32px;
-  --leg-row-gap-total: 24px;
-  --leg-greeks-gap-total: 36px;
+  --leg-row-gap-total: calc(var(--layout-gap) * 4);
+  --leg-greeks-gap-total: calc(var(--layout-gap) * 6);
   --greeks-shift-x: 0px;
   --control-height: 27px;
 }
@@ -896,9 +897,10 @@ const totalMarkPrice = computed<number | null>(() => {
 .field-header {
   width: 100%;
   text-align: center;
-  font-size: 9px;
+  font-size: 10px;
+  font-weight: 600;
   line-height: 1;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.5px;
   text-transform: uppercase;
   color: rgba(148, 163, 184, 0.6);
 }
@@ -910,7 +912,7 @@ const totalMarkPrice = computed<number | null>(() => {
 .tte-cell {
   width: 100%;
   text-align: center;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
   color: #f8fafc;
   font-variant-numeric: tabular-nums;
@@ -936,15 +938,15 @@ const totalMarkPrice = computed<number | null>(() => {
   box-sizing: border-box;
   height: var(--control-height);
   padding: 0 6px;
-  border-radius: 12px;
-  font-size: 10px;
+  border-radius: 6px;
+  font-size: 12px;
   line-height: 1;
   font-weight: 600;
-  letter-spacing: 0.01em;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  letter-spacing: 0;
+  border: 1px solid rgba(255, 255, 255, 0.09);
   cursor: pointer;
   box-shadow: none;
-  background: #0f1318;
+  background: #111114;
 }
 
 .side-pill--sell {
@@ -976,11 +978,11 @@ const totalMarkPrice = computed<number | null>(() => {
   min-height: var(--control-height);
   padding: 0 5px;
   line-height: var(--control-height);
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: transparent;
-  color: #f8fafc;
-  font-size: 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: #111114;
+  color: #e8eaed;
+  font-size: 12px;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -1022,11 +1024,11 @@ const totalMarkPrice = computed<number | null>(() => {
   min-height: var(--control-height);
   padding: 0 7px;
   line-height: var(--control-height);
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: transparent;
-  color: #f8fafc;
-  font-size: 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: #111114;
+  color: #e8eaed;
+  font-size: 12px;
   text-align: center;
   text-align-last: center;
   cursor: pointer;
@@ -1048,11 +1050,11 @@ const totalMarkPrice = computed<number | null>(() => {
   box-sizing: border-box;
   height: var(--control-height);
   padding: 0 6px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: #0f1318;
-  color: #f8fafc;
-  font-size: 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: #111114;
+  color: #e8eaed;
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
 }
@@ -1086,7 +1088,7 @@ const totalMarkPrice = computed<number | null>(() => {
   align-items: center;
   justify-items: stretch;
   column-gap: var(--layout-gap);
-  font-size: 10px;
+  font-size: 11px;
   color: rgba(148, 163, 184, 0.9);
   margin-left: var(--greeks-shift-x);
 }
@@ -1106,15 +1108,16 @@ const totalMarkPrice = computed<number | null>(() => {
 .leg-greek-header {
   width: 100%;
   text-align: right;
-  font-size: 9px;
+  font-size: 10px;
+  font-weight: 600;
   line-height: 1;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.5px;
   text-transform: none;
   color: rgba(148, 163, 184, 0.6);
 }
 
 .leg-greek-header--text {
-  letter-spacing: 0.06em;
+  letter-spacing: 0.5px;
   text-transform: uppercase;
 }
 
@@ -1125,12 +1128,12 @@ const totalMarkPrice = computed<number | null>(() => {
 .leg-greek-value {
   width: 100%;
   text-align: right;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
-  color: #f8fafc;
+  color: #e8eaed;
 }
 
 .remove-btn {
@@ -1162,7 +1165,7 @@ const totalMarkPrice = computed<number | null>(() => {
   border: none;
   background: transparent;
   color: rgba(226, 232, 240, 0.7);
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
   box-shadow: none;
 }
@@ -1252,6 +1255,22 @@ const totalMarkPrice = computed<number | null>(() => {
     row-gap: 6px;
     justify-self: start;
     margin-left: 0;
+  }
+}
+
+@media (min-width: 1200px) {
+  .legs-section {
+    width: 95.5%;
+    --layout-gap: clamp(11px, 0.625vw, 16px);
+    --strike-greeks-gap: clamp(16px, 0.9375vw, 24px);
+  }
+
+  .leg-greeks {
+    justify-content: space-between;
+  }
+
+  .legs-divider {
+    width: calc(100% - var(--row-pad-x));
   }
 }
 </style>

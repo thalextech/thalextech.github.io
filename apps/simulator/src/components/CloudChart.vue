@@ -33,22 +33,23 @@ const emit = defineEmits<{
   (event: "set-mu", value: number): void;
   (event: "set-vol", value: number): void;
   (event: "guide-update", value: { mu: number; vol: number }): void;
-  (
-    event: "stats-update",
-    value: {
-      meanPayoff: number;
-      medianPayoff: number;
-      breakEvenPrices: number[];
-      maxLoss: number;
-      maxDrawdown: number;
-      maxPayoff: number;
-      winRate: number;
-    },
-  ): void;
 }>();
 
 const svgRef = ref<SVGSVGElement | null>(null);
 const canvasRef = ref<HTMLCanvasElement | null>(null);
+const chartLayerRef = ref<HTMLDivElement | null>(null);
+type HistogramTooltipState = {
+  x: number;
+  y: number;
+  priceRange: string;
+  probability: string;
+  cumulativeProbability: string;
+  paths: string;
+  medianPayoff: string;
+  averagePayoff: string;
+  accent: string;
+};
+const histogramTooltip = ref<HistogramTooltipState | null>(null);
 const SECONDS_PER_YEAR = 365.25 * 24 * 60 * 60;
 const RISK_FREE_RATE = 0.0;
 const MAX_CLOUD_RENDER_PATHS = 500;
@@ -59,9 +60,9 @@ const COLOR_T_MAX = 0.85;
 const COLOR_T_MID = 0.5;
 const CHART_WIDTH = 1120;
 const CHART_HEIGHT = 520;
-const CHART_MARGIN = { top: 28, right: 86, bottom: 28, left: 34 };
+const CHART_MARGIN = { top: 18, right: 86, bottom: 38, left: 46 };
 const HISTOGRAM_WIDTH = 212;
-const HISTOGRAM_GAP = 36;
+const HISTOGRAM_GAP = 34;
 const MAIN_WIDTH =
   CHART_WIDTH -
   CHART_MARGIN.left -
@@ -69,9 +70,31 @@ const MAIN_WIDTH =
   HISTOGRAM_WIDTH -
   HISTOGRAM_GAP;
 const MAIN_HEIGHT = CHART_HEIGHT - CHART_MARGIN.top - CHART_MARGIN.bottom;
+const HISTOGRAM_TOOLTIP_WIDTH = 172;
+const HISTOGRAM_TOOLTIP_HEIGHT = 148;
+const HISTOGRAM_TOOLTIP_GAP = 24;
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
+
+const formatTooltipPrice = (value: number): string =>
+  `$${Math.round(value).toLocaleString("en-US")}`;
+
+const formatTooltipPayoff = (value: number): string => {
+  if (!Number.isFinite(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  const absolute = Math.abs(value);
+  const maximumFractionDigits = absolute >= 1000 ? 0 : absolute >= 100 ? 1 : 2;
+  return `${sign}$${absolute.toLocaleString("en-US", {
+    maximumFractionDigits,
+  })}`;
+};
+
+const formatTooltipProbability = (value: number): string => {
+  if (!Number.isFinite(value) || value <= 0) return "0.00%";
+  const percentage = value * 100;
+  return `${percentage.toFixed(percentage < 0.1 ? 3 : 2)}%`;
+};
 
 type SceneHandles = {
   svg: d3.Selection<SVGSVGElement, unknown, null, undefined>;
@@ -380,7 +403,7 @@ const ensureScene = (): SceneHandles | null => {
   const svg = d3.select(svgRef.value);
   svg.selectAll("*").remove();
   svg.attr("viewBox", `0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`);
-  svg.attr("preserveAspectRatio", "none");
+  svg.attr("preserveAspectRatio", "xMidYMin meet");
 
   const defs = svg.append("defs");
   const mainGroup = svg
@@ -429,11 +452,13 @@ const ensureScene = (): SceneHandles | null => {
 };
 
 const clearDynamicScene = (sceneHandles: SceneHandles): void => {
+  histogramTooltip.value = null;
   sceneHandles.defs.selectAll("*").remove();
   sceneHandles.plotGroup.selectAll("*").remove();
   sceneHandles.histogramGroup.selectAll("*").remove();
   // Forward/cone value labels are attached at root SVG level.
   sceneHandles.svg.selectAll(".forward-value-label").remove();
+  sceneHandles.svg.selectAll(".break-even-region").remove();
 };
 
 const updateDynamicScene = (
@@ -462,13 +487,11 @@ const updateDynamicScene = (
   const histogramWidth = HISTOGRAM_WIDTH;
   const mainWidth = MAIN_WIDTH;
   const mainHeight = MAIN_HEIGHT;
-  const cssWidth = canvas.clientWidth || width;
-  const cssHeight = canvas.clientHeight || height;
   const deviceScale = Math.max(1, window.devicePixelRatio || 1);
-  const backingWidth = Math.max(1, Math.round(cssWidth * deviceScale));
-  const backingHeight = Math.max(1, Math.round(cssHeight * deviceScale));
-  const scaleX = backingWidth / width;
-  const scaleY = backingHeight / height;
+  const backingWidth = Math.max(1, Math.round(width * deviceScale));
+  const backingHeight = Math.max(1, Math.round(height * deviceScale));
+  const scaleX = deviceScale;
+  const scaleY = deviceScale;
   const transformDirty =
     canvasTransformCache.canvas !== canvas ||
     canvasTransformCache.backingWidth !== backingWidth ||
@@ -510,21 +533,9 @@ const updateDynamicScene = (
     payoffMin,
     payoffMax,
     meanPayoff,
-    medianPayoff,
     maxPayoff,
-    maxDrawdown,
-    winRate,
   } = sim;
   const breakEvenPrices = computeBreakEvenPrices(bins);
-  emit("stats-update", {
-    meanPayoff,
-    medianPayoff,
-    breakEvenPrices,
-    maxLoss: Math.min(payoffMin, 0),
-    maxDrawdown,
-    maxPayoff,
-    winRate,
-  });
 
   const maxDelta = Math.max(
     Math.abs(pathMin - baseline),
@@ -686,8 +697,8 @@ const updateDynamicScene = (
     const upper = forward * Math.exp(band);
     const lower = forward * Math.exp(-band);
 
-    // Forward label
-    if (!Number.isFinite(forward) || forward <= 0) {
+    // Price mode already has a price axis, so the forward/average label is redundant.
+    if (histogramMode === "price" || !Number.isFinite(forward) || forward <= 0) {
       forwardValueLabel.style("display", "none");
     } else {
       const rawY = y(forward);
@@ -834,6 +845,11 @@ const updateDynamicScene = (
     const idx = Math.floor((value - binMin) * invBinSize);
     return Math.max(0, Math.min(binCount - 1, idx));
   };
+  let cumulativePathCount = 0;
+  const cumulativePathCounts = bins.map((bin) => {
+    cumulativePathCount += bin.count;
+    return cumulativePathCount;
+  });
   const opacityForPath = (pathIndex: number): number => {
     const finalPrice = sampledFinalPrices[pathIndex];
     if (!Number.isFinite(finalPrice)) return cloudFillOpacity;
@@ -907,6 +923,47 @@ const updateDynamicScene = (
     : baseline;
   const dataTopY = y(safeFinalMax); // max price -> top of histogram data
   const dataBottomY = y(safeFinalMin); // min price -> bottom of histogram data
+  const guideStartX = margin.left + mainWidth;
+  const guideEndX =
+    margin.left + mainWidth + HISTOGRAM_GAP + histogramWidth + 4;
+  const guideLabelX = guideEndX + 8;
+  const visibleBreakEvens = breakEvenPrices
+    .slice(0, 2)
+    .map((price) => ({ price, y: margin.top + y(price) }))
+    .filter(
+      ({ y: guideY }) =>
+        Number.isFinite(guideY) &&
+        guideY >= margin.top &&
+        guideY <= margin.top + mainHeight,
+    );
+  const breakEvenRegion = svg
+    .append("g")
+    .attr("class", "break-even-region");
+
+  if (visibleBreakEvens.length === 2) {
+    const [firstBreakEven, secondBreakEven] = visibleBreakEvens;
+    const bandTop = Math.min(firstBreakEven.y, secondBreakEven.y);
+    const bandBottom = Math.max(firstBreakEven.y, secondBreakEven.y);
+    breakEvenRegion
+      .append("rect")
+      .attr("class", "break-even-band")
+      .attr("x", guideStartX)
+      .attr("y", bandTop)
+      .attr("width", guideEndX - guideStartX)
+      .attr("height", bandBottom - bandTop);
+  }
+
+  if (histogramMode !== "price") {
+    for (const breakEven of visibleBreakEvens) {
+      breakEvenRegion
+        .append("text")
+        .attr("x", guideLabelX)
+        .attr("y", breakEven.y)
+        .attr("text-anchor", "start")
+        .attr("dominant-baseline", "middle")
+        .text(priceFormat(breakEven.price));
+    }
+  }
 
   if (histogramMode !== "price") {
     // Payoff/prob modes use a payoff axis mapped onto the histogram's vertical span.
@@ -921,13 +978,6 @@ const updateDynamicScene = (
           .domain([minPayoff, maxPayoffValue])
           .range([axisBottomY, axisTopY])
       : null;
-
-    axisGroup
-      .append("line")
-      .attr("x1", 0)
-      .attr("x2", 0)
-      .attr("y1", axisTopY)
-      .attr("y2", axisBottomY);
 
     axisGroup
       .append("text")
@@ -953,6 +1003,13 @@ const updateDynamicScene = (
       Math.min(axisBottomY - labelClearance, rawAverageY),
     );
     axisGroup
+      .append("line")
+      .attr("class", "average-payoff-guide")
+      .attr("x1", -(histogramWidth + HISTOGRAM_GAP + 4))
+      .attr("x2", 0)
+      .attr("y1", averageY)
+      .attr("y2", averageY);
+    axisGroup
       .append("text")
       .attr("x", 8)
       .attr("y", averageY)
@@ -960,13 +1017,6 @@ const updateDynamicScene = (
       .text(payoffFormat(meanPayoff));
   } else {
     // Price mode: explicit axis limited to histogram data span.
-    axisGroup
-      .append("line")
-      .attr("x1", 0)
-      .attr("x2", 0)
-      .attr("y1", dataTopY)
-      .attr("y2", dataBottomY);
-
     const priceTicks = d3.ticks(safeFinalMin, safeFinalMax, 4);
     for (const tick of priceTicks) {
       axisGroup
@@ -977,6 +1027,96 @@ const updateDynamicScene = (
         .text(priceFormat(tick));
     }
   }
+
+  const histogramHoverHighlight = histogramGroup
+    .append("rect")
+    .attr("class", "histogram-hover-highlight")
+    .attr("x", 0)
+    .attr("width", histogramWidth)
+    .style("display", "none")
+    .style("pointer-events", "none");
+
+  const hideHistogramTooltip = (): void => {
+    histogramHoverHighlight.style("display", "none");
+    histogramTooltip.value = null;
+  };
+
+  const updateHistogramTooltip = (event: PointerEvent): void => {
+    const histogramNode = histogramGroup.node();
+    const layerNode = chartLayerRef.value;
+    if (!histogramNode || !layerNode) return;
+    const [, pointerY] = d3.pointer(event, histogramNode);
+    const binIndex = findBinIndex(y.invert(pointerY));
+    const bin = bins[binIndex];
+    if (!bin) {
+      hideHistogramTooltip();
+      return;
+    }
+
+    histogramHoverHighlight
+      .style("display", null)
+      .attr("y", histBarY(bin))
+      .attr("height", histBarHeight(bin));
+
+    const layerRect = layerNode.getBoundingClientRect();
+    const localY = event.clientY - layerRect.top;
+    const hoverTarget = event.currentTarget as Element | null;
+    const histogramRect =
+      hoverTarget?.getBoundingClientRect() ??
+      histogramNode.getBoundingClientRect();
+    const x =
+      histogramRect.left -
+      layerRect.left -
+      HISTOGRAM_TOOLTIP_WIDTH -
+      HISTOGRAM_TOOLTIP_GAP;
+    const yPosition = clamp(
+      localY - HISTOGRAM_TOOLTIP_HEIGHT * 0.5,
+      48,
+      Math.max(48, layerRect.height - HISTOGRAM_TOOLTIP_HEIGHT - 8),
+    );
+    const probability =
+      totalPathCount > 0 ? bin.count / totalPathCount : 0;
+    const cumulativeProbability =
+      totalPathCount > 0
+        ? (cumulativePathCounts[binIndex] ?? 0) / totalPathCount
+        : 0;
+    const averagePayoff =
+      bin.count > 0 ? bin.sumPayoff / bin.count : Number.NaN;
+
+    histogramTooltip.value = {
+      x: clamp(x, 8, Math.max(8, layerRect.width - HISTOGRAM_TOOLTIP_WIDTH - 8)),
+      y: yPosition,
+      priceRange: `${formatTooltipPrice(bin.x0)} – ${formatTooltipPrice(bin.x1)}`,
+      probability: formatTooltipProbability(probability),
+      cumulativeProbability: formatTooltipProbability(cumulativeProbability),
+      paths: `${bin.count.toLocaleString("en-US")} / ${totalPathCount.toLocaleString("en-US")}`,
+      medianPayoff:
+        bin.count > 0 ? formatTooltipPayoff(bin.medianPayoff) : "—",
+      averagePayoff: formatTooltipPayoff(averagePayoff),
+      accent: barFill(bin),
+    };
+  };
+
+  histogramGroup
+    .append("rect")
+    .attr("class", "histogram-hover-layer")
+    .attr("x", 0)
+    .attr("y", dataTopY)
+    .attr("width", histogramWidth)
+    .attr("height", Math.max(1, dataBottomY - dataTopY))
+    .attr("fill", "transparent")
+    .style("pointer-events", "all")
+    .style("cursor", "default")
+    .on("pointerenter", (event) =>
+      updateHistogramTooltip(event as PointerEvent),
+    )
+    .on("pointermove", (event) =>
+      updateHistogramTooltip(event as PointerEvent),
+    )
+    .on("click", (event) =>
+      updateHistogramTooltip(event as PointerEvent),
+    )
+    .on("pointerleave", hideHistogramTooltip);
 
   const minMu = props.muMin ?? -0.1;
   const maxMu = props.muMax ?? 0.3;
@@ -1376,9 +1516,54 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="cloud-chart-layer">
+  <div ref="chartLayerRef" class="cloud-chart-layer">
     <canvas ref="canvasRef" aria-hidden="true"></canvas>
     <svg ref="svgRef" aria-label="Brownian motion cloud chart"></svg>
+    <Transition name="histogram-tooltip">
+      <div
+        v-if="histogramTooltip"
+        class="histogram-tooltip"
+        role="tooltip"
+        :style="{
+          left: `${histogramTooltip.x}px`,
+          top: `${histogramTooltip.y}px`,
+        }"
+      >
+        <div class="histogram-tooltip-kicker">
+          <span
+            class="histogram-tooltip-swatch"
+            :style="{ backgroundColor: histogramTooltip.accent }"
+          ></span>
+          Terminal distribution
+        </div>
+        <div class="histogram-tooltip-range">
+          {{ histogramTooltip.priceRange }}
+        </div>
+        <div class="histogram-tooltip-divider"></div>
+        <dl class="histogram-tooltip-stats">
+          <div>
+            <dt>Probability</dt>
+            <dd>{{ histogramTooltip.probability }}</dd>
+          </div>
+          <div>
+            <dt>Cumulative</dt>
+            <dd>{{ histogramTooltip.cumulativeProbability }}</dd>
+          </div>
+          <div>
+            <dt>Median PnL</dt>
+            <dd>{{ histogramTooltip.medianPayoff }}</dd>
+          </div>
+          <div>
+            <dt>Average PnL</dt>
+            <dd>{{ histogramTooltip.averagePayoff }}</dd>
+          </div>
+          <div>
+            <dt>Paths</dt>
+            <dd>{{ histogramTooltip.paths }}</dd>
+          </div>
+        </dl>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -1397,6 +1582,8 @@ onUnmounted(() => {
   width: 100%;
   height: calc(100% - var(--chart-header-height));
   display: block;
+  object-fit: contain;
+  object-position: center top;
 }
 
 .cloud-chart-layer svg {
@@ -1407,6 +1594,98 @@ onUnmounted(() => {
 .cloud-chart-layer canvas {
   pointer-events: none;
   z-index: 1;
+}
+
+.histogram-tooltip {
+  position: absolute;
+  z-index: 12;
+  box-sizing: border-box;
+  width: 172px;
+  padding: 9px 10px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 5px;
+  background: #111318;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.44);
+  color: #dfe3e7;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.histogram-tooltip-kicker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #858d95;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.histogram-tooltip-swatch {
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.histogram-tooltip-range {
+  margin-top: 7px;
+  color: #dfe3e7;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.histogram-tooltip-divider {
+  height: 1px;
+  margin: 8px 0 7px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.histogram-tooltip-stats {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.histogram-tooltip-stats > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.histogram-tooltip-stats dt,
+.histogram-tooltip-stats dd {
+  margin: 0;
+}
+
+.histogram-tooltip-stats dt {
+  color: #858d95;
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.histogram-tooltip-stats dd {
+  color: #dfe3e7;
+  font-size: 9px;
+  font-weight: 500;
+  text-align: right;
+}
+
+.histogram-tooltip-enter-active,
+.histogram-tooltip-leave-active {
+  transition:
+    opacity 110ms ease,
+    transform 110ms ease;
+}
+
+.histogram-tooltip-enter-from,
+.histogram-tooltip-leave-to {
+  opacity: 0;
+  transform: translateY(3px);
 }
 
 :deep(svg) {
@@ -1476,13 +1755,41 @@ onUnmounted(() => {
 
 :deep(.axis text) {
   fill: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
   font-family: inherit;
+}
+
+:deep(.break-even-band) {
+  fill: rgba(100, 116, 139, 0.12);
+}
+
+:deep(.break-even-region text) {
+  fill: rgba(148, 163, 184, 0.92);
+  stroke: #0a0b0e;
+  stroke-width: 4;
+  paint-order: stroke;
+  font-size: 11px;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+:deep(.histogram-hover-highlight) {
+  fill: rgba(255, 255, 255, 0.07);
+  stroke: rgba(255, 255, 255, 0.16);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+:deep(.axis .average-payoff-guide) {
+  stroke: rgba(226, 232, 240, 0.55);
+  stroke-width: 1;
+  stroke-dasharray: 3 5;
+  shape-rendering: crispEdges;
 }
 
 :deep(.forward-value-label) {
   fill: rgba(148, 163, 184, 0.88);
-  font-size: 10px;
+  font-size: 11px;
   font-family: inherit;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
