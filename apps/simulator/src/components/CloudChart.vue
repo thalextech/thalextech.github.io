@@ -927,6 +927,19 @@ const updateDynamicScene = (
   const guideEndX =
     margin.left + mainWidth + HISTOGRAM_GAP + histogramWidth + 4;
   const guideLabelX = guideEndX + 8;
+  const minPayoff = Number.isFinite(payoffMin) ? payoffMin : 0;
+  const maxPayoffValue = Number.isFinite(maxPayoff) ? maxPayoff : minPayoff;
+  const hasPayoffSpan = maxPayoffValue > minPayoff;
+  const payoffToY = hasPayoffSpan
+    ? d3
+        .scaleLinear()
+        .domain([minPayoff, maxPayoffValue])
+        .range([dataBottomY, dataTopY])
+    : null;
+  const rawAverageY =
+    payoffToY != null
+      ? payoffToY(meanPayoff)
+      : (dataTopY + dataBottomY) * 0.5;
   const visibleBreakEvens = breakEvenPrices
     .slice(0, 2)
     .map((price) => ({ price, y: margin.top + y(price) }))
@@ -936,6 +949,54 @@ const updateDynamicScene = (
         guideY >= margin.top &&
         guideY <= margin.top + mainHeight,
     );
+
+  /*
+   * All right-gutter annotations share one collision layout. Keeping this
+   * central avoids each label type independently claiming the same pixels.
+   */
+  const rightLabelPositions = new Map<string, number>();
+  if (histogramMode !== "price") {
+    const labelTop = margin.top + 7;
+    const labelBottom = margin.top + mainHeight - 7;
+    const labelCandidates = [
+      { id: "payoff-max", rawY: margin.top + dataTopY },
+      { id: "payoff-average", rawY: margin.top + rawAverageY },
+      { id: "payoff-min", rawY: margin.top + dataBottomY },
+      ...visibleBreakEvens.map((breakEven, index) => ({
+        id: `break-even-${index}`,
+        rawY: breakEven.y,
+      })),
+    ].sort((a, b) => a.rawY - b.rawY);
+    const preferredGap = 18;
+    const availableGap =
+      labelCandidates.length > 1
+        ? (labelBottom - labelTop) / (labelCandidates.length - 1)
+        : preferredGap;
+    const minimumGap = Math.min(preferredGap, availableGap);
+    const resolved = labelCandidates.map((candidate) =>
+      Math.max(labelTop, Math.min(labelBottom, candidate.rawY)),
+    );
+
+    for (let index = 1; index < resolved.length; index += 1) {
+      resolved[index] = Math.max(
+        resolved[index],
+        resolved[index - 1] + minimumGap,
+      );
+    }
+    if (resolved.length && resolved[resolved.length - 1] > labelBottom) {
+      resolved[resolved.length - 1] = labelBottom;
+      for (let index = resolved.length - 2; index >= 0; index -= 1) {
+        resolved[index] = Math.min(
+          resolved[index],
+          resolved[index + 1] - minimumGap,
+        );
+      }
+    }
+    labelCandidates.forEach((candidate, index) => {
+      rightLabelPositions.set(candidate.id, resolved[index]);
+    });
+  }
+
   const breakEvenRegion = svg
     .append("g")
     .attr("class", "break-even-region");
@@ -954,67 +1015,90 @@ const updateDynamicScene = (
   }
 
   if (histogramMode !== "price") {
-    for (const breakEven of visibleBreakEvens) {
+    visibleBreakEvens.forEach((breakEven, index) => {
+      const labelY =
+        rightLabelPositions.get(`break-even-${index}`) ?? breakEven.y;
+      if (Math.abs(labelY - breakEven.y) > 0.5) {
+        breakEvenRegion
+          .append("line")
+          .attr("class", "annotation-label-leader")
+          .attr("x1", guideEndX)
+          .attr("x2", guideLabelX - 2)
+          .attr("y1", breakEven.y)
+          .attr("y2", labelY);
+      }
       breakEvenRegion
         .append("text")
         .attr("x", guideLabelX)
-        .attr("y", breakEven.y)
+        .attr("y", labelY)
         .attr("text-anchor", "start")
         .attr("dominant-baseline", "middle")
         .text(priceFormat(breakEven.price));
-    }
+    });
   }
 
   if (histogramMode !== "price") {
     // Payoff/prob modes use a payoff axis mapped onto the histogram's vertical span.
-    const minPayoff = Number.isFinite(payoffMin) ? payoffMin : 0;
-    const maxPayoffValue = Number.isFinite(maxPayoff) ? maxPayoff : minPayoff;
-    const hasPayoffSpan = maxPayoffValue > minPayoff;
-    const axisTopY = dataTopY;
-    const axisBottomY = dataBottomY;
-    const payoffToY = hasPayoffSpan
-      ? d3
-          .scaleLinear()
-          .domain([minPayoff, maxPayoffValue])
-          .range([axisBottomY, axisTopY])
-      : null;
+    const maxLabelY =
+      (rightLabelPositions.get("payoff-max") ?? margin.top + dataTopY) -
+      margin.top;
+    const averageLabelY =
+      (rightLabelPositions.get("payoff-average") ??
+        margin.top + rawAverageY) - margin.top;
+    const minLabelY =
+      (rightLabelPositions.get("payoff-min") ?? margin.top + dataBottomY) -
+      margin.top;
 
     axisGroup
       .append("text")
       .attr("x", 8)
-      .attr("y", axisTopY)
-      .attr("dominant-baseline", "hanging")
+      .attr("y", maxLabelY)
+      .attr("dominant-baseline", "middle")
       .text(payoffFormat(maxPayoffValue));
 
     axisGroup
       .append("text")
       .attr("x", 8)
-      .attr("y", axisBottomY)
-      .attr("dominant-baseline", "alphabetic")
+      .attr("y", minLabelY)
+      .attr("dominant-baseline", "middle")
       .text(payoffFormat(minPayoff));
 
-    const rawAverageY =
-      payoffToY != null
-        ? payoffToY(meanPayoff)
-        : (axisTopY + axisBottomY) * 0.5;
-    const labelClearance = 14;
-    const averageY = Math.max(
-      axisTopY + labelClearance,
-      Math.min(axisBottomY - labelClearance, rawAverageY),
-    );
     axisGroup
       .append("line")
       .attr("class", "average-payoff-guide")
       .attr("x1", -(histogramWidth + HISTOGRAM_GAP + 4))
       .attr("x2", 0)
-      .attr("y1", averageY)
-      .attr("y2", averageY);
+      .attr("y1", rawAverageY)
+      .attr("y2", rawAverageY);
+    if (Math.abs(averageLabelY - rawAverageY) > 0.5) {
+      axisGroup
+        .append("line")
+        .attr("class", "annotation-label-leader")
+        .attr("x1", 0)
+        .attr("x2", 6)
+        .attr("y1", rawAverageY)
+        .attr("y2", averageLabelY);
+    }
     axisGroup
       .append("text")
       .attr("x", 8)
-      .attr("y", averageY)
+      .attr("y", averageLabelY)
       .attr("dominant-baseline", "middle")
       .text(payoffFormat(meanPayoff));
+
+    [
+      { rawY: dataTopY, labelY: maxLabelY },
+      { rawY: dataBottomY, labelY: minLabelY },
+    ].forEach(({ rawY, labelY }) => {
+      if (Math.abs(labelY - rawY) <= 0.5) return;
+      axisGroup
+        .append("line")
+        .attr("class", "annotation-label-leader")
+        .attr("x1", 0)
+        .attr("x2", 6)
+        .attr("y1", rawY)
+        .attr("y2", labelY);
+    });
   } else {
     // Price mode: explicit axis limited to histogram data span.
     const priceTicks = d3.ticks(safeFinalMin, safeFinalMax, 4);
@@ -1580,7 +1664,9 @@ onUnmounted(() => {
   top: var(--chart-header-height);
   left: 0;
   width: 100%;
-  height: calc(100% - var(--chart-header-height));
+  height: calc(
+    100% - var(--chart-header-height) - var(--chart-legend-height, 0px)
+  );
   display: block;
   object-fit: contain;
   object-position: center top;
@@ -1785,6 +1871,12 @@ onUnmounted(() => {
   stroke-width: 1;
   stroke-dasharray: 3 5;
   shape-rendering: crispEdges;
+}
+
+:deep(.annotation-label-leader) {
+  stroke: rgba(148, 163, 184, 0.45);
+  stroke-width: 1;
+  shape-rendering: geometricPrecision;
 }
 
 :deep(.forward-value-label) {

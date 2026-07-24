@@ -114,6 +114,7 @@ const SVG_EXPORT_STYLE = `
   .break-even-band { fill: rgba(100, 116, 139, 0.12); }
   .break-even-region text { fill: rgba(148, 163, 184, 0.92); stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-size: 11px; }
   .axis .average-payoff-guide { stroke: rgba(226, 232, 240, 0.55); stroke-width: 1; stroke-dasharray: 3 5; }
+  .annotation-label-leader { stroke: rgba(148, 163, 184, 0.45); stroke-width: 1; }
   .forward-value-label { fill: rgba(148, 163, 184, 0.88); font-size: 11px; font-variant-numeric: tabular-nums; }
 `;
 
@@ -1576,6 +1577,29 @@ watch(
         @set-vol="setVolFromChart"
         @guide-update="updateGuide"
           />
+          <div class="histogram-legend" aria-label="Histogram label legend">
+            <span class="histogram-legend-title">Histogram labels</span>
+            <template v-if="histogramMode === 'price'">
+              <span class="histogram-legend-item">
+                <span class="histogram-legend-mark histogram-legend-mark--axis"></span>
+                Terminal price
+              </span>
+            </template>
+            <template v-else>
+              <span class="histogram-legend-item">
+                <span class="histogram-legend-mark histogram-legend-mark--axis"></span>
+                Top / bottom: max / min PnL
+              </span>
+              <span class="histogram-legend-item">
+                <span class="histogram-legend-mark histogram-legend-mark--average"></span>
+                Dotted: average PnL
+              </span>
+              <span class="histogram-legend-item">
+                <span class="histogram-legend-mark histogram-legend-mark--break-even"></span>
+                Shaded: break-even prices
+              </span>
+            </template>
+          </div>
         </section>
       </div>
     </div>
@@ -1905,11 +1929,14 @@ watch(
 
 .chart-section {
   position: relative;
+  container-type: inline-size;
   width: 100%;
   max-width: var(--workspace-max-width);
   min-width: 0;
   margin: 0;
   --chart-header-height: 40px;
+  /* The legend sits inside the SVG's existing lower plot margin. */
+  --chart-legend-height: 0px;
   height: auto;
   min-height: 0;
   aspect-ratio: 2 / 1;
@@ -1920,7 +1947,9 @@ watch(
   top: var(--chart-header-height);
   left: 0;
   width: 100%;
-  height: calc(100% - var(--chart-header-height));
+  height: calc(
+    100% - var(--chart-header-height) - var(--chart-legend-height)
+  );
   display: block;
   cursor: crosshair;
   z-index: 2;
@@ -1931,10 +1960,78 @@ watch(
   top: var(--chart-header-height);
   left: 0;
   width: 100%;
-  height: calc(100% - var(--chart-header-height));
+  height: calc(
+    100% - var(--chart-header-height) - var(--chart-legend-height)
+  );
   display: block;
   pointer-events: none;
   z-index: 1;
+}
+
+.histogram-legend {
+  position: absolute;
+  right: 3.5%;
+  top: calc(
+    var(--chart-header-height) +
+      min(
+        46.4286cqw,
+        calc(100% - var(--chart-header-height))
+      ) -
+      50px
+  );
+  bottom: auto;
+  left: 3.5%;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 20px;
+  color: #70767d;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.histogram-legend-title {
+  color: #858d95;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.histogram-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.histogram-legend-mark {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 6px;
+}
+
+.histogram-legend-mark--axis {
+  height: 1px;
+  background: rgba(148, 163, 184, 0.7);
+}
+
+.histogram-legend-mark--average {
+  height: 1px;
+  background: repeating-linear-gradient(
+    to right,
+    rgba(226, 232, 240, 0.65) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+.histogram-legend-mark--break-even {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(100, 116, 139, 0.18);
 }
 
 .rows-popover {
