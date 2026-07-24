@@ -28,6 +28,41 @@ const IV_REGIMES = [
   { label: "High IV", rangeLabel: "z ≥ +1", accepts: (zScore) => zScore >= 1 },
 ];
 
+const PRICE_MOVE_COHORT_LABELS = [
+  "Lowest BTC moves",
+  "Middle BTC moves",
+  "Highest BTC moves",
+];
+
+const formatSignedPercent = (value) => {
+  const rounded = Math.abs(value) < 0.0005 ? 0 : value;
+  const sign = rounded < 0 ? "−" : rounded > 0 ? "+" : "";
+  return `${sign}${Math.abs(rounded * 100).toFixed(1)}%`;
+};
+
+const buildPriceMoveGroups = (cycles) => {
+  const ordered = [...cycles].sort(
+    (first, second) =>
+      (first.exitSpot / first.entrySpot) - (second.exitSpot / second.entrySpot),
+  );
+  const baseSize = Math.floor(ordered.length / PRICE_MOVE_COHORT_LABELS.length);
+  const remainder = ordered.length % PRICE_MOVE_COHORT_LABELS.length;
+  let start = 0;
+  return PRICE_MOVE_COHORT_LABELS.map((label, index) => {
+    const size = baseSize + (index < remainder ? 1 : 0);
+    const cohortCycles = ordered.slice(start, start + size);
+    start += size;
+    const moves = cohortCycles.map((cycle) => cycle.exitSpot / cycle.entrySpot - 1);
+    return {
+      label,
+      rangeLabel: moves.length
+        ? `${formatSignedPercent(moves[0])} to ${formatSignedPercent(moves.at(-1))}`
+        : "no observed weeks",
+      cycles: cohortCycles,
+    };
+  });
+};
+
 export const createSeededRandom = (seed = 1) => {
   let state = Number(seed) >>> 0;
   return () => {
@@ -412,7 +447,7 @@ const summarizeMode = ({
   cycles,
   timeGroups,
   ivGroups,
-  muGroups,
+  priceMoveGroups,
   ivMean,
   ivStandardDeviation,
   bayesianEdge,
@@ -439,11 +474,11 @@ const summarizeMode = ({
     hedgeMode,
     bayesianEdge.iv,
   );
-  const muRegimes = summarizeGroups(
-    muGroups,
-    samples.mu,
+  const priceMoveCohorts = summarizeGroups(
+    priceMoveGroups,
+    samples.priceMove,
     hedgeMode,
-    muGroups.map(() => bayesianEdge.combined),
+    bayesianEdge.priceMove,
   );
   const combinedHitRate = summarizeHitRateGroups(
     combinedGroups,
@@ -453,6 +488,12 @@ const summarizeMode = ({
   )[0];
   const timeHitRates = summarizeHitRateGroups(timeGroups, cycles, samples.weekly, hedgeMode);
   const ivHitRates = summarizeHitRateGroups(ivGroups, cycles, samples.weekly, hedgeMode);
+  const priceMoveHitRates = summarizeHitRateGroups(
+    priceMoveGroups,
+    cycles,
+    samples.weekly,
+    hedgeMode,
+  );
   return {
     hedgeMode,
     modelLabel: hedgeMode === "dynamic"
@@ -487,11 +528,12 @@ const summarizeMode = ({
     views: {
       time: timeCohorts,
       iv: ivRegimes,
-      mu: muRegimes,
+      priceMove: priceMoveCohorts,
     },
     hitRateViews: {
       time: timeHitRates,
       iv: ivHitRates,
+      priceMove: priceMoveHitRates,
     },
   };
 };
@@ -503,7 +545,7 @@ const summarize = ({
   cycles,
   timeGroups,
   ivGroups,
-  muGroups,
+  priceMoveGroups,
   ivMean,
   ivStandardDeviation,
   path,
@@ -520,7 +562,7 @@ const summarize = ({
       cycles,
       timeGroups,
       ivGroups,
-      muGroups,
+      priceMoveGroups,
       ivMean,
       ivStandardDeviation,
       bayesianEdge: bayesianByMode[hedgeMode],
@@ -595,12 +637,7 @@ export const runFairValueMonteCarlo = async ({
     rangeLabel: regime.rangeLabel,
     cycles: states.filter((cycle) => regime.accepts(zScoreFor(cycle))),
   }));
-  const muGroups = ANNUAL_DRIFT_VARIANTS.map((annualDrift) => ({
-    label: `μ ${annualDrift < 0 ? "−100%" : annualDrift > 0 ? "+100%" : "0%"}`,
-    rangeLabel: "annual drift",
-    annualDrift,
-    cycles: states,
-  }));
+  const priceMoveGroups = buildPriceMoveGroups(states);
   const timeGroupByCycle = new Map();
   timeGroups.forEach((group, groupIndex) => {
     group.cycles.forEach((cycle) => timeGroupByCycle.set(cycle, groupIndex));
@@ -609,12 +646,16 @@ export const runFairValueMonteCarlo = async ({
   ivGroups.forEach((group, groupIndex) => {
     group.cycles.forEach((cycle) => ivGroupByCycle.set(cycle, groupIndex));
   });
+  const priceMoveGroupByCycle = new Map();
+  priceMoveGroups.forEach((group, groupIndex) => {
+    group.cycles.forEach((cycle) => priceMoveGroupByCycle.set(cycle, groupIndex));
+  });
   const modeSamples = Object.fromEntries(hedgeModes.map((hedgeMode) => [hedgeMode, {
     terminalPnl: [],
     weekly: states.map(() => []),
     time: timeGroups.map(() => []),
     iv: ivGroups.map(() => []),
-    mu: muGroups.map(() => []),
+    priceMove: priceMoveGroups.map(() => []),
   }]));
   const bayesianByMode = Object.fromEntries(hedgeModes.map((hedgeMode, modeIndex) => {
     const baseSeed = (Number(seed) + 0x9e3779b9 + modeIndex * 10_000) >>> 0;
@@ -628,6 +669,7 @@ export const runFairValueMonteCarlo = async ({
       combined: summarizeBayesianEdge({ cycles: states, hedgeMode, seed: baseSeed }),
       time: summarizeGroupsForBayes(timeGroups, 1_000),
       iv: summarizeGroupsForBayes(ivGroups, 2_000),
+      priceMove: summarizeGroupsForBayes(priceMoveGroups, 3_000),
     }];
   }));
   const path = {
@@ -641,10 +683,12 @@ export const runFairValueMonteCarlo = async ({
 
   for (let simulation = 0; simulation < count; simulation += 1) {
     const annualDrift = ANNUAL_DRIFT_VARIANTS[simulation % ANNUAL_DRIFT_VARIANTS.length];
-    const driftIndex = ANNUAL_DRIFT_VARIANTS.indexOf(annualDrift);
     const terminalPnl = Object.fromEntries(hedgeModes.map((mode) => [mode, 0]));
     const timePnl = Object.fromEntries(hedgeModes.map((mode) => [mode, timeGroups.map(() => 0)]));
     const ivPnl = Object.fromEntries(hedgeModes.map((mode) => [mode, ivGroups.map(() => 0)]));
+    const priceMovePnl = Object.fromEntries(
+      hedgeModes.map((mode) => [mode, priceMoveGroups.map(() => 0)]),
+    );
     for (const [cycleIndex, cycle] of states.entries()) {
       const outcomes = simulateWeeklyCycleModes(cycle, normalRandom, annualDrift);
       for (const hedgeMode of hedgeModes) {
@@ -652,13 +696,16 @@ export const runFairValueMonteCarlo = async ({
         modeSamples[hedgeMode].weekly[cycleIndex].push(outcomes[hedgeMode]);
         timePnl[hedgeMode][timeGroupByCycle.get(cycle)] += outcomes[hedgeMode];
         ivPnl[hedgeMode][ivGroupByCycle.get(cycle)] += outcomes[hedgeMode];
+        priceMovePnl[hedgeMode][priceMoveGroupByCycle.get(cycle)] += outcomes[hedgeMode];
       }
     }
     for (const hedgeMode of hedgeModes) {
       modeSamples[hedgeMode].terminalPnl.push(terminalPnl[hedgeMode]);
       timePnl[hedgeMode].forEach((pnl, index) => modeSamples[hedgeMode].time[index].push(pnl));
       ivPnl[hedgeMode].forEach((pnl, index) => modeSamples[hedgeMode].iv[index].push(pnl));
-      modeSamples[hedgeMode].mu[driftIndex].push(terminalPnl[hedgeMode]);
+      priceMovePnl[hedgeMode].forEach(
+        (pnl, index) => modeSamples[hedgeMode].priceMove[index].push(pnl),
+      );
     }
     const completed = simulation + 1;
     if (completed % updateStride === 0 || completed === count) {
@@ -672,7 +719,7 @@ export const runFairValueMonteCarlo = async ({
           cycles: states,
           timeGroups,
           ivGroups,
-          muGroups,
+          priceMoveGroups,
           ivMean,
           ivStandardDeviation,
           path,
@@ -694,7 +741,7 @@ export const runFairValueMonteCarlo = async ({
     cycles: states,
     timeGroups,
     ivGroups,
-    muGroups,
+    priceMoveGroups,
     ivMean,
     ivStandardDeviation,
     path,

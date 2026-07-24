@@ -128,11 +128,13 @@ test("same internal seed reproduces weekly scenarios without mutating historical
   assert.deepEqual(first.returnNull.driftScenarioCounts, { "-1": 7, "0": 7, "1": 6 });
   assert.equal(first.returnNull.pnlCenteredToFairValue, false);
   assert.equal(first.combined.terminalReturnOnPremium.length, 20);
-  assert.deepEqual(first.views.mu.map((group) => group.label), ["μ −100%", "μ 0%", "μ +100%"]);
-  assert.deepEqual(first.views.mu.map((group) => group.terminalPnl.length), [7, 7, 6]);
-  assert.ok(first.views.mu.every((group) => Number.isFinite(group.notionalReturnSummary.mean)));
-  assert.ok(first.views.mu.every((group) =>
-    Math.abs(group.notionalReturnSummary.actualPnl - 0.00125) < 1e-12));
+  assert.deepEqual(first.views.priceMove.map((group) => group.label), [
+    "Lowest BTC moves", "Middle BTC moves", "Highest BTC moves",
+  ]);
+  assert.deepEqual(first.views.priceMove.map((group) => group.weekCount), [2, 1, 1]);
+  assert.ok(first.views.priceMove.every((group) => group.terminalPnl.length === 20));
+  assert.ok(first.views.priceMove.every((group) =>
+    Number.isFinite(group.notionalReturnSummary.mean)));
   assert.equal(first.weeklyOutcomes.length, EMPIRICAL_LOG_RETURNS.length);
   assert.ok(first.weeklyOutcomes.every((week) =>
     Number.isFinite(week.priceMove)
@@ -300,4 +302,36 @@ test("entry IV z-score view groups weeks into low, medium, and high regimes", as
     );
     assert.ok(Math.abs(total - groupedTotal) < 1e-8);
   });
+});
+
+test("observed BTC price-change view splits ranked weeks into three cohorts", async () => {
+  const logReturns = [0.09, -0.03, 0.04, -0.11, 0.01, -0.06, 0.13, -0.01, 0.06];
+  const weeks = logReturns.map((logReturn, index) => {
+    const cycle = buildCycle({ exitIndexPrice: 100_000 * Math.exp(logReturn) });
+    cycle.cycle = index + 1;
+    cycle.entryTime = new Date((entryTs + index * 7 * 86_400) * 1000);
+    cycle.exitTime = new Date((exitTs + index * 7 * 86_400) * 1000);
+    cycle.legs = cycle.legs.map((leg) => ({
+      ...leg,
+      expirationTs: leg.expirationTs + index * 7 * 86_400,
+    }));
+    return cycle;
+  });
+  const result = await runFairValueMonteCarlo({ cycles: weeks, simulations: 12, seed: 27 });
+  const cohorts = result.views.priceMove;
+
+  assert.deepEqual(cohorts.map((group) => group.weekCount), [3, 3, 3]);
+  assert.deepEqual(cohorts.map((group) => group.label), [
+    "Lowest BTC moves", "Middle BTC moves", "Highest BTC moves",
+  ]);
+  assert.match(cohorts[0].rangeLabel, /^−/);
+  assert.match(cohorts[2].rangeLabel, /\+/);
+  result.terminalPnl.forEach((total, simulation) => {
+    const groupedTotal = cohorts.reduce(
+      (sum, group) => sum + group.terminalPnl[simulation],
+      0,
+    );
+    assert.ok(Math.abs(total - groupedTotal) < 1e-8);
+  });
+  assert.deepEqual(result.hitRateViews.priceMove.map((group) => group.weekCount), [3, 3, 3]);
 });

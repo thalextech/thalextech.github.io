@@ -37,7 +37,7 @@ const displayedGroups = computed(() => {
         ? "Actual weekly PnL over time"
         : viewMode.value === "iv"
           ? "Actual weekly PnL by entry IV z-score"
-          : "Actual weekly PnL by BTC move",
+          : "Actual weekly PnL by observed BTC move",
       weeklyOutcomes: modeResult.value?.weeklyOutcomes || [],
     },
   ];
@@ -128,8 +128,8 @@ const draw = () => {
     .attr("role", "img")
     .attr("aria-label", `Three ${viewMode.value === "iv"
       ? "entry IV regime"
-      : viewMode.value === "mu"
-        ? "drift-conditioned"
+      : viewMode.value === "priceMove"
+        ? "observed BTC move"
         : "consecutive cohort"} PnL distributions and actual weekly PnL plotted by ${viewMode.value === "time"
       ? "date"
       : viewMode.value === "iv"
@@ -345,7 +345,7 @@ const draw = () => {
     const y = d3.scaleLinear().domain([0, d3.max(bins, (bin) => bin.length) || 1]).nice()
       .range([plotBottom, plotTop]);
 
-    const panelTitle = viewMode.value === "iv" || viewMode.value === "mu"
+    const panelTitle = viewMode.value === "iv" || viewMode.value === "priceMove"
       ? `${cohort.label} · ${cohort.rangeLabel}`
       : `${cohort.label} · ${formatDate(cohort.startDate)} – ${formatDate(cohort.endDate)}`;
     const panelSubtitle = cohort.weekCount
@@ -484,11 +484,11 @@ defineExpose({ exportPng });
                       Entry IV is standardized into Low, Medium, and High regimes across the
                       {{ completedWeekCount }} completed weeks.
                     </template><template v-else>
-                      The first three panels hold all completed weeks fixed and separate the −100%, 0%, and +100% annual
-                      drift assumptions.
+                      Weeks are ranked by their observed BTC price change from entry to exit, then split into equal-count
+                      lowest, middle, and highest move cohorts across the {{ completedWeekCount }} completed weeks.
                     </template>
                     The fourth panel follows the selected view: actual weekly PnL over calendar time for T, against entry-IV
-                    z-score for σ, or against the week's BTC return for μ.
+                    z-score for σ, or against the week's observed BTC return for Δ.
                     Bars show simulated PnL divided by the total option value paid or received when the trades in that
                     panel were opened, which makes differently sized cohorts comparable; it is not return on the strategy's
                     $100k notional. The brighter band contains the middle 90% of null outcomes and the fainter band contains
@@ -504,7 +504,7 @@ defineExpose({ exportPng });
               <div class="groupingToggle" role="group" aria-label="Group distributions by">
                 <button type="button" :aria-pressed="viewMode === 'time'" title="Time cohorts" @click="viewMode = 'time'">T</button>
                 <button type="button" :aria-pressed="viewMode === 'iv'" title="Entry IV" @click="viewMode = 'iv'">σ</button>
-                <button type="button" :aria-pressed="viewMode === 'mu'" title="Drift" @click="viewMode = 'mu'">μ</button>
+                <button type="button" :aria-pressed="viewMode === 'priceMove'" title="Observed BTC price change cohorts" @click="viewMode = 'priceMove'">Δ</button>
               </div>
             </div>
             <div class="controlRow">
