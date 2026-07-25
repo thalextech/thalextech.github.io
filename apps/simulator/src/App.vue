@@ -2,6 +2,8 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import CloudChart from "./components/CloudChart.vue";
 import PositionBuilder from "./components/PositionBuilder.vue";
+import StopLossSimulator from "./components/StopLossSimulator.vue";
+import type { AtmOptionExpiryQuote } from "./lib/atmOptionChain";
 import type { GBMParams } from "./lib/gbm";
 import type { PositionLeg, OptionLeg } from "./lib/position";
 import {
@@ -41,6 +43,7 @@ const EXPORT_PADDING_BOTTOM = 48;
 
 const generateSeed = (): number => Math.floor(Math.random() * 1_000_000_000);
 const seed = ref(generateSeed());
+const activeSimulatorTab = ref<"strategy" | "stop-loss">("strategy");
 const appMainRef = ref<HTMLElement | null>(null);
 const chartSectionRef = ref<HTMLElement | null>(null);
 const guideMu = ref<number | null>(null);
@@ -377,7 +380,9 @@ const handleSavePng = (): void => {
   exportInProgress.value = true;
   void exportElementScreenshot(
     appMainRef.value,
-    `simulator-${histogramMode.value}.png`,
+    activeSimulatorTab.value === "stop-loss"
+      ? "simulator-stop-loss-comparison.png"
+      : `simulator-${histogramMode.value}.png`,
   )
     .catch((error) => {
       console.error("Failed to export simulator PNG", error);
@@ -397,7 +402,14 @@ const setMuFromChart = (mu: number): void => {
 const setVolFromChart = (vol: number): void => {
   if (!Number.isFinite(vol)) return;
   const clamped = clamp(vol, volBounds.min, volBounds.max);
-  pendingParams.vol = roundTo(clamped, 2);
+  const next = roundTo(clamped, 2);
+  if (
+    Math.abs(pendingParams.vol - next) < 1e-9 &&
+    Math.abs(appliedParams.vol - next) < 1e-9
+  ) {
+    return;
+  }
+  pendingParams.vol = next;
   applyParams();
 };
 
@@ -760,6 +772,7 @@ const normalizeInstrument = (
   instrument: ThalexInstrument,
 ): ResolvedInstrument | null => {
   if (!instrument?.instrument_name) return null;
+  const indexName = instrument.index_name ?? instrument.underlying;
   const optionTypeRaw = instrument.option_type?.toLowerCase?.();
   const optionType =
     optionTypeRaw === "p" || optionTypeRaw === "put"
@@ -776,7 +789,7 @@ const normalizeInstrument = (
   if (optionType && Number.isFinite(strike) && Number.isFinite(expiration)) {
     return {
       instrument_name: instrument.instrument_name,
-      index_name: instrument.index_name,
+      index_name: indexName,
       option_type: optionType,
       strike_price: strike,
       expiration_timestamp: expiration,
@@ -787,7 +800,7 @@ const normalizeInstrument = (
   if (!parsed) return null;
   return {
     ...parsed,
-    index_name: instrument.index_name,
+    index_name: indexName,
     create_time: createTime ?? undefined,
   };
 };
@@ -801,6 +814,9 @@ const normalizedOptionInstruments = computed<ResolvedInstrument[]>(() =>
 const optionLegs = computed(() =>
   positionLegs.value.filter((leg): leg is OptionLeg => leg.kind === "option"),
 );
+
+const isTickerRequested = (name: string): boolean =>
+  requestedInstrumentNames.value.includes(name);
 
 const MARK_RETRY_DELAY_MS = 1500;
 const MARK_RETRY_MAX = 2;
@@ -830,7 +846,7 @@ const fetchMarkSnapshot = async (name: string): Promise<boolean> => {
   try {
     const ticker = await fetchLatestMarkPrice(name);
     if (!ticker) return false;
-    if (!selectedInstrumentNames.value.includes(name)) return false;
+    if (!isTickerRequested(name)) return false;
     setTickerSnapshot(name, ticker);
     clearMarkRetry(name);
     return true;
@@ -849,7 +865,7 @@ const scheduleMarkRetry = (name: string): void => {
   markRetryAttempts.set(name, attempts + 1);
   const timer = setTimeout(async () => {
     markRetryTimers.delete(name);
-    if (!selectedInstrumentNames.value.includes(name)) {
+    if (!isTickerRequested(name)) {
       markRetryAttempts.delete(name);
       return;
     }
@@ -994,6 +1010,123 @@ const indexDisplay = computed(() => {
   };
 });
 
+type AtmExpiryInstruments = {
+  expirationTs: number;
+  strike: number;
+  callInstrumentName: string;
+  putInstrumentName: string | null;
+};
+
+const stopLossAtmExpiryInstruments = computed<AtmExpiryInstruments[]>(() => {
+  const spot = Number(indexDisplay.value?.price ?? appliedParams.s0);
+  if (!Number.isFinite(spot) || spot <= 0) return [];
+  const nowTs = Math.floor(Date.now() / 1000);
+  const activeUnderlyingPrefix = activeIndexName.value?.replace(/USD$/, "");
+  const chain = normalizedOptionInstruments.value.filter((instrument) => {
+    const expiryTs = Number(instrument.expiration_timestamp);
+    if (!Number.isFinite(expiryTs) || expiryTs <= nowTs) return false;
+    if (activeIndexName.value) {
+      if (
+        instrument.index_name &&
+        instrument.index_name !== activeIndexName.value
+      ) {
+        return false;
+      }
+      if (
+        !instrument.index_name &&
+        activeUnderlyingPrefix &&
+        !instrument.instrument_name.startsWith(`${activeUnderlyingPrefix}-`)
+      ) {
+        return false;
+      }
+    }
+    return Number.isFinite(Number(instrument.strike_price));
+  });
+
+  const byExpiry = new Map<number, ResolvedInstrument[]>();
+  for (const instrument of chain) {
+    const expiryTs = Number(instrument.expiration_timestamp);
+    const group = byExpiry.get(expiryTs) ?? [];
+    group.push(instrument);
+    byExpiry.set(expiryTs, group);
+  }
+
+  const rows: AtmExpiryInstruments[] = [];
+  for (const [expirationTs, instrumentsForExpiry] of byExpiry) {
+    const calls = instrumentsForExpiry.filter(
+      (instrument) => instrument.option_type === "call",
+    );
+    if (!calls.length) continue;
+    let atmCall = calls[0];
+    let bestDistance = Math.abs(Number(atmCall.strike_price) - spot);
+    for (let index = 1; index < calls.length; index += 1) {
+      const candidate = calls[index];
+      const distance = Math.abs(Number(candidate.strike_price) - spot);
+      if (
+        distance < bestDistance ||
+        (distance === bestDistance &&
+          Number(candidate.strike_price) < Number(atmCall.strike_price))
+      ) {
+        atmCall = candidate;
+        bestDistance = distance;
+      }
+    }
+    const strike = Number(atmCall.strike_price);
+    const matchingPut = instrumentsForExpiry.find(
+      (instrument) =>
+        instrument.option_type === "put" &&
+        Number(instrument.strike_price) === strike,
+    );
+    rows.push({
+      expirationTs,
+      strike,
+      callInstrumentName: atmCall.instrument_name,
+      putInstrumentName: matchingPut?.instrument_name ?? null,
+    });
+  }
+
+  return rows.sort((left, right) => left.expirationTs - right.expirationTs);
+});
+
+const stopLossInstrumentNames = computed(() =>
+  stopLossAtmExpiryInstruments.value.flatMap((expiry) =>
+    expiry.putInstrumentName
+      ? [expiry.callInstrumentName, expiry.putInstrumentName]
+      : [expiry.callInstrumentName],
+  ),
+);
+
+const stopLossExpiryQuotes = computed<AtmOptionExpiryQuote[]>(() =>
+  stopLossAtmExpiryInstruments.value.map((expiry) => {
+    const callSnapshot = tickerByInstrument.value[expiry.callInstrumentName];
+    const putSnapshot = expiry.putInstrumentName
+      ? tickerByInstrument.value[expiry.putInstrumentName]
+      : null;
+    const fetchedAtCandidates = [
+      callSnapshot?.fetchedAt,
+      putSnapshot?.fetchedAt,
+    ].filter((value): value is number => Number.isFinite(value));
+    return {
+      ...expiry,
+      callIv: extractTickerIV(callSnapshot?.data),
+      callMark: extractTickerMark(callSnapshot?.data),
+      putMark: extractTickerMark(putSnapshot?.data),
+      fetchedAt: fetchedAtCandidates.length
+        ? Math.min(...fetchedAtCandidates)
+        : null,
+    };
+  }),
+);
+
+const requestedInstrumentNames = computed(() =>
+  Array.from(
+    new Set([
+      ...selectedInstrumentNames.value,
+      ...stopLossInstrumentNames.value,
+    ]),
+  ),
+);
+
 const activeIndexName = computed<string | null>(
   () => resolvedIndexNames.value[0] ?? null,
 );
@@ -1113,6 +1246,25 @@ const optionPricingByLegId = computed<Record<string, OptionPricingInput>>(
   },
 );
 
+const strategySimulationReady = computed(() => {
+  if (!defaultTradeInitialized.value) return false;
+  if (optionLegs.value.length > 0 && instruments.value.length === 0) {
+    return false;
+  }
+  return optionLegs.value.every((leg) => {
+    const instrument = resolveInstrumentForLeg(leg);
+    if (!instrument) return true;
+    const snapshot = tickerByInstrument.value[instrument.instrument_name];
+    const pricing = optionPricingByLegId.value[leg.id];
+    return (
+      snapshot != null &&
+      Number.isFinite(pricing?.iv) &&
+      Number(pricing?.iv) > 0 &&
+      Number.isFinite(pricing?.mark)
+    );
+  });
+});
+
 const quoteValuationTs = computed<number>(() => {
   const fetchedAtMs: number[] = [];
   const indexFetchedAt = activeIndexSnapshot.value?.fetchedAt;
@@ -1120,7 +1272,7 @@ const quoteValuationTs = computed<number>(() => {
     fetchedAtMs.push(Number(indexFetchedAt));
   }
 
-  for (const name of selectedInstrumentNames.value) {
+  for (const name of requestedInstrumentNames.value) {
     const fetchedAt = tickerByInstrument.value[name]?.fetchedAt;
     if (Number.isFinite(fetchedAt)) {
       fetchedAtMs.push(Number(fetchedAt));
@@ -1250,7 +1402,7 @@ onMounted(async () => {
 });
 
 watch(
-  selectedInstrumentNames,
+  requestedInstrumentNames,
   async (names) => {
     if (!names.length) {
       for (const name of Array.from(markRetryTimers.keys())) {
@@ -1304,6 +1456,25 @@ watch(
       <div class="top-bar-content">
         <div class="wordmark">Simulator</div>
         <div class="top-divider" aria-hidden="true"></div>
+        <nav class="simulator-tabs" aria-label="Simulator views">
+          <button
+            type="button"
+            :class="{ 'is-active': activeSimulatorTab === 'strategy' }"
+            :aria-current="activeSimulatorTab === 'strategy' ? 'page' : undefined"
+            @click="activeSimulatorTab = 'strategy'"
+          >
+            Strategy
+          </button>
+          <button
+            type="button"
+            :class="{ 'is-active': activeSimulatorTab === 'stop-loss' }"
+            :aria-current="activeSimulatorTab === 'stop-loss' ? 'page' : undefined"
+            @click="activeSimulatorTab = 'stop-loss'"
+          >
+            Stop-loss
+          </button>
+        </nav>
+        <div class="top-divider" aria-hidden="true"></div>
         <div class="underlying-toggle" role="group" aria-label="Underlying">
           <button
             v-for="opt in UNDERLYING_OPTIONS"
@@ -1326,7 +1497,7 @@ watch(
           {{ exportInProgress ? "Saving..." : "Save PNG" }}
         </button>
         <a
-          v-if="thalexUrl"
+          v-if="thalexUrl && activeSimulatorTab === 'strategy'"
           :href="thalexUrl"
           class="trade-thalex-button"
           target="_blank"
@@ -1338,7 +1509,7 @@ watch(
     </header>
 
     <div class="workspace-container">
-      <section class="builder-section">
+      <section v-if="activeSimulatorTab === 'strategy'" class="builder-section">
         <PositionBuilder
           v-model:legs="positionLegs"
           :spot="appliedParams.s0"
@@ -1352,7 +1523,7 @@ watch(
         />
       </section>
 
-      <div class="simulation-main">
+      <div v-if="activeSimulatorTab === 'strategy'" class="simulation-main">
         <section ref="chartSectionRef" class="chart-section">
           <div class="chart-header">
             <div class="chart-header-left">
@@ -1559,6 +1730,7 @@ watch(
         </div>
       </div>
           <CloudChart
+        v-if="strategySimulationReady"
         :seed="seed"
         :params="appliedParams"
         :valuationTs="quoteValuationTs"
@@ -1568,6 +1740,7 @@ watch(
         :volMin="volBounds.min"
         :volMax="volBounds.max"
         :histMode="histogramMode"
+        :histogramOpacity="0.9"
         :colorMin="colorMinPercent / 100"
         :colorMax="colorMaxPercent / 100"
         :histBinsMultiplier="histBinsMultiplier"
@@ -1577,6 +1750,9 @@ watch(
         @set-vol="setVolFromChart"
         @guide-update="updateGuide"
           />
+          <div v-else class="strategy-chart-loading">
+            Loading selected option quotes…
+          </div>
           <div class="histogram-legend" aria-label="Histogram label legend">
             <span class="histogram-legend-title">Histogram labels</span>
             <template v-if="histogramMode === 'price'">
@@ -1602,6 +1778,20 @@ watch(
           </div>
         </section>
       </div>
+      <StopLossSimulator
+        v-else
+        :key="underlying"
+        :seed="seed"
+        :params="appliedParams"
+        :valuationTs="quoteValuationTs"
+        :samplePathLimit="cloudPathLimit"
+        :colorMin="colorMinPercent / 100"
+        :colorMax="colorMaxPercent / 100"
+        :histBinsMultiplier="histBinsMultiplier"
+        :expiryQuotes="stopLossExpiryQuotes"
+        @set-mu="setMuFromChart"
+        @set-vol="setVolFromChart"
+      />
     </div>
   </main>
 </template>
@@ -1612,8 +1802,8 @@ watch(
   --color-surface: #131316;
   --color-text: #e8eaed;
   --color-text-muted: #70767d;
-  --color-border: rgba(255, 255, 255, 0.09);
-  --color-border-strong: rgba(255, 255, 255, 0.2);
+  --color-border: transparent;
+  --color-border-strong: transparent;
 }
 
 :global(body) {
@@ -1641,8 +1831,15 @@ watch(
   font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
 }
 
+.app-main :deep(*) {
+  border-color: transparent !important;
+}
+
+.app-main :deep(:focus-visible) {
+  outline: none;
+}
+
 :deep(input),
-:deep(select),
 :deep(textarea),
 :deep(button) {
   font-family: inherit;
@@ -1700,13 +1897,36 @@ watch(
 }
 
 .top-divider {
-  width: 1px;
-  height: 20px;
-  background: rgba(255, 255, 255, 0.08);
+  display: none;
 }
 
 .top-spacer {
   flex: 1;
+}
+
+.simulator-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.simulator-tabs button {
+  height: var(--top-control-height);
+  padding: 0 11px;
+  border-radius: 7px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.simulator-tabs button:hover:not(.is-active) {
+  color: var(--color-text);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.simulator-tabs button.is-active {
+  color: var(--color-text);
+  background: var(--color-surface);
 }
 
 .underlying-toggle {
@@ -1966,6 +2186,18 @@ watch(
   display: block;
   pointer-events: none;
   z-index: 1;
+}
+
+.strategy-chart-loading {
+  position: absolute;
+  top: var(--chart-header-height);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  font-size: 10px;
 }
 
 .histogram-legend {

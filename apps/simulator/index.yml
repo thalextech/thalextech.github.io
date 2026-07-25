@@ -1,3 +1,3 @@
 title: "Simulator"
-description: "Simulate price paths for a multi-leg combination with configurable drift, volatility, and horizon."
+description: "Simulate multi-leg strategies or compare an ATM option with a risk-matched perpetual stop across the same price paths."
 image: "/images/simulator.png"

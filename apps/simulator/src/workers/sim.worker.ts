@@ -19,6 +19,10 @@ type SimWorkerRequest = {
   histBins: number;
   histBinsMultiplier: number;
   samplePathLimit: number;
+  samplingStopLoss?: {
+    side: "buy" | "sell";
+    price: number;
+  };
 };
 
 type SimBin = {
@@ -49,6 +53,10 @@ type SimWorkerSuccess = {
   maxPayoff: number;
   maxDrawdown: number;
   winRate: number;
+  p05Payoff: number;
+  p95Payoff: number;
+  maxLossRate: number;
+  opportunityCost: number;
 };
 
 type SimWorkerError = {
@@ -72,6 +80,7 @@ type PreparedFuturePathLeg = {
   entry: number | null;
   stopLoss: number | null;
   isBuy: boolean;
+  annualFundingRate: number;
 };
 type TailCandidate = {
   index: number;
@@ -264,6 +273,9 @@ const prepareLegs = (
         entry,
         stopLoss,
         isBuy: future.side === "buy",
+        annualFundingRate: Number.isFinite(future.annualFundingRate)
+          ? Number(future.annualFundingRate)
+          : 0,
       });
       continue;
     }
@@ -343,14 +355,28 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   let payoffMax = Number.NEGATIVE_INFINITY;
   let payoffSum = 0;
   let wins = 0;
+  let maxLossHits = 0;
+  let opportunityCostSum = 0;
   let maxDrawdown = 0;
+  let highestStoppedFinalPrice = Number.NEGATIVE_INFINITY;
+  let highestStoppedFinalIndex: number | null = null;
+  const optionPremiumAtRisk = optionLegs.reduce(
+    (sum, leg) =>
+      leg.sign > 0 ? sum + leg.qty * Math.max(0, leg.entryPrice) : sum,
+    0,
+  );
 
   for (let r = 0; r < rows; r += 1) {
     let s = baseline;
     let peak = baseline;
     let worstDrawdown = 0;
+    let samplingStopHit = false;
     const stopHit =
       futureLegs.length > 0 ? new Uint8Array(futureLegs.length) : null;
+    const stopHitStep =
+      futureLegs.length > 0
+        ? new Int32Array(futureLegs.length).fill(-1)
+        : null;
 
     for (let c = 0; c < steps; c += 1) {
       const z = randn();
@@ -375,8 +401,15 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
             (!leg.isBuy && Number.isFinite(s) && s >= leg.stopLoss)
           ) {
             stopHit[i] = 1;
+            if (stopHitStep) stopHitStep[i] = c;
           }
         }
+      }
+      if (!samplingStopHit && request.samplingStopLoss) {
+        samplingStopHit =
+          request.samplingStopLoss.side === "buy"
+            ? s <= request.samplingStopLoss.price
+            : s >= request.samplingStopLoss.price;
       }
     }
 
@@ -410,12 +443,46 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
             ? leg.stopLoss
             : s;
         total += leg.sign * leg.qty * (exitPrice - entryPrice);
+        // Opportunity cost of a bad stop: path hit the stop, then recovered
+        // past it by horizon. Price-only (matches stop-path highlight).
+        if (leg.stopLoss != null && stopHit?.[i]) {
+          const recovered =
+            (leg.isBuy && s > leg.stopLoss) ||
+            (!leg.isBuy && s < leg.stopLoss);
+          if (recovered) {
+            opportunityCostSum += leg.sign * leg.qty * (s - leg.stopLoss);
+          }
+        }
+        const fundedSteps =
+          stopHitStep?.[i] != null && stopHitStep[i] >= 0
+            ? stopHitStep[i] + 1
+            : steps;
+        const fundedYears = fundedSteps * request.params.dt;
+        total -=
+          leg.sign *
+          leg.qty *
+          entryPrice *
+          leg.annualFundingRate *
+          fundedYears;
       }
     }
 
     payoffs[r] = total;
     payoffSum += total;
     if (total > 0) wins += 1;
+    const stopped = stopHit?.some((value) => value === 1) ?? false;
+    if (
+      (futureLegs.length > 0 && stopped) ||
+      (futureLegs.length === 0 &&
+        optionPremiumAtRisk > 0 &&
+        total <= -0.99 * optionPremiumAtRisk)
+    ) {
+      maxLossHits += 1;
+    }
+    if ((stopped || samplingStopHit) && s > highestStoppedFinalPrice) {
+      highestStoppedFinalPrice = s;
+      highestStoppedFinalIndex = r;
+    }
     if (total < payoffMin) payoffMin = total;
     if (total > payoffMax) payoffMax = total;
 
@@ -439,6 +506,14 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   const medianPayoff = medianOfTypedArray(payoffs);
   const maxPayoff = payoffMax;
   const winRate = rows > 0 ? wins / rows : 0;
+  const maxLossRate = rows > 0 ? maxLossHits / rows : 0;
+  // Probability-weight each path equally (1 / N) so this is expected
+  // opportunity cost, not a raw Monte Carlo total.
+  const opportunityCost = rows > 0 ? opportunityCostSum / rows : 0;
+  const sortedPayoffs = Float64Array.from(payoffs);
+  sortedPayoffs.sort();
+  const p05Payoff = quantileSorted(sortedPayoffs, 0.05);
+  const p95Payoff = quantileSorted(sortedPayoffs, 0.95);
 
   const maxDelta = Math.max(
     Math.abs(pathMin - baseline),
@@ -525,6 +600,9 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
     addTailPercentileSamples(lowTailPool, 3);
     addTailPercentileSamples(highTailPool, 3);
   }
+  if (highestStoppedFinalIndex != null) {
+    sampleIndexSet.add(highestStoppedFinalIndex);
+  }
   const sampleIndices = Array.from(sampleIndexSet).sort((a, b) => a - b);
   const sampleIndexToRow = new Map<number, number>();
   for (let i = 0; i < sampleIndices.length; i += 1) {
@@ -577,6 +655,10 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
     maxPayoff,
     maxDrawdown,
     winRate,
+    p05Payoff,
+    p95Payoff,
+    maxLossRate,
+    opportunityCost,
   };
 };
 

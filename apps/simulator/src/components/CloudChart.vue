@@ -3,12 +3,22 @@ import { onMounted, onUnmounted, ref, watch } from "vue";
 import * as d3 from "d3";
 import type { GBMParams } from "../lib/gbm";
 import type { PositionLeg } from "../lib/position";
+import type { SimulationStats } from "../lib/simulation";
 import SimWorker from "../workers/sim.worker?worker";
 
 type OptionPricingInput = {
   iv: number | null;
   mark: number | null;
   expirationTs: number | null;
+};
+
+type StopPathSummary = {
+  stoppedPathCount: number;
+  sampledPathCount: number;
+  highlightedLoss: number;
+  stopDay: number;
+  finalPrice: number;
+  opportunityCost: number;
 };
 
 const props = defineProps<{
@@ -20,6 +30,7 @@ const props = defineProps<{
   volMin?: number;
   volMax?: number;
   histMode?: "price" | "payoff" | "prob";
+  histogramOpacity?: number;
   colorMin?: number;
   colorMax?: number;
   histBinsMultiplier?: number;
@@ -27,12 +38,21 @@ const props = defineProps<{
   optionPricingByLegId?: Record<string, OptionPricingInput>;
   histBins?: number;
   samplePathLimit?: number;
+  comparisonLegs?: PositionLeg[];
+  comparisonOptionPricingByLegId?: Record<string, OptionPricingInput>;
+  primarySeriesLabel?: string;
+  comparisonSeriesLabel?: string;
+  comparisonReferencePrice?: number;
+  pathFilter?: "all" | "stopped";
 }>();
 
 const emit = defineEmits<{
   (event: "set-mu", value: number): void;
   (event: "set-vol", value: number): void;
   (event: "guide-update", value: { mu: number; vol: number }): void;
+  (event: "stats-update", value: SimulationStats): void;
+  (event: "comparison-stats-update", value: SimulationStats): void;
+  (event: "stop-path-update", value: StopPathSummary | null): void;
 }>();
 
 const svgRef = ref<SVGSVGElement | null>(null);
@@ -47,6 +67,8 @@ type HistogramTooltipState = {
   paths: string;
   medianPayoff: string;
   averagePayoff: string;
+  primaryContribution?: string;
+  comparisonContribution?: string;
   accent: string;
 };
 const histogramTooltip = ref<HistogramTooltipState | null>(null);
@@ -58,11 +80,11 @@ const HISTOGRAM_BIN_COUNT = 100;
 const COLOR_T_MIN = 0.15;
 const COLOR_T_MAX = 0.85;
 const COLOR_T_MID = 0.5;
-const CHART_WIDTH = 1120;
+const CHART_WIDTH = 1200;
 const CHART_HEIGHT = 520;
-const CHART_MARGIN = { top: 18, right: 86, bottom: 38, left: 46 };
-const HISTOGRAM_WIDTH = 212;
-const HISTOGRAM_GAP = 34;
+const CHART_MARGIN = { top: 18, right: 112, bottom: 38, left: 46 };
+const HISTOGRAM_WIDTH = 200;
+const HISTOGRAM_GAP = 28;
 const MAIN_WIDTH =
   CHART_WIDTH -
   CHART_MARGIN.left -
@@ -87,6 +109,21 @@ const formatTooltipPayoff = (value: number): string => {
   const maximumFractionDigits = absolute >= 1000 ? 0 : absolute >= 100 ? 1 : 2;
   return `${sign}$${absolute.toLocaleString("en-US", {
     maximumFractionDigits,
+  })}`;
+};
+
+const formatTooltipContribution = (value: number): string => {
+  if (!Number.isFinite(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  const absolute = Math.abs(value);
+  const fractionDigits = absolute > 0 && absolute < 0.01
+    ? 4
+    : absolute < 1
+      ? 2
+      : 0;
+  return `${sign}$${absolute.toLocaleString("en-US", {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
   })}`;
 };
 
@@ -116,6 +153,10 @@ type SimWorkerRequest = {
   histBins: number;
   histBinsMultiplier: number;
   samplePathLimit: number;
+  samplingStopLoss?: {
+    side: "buy" | "sell";
+    price: number;
+  };
 };
 
 type SimBin = {
@@ -191,6 +232,10 @@ type SimWorkerSuccess = {
   maxPayoff: number;
   maxDrawdown: number;
   winRate: number;
+  p05Payoff: number;
+  p95Payoff: number;
+  maxLossRate: number;
+  opportunityCost: number;
 };
 
 type SimWorkerError = {
@@ -216,6 +261,10 @@ type SimComputation = {
   maxPayoff: number;
   maxDrawdown: number;
   winRate: number;
+  p05Payoff: number;
+  p95Payoff: number;
+  maxLossRate: number;
+  opportunityCost: number;
 };
 
 const sanitizeParamsForWorker = (params: GBMParams): GBMParams => ({
@@ -252,6 +301,9 @@ const sanitizeLegsForWorker = (
             leg.stopLoss == null || !Number.isFinite(Number(leg.stopLoss))
               ? null
               : Number(leg.stopLoss),
+          annualFundingRate: Number.isFinite(Number(leg.annualFundingRate))
+            ? Number(leg.annualFundingRate)
+            : 0,
         },
   );
 
@@ -289,7 +341,10 @@ type InteractionHandlers = {
 };
 
 let cloudRevealRaf: number | null = null;
-let drawScheduleRaf: number | null = null;
+let drawScheduleTimer: ReturnType<typeof setTimeout> | null = null;
+let drawInFlight = false;
+let drawQueued = false;
+let componentMounted = false;
 let scene: SceneHandles | null = null;
 let interactionHandlers: InteractionHandlers | null = null;
 let canvasTransformCache: {
@@ -365,6 +420,10 @@ const handleWorkerMessage = (
     maxPayoff: payload.maxPayoff,
     maxDrawdown: payload.maxDrawdown,
     winRate: payload.winRate,
+    p05Payoff: payload.p05Payoff,
+    p95Payoff: payload.p95Payoff,
+    maxLossRate: payload.maxLossRate,
+    opportunityCost: payload.opportunityCost,
   });
 };
 
@@ -466,6 +525,7 @@ const updateDynamicScene = (
   canvas: HTMLCanvasElement,
   canvasCtx: CanvasRenderingContext2D,
   sim: SimComputation,
+  comparisonSim: SimComputation | null = null,
 ): void => {
   const { svg, defs, plotGroup, interactionLayer, histogramGroup } =
     sceneHandles;
@@ -533,9 +593,17 @@ const updateDynamicScene = (
     payoffMin,
     payoffMax,
     meanPayoff,
-    maxPayoff,
   } = sim;
-  const breakEvenPrices = computeBreakEvenPrices(bins);
+  const optionBreakEvenPrices = computeBreakEvenPrices(bins);
+  const comparisonReferencePrice = Number(props.comparisonReferencePrice);
+  const breakEvenPrices =
+    comparisonSim &&
+    optionBreakEvenPrices.length &&
+    Number.isFinite(comparisonReferencePrice)
+      ? [optionBreakEvenPrices[0], comparisonReferencePrice]
+      : comparisonSim
+        ? []
+        : optionBreakEvenPrices;
 
   const maxDelta = Math.max(
     Math.abs(pathMin - baseline),
@@ -608,6 +676,115 @@ const updateDynamicScene = (
     canvasCtx.fill();
     canvasCtx.restore();
   };
+
+  const stopLeg = props.comparisonLegs?.find(
+    (leg): leg is Extract<PositionLeg, { kind: "future" }> =>
+      leg.kind === "future" &&
+      leg.stopLoss != null &&
+      Number.isFinite(leg.stopLoss),
+  );
+  const stoppedPaths = stopLeg
+    ? paths.flatMap((path, pathIndex) => {
+        let stopStep = -1;
+        for (let step = 0; step < path.length; step += 1) {
+          const price = path[step];
+          const hit =
+            stopLeg.side === "buy"
+              ? price <= Number(stopLeg.stopLoss)
+              : price >= Number(stopLeg.stopLoss);
+          if (hit) {
+            stopStep = step;
+            break;
+          }
+        }
+        if (stopStep < 0) return [];
+        const sign = stopLeg.side === "buy" ? 1 : -1;
+        const entry = Number.isFinite(stopLeg.entry)
+          ? stopLeg.entry
+          : baseline;
+        const stopPrice = Number(stopLeg.stopLoss);
+        const fundedYears = (stopStep + 1) * props.params.dt;
+        const funding =
+          sign *
+          stopLeg.qty *
+          entry *
+          Number(stopLeg.annualFundingRate ?? 0) *
+          fundedYears;
+        const payoff =
+          sign * stopLeg.qty * (stopPrice - entry) - funding;
+        const finalPrice = sampledFinalPrices[pathIndex] ?? baseline;
+        return [
+          {
+            pathIndex,
+            stopStep,
+            payoff,
+            finalPrice,
+            opportunityCost:
+              sign * stopLeg.qty * (finalPrice - stopPrice),
+          },
+        ];
+      })
+    : [];
+  const stoppedPathIndices = stoppedPaths.map(({ pathIndex }) => pathIndex);
+  const highestFinishingStoppedPath = stoppedPaths.length
+    ? stoppedPaths.reduce((highest, candidate) =>
+        candidate.finalPrice > highest.finalPrice ? candidate : highest,
+      )
+    : null;
+  emit(
+    "stop-path-update",
+    highestFinishingStoppedPath
+      ? {
+          stoppedPathCount: stoppedPaths.length,
+          sampledPathCount: paths.length,
+          highlightedLoss: highestFinishingStoppedPath.payoff,
+          stopDay:
+            (highestFinishingStoppedPath.stopStep + 1) *
+            props.params.dt *
+            365.25,
+          finalPrice: highestFinishingStoppedPath.finalPrice,
+          opportunityCost: highestFinishingStoppedPath.opportunityCost,
+        }
+      : null,
+  );
+  const activeCloudIndices =
+    props.pathFilter === "stopped" ? stoppedPathIndices : d3.range(paths.length);
+  if (
+    props.pathFilter === "stopped" &&
+    highestFinishingStoppedPath != null
+  ) {
+    const highlightedPath =
+      paths[highestFinishingStoppedPath.pathIndex];
+    const highlightValues = [baseline, ...highlightedPath];
+    const highlightLine = d3
+      .line<number>()
+      .x((_value, index) => x(index))
+      .y((value) => y(value));
+    plotGroup
+      .append("path")
+      .attr("class", "stopped-path-highlight")
+      .attr("d", highlightLine(highlightValues));
+
+    const stopStep = highestFinishingStoppedPath.stopStep;
+    const beforeStop = stopStep === 0
+      ? baseline
+      : highlightedPath[stopStep - 1];
+    const afterStop = highlightedPath[stopStep];
+    const stopPrice = Number(stopLeg?.stopLoss);
+    const crossingProgress =
+      Number.isFinite(beforeStop) &&
+      Number.isFinite(afterStop) &&
+      Number.isFinite(stopPrice) &&
+      afterStop !== beforeStop
+        ? clamp((stopPrice - beforeStop) / (afterStop - beforeStop), 0, 1)
+        : 1;
+    plotGroup
+      .append("circle")
+      .attr("class", "stopped-path-marker")
+      .attr("cx", x(stopStep + crossingProgress))
+      .attr("cy", y(stopPrice))
+      .attr("r", 2.4);
+  }
 
   const baselineY = y(baseline);
 
@@ -757,45 +934,10 @@ const updateDynamicScene = (
     }
   };
 
-  // Display-only smoothing to fill interior empty histogram bins.
-  // Keeps tails untouched and does not affect simulation stats.
-  const smoothDisplayBins = (input: SimBin[]): SimBin[] => {
-    if (input.length < 3) return input;
-    const output = input.map((bin) => ({ ...bin }));
-    const maxBridgeGap = 6;
-
-    for (let i = 1; i < output.length - 1; i += 1) {
-      if (output[i].count > 0) continue;
-
-      let left = i - 1;
-      while (left >= 0 && output[left].count <= 0) left -= 1;
-      let right = i + 1;
-      while (right < output.length && output[right].count <= 0) right += 1;
-
-      if (left < 0 || right >= output.length) continue;
-      if (right - left > maxBridgeGap) continue;
-
-      const span = right - left;
-      const t = (i - left) / span;
-      const lerp = (a: number, b: number): number => a + (b - a) * t;
-      output[i].count = Math.max(
-        1,
-        Math.round(lerp(output[left].count, output[right].count)),
-      );
-      output[i].sumPayoff = lerp(
-        output[left].sumPayoff,
-        output[right].sumPayoff,
-      );
-      output[i].medianPayoff = lerp(
-        output[left].medianPayoff,
-        output[right].medianPayoff,
-      );
-    }
-
-    return output;
-  };
-
-  const displayBins = smoothDisplayBins(bins);
+  // Bars and hover labels must share the same underlying bins. Interpolating
+  // empty bins creates visible bars whose truthful tooltip value is zero.
+  const displayBins = bins;
+  const comparisonDisplayBins = comparisonSim?.bins ?? [];
   const countMax = d3.max(displayBins, (bin) => bin.count) || 1;
   const cloudFillOpacity = 0.5;
   const binCountMax = d3.max(bins, (bin) => bin.count) || 1;
@@ -804,15 +946,35 @@ const updateDynamicScene = (
     .domain([0, binCountMax])
     .range([0.2, cloudFillOpacity])
     .clamp(true);
-  const maxAbsAvgPayoff = Math.max(Math.abs(payoffMin), Math.abs(payoffMax));
+  const activePayoffMin = Math.min(
+    payoffMin,
+    comparisonSim?.payoffMin ?? payoffMin,
+  );
+  const activePayoffMax = Math.max(
+    payoffMax,
+    comparisonSim?.payoffMax ?? payoffMax,
+  );
+  const activeMeanPayoff = meanPayoff;
+  const maxAbsAvgPayoff = Math.max(
+    Math.abs(activePayoffMin),
+    Math.abs(activePayoffMax),
+  );
   const payoffSpan =
     Number.isFinite(maxAbsAvgPayoff) && maxAbsAvgPayoff > 0
       ? maxAbsAvgPayoff * 1.1
       : 1;
+  const weightedPayoffs = [
+    ...displayBins.map((value) =>
+      totalPathCount > 0 ? value.sumPayoff / totalPathCount : 0,
+    ),
+    ...comparisonDisplayBins.map((value) =>
+      comparisonSim && comparisonSim.rows > 0
+        ? value.sumPayoff / comparisonSim.rows
+        : 0,
+    ),
+  ];
   const maxAbsWeightedPayoff =
-    d3.max(displayBins, (value) =>
-      Math.abs(totalPathCount > 0 ? value.sumPayoff / totalPathCount : 0),
-    ) || 1;
+    d3.max(weightedPayoffs, (value) => Math.abs(value)) || 1;
   const weightedPayoffSpan =
     Number.isFinite(maxAbsWeightedPayoff) && maxAbsWeightedPayoff > 0
       ? maxAbsWeightedPayoff * 1.1
@@ -831,10 +993,15 @@ const updateDynamicScene = (
             .range([0, histogramWidth]);
   const xZero = xHist(0);
   const getMedianPayoff = (bin: SimBin): number => bin.medianPayoff;
-  const getWeightedPayoff = (bin: SimBin): number =>
-    totalPathCount > 0 ? bin.sumPayoff / totalPathCount : 0;
-  const barFill = (bin: SimBin): string =>
-    payoffColorRamp(getMedianPayoff(bin));
+  const getWeightedPayoff = (bin: SimBin, pathCount = totalPathCount): number =>
+    pathCount > 0 ? bin.sumPayoff / pathCount : 0;
+  const histogramPriceFill = (bin: SimBin): string => {
+    const midpoint = (bin.x0 + bin.x1) * 0.5;
+    const priceT =
+      binMax > binMin ? clamp((midpoint - binMin) / (binMax - binMin), 0, 1) : 0.5;
+    return d3.interpolateRdBu(priceT);
+  };
+  const histogramOpacity = clamp(props.histogramOpacity ?? 0.9, 0, 1);
   const binCount = bins.length;
   const invBinSize =
     binCount > 0 && binMax > binMin ? binCount / (binMax - binMin) : 0;
@@ -857,10 +1024,53 @@ const updateDynamicScene = (
     if (binIndex < 0) return cloudFillOpacity;
     return opacityScale(bins[binIndex]?.count ?? 0);
   };
-  const barX = (bin: SimBin, progress: number): number => {
+  const totalCloud = paths.length;
+  const renderCloudForHistogramBin = (focusBin: number | null): void => {
+    if (cloudRevealRaf != null) {
+      cancelAnimationFrame(cloudRevealRaf);
+      cloudRevealRaf = null;
+    }
+    canvasCtx.clearRect(0, 0, width, height);
+
+    const drawPath = (pathIndex: number, opacity: number): void => {
+      drawCloudPath(
+        paths[pathIndex],
+        cloudFillForPath(pathIndex),
+        opacity,
+      );
+    };
+
+    if (focusBin == null) {
+      for (const pathIndex of activeCloudIndices) {
+        drawPath(pathIndex, opacityForPath(pathIndex));
+      }
+      return;
+    }
+
+    const matchingPathIndices: number[] = [];
+    for (const pathIndex of activeCloudIndices) {
+      const pathBin = findBinIndex(sampledFinalPrices[pathIndex]);
+      if (pathBin === focusBin) {
+        matchingPathIndices.push(pathIndex);
+      } else {
+        drawPath(pathIndex, 0.012);
+      }
+    }
+    for (const pathIndex of matchingPathIndices) {
+      drawPath(
+        pathIndex,
+        clamp(opacityForPath(pathIndex) * 1.55, 0.4, 0.82),
+      );
+    }
+  };
+  const barX = (
+    bin: SimBin,
+    progress: number,
+    pathCount = totalPathCount,
+  ): number => {
     if (histogramMode === "price") return xZero;
     if (histogramMode === "prob") {
-      const weighted = getWeightedPayoff(bin) * progress;
+      const weighted = getWeightedPayoff(bin, pathCount) * progress;
       const clamped = Math.min(
         weightedPayoffSpan,
         Math.max(-weightedPayoffSpan, weighted),
@@ -873,10 +1083,14 @@ const updateDynamicScene = (
     const xValue = xHist(clamped);
     return Math.min(xZero, xValue);
   };
-  const barWidth = (bin: SimBin, progress: number): number => {
+  const barWidth = (
+    bin: SimBin,
+    progress: number,
+    pathCount = totalPathCount,
+  ): number => {
     if (histogramMode === "price") return xHist(bin.count * progress);
     if (histogramMode === "prob") {
-      const weighted = getWeightedPayoff(bin) * progress;
+      const weighted = getWeightedPayoff(bin, pathCount) * progress;
       const clamped = Math.min(
         weightedPayoffSpan,
         Math.max(-weightedPayoffSpan, weighted),
@@ -897,17 +1111,31 @@ const updateDynamicScene = (
   const histBarHeight = (bin: SimBin): number =>
     Math.max(1, Math.abs(histBarBottomY(bin) - histBarTopY(bin)));
 
-  const bars = histogramGroup
-    .selectAll("rect")
+  const primaryBars = histogramGroup
+    .selectAll(".hist-bar--primary")
     .data(displayBins)
     .join("rect")
-    .attr("class", "hist-bar")
+    .attr("class", "hist-bar hist-bar--primary")
     .attr("x", (d) => barX(d, 0))
     .attr("y", (d) => histBarY(d))
     .attr("height", (d) => histBarHeight(d))
     .attr("width", 0)
-    .attr("fill", (d) => barFill(d))
-    .attr("fill-opacity", 0.95)
+    .attr("fill", (d) => histogramPriceFill(d))
+    .attr("fill-opacity", histogramOpacity)
+    .attr("shape-rendering", "crispEdges");
+
+  const comparisonPathCount = comparisonSim?.rows ?? totalPathCount;
+  const comparisonBars = histogramGroup
+    .selectAll(".hist-bar--comparison")
+    .data(comparisonDisplayBins)
+    .join("rect")
+    .attr("class", "hist-bar hist-bar--comparison")
+    .attr("x", (d) => barX(d, 0, comparisonPathCount))
+    .attr("y", (d) => histBarY(d))
+    .attr("height", (d) => histBarHeight(d))
+    .attr("width", 0)
+    .attr("fill", (d) => histogramPriceFill(d))
+    .attr("fill-opacity", histogramOpacity)
     .attr("shape-rendering", "crispEdges");
 
   // Axis: keep axis height aligned to histogram data range in every mode.
@@ -927,8 +1155,10 @@ const updateDynamicScene = (
   const guideEndX =
     margin.left + mainWidth + HISTOGRAM_GAP + histogramWidth + 4;
   const guideLabelX = guideEndX + 8;
-  const minPayoff = Number.isFinite(payoffMin) ? payoffMin : 0;
-  const maxPayoffValue = Number.isFinite(maxPayoff) ? maxPayoff : minPayoff;
+  const minPayoff = Number.isFinite(activePayoffMin) ? activePayoffMin : 0;
+  const maxPayoffValue = Number.isFinite(activePayoffMax)
+    ? activePayoffMax
+    : minPayoff;
   const hasPayoffSpan = maxPayoffValue > minPayoff;
   const payoffToY = hasPayoffSpan
     ? d3
@@ -938,7 +1168,7 @@ const updateDynamicScene = (
     : null;
   const rawAverageY =
     payoffToY != null
-      ? payoffToY(meanPayoff)
+      ? payoffToY(activeMeanPayoff)
       : (dataTopY + dataBottomY) * 0.5;
   const visibleBreakEvens = breakEvenPrices
     .slice(0, 2)
@@ -955,13 +1185,17 @@ const updateDynamicScene = (
    * central avoids each label type independently claiming the same pixels.
    */
   const rightLabelPositions = new Map<string, number>();
-  if (histogramMode !== "price") {
+  {
     const labelTop = margin.top + 7;
     const labelBottom = margin.top + mainHeight - 7;
     const labelCandidates = [
-      { id: "payoff-max", rawY: margin.top + dataTopY },
-      { id: "payoff-average", rawY: margin.top + rawAverageY },
-      { id: "payoff-min", rawY: margin.top + dataBottomY },
+      ...(histogramMode === "payoff"
+        ? [
+            { id: "payoff-max", rawY: margin.top + dataTopY },
+            { id: "payoff-average", rawY: margin.top + rawAverageY },
+            { id: "payoff-min", rawY: margin.top + dataBottomY },
+          ]
+        : []),
       ...visibleBreakEvens.map((breakEven, index) => ({
         id: `break-even-${index}`,
         rawY: breakEven.y,
@@ -999,7 +1233,8 @@ const updateDynamicScene = (
 
   const breakEvenRegion = svg
     .append("g")
-    .attr("class", "break-even-region");
+    .attr("class", "break-even-region")
+    .style("pointer-events", "none");
 
   if (visibleBreakEvens.length === 2) {
     const [firstBreakEven, secondBreakEven] = visibleBreakEvens;
@@ -1014,31 +1249,31 @@ const updateDynamicScene = (
       .attr("height", bandBottom - bandTop);
   }
 
-  if (histogramMode !== "price") {
-    visibleBreakEvens.forEach((breakEven, index) => {
-      const labelY =
-        rightLabelPositions.get(`break-even-${index}`) ?? breakEven.y;
-      if (Math.abs(labelY - breakEven.y) > 0.5) {
-        breakEvenRegion
-          .append("line")
-          .attr("class", "annotation-label-leader")
-          .attr("x1", guideEndX)
-          .attr("x2", guideLabelX - 2)
-          .attr("y1", breakEven.y)
-          .attr("y2", labelY);
-      }
+  visibleBreakEvens.forEach((breakEven, index) => {
+    const labelY =
+      rightLabelPositions.get(`break-even-${index}`) ?? breakEven.y;
+    if (Math.abs(labelY - breakEven.y) > 0.5) {
       breakEvenRegion
-        .append("text")
-        .attr("x", guideLabelX)
-        .attr("y", labelY)
-        .attr("text-anchor", "start")
-        .attr("dominant-baseline", "middle")
-        .text(priceFormat(breakEven.price));
-    });
-  }
+        .append("line")
+        .attr("class", "annotation-label-leader")
+        .attr("x1", guideEndX)
+        .attr("x2", guideLabelX - 2)
+        .attr("y1", breakEven.y)
+        .attr("y2", labelY);
+    }
+    const label =
+      comparisonSim && index === 1 ? "Stop-loss" : "Break-even";
+    breakEvenRegion
+      .append("text")
+      .attr("x", guideLabelX)
+      .attr("y", labelY)
+      .attr("text-anchor", "start")
+      .attr("dominant-baseline", "middle")
+      .text(`${label} · ${priceFormat(breakEven.price)}`);
+  });
 
-  if (histogramMode !== "price") {
-    // Payoff/prob modes use a payoff axis mapped onto the histogram's vertical span.
+  if (histogramMode === "payoff") {
+    // Payoff mode uses a payoff axis mapped onto the histogram's vertical span.
     const maxLabelY =
       (rightLabelPositions.get("payoff-max") ?? margin.top + dataTopY) -
       margin.top;
@@ -1084,7 +1319,7 @@ const updateDynamicScene = (
       .attr("x", 8)
       .attr("y", averageLabelY)
       .attr("dominant-baseline", "middle")
-      .text(payoffFormat(meanPayoff));
+      .text(payoffFormat(activeMeanPayoff));
 
     [
       { rawY: dataTopY, labelY: maxLabelY },
@@ -1099,7 +1334,7 @@ const updateDynamicScene = (
         .attr("y1", rawY)
         .attr("y2", labelY);
     });
-  } else {
+  } else if (histogramMode === "price") {
     // Price mode: explicit axis limited to histogram data span.
     const priceTicks = d3.ticks(safeFinalMin, safeFinalMax, 4);
     for (const tick of priceTicks) {
@@ -1120,9 +1355,14 @@ const updateDynamicScene = (
     .style("display", "none")
     .style("pointer-events", "none");
 
+  let activeHistogramBin: number | null = null;
   const hideHistogramTooltip = (): void => {
     histogramHoverHighlight.style("display", "none");
     histogramTooltip.value = null;
+    if (activeHistogramBin != null) {
+      activeHistogramBin = null;
+      renderCloudForHistogramBin(null);
+    }
   };
 
   const updateHistogramTooltip = (event: PointerEvent): void => {
@@ -1132,9 +1372,17 @@ const updateDynamicScene = (
     const [, pointerY] = d3.pointer(event, histogramNode);
     const binIndex = findBinIndex(y.invert(pointerY));
     const bin = bins[binIndex];
-    if (!bin) {
+    const comparisonBin = comparisonSim?.bins[binIndex];
+    if (
+      !bin ||
+      (bin.count <= 0 && (comparisonBin?.count ?? 0) <= 0)
+    ) {
       hideHistogramTooltip();
       return;
+    }
+    if (activeHistogramBin !== binIndex) {
+      activeHistogramBin = binIndex;
+      renderCloudForHistogramBin(binIndex);
     }
 
     histogramHoverHighlight
@@ -1148,11 +1396,9 @@ const updateDynamicScene = (
     const histogramRect =
       hoverTarget?.getBoundingClientRect() ??
       histogramNode.getBoundingClientRect();
+    // Prefer the right side so the tooltip doesn't cover the cloud chart.
     const x =
-      histogramRect.left -
-      layerRect.left -
-      HISTOGRAM_TOOLTIP_WIDTH -
-      HISTOGRAM_TOOLTIP_GAP;
+      histogramRect.right - layerRect.left + HISTOGRAM_TOOLTIP_GAP;
     const yPosition = clamp(
       localY - HISTOGRAM_TOOLTIP_HEIGHT * 0.5,
       48,
@@ -1166,7 +1412,6 @@ const updateDynamicScene = (
         : 0;
     const averagePayoff =
       bin.count > 0 ? bin.sumPayoff / bin.count : Number.NaN;
-
     histogramTooltip.value = {
       x: clamp(x, 8, Math.max(8, layerRect.width - HISTOGRAM_TOOLTIP_WIDTH - 8)),
       y: yPosition,
@@ -1177,7 +1422,22 @@ const updateDynamicScene = (
       medianPayoff:
         bin.count > 0 ? formatTooltipPayoff(bin.medianPayoff) : "—",
       averagePayoff: formatTooltipPayoff(averagePayoff),
-      accent: barFill(bin),
+      primaryContribution: comparisonSim
+        ? formatTooltipContribution(
+            histogramMode === "prob"
+              ? getWeightedPayoff(bin)
+              : bin.medianPayoff,
+          )
+        : undefined,
+      comparisonContribution:
+        comparisonSim && comparisonBin
+          ? formatTooltipContribution(
+              histogramMode === "prob"
+                ? getWeightedPayoff(comparisonBin, comparisonPathCount)
+                : comparisonBin.medianPayoff,
+            )
+          : undefined,
+      accent: histogramPriceFill(bin),
     };
   };
 
@@ -1444,22 +1704,28 @@ const updateDynamicScene = (
 
   const updateHistogram = (progress: number): void => {
     const clampedProgress = Math.max(0, Math.min(1, progress));
-    bars
+    primaryBars
       .attr("x", (d) => barX(d, clampedProgress))
-      .attr("width", (d) => barWidth(d, clampedProgress))
-      .attr("fill", (d) => barFill(d));
+      .attr("width", (d) => barWidth(d, clampedProgress));
+    comparisonBars
+      .attr("x", (d) =>
+        barX(d, clampedProgress, comparisonPathCount),
+      )
+      .attr("width", (d) =>
+        barWidth(d, clampedProgress, comparisonPathCount),
+      );
   };
 
-  const totalCloud = paths.length;
   if (!totalCloud && bins.length === 0) return;
-  const cloudRenderIndices = d3.range(totalCloud);
+  const cloudRenderIndices = activeCloudIndices;
+  const renderedCloudCount = cloudRenderIndices.length;
   let cloudCursor = 0;
 
   const drawBatch = (now: number): void => {
     const start = drawBatchStartTs ?? now;
     drawBatchStartTs = start;
     const progress = Math.min(1, (now - start) / REVEAL_DURATION_MS);
-    const targetCloud = Math.floor(progress * totalCloud);
+    const targetCloud = Math.floor(progress * renderedCloudCount);
 
     updateHistogram(progress);
 
@@ -1479,7 +1745,7 @@ const updateDynamicScene = (
     }
     updateHistogram(1);
 
-    for (let i = cloudCursor; i < totalCloud; i += 1) {
+    for (let i = cloudCursor; i < renderedCloudCount; i += 1) {
       const pathIndex = cloudRenderIndices[i];
       drawCloudPath(
         paths[pathIndex],
@@ -1487,7 +1753,7 @@ const updateDynamicScene = (
         opacityForPath(pathIndex),
       );
     }
-    cloudCursor = totalCloud;
+    cloudCursor = renderedCloudCount;
     drawBatchStartTs = null;
     cloudRevealRaf = null;
   };
@@ -1506,24 +1772,48 @@ const draw = async (): Promise<void> => {
   const drawSeq = ++latestDrawSeq;
 
   let sim: SimComputation;
+  let comparisonSim: SimComputation | null = null;
   try {
+    const workerParams = sanitizeParamsForWorker(props.params);
+    const valuationTs =
+      props.valuationTs != null && Number.isFinite(props.valuationTs)
+        ? Math.floor(props.valuationTs)
+        : Math.floor(Date.now() / 1000);
+    const horizonSeconds = Math.max(0, props.params.T * SECONDS_PER_YEAR);
+    const histBins = Math.max(
+      10,
+      Math.min(400, Math.round(props.histBins ?? HISTOGRAM_BIN_COUNT)),
+    );
+    const histBinsMultiplier = clamp(
+      Number(props.histBinsMultiplier ?? 1),
+      1,
+      2,
+    );
+    const samplingStopLeg = props.comparisonLegs?.find(
+      (leg) =>
+        leg.kind === "future" &&
+        leg.stopLoss != null &&
+        Number.isFinite(leg.stopLoss),
+    );
+    const samplingStopLoss =
+      samplingStopLeg?.kind === "future" &&
+      samplingStopLeg.stopLoss != null
+        ? {
+            side: samplingStopLeg.side,
+            price: Number(samplingStopLeg.stopLoss),
+          }
+        : undefined;
     sim = await requestSimulation({
       seed: props.seed,
-      params: sanitizeParamsForWorker(props.params),
+      params: workerParams,
       legs: sanitizeLegsForWorker(props.legs),
       optionPricingByLegId: sanitizeOptionPricingForWorker(
         props.optionPricingByLegId,
       ),
-      valuationTs:
-        props.valuationTs != null && Number.isFinite(props.valuationTs)
-          ? Math.floor(props.valuationTs)
-          : Math.floor(Date.now() / 1000),
-      horizonSeconds: Math.max(0, props.params.T * SECONDS_PER_YEAR),
-      histBins: Math.max(
-        10,
-        Math.min(400, Math.round(props.histBins ?? HISTOGRAM_BIN_COUNT)),
-      ),
-      histBinsMultiplier: clamp(Number(props.histBinsMultiplier ?? 1), 1, 2),
+      valuationTs,
+      horizonSeconds,
+      histBins,
+      histBinsMultiplier,
       samplePathLimit: Math.max(
         1,
         Math.min(
@@ -1531,27 +1821,90 @@ const draw = async (): Promise<void> => {
           Math.round(props.samplePathLimit ?? MAX_CLOUD_RENDER_PATHS),
         ),
       ),
+      samplingStopLoss,
     });
+    if (props.comparisonLegs?.length) {
+      comparisonSim = await requestSimulation({
+        seed: props.seed,
+        params: workerParams,
+        legs: sanitizeLegsForWorker(props.comparisonLegs),
+        optionPricingByLegId: sanitizeOptionPricingForWorker(
+          props.comparisonOptionPricingByLegId,
+        ),
+        valuationTs,
+        horizonSeconds,
+        histBins,
+        histBinsMultiplier,
+        samplePathLimit: 1,
+        samplingStopLoss,
+      });
+    }
   } catch (error) {
-    if (drawSeq === latestDrawSeq) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      drawSeq === latestDrawSeq &&
+      message !== "Simulation worker disposed"
+    ) {
       console.error("Failed to compute simulation in worker", error);
     }
     return;
   }
 
   if (drawSeq !== latestDrawSeq) return;
-  updateDynamicScene(sceneHandles, canvas, canvasCtx, sim);
+  emit("stats-update", {
+    meanPayoff: sim.meanPayoff,
+    medianPayoff: sim.medianPayoff,
+    payoffMin: sim.payoffMin,
+    payoffMax: sim.payoffMax,
+    p05Payoff: sim.p05Payoff,
+    p95Payoff: sim.p95Payoff,
+    winRate: sim.winRate,
+    maxLossRate: sim.maxLossRate,
+    opportunityCost: sim.opportunityCost,
+  });
+  if (comparisonSim) {
+    emit("comparison-stats-update", {
+      meanPayoff: comparisonSim.meanPayoff,
+      medianPayoff: comparisonSim.medianPayoff,
+      payoffMin: comparisonSim.payoffMin,
+      payoffMax: comparisonSim.payoffMax,
+      p05Payoff: comparisonSim.p05Payoff,
+      p95Payoff: comparisonSim.p95Payoff,
+      winRate: comparisonSim.winRate,
+      maxLossRate: comparisonSim.maxLossRate,
+      opportunityCost: comparisonSim.opportunityCost,
+    });
+  }
+  updateDynamicScene(sceneHandles, canvas, canvasCtx, sim, comparisonSim);
 };
 
 const scheduleDraw = (): void => {
-  if (drawScheduleRaf != null) return;
-  drawScheduleRaf = requestAnimationFrame(() => {
-    drawScheduleRaf = null;
-    draw();
-  });
+  drawQueued = true;
+  if (drawScheduleTimer != null) {
+    clearTimeout(drawScheduleTimer);
+  }
+  drawScheduleTimer = setTimeout(() => {
+    drawScheduleTimer = null;
+    void runDrawQueue();
+  }, 16);
 };
 
-onMounted(draw);
+const runDrawQueue = async (): Promise<void> => {
+  if (!componentMounted || drawInFlight) return;
+  drawInFlight = true;
+  drawQueued = false;
+  try {
+    await draw();
+  } finally {
+    drawInFlight = false;
+    if (componentMounted && drawQueued) scheduleDraw();
+  }
+};
+
+onMounted(() => {
+  componentMounted = true;
+  scheduleDraw();
+});
 watch(
   () => [
     props.seed,
@@ -1561,26 +1914,49 @@ watch(
     props.params.T,
     props.params.dt,
     props.params.rows,
-    props.valuationTs,
     props.histBins,
     props.histBinsMultiplier,
     props.samplePathLimit,
     props.histMode,
+    props.histogramOpacity,
     props.colorMin,
     props.colorMax,
+    props.pathFilter,
   ],
   scheduleDraw,
 );
-watch(() => props.legs, scheduleDraw, { deep: true });
-watch(() => props.optionPricingByLegId, scheduleDraw, { deep: true });
+watch(
+  () => JSON.stringify(sanitizeLegsForWorker(props.legs)),
+  scheduleDraw,
+);
+watch(
+  () =>
+    JSON.stringify(
+      sanitizeOptionPricingForWorker(props.optionPricingByLegId),
+    ),
+  scheduleDraw,
+);
+watch(
+  () => JSON.stringify(sanitizeLegsForWorker(props.comparisonLegs)),
+  scheduleDraw,
+);
+watch(
+  () =>
+    JSON.stringify(
+      sanitizeOptionPricingForWorker(props.comparisonOptionPricingByLegId),
+    ),
+  scheduleDraw,
+);
 onUnmounted(() => {
+  componentMounted = false;
+  drawQueued = false;
   if (cloudRevealRaf != null) {
     cancelAnimationFrame(cloudRevealRaf);
     cloudRevealRaf = null;
   }
-  if (drawScheduleRaf != null) {
-    cancelAnimationFrame(drawScheduleRaf);
-    drawScheduleRaf = null;
+  if (drawScheduleTimer != null) {
+    clearTimeout(drawScheduleTimer);
+    drawScheduleTimer = null;
   }
   if (simWorker != null) {
     simWorker.terminate();
@@ -1633,11 +2009,19 @@ onUnmounted(() => {
             <dt>Cumulative</dt>
             <dd>{{ histogramTooltip.cumulativeProbability }}</dd>
           </div>
-          <div>
+          <div v-if="histogramTooltip.primaryContribution">
+            <dt>{{ primarySeriesLabel ?? "Primary" }}</dt>
+            <dd>{{ histogramTooltip.primaryContribution }}</dd>
+          </div>
+          <div v-if="histogramTooltip.comparisonContribution">
+            <dt>{{ comparisonSeriesLabel ?? "Comparison" }}</dt>
+            <dd>{{ histogramTooltip.comparisonContribution }}</dd>
+          </div>
+          <div v-if="!histogramTooltip.primaryContribution">
             <dt>Median PnL</dt>
             <dd>{{ histogramTooltip.medianPayoff }}</dd>
           </div>
-          <div>
+          <div v-if="!histogramTooltip.primaryContribution">
             <dt>Average PnL</dt>
             <dd>{{ histogramTooltip.averagePayoff }}</dd>
           </div>
@@ -1707,6 +2091,7 @@ onUnmounted(() => {
   letter-spacing: 0.5px;
   line-height: 1;
   text-transform: uppercase;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
 .histogram-tooltip-swatch {
@@ -1813,6 +2198,25 @@ onUnmounted(() => {
   mix-blend-mode: normal;
 }
 
+:deep(.stopped-path-highlight) {
+  fill: none;
+  stroke: #f2f5f7;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 4px rgba(242, 245, 247, 0.72));
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+:deep(.stopped-path-marker) {
+  fill: #f2f5f7;
+  stroke: #0a0b0e;
+  stroke-width: 1;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
 :deep(.mu-guide line) {
   stroke: #fff;
 }
@@ -1837,6 +2241,7 @@ onUnmounted(() => {
   font-size: 10px;
   letter-spacing: 0.24em;
   text-transform: uppercase;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
 }
 
 :deep(.axis text) {
@@ -1847,6 +2252,11 @@ onUnmounted(() => {
 
 :deep(.break-even-band) {
   fill: rgba(100, 116, 139, 0.12);
+  pointer-events: none;
+}
+
+:deep(.break-even-region) {
+  pointer-events: none;
 }
 
 :deep(.break-even-region text) {

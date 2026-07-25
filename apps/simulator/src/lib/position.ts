@@ -19,6 +19,7 @@ export type FutureLeg = {
   qty: number;
   entry: number;
   stopLoss?: number | null;
+  annualFundingRate?: number;
 };
 
 export type PositionLeg = OptionLeg | FutureLeg;

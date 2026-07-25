@@ -13,6 +13,8 @@ export type ThalexInstrument = {
   create_time?: number | string;
   create_time_ms?: number | string;
   kind?: string;
+  type?: string;
+  underlying?: string;
 };
 
 export type IndexPriceRow = {

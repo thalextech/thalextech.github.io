@@ -3,6 +3,7 @@ import { computed, watch } from "vue";
 import type { PositionLeg, OptionLeg, OptionType } from "../lib/position";
 import type { ThalexInstrument } from "../lib/thalex";
 import { blackScholesGreeks } from "../lib/blackScholes";
+import StyledSelectMenu from "./StyledSelectMenu.vue";
 
 const props = defineProps<{
   legs: PositionLeg[];
@@ -119,7 +120,7 @@ const parseTimestampToSeconds = (value: unknown): number | null => {
 
 const normalizeInstrument = (instrument: ThalexInstrument): NormalizedOptionInstrument | null => {
   if (!instrument?.instrument_name) return null;
-  const kind = instrument.kind?.toLowerCase?.();
+  const kind = (instrument.kind ?? instrument.type)?.toLowerCase?.();
   const hasOptionKind = kind === "option" || kind === "options";
   const optionTypeRaw = instrument.option_type?.toLowerCase?.();
   const optionType =
@@ -140,7 +141,7 @@ const normalizeInstrument = (instrument: ThalexInstrument): NormalizedOptionInst
   ) {
     return {
       instrument_name: instrument.instrument_name,
-      index_name: instrument.index_name,
+      index_name: instrument.index_name ?? instrument.underlying,
       option_type: optionType,
       strike_price: strike,
       expiration_timestamp: expiration,
@@ -152,7 +153,7 @@ const normalizeInstrument = (instrument: ThalexInstrument): NormalizedOptionInst
   if (!parsed) return null;
   return {
     ...parsed,
-    index_name: instrument.index_name,
+    index_name: instrument.index_name ?? instrument.underlying,
     create_time: createTime ?? undefined,
   };
 };
@@ -541,6 +542,14 @@ const defaultStrikeFor = (strikes: number[]): number => {
 
 const strikeOptionsForLeg = (leg: OptionLeg): number[] =>
   strikeOptionsFor(leg.optionType, leg.expiry);
+const expirySelectOptions = computed(() =>
+  expiryOptions.value.map((expiry) => ({ label: expiry, value: expiry })),
+);
+const strikeSelectOptionsForLeg = (leg: OptionLeg) =>
+  strikeOptionsForLeg(leg).map((strike) => ({
+    label: formatNumber(strike),
+    value: strike,
+  }));
 
 const formatSignedNumber = (value: number, decimals: number = 2): string => {
   if (!Number.isFinite(value)) return "--";
@@ -695,38 +704,32 @@ const totalMarkPrice = computed<number | null>(() => {
           </button>
         </div>
 
-        <select
+        <StyledSelectMenu
           class="leg-select"
-          :name="`leg-expiry-${leg.id}`"
-          :value="leg.expiry ?? defaultExpiry()"
-          @change="
+          label="Option expiry"
+          :model-value="leg.expiry ?? defaultExpiry()"
+          :options="expirySelectOptions"
+          @update:model-value="
             updateLeg(leg.id, (l) => ({
               ...(l as OptionLeg),
-              expiry: ($event.target as HTMLSelectElement).value,
+              expiry: String($event),
             }))
           "
-        >
-          <option v-for="expiry in expiryOptions" :key="expiry" :value="expiry">
-            {{ expiry }}
-          </option>
-        </select>
+        />
 
         <div class="strike-greeks">
-          <select
+          <StyledSelectMenu
             class="leg-select"
-            :name="`leg-strike-${leg.id}`"
-            :value="leg.strike"
-            @change="
+            label="Option strike"
+            :model-value="leg.strike"
+            :options="strikeSelectOptionsForLeg(leg)"
+            @update:model-value="
               updateLeg(leg.id, (l) => ({
                 ...(l as OptionLeg),
-                strike: Number(($event.target as HTMLSelectElement).value),
+                strike: Number($event),
               }))
             "
-          >
-            <option v-for="strike in strikeOptionsForLeg(leg)" :key="strike" :value="strike">
-              {{ formatNumber(strike) }}
-            </option>
-          </select>
+          />
 
           <span v-if="props.showTte" class="tte-cell">{{ formatTteForLeg(leg) }}</span>
 
@@ -1022,18 +1025,11 @@ const totalMarkPrice = computed<number | null>(() => {
   box-sizing: border-box;
   height: var(--control-height);
   min-height: var(--control-height);
-  padding: 0 7px;
-  line-height: var(--control-height);
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  background: #111114;
-  color: #e8eaed;
+}
+
+.leg-select :deep(.styled-select-trigger) {
+  height: var(--control-height);
   font-size: 12px;
-  text-align: center;
-  text-align-last: center;
-  cursor: pointer;
-  appearance: none;
-  background-image: none;
 }
 
 .type-toggle {
