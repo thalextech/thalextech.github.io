@@ -13,13 +13,16 @@ const props = defineProps({
 });
 
 const SCENARIO_OPTIONS = [250, 500, 1_000, 2_000, 5_000];
+const JUMP_THRESHOLD_OPTIONS = [3, 3.5, 4, 4.5, 5];
 const chartRef = ref(null);
+const weeklyForecastChartRef = ref(null);
 const result = ref(null);
 const running = ref(false);
 const progress = ref(0);
 const error = ref("");
 const viewMode = defineModel("viewMode", { type: String, default: "time" });
 const scenarioCount = ref(1_000);
+const jumpThreshold = ref(4);
 let resizeObserver;
 let runSequence = 0;
 
@@ -50,11 +53,137 @@ const hedgeModeLabel = computed(() => {
 });
 const scenarioStatus = computed(() => {
   const completed = Number(modeResult.value?.simulations) || 0;
-  return `${completed.toLocaleString()} scenarios completed · Conditional GBM · equal drift mix −100% / 0% / +100% · ${hedgeModeLabel.value}`;
+  const model = modeResult.value?.calibration ? "Calibrated Bates" : "Conditional GBM";
+  return `${completed.toLocaleString()} scenarios · ${model} · equal drift mix −100% / 0% / +100% · ${hedgeModeLabel.value}`;
 });
+const realizedVolSensitivity = computed(() =>
+  modeResult.value?.realizedVolSensitivity || []);
+const selectedForecastSensitivity = computed(() =>
+  realizedVolSensitivity.value.find((row) =>
+    Number(row.threshold) === Number(jumpThreshold.value)));
+const weeklyForecastRows = computed(() =>
+  (selectedForecastSensitivity.value?.weekly || []).map((row) => ({
+    cycle: row.cycle,
+    entryDate: new Date(Number(row.entryTs) * 1000),
+    regime: row.regime,
+    totalVol: row.medianVol,
+    p10Vol: row.p10Vol,
+    p90Vol: row.p90Vol,
+    expectedVol: row.expectedVol,
+    diffusiveVol: row.diffusiveForecastVol,
+    jumpVol: row.jumpForecastVol,
+  })));
+
+const drawWeeklyForecastChart = () => {
+  const element = weeklyForecastChartRef.value;
+  const rows = weeklyForecastRows.value;
+  if (!element || !rows.length) return;
+  element.innerHTML = "";
+  const width = Math.max(620, element.getBoundingClientRect().width || 620);
+  const height = 210;
+  const margin = { top: 24, right: 18, bottom: 30, left: 44 };
+  const dates = rows.map((row) => row.entryDate);
+  const typicalStep = d3.median(d3.pairs(dates), ([first, second]) => second - first)
+    || 7 * 86_400_000;
+  const x = d3.scaleUtc()
+    .domain([
+      new Date(dates[0].getTime() - typicalStep / 2),
+      new Date(dates.at(-1).getTime() + typicalStep / 2),
+    ])
+    .range([margin.left, width - margin.right]);
+  const y = d3.scaleLinear()
+    .domain([0, d3.max(rows, (row) => Math.max(
+      row.totalVol,
+      row.p90Vol,
+      row.expectedVol,
+      row.diffusiveVol,
+      row.jumpVol,
+    )) * 1.08])
+    .nice()
+    .range([height - margin.bottom, margin.top]);
+  const svg = d3.select(element).append("svg")
+    .attr("viewBox", `0 0 ${width} ${height}`)
+    .attr("width", "100%")
+    .attr("height", height)
+    .attr("role", "img")
+    .attr("aria-label", "Weekly forecast volatility split between diffusion and jumps, with volatility-regime bands");
+  const regimeColor = {
+    low: "rgba(96,165,250,.10)",
+    medium: "rgba(167,139,250,.10)",
+    high: "rgba(251,113,133,.10)",
+  };
+  rows.forEach((row, index) => {
+    const left = index
+      ? (rows[index - 1].entryDate.getTime() + row.entryDate.getTime()) / 2
+      : row.entryDate.getTime() - typicalStep / 2;
+    const right = index < rows.length - 1
+      ? (row.entryDate.getTime() + rows[index + 1].entryDate.getTime()) / 2
+      : row.entryDate.getTime() + typicalStep / 2;
+    svg.append("rect")
+      .attr("x", x(new Date(left)))
+      .attr("y", margin.top)
+      .attr("width", Math.max(0, x(new Date(right)) - x(new Date(left))))
+      .attr("height", height - margin.top - margin.bottom)
+      .attr("fill", regimeColor[row.regime] || regimeColor.medium);
+  });
+  const line = (selector) => d3.line()
+    .x((row) => x(row.entryDate))
+    .y((row) => y(selector(row)));
+  svg.append("path")
+    .datum(rows)
+    .attr("fill", "rgba(226,232,240,.09)")
+    .attr("d", d3.area()
+      .x((row) => x(row.entryDate))
+      .y0((row) => y(row.p10Vol))
+      .y1((row) => y(row.p90Vol)));
+  [
+    { key: "totalVol", label: "Median RV", color: "#e2e8f0", width: 1.6 },
+    { key: "diffusiveVol", label: "Diffusion", color: "#38bdf8", width: 1.3 },
+    { key: "jumpVol", label: "Jumps", color: "#fb7185", width: 1.3 },
+  ].forEach((series, index) => {
+    svg.append("path")
+      .datum(rows)
+      .attr("fill", "none")
+      .attr("stroke", series.color)
+      .attr("stroke-width", series.width)
+      .attr("d", line((row) => row[series.key]));
+    const legendX = margin.left + index * 112;
+    svg.append("line")
+      .attr("x1", legendX).attr("x2", legendX + 16)
+      .attr("y1", 9).attr("y2", 9)
+      .attr("stroke", series.color).attr("stroke-width", series.width);
+    svg.append("text")
+      .attr("x", legendX + 21).attr("y", 12)
+      .attr("fill", "rgba(255,255,255,.48)").attr("font-size", 10)
+      .text(series.label);
+  });
+  svg.append("path")
+    .datum(rows)
+    .attr("fill", "none")
+    .attr("stroke", "rgba(255,255,255,.36)")
+    .attr("stroke-width", 1)
+    .attr("stroke-dasharray", "3 3")
+    .attr("d", line((row) => row.expectedVol));
+  const xAxis = svg.append("g")
+    .attr("transform", `translate(0,${height - margin.bottom})`)
+    .call(d3.axisBottom(x).ticks(5).tickSize(0).tickPadding(8));
+  const yAxis = svg.append("g")
+    .attr("transform", `translate(${margin.left},0)`)
+    .call(d3.axisLeft(y).ticks(4).tickFormat(d3.format(".0%")).tickSize(0).tickPadding(7));
+  [xAxis, yAxis].forEach((axis) => {
+    axis.select(".domain").remove();
+    axis.selectAll("text").attr("fill", "rgba(255,255,255,.34)").attr("font-size", 10);
+  });
+};
+
+const redrawSettingsCharts = async () => {
+  await nextTick();
+  drawWeeklyForecastChart();
+};
 const redraw = async () => {
   await nextTick();
   draw();
+  drawWeeklyForecastChart();
 };
 
 const run = async () => {
@@ -63,13 +192,13 @@ const run = async () => {
   const sequence = ++runSequence;
   running.value = true;
   progress.value = 0;
-  result.value = null;
   error.value = "";
   try {
     const nextResult = await runFairValueInWorker({
       cycles: JSON.parse(JSON.stringify(props.rows)),
       options: {
         simulations: requestedScenarios,
+        jumpThreshold: jumpThreshold.value,
         // Every rerun draws a fresh scenario set. Reproducibility stays internal.
         seed: Math.floor(Math.random() * 4_294_967_296),
       },
@@ -418,6 +547,7 @@ watch(() => props.rows, () => {
   if (props.rows.length) void run();
 });
 watch(viewMode, () => void redraw());
+watch(jumpThreshold, () => void redrawSettingsCharts());
 
 onMounted(() => {
   resizeObserver = new ResizeObserver(() => {
@@ -470,11 +600,16 @@ defineExpose({ exportPng });
                     means the result is readily explained by the null.
                   </p>
                   <p>
-                    <strong>The null assumes each week's implied volatility equals its expected realized volatility.</strong>
-                    Every week keeps its actual entry conditions and gets fresh GBM paths with volatility set to that week's
-                    entry IV; realized volatility still varies naturally across individual paths. We split scenarios equally
-                    between −100%, 0%, and +100% annual drift and pool them, so the comparison averages over strong bearish,
-                    driftless, and strong bullish price environments.
+                    <strong>The null uses a Bates stochastic-volatility jump process calibrated to the hourly BTC history.</strong>
+                    A rolling robust local-volatility filter detects jumps, jump rates are estimated separately for low,
+                    medium, and high volatility regimes, and κ, θ, σᵥ, and ρ are fitted from the jump-filtered 7-day realized
+                    variance series. Paths are generated hourly and hedges occur only on the strategy's configured schedule.
+                  </p>
+                  <p>
+                    <strong>Entry ATM IV is the total variance budget, not an extra diffusion input.</strong>
+                    For each week, expected jump quadratic variation is deducted from IV²T. The remaining budget rescales
+                    expected integrated Heston variance, so expected diffusion QV plus expected jump QV equals IV²T. We split
+                    scenarios equally between −100%, 0%, and +100% annual drift and pool them.
                   </p>
                   <p>
                     <strong>Read the actual marker against the simulated distribution and its empirical ranges.</strong>
@@ -506,6 +641,51 @@ defineExpose({ exportPng });
                 <button type="button" :aria-pressed="viewMode === 'iv'" title="Entry IV" @click="viewMode = 'iv'">σ</button>
                 <button type="button" :aria-pressed="viewMode === 'priceMove'" title="Observed BTC price change cohorts" @click="viewMode = 'priceMove'">Δ</button>
               </div>
+            </div>
+            <div class="controlRow">
+              <details class="modelSettings" @click.stop @toggle="redrawSettingsCharts">
+                <summary>Model settings</summary>
+                <div class="modelSettingsMenu">
+                  <div class="settingsHeader">
+                    <div>
+                      <strong>Jump threshold</strong>
+                      <span>Local-volatility standard deviations</span>
+                    </div>
+                    <div class="groupingToggle" role="group" aria-label="Jump detection threshold">
+                      <button
+                        v-for="threshold in JUMP_THRESHOLD_OPTIONS"
+                        :key="threshold"
+                        type="button"
+                        :disabled="running"
+                        :aria-pressed="jumpThreshold === threshold"
+                        @click="jumpThreshold = threshold"
+                      >{{ threshold.toFixed(1) }}σ</button>
+                    </div>
+                  </div>
+                  <p>
+                    BTC volatility changes materially through time, so one fixed return cutoff would label ordinary
+                    high-volatility moves as jumps and miss unusual moves during quiet periods. Each hourly log return is
+                    therefore centered on the preceding 168-hour median and divided by a local robust volatility estimate
+                    based on median absolute deviation. Median statistics keep a candidate jump from materially inflating
+                    its own detection threshold.
+                  </p>
+                  <p>
+                    A return is a jump when its absolute local z-score reaches the selected threshold. Lower settings assign
+                    more variance to jumps; higher settings assign more to stochastic diffusion. Threshold changes are
+                    retained and applied to the strategy distribution the next time you select Run again.
+                  </p>
+                  <div class="forecastHeader">
+                    <strong>Weekly forecast RV</strong>
+                    <span>Background: low / medium / high volatility regime</span>
+                  </div>
+                  <div ref="weeklyForecastChartRef" class="settingsChart"></div>
+                  <p>
+                    The white line is median simulated RV for the selected jump setting and the pale band is its 10–90%
+                    range, so both update when the threshold changes. The dashed line is the fixed ATM-IV expected-QV
+                    target. Blue and pink show the QV-equivalent diffusion and jump forecasts.
+                  </p>
+                </div>
+              </details>
             </div>
             <div class="controlRow">
               <div class="scenarioRunner">
@@ -593,6 +773,7 @@ defineExpose({ exportPng });
 }
 .distributionIntro {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
@@ -614,10 +795,7 @@ defineExpose({ exportPng });
   background: transparent;
   color: rgba(255,255,255,.42);
   font: 500 13px/1 "Helvetica Neue", Helvetica, sans-serif;
-  text-decoration: underline dotted rgba(255,255,255,.24);
-  text-underline-offset: 4px;
   white-space: nowrap;
-  cursor: help;
 }
 .methodologyTooltip {
   position: absolute;
@@ -659,6 +837,7 @@ defineExpose({ exportPng });
 }
 .distributionControls {
   display: flex;
+  flex-wrap: wrap;
   flex: 0 0 auto;
   align-items: center;
   justify-content: flex-end;
@@ -675,6 +854,87 @@ defineExpose({ exportPng });
   color: #6a727a;
   font-size: 13px;
 }
+.modelSettings {
+  position: relative;
+}
+.modelSettings summary {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0 9px;
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 4px;
+  background: transparent;
+  color: #777e86;
+  font: inherit;
+  font-size: 13px;
+  list-style: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.modelSettings summary::-webkit-details-marker { display: none; }
+.modelSettings summary::marker { content: ""; }
+.modelSettings[open] summary {
+  color: #c5c9ce;
+  border-color: rgba(255,255,255,.20);
+  background: rgba(255,255,255,.04);
+}
+.modelSettingsMenu {
+  position: absolute;
+  z-index: 32;
+  top: calc(100% + 6px);
+  right: 0;
+  display: grid;
+  gap: 12px;
+  width: 680px;
+  max-height: calc(100vh - 150px);
+  box-sizing: border-box;
+  padding: 16px 18px 18px;
+  border: 1px solid rgba(255,255,255,.11);
+  border-radius: 5px;
+  background: #111318;
+  box-shadow: 0 14px 34px rgba(0,0,0,.42);
+  overflow-y: auto;
+  scrollbar-color: rgba(255,255,255,.14) transparent;
+}
+.settingsHeader,
+.forecastHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.settingsHeader > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+.modelSettingsMenu strong {
+  color: #c8ced4;
+  font-size: 13px;
+  font-weight: 600;
+}
+.modelSettingsMenu span {
+  color: #616a73;
+  font-size: 11px;
+}
+.modelSettingsMenu p {
+  margin: 0;
+  color: #7c838b;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+}
+.forecastHeader {
+  padding-top: 3px;
+}
+.settingsChart {
+  min-height: 210px;
+  border: 1px solid rgba(255,255,255,.07);
+  border-radius: 4px;
+  background: rgba(0,0,0,.08);
+}
+.settingsChart :deep(svg) { display: block; }
 .groupingToggle {
   display: inline-flex;
   flex: none;

@@ -1,6 +1,13 @@
 import { blackScholesPrice } from "./optionPricing.js";
 import { blackScholesDelta, normalizeVol } from "./optionRisk.js";
 import { mean } from "./statistics.js";
+import { calibrateBatesModel } from "./batesCalibration.js";
+import {
+  buildIntraWeekSimulationTimes,
+  buildQuadraticVariationBudget,
+  generateBatesPath,
+  simulateBatesRealizedVol,
+} from "./batesSimulation.js";
 
 const SECONDS_PER_YEAR = 365 * 86_400;
 const EPSILON = 1e-12;
@@ -264,14 +271,101 @@ export const simulateWeeklyCycleModes = (
   cycle,
   normalRandom,
   annualDrift = 0,
+  batesContext = null,
 ) => {
-  const path = generateGbmPath({ cycle, normalRandom, annualDrift });
+  const path = batesContext
+    ? generateBatesPath({
+        cycle,
+        calibration: batesContext.calibration,
+        normalRandom,
+        uniformRandom: batesContext.uniformRandom,
+        annualDrift,
+        budget: batesContext.budget,
+      })
+    : generateGbmPath({ cycle, normalRandom, annualDrift });
   const terminalSpot = path.at(-1).spot;
   const unhedged = optionPnlAt(cycle, terminalSpot, cycle.exitTs);
   return {
     unhedged,
     dynamic: unhedged + dynamicHedgePnl({ cycle, path }),
   };
+};
+
+const buildRealizedVolSensitivity = ({
+  cycles,
+  calibration,
+  seed,
+  drawsPerCycle = 24,
+}) => {
+  const uniformRandom = createSeededRandom((Number(seed) + 0x51ed270b) >>> 0);
+  const normalRandom = createNormalRandom(uniformRandom);
+  const drawsForEachCycle = Math.max(
+    drawsPerCycle,
+    Math.ceil(240 / Math.max(1, cycles.length)),
+  );
+  return calibration.sensitivity.map((sensitivity) => {
+    const variant = {
+      ...calibration,
+      threshold: sensitivity.threshold,
+      jumps: sensitivity._model.jumps,
+      variance: sensitivity._model.variance,
+      diagnostics: {
+        ...calibration.diagnostics,
+        varianceSeries: sensitivity._model.varianceSeries,
+      },
+    };
+    const budgets = cycles.map((cycle) =>
+      buildQuadraticVariationBudget({ cycle, calibration: variant }));
+    const relativeRealizedVols = [];
+    const weekly = cycles.map((cycle, cycleIndex) => {
+      const realizedVols = [];
+      for (let draw = 0; draw < drawsForEachCycle; draw += 1) {
+        const realizedVol = simulateBatesRealizedVol({
+          cycle,
+          calibration: variant,
+          normalRandom,
+          uniformRandom,
+          budget: budgets[cycleIndex],
+        });
+        realizedVols.push(realizedVol);
+        relativeRealizedVols.push(realizedVol / Math.max(EPSILON, cycle.sigma));
+      }
+      const budget = budgets[cycleIndex];
+      return {
+        cycle: cycle.cycle,
+        entryTs: cycle.entryTs,
+        regime: budget.regime,
+        samples: realizedVols.length,
+        p10Vol: quantile(realizedVols, 0.1),
+        medianVol: quantile(realizedVols, 0.5),
+        p90Vol: quantile(realizedVols, 0.9),
+        expectedVol: Math.sqrt(budget.targetQv / Math.max(EPSILON, budget.years)),
+        diffusiveForecastVol: Math.sqrt(
+          budget.expectedDiffusiveQv / Math.max(EPSILON, budget.years),
+        ),
+        jumpForecastVol: Math.sqrt(
+          budget.expectedJumpQv / Math.max(EPSILON, budget.years),
+        ),
+      };
+    });
+    const averageAnnualizedVariance = (selector) => mean(budgets.map((budget) =>
+      selector(budget) / Math.max(EPSILON, budget.years)));
+    return {
+      threshold: sensitivity.threshold,
+      samples: relativeRealizedVols.length,
+      p10Ratio: quantile(relativeRealizedVols, 0.1),
+      medianRatio: quantile(relativeRealizedVols, 0.5),
+      p90Ratio: quantile(relativeRealizedVols, 0.9),
+      totalForecastVol: Math.sqrt(averageAnnualizedVariance((budget) => budget.targetQv)),
+      diffusiveForecastVol: Math.sqrt(
+        averageAnnualizedVariance((budget) => budget.expectedDiffusiveQv),
+      ),
+      jumpForecastVol: Math.sqrt(
+        averageAnnualizedVariance((budget) => budget.expectedJumpQv),
+      ),
+      weekly,
+    };
+  });
 };
 
 
@@ -552,6 +646,9 @@ const summarize = ({
   returnNull,
   hedgeModes,
   bayesianByMode,
+  calibration,
+  varianceBudgets,
+  realizedVolSensitivity,
 }) => {
   const modes = Object.fromEntries(hedgeModes.map((hedgeMode) => [
     hedgeMode,
@@ -578,11 +675,16 @@ const summarize = ({
     },
     path,
     returnNull,
+    calibration,
+    varianceBudgets,
+    realizedVolSensitivity,
   };
 };
 
 export const runFairValueMonteCarlo = async ({
   cycles = [],
+  historyRows = [],
+  jumpThreshold = 4,
   simulations = 1_000,
   seed = Date.now(),
   onProgress,
@@ -595,25 +697,70 @@ export const runFairValueMonteCarlo = async ({
 
   const uniformRandom = createSeededRandom(seed);
   const normalRandom = createNormalRandom(uniformRandom);
+  const calibratedModel = historyRows.length
+    ? calibrateBatesModel({ rows: historyRows, jumpThreshold })
+    : null;
+  const realizedVolSensitivity = calibratedModel
+    ? buildRealizedVolSensitivity({
+        cycles: states,
+        calibration: calibratedModel,
+        seed,
+      })
+    : [];
+  const calibration = calibratedModel
+    ? {
+        ...calibratedModel,
+        sensitivity: calibratedModel.sensitivity.map(({ _model, ...row }) => row),
+      }
+    : null;
+  const varianceBudgets = calibration
+    ? states.map((cycle) => ({
+        cycle: cycle.cycle,
+        entryTs: cycle.entryTs,
+        entryIv: cycle.sigma,
+        ...buildQuadraticVariationBudget({ cycle, calibration }),
+      }))
+    : [];
+  const varianceBudgetByCycle = new Map(varianceBudgets.map((budget) => [
+    budget.cycle,
+    budget,
+  ]));
   // Follow the strategy run settings: only simulate the hedge mode used in the backtest.
   const defaultHedgeMode = states.some((cycle) => cycle.hedgeEnabled) ? "dynamic" : "unhedged";
   const hedgeModes = [defaultHedgeMode];
-  const returnNull = {
-    type: "conditional-gbm-drift-mixture",
-    conditionalCycles: states.length,
-    volatility: "each cycle's entry IV",
-    pathGrid: "scheduled hedge times and exit",
-    realizedVariance: "unconstrained finite-sample GBM realization",
-    annualDriftVariants: [...ANNUAL_DRIFT_VARIANTS],
-    entryCashflow: "observed strategy premium",
-    driftScenarioCounts: Object.fromEntries(ANNUAL_DRIFT_VARIANTS.map((drift, variantIndex) => [
-      `${drift}`,
-      Math.max(0, Math.floor((count - 1 - variantIndex) / ANNUAL_DRIFT_VARIANTS.length) + 1),
-    ])),
-    allocation: "round-robin equal thirds",
-    zeroDriftIsPrimaryNull: true,
-    pnlCenteredToFairValue: false,
-  };
+  const returnNull = calibration
+    ? {
+        type: "calibrated-bates-drift-mixture",
+        conditionalCycles: states.length,
+        volatility: "Heston variance dynamics scaled to each cycle's entry ATM IV budget",
+        pathGrid: "hourly path with the configured hedge schedule",
+        realizedVariance: "expected diffusion plus jump QV equals entry ATM IV squared times T",
+        annualDriftVariants: [...ANNUAL_DRIFT_VARIANTS],
+        entryCashflow: "observed strategy premium",
+        driftScenarioCounts: Object.fromEntries(ANNUAL_DRIFT_VARIANTS.map((drift, variantIndex) => [
+          `${drift}`,
+          Math.max(0, Math.floor((count - 1 - variantIndex) / ANNUAL_DRIFT_VARIANTS.length) + 1),
+        ])),
+        allocation: "round-robin equal thirds",
+        zeroDriftIsPrimaryNull: true,
+        pnlCenteredToFairValue: false,
+      }
+    : {
+        type: "conditional-gbm-drift-mixture",
+        conditionalCycles: states.length,
+        volatility: "each cycle's entry IV",
+        pathGrid: "scheduled hedge times and exit",
+        realizedVariance: "unconstrained finite-sample GBM realization",
+        annualDriftVariants: [...ANNUAL_DRIFT_VARIANTS],
+        entryCashflow: "observed strategy premium",
+        driftScenarioCounts: Object.fromEntries(ANNUAL_DRIFT_VARIANTS.map((drift, variantIndex) => [
+          `${drift}`,
+          Math.max(0, Math.floor((count - 1 - variantIndex) / ANNUAL_DRIFT_VARIANTS.length) + 1),
+        ])),
+        allocation: "round-robin equal thirds",
+        zeroDriftIsPrimaryNull: true,
+        pnlCenteredToFairValue: false,
+      };
   const cohortCount = Math.min(3, states.length);
   const baseCohortSize = Math.floor(states.length / cohortCount);
   const remainder = states.length % cohortCount;
@@ -673,9 +820,13 @@ export const runFairValueMonteCarlo = async ({
     }];
   }));
   const path = {
-    maxPathPoints: Math.max(...states.map((cycle) => cycle.simulationTimes.length)),
+    maxPathPoints: Math.max(...states.map((cycle) => calibration
+      ? buildIntraWeekSimulationTimes(cycle).length
+      : cycle.simulationTimes.length)),
     usesScheduledHedgeTimes: true,
-    pathSource: "conditional GBM with cycle entry IV",
+    pathSource: calibration
+      ? "hourly Bates paths with calibrated stochastic variance and regime jump intensity"
+      : "conditional GBM with cycle entry IV",
     costsConfigured: states.some((cycle) => cycle.hedgeCostBps > 0),
     toleranceConfigured: states.some((cycle) => cycle.hedgeDeltaTolerance > 0),
   };
@@ -690,7 +841,18 @@ export const runFairValueMonteCarlo = async ({
       hedgeModes.map((mode) => [mode, priceMoveGroups.map(() => 0)]),
     );
     for (const [cycleIndex, cycle] of states.entries()) {
-      const outcomes = simulateWeeklyCycleModes(cycle, normalRandom, annualDrift);
+      const outcomes = simulateWeeklyCycleModes(
+        cycle,
+        normalRandom,
+        annualDrift,
+        calibration
+          ? {
+              calibration,
+              uniformRandom,
+              budget: varianceBudgetByCycle.get(cycle.cycle),
+            }
+          : null,
+      );
       for (const hedgeMode of hedgeModes) {
         terminalPnl[hedgeMode] += outcomes[hedgeMode];
         modeSamples[hedgeMode].weekly[cycleIndex].push(outcomes[hedgeMode]);
@@ -726,6 +888,9 @@ export const runFairValueMonteCarlo = async ({
           returnNull,
           hedgeModes,
           bayesianByMode,
+          calibration,
+          varianceBudgets,
+          realizedVolSensitivity,
         }),
       });
       // Pace batches by one frame so the evolving distribution is visible and
@@ -748,5 +913,8 @@ export const runFairValueMonteCarlo = async ({
     returnNull,
     hedgeModes,
     bayesianByMode,
+    calibration,
+    varianceBudgets,
+    realizedVolSensitivity,
   });
 };
