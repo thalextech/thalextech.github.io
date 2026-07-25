@@ -10,30 +10,56 @@ const props = defineProps({
 const emit = defineEmits(["select"]);
 
 const chartRef = ref(null);
-const sortMode = ref("total");
+const xAxisMode = ref("hedge");
 let resizeObserver;
 
 const CHART_FONT_FAMILY = '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
-const SORT_MODES = [
-  { value: "total", label: "Total hi–lo", key: "cyclePnlUsd" },
-  { value: "hedge", label: "Hedge hi–lo", key: "hedgePnlUsd" },
-  { value: "option", label: "Option hi–lo", key: "shortOptionPnlUsd" },
-  { value: "time", label: "Chronological", key: null },
-];
 const formatUsd = d3.format("$,.2f");
-const formatEntryDate = d3.utcFormat("%d %b %y");
+const formatAxisUsd = d3.format("$,.0f");
+const formatAxisDate = d3.utcFormat("%b %y");
+const formatTooltipDate = d3.utcFormat("%d %b %Y");
+
+const X_AXIS_MODES = [
+  { value: "time", label: "Time", key: null },
+  { value: "total", label: "Total PnL", key: "cyclePnlUsd" },
+  { value: "option", label: "Option PnL", key: "shortOptionPnlUsd" },
+  { value: "hedge", label: "Hedge PnL", key: "hedgePnlUsd" },
+];
+
+const SERIES = [
+  { key: "shortOptionPnlUsd", label: "Option", opacity: 1 },
+  { key: "hedgePnlUsd", label: "Hedge", opacity: 0.62 },
+];
+
 const valueFor = (row, key) => Number(row[key]) || 0;
 const instrumentName = (row) =>
   row.legs?.length
     ? row.legs.map((leg) => leg.instrumentName).join(" / ")
     : `Cycle ${row.cycle || ""}`;
 
+/** Diverging stack: positives grow up from 0, negatives down from 0. */
+function stackSegments(row) {
+  let pos = 0;
+  let neg = 0;
+  return SERIES.map((series) => {
+    const value = valueFor(row, series.key);
+    if (value >= 0) {
+      const y0 = pos;
+      pos += value;
+      return { ...series, value, y0, y1: pos };
+    }
+    const y1 = neg;
+    neg += value;
+    return { ...series, value, y0: neg, y1 };
+  });
+}
+
 const draw = () => {
   const element = chartRef.value;
   if (!element) return;
   element.innerHTML = "";
 
-  const sortKey = SORT_MODES.find((mode) => mode.value === sortMode.value)?.key;
+  const sortKey = X_AXIS_MODES.find((mode) => mode.value === xAxisMode.value)?.key;
   const rows = [...(props.rows || [])]
     .filter((row) => row.closed !== false)
     .sort((a, b) => sortKey
@@ -42,25 +68,26 @@ const draw = () => {
       : new Date(a.entryTime) - new Date(b.entryTime));
 
   const bounds = element.getBoundingClientRect();
-  const width = Math.max(1080, bounds.width || 1360);
+  const width = Math.max(900, bounds.width || 1360);
   const allocatedHeight = Math.max(300, bounds.height || 470);
-  const height = Math.max(720, allocatedHeight * 0.98);
-  const margin = { top: 54, right: 24, bottom: 20, left: 82 };
-  const panelGap = 36;
-  const plotHeight = height - margin.top - margin.bottom;
-  const panelWidth = (width - margin.left - margin.right - panelGap * 2) / 3;
+  const height = allocatedHeight * 0.95;
+  const plotTop = 20;
+  const plotBottom = height - 30;
+  const X0 = 62;
+  const X1 = width - 28;
 
+  const orderLabel = X_AXIS_MODES.find((mode) => mode.value === xAxisMode.value)?.label || "Time";
   const svg = d3
     .select(element)
     .append("svg")
     .attr("viewBox", `0 0 ${width} ${height}`)
     .attr("width", "100%")
-    .attr("height", height)
+    .attr("height", "100%")
     .attr("font-family", CHART_FONT_FAMILY)
     .attr("role", "img")
     .attr(
       "aria-label",
-      "Three-column PnL decomposition with horizontal total, option, and hedge PnL bars",
+      `Stacked bar chart of option and hedge PnL by cycle, ordered by ${orderLabel}`,
     );
 
   if (!rows.length) {
@@ -74,135 +101,173 @@ const draw = () => {
     return;
   }
 
-  const series = [
-    { key: "cyclePnlUsd", label: "Total PnL" },
-    { key: "shortOptionPnlUsd", label: "Option PnL" },
-    { key: "hedgePnlUsd", label: "Hedge PnL" },
-  ];
-  const entryTimes = rows.map((row) => new Date(row.entryTime).getTime());
-  const y = d3
-    .scaleBand()
-    .domain(entryTimes)
-    .range([0, plotHeight])
-    .padding(0.18);
-  const panels = series.map(({ key, label }) => {
-    const values = rows.map((row) => valueFor(row, key));
-    const [dataMin = 0, dataMax = 0] = d3.extent(values);
-    let domainMin = Math.min(0, dataMin);
-    let domainMax = Math.max(0, dataMax);
-    if (domainMin === domainMax) {
-      domainMin = -1;
-      domainMax = 1;
-    } else {
-      const padding = (domainMax - domainMin) * 0.08;
-      if (domainMin < 0) domainMin -= padding;
-      if (domainMax > 0) domainMax += padding;
-    }
-    const x = d3.scaleLinear()
-      .domain([domainMin, domainMax])
-      .range([0, panelWidth])
-      .nice(5);
-    const color = d3.scaleDiverging(d3.interpolateRdBu)
-      .domain([
-        Math.min(dataMin, -Number.EPSILON),
-        0,
-        Math.max(dataMax, Number.EPSILON),
-      ]);
-    let xTickValues = x.ticks(4);
-    const [xMin, xMax] = x.domain();
-    if (!xTickValues.includes(0) && xMin <= 0 && xMax >= 0) {
-      xTickValues = [...xTickValues, 0].sort((a, b) => a - b);
-    }
-    return { key, label, x, color, xTickValues };
+  const stacked = rows.map((row) => ({
+    row,
+    segments: stackSegments(row),
+    total: valueFor(row, "cyclePnlUsd"),
+  }));
+
+  const allEnds = stacked.flatMap(({ segments }) =>
+    segments.flatMap((seg) => [seg.y0, seg.y1]),
+  );
+  let [dataMin, dataMax] = d3.extent(allEnds);
+  if (!Number.isFinite(dataMin)) dataMin = 0;
+  if (!Number.isFinite(dataMax)) dataMax = 0;
+  if (dataMin > 0) dataMin = 0;
+  if (dataMax < 0) dataMax = 0;
+  if (dataMin === dataMax) {
+    dataMin = -1;
+    dataMax = 1;
+  } else {
+    const pad = (dataMax - dataMin) * 0.08;
+    if (dataMin < 0) dataMin -= pad;
+    if (dataMax > 0) dataMax += pad;
+  }
+
+  const y = d3.scaleLinear()
+    .domain([dataMin, dataMax])
+    .range([plotBottom, plotTop])
+    .nice(7);
+
+  const slot = (X1 - X0) / Math.max(1, rows.length);
+  const x = d3.scaleLinear()
+    .domain([0, Math.max(1, rows.length - 1)])
+    .range([X0 + slot / 2, X1 - slot / 2]);
+  const bw = Math.max(2, slot - 1);
+
+  // RdBu by segment PnL (same diverging scheme as the original panels / weekly chart)
+  const segmentValues = stacked.flatMap(({ segments }) =>
+    segments.map((seg) => seg.value),
+  );
+  const [segMin = 0, segMax = 0] = d3.extent(segmentValues);
+  const barColor = d3.scaleDiverging(d3.interpolateRdBu)
+    .domain([
+      Math.min(segMin, -Number.EPSILON),
+      0,
+      Math.max(segMax, Number.EPSILON),
+    ]);
+
+  // Horizontal grid + y-axis labels
+  const [yLo, yHi] = y.domain();
+  let ticks = y.ticks(7);
+  if (!ticks.includes(0) && yLo <= 0 && yHi >= 0) ticks.push(0);
+  ticks = ticks.filter((v) => v >= yLo && v <= yHi).sort((a, b) => a - b);
+  ticks.forEach((v) => {
+    const gy = y(v);
+    svg.append("line")
+      .attr("x1", X0 - 8)
+      .attr("x2", X1)
+      .attr("y1", gy)
+      .attr("y2", gy)
+      .attr("stroke", v === 0 ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.055)");
+    svg.append("text")
+      .attr("x", X0 - 12)
+      .attr("y", gy + 3)
+      .attr("text-anchor", "end")
+      .attr("fill", "rgba(255,255,255,0.32)")
+      .attr("font-size", 12)
+      .text(formatAxisUsd(v));
   });
 
-  panels.forEach(({ key, label, x, color, xTickValues }, panelIndex) => {
-    const panelX = margin.left + panelIndex * (panelWidth + panelGap);
-    const group = svg
-      .append("g")
-      .attr("transform", `translate(${panelX},${margin.top})`);
-
-    xTickValues.forEach((tick) => {
-      group.append("line")
-        .attr("x1", x(tick)).attr("x2", x(tick))
-        .attr("y1", 0).attr("y2", plotHeight)
-        .attr("stroke", "rgba(255,255,255,0.055)");
-    });
-
-    group.append("line")
-      .attr("x1", x(0)).attr("x2", x(0))
-      .attr("y1", 0).attr("y2", plotHeight)
-      .attr("stroke", "rgba(255,255,255,0.12)");
-
-    const bars = group.selectAll(`rect.${key}`)
-      .data(rows)
-      .join("rect")
-      .attr("class", key)
-      .attr("x", (row) => Math.min(x(0), x(valueFor(row, key))))
-      .attr("y", (row) => y(new Date(row.entryTime).getTime()))
-      .attr("width", (row) => Math.max(1, Math.abs(x(valueFor(row, key)) - x(0))))
-      .attr("height", y.bandwidth())
-      .attr("fill", (row) => color(valueFor(row, key)))
+  // Stacked bars (option + hedge). Invisible full-height hit target for click.
+  stacked.forEach(({ row, segments, total }, i) => {
+    const cx = x(i);
+    const group = svg.append("g")
+      .attr("class", "cycle-bar")
+      .style("cursor", "pointer")
       .attr("tabindex", 0)
       .attr("role", "button")
-      .attr("aria-label", (row) =>
-        `${formatEntryDate(new Date(row.entryTime))} ${label}; open cycle detail`,
+      .attr(
+        "aria-label",
+        `${formatTooltipDate(new Date(row.entryTime))}: total ${formatUsd(total)}. Open cycle detail`,
       )
-      .style("cursor", "pointer")
-      .on("click", (_, row) => emit("select", row))
-      .on("keydown", (event, row) => {
+      .on("click", () => emit("select", row))
+      .on("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         emit("select", row);
       });
 
-    bars.append("title")
-      .text((row) => [
-        instrumentName(row),
-        `Option PnL: ${formatUsd(valueFor(row, "shortOptionPnlUsd"))}`,
-        `Hedge PnL: ${formatUsd(valueFor(row, "hedgePnlUsd"))}`,
-        `Total PnL: ${formatUsd(valueFor(row, "cyclePnlUsd"))}`,
-        "Click to open cycle detail",
-      ].join("\n"));
+    group.append("title").text([
+      instrumentName(row),
+      formatTooltipDate(new Date(row.entryTime)),
+      `Option PnL: ${formatUsd(valueFor(row, "shortOptionPnlUsd"))}`,
+      `Hedge PnL: ${formatUsd(valueFor(row, "hedgePnlUsd"))}`,
+      `Total PnL: ${formatUsd(total)}`,
+      "Click to open cycle detail",
+    ].join("\n"));
 
-    const axis = d3.axisTop(x)
-      .tickValues(xTickValues)
-      .tickFormat(d3.format("~s"))
-      .tickSize(0)
-      .tickPadding(7);
-    const axisGroup = group.append("g").call(axis);
-    axisGroup.attr("font-family", CHART_FONT_FAMILY);
-    axisGroup.select(".domain").remove();
-    axisGroup.selectAll("text")
-      .attr("fill", "rgba(255,255,255,0.32)")
-      .attr("font-size", 11);
+    // Widen click target without drawing a visible bar
+    group.append("rect")
+      .attr("x", cx - bw / 2)
+      .attr("y", plotTop)
+      .attr("width", bw)
+      .attr("height", Math.max(1, plotBottom - plotTop))
+      .attr("fill", "transparent");
 
-    group.append("text")
-      .attr("x", panelWidth / 2)
-      .attr("y", -32)
-      .attr("text-anchor", "middle")
-      .attr("fill", "rgba(255,255,255,0.68)")
-      .attr("font-size", 12)
-      .attr("font-weight", 500)
-      .text(label);
+    segments.forEach((seg) => {
+      if (seg.value === 0) return;
+      const top = y(Math.max(seg.y0, seg.y1));
+      const bottom = y(Math.min(seg.y0, seg.y1));
+      group.append("rect")
+        .attr("x", cx - bw / 2)
+        .attr("y", top)
+        .attr("width", bw)
+        .attr("height", Math.max(1, bottom - top))
+        .attr("fill", barColor(seg.value))
+        .attr("fill-opacity", seg.opacity)
+        .attr("pointer-events", "none");
+    });
   });
 
-  const labelStep = Math.max(1, Math.ceil(entryTimes.length / 12));
-  const entryTickValues = entryTimes.filter((_, index) => index % labelStep === 0);
-  const entryAxis = d3.axisLeft(y)
-    .tickValues(entryTickValues)
-    .tickFormat((timestamp) => formatEntryDate(new Date(timestamp)))
-    .tickSize(0)
-    .tickPadding(7);
-  const entryAxisGroup = svg.append("g")
-    .attr("transform", `translate(${margin.left - 8},${margin.top})`)
-    .call(entryAxis);
-  entryAxisGroup.attr("font-family", CHART_FONT_FAMILY);
-  entryAxisGroup.select(".domain").remove();
-  entryAxisGroup.selectAll("text")
-    .attr("fill", "rgba(255,255,255,0.28)")
-    .attr("font-size", 10);
+  // Smoothed total PnL line + dots at each cycle
+  const totalPoints = stacked
+    .map(({ total }, i) => ({ i, total }))
+    .filter(({ total }) => Number.isFinite(total));
 
+  if (totalPoints.length) {
+    const totalLine = d3.line()
+      .x((d) => x(d.i))
+      .y((d) => y(d.total))
+      .curve(d3.curveCatmullRom.alpha(0.5));
+
+    svg.append("path")
+      .datum(totalPoints)
+      .attr("d", totalLine)
+      .attr("fill", "none")
+      .attr("stroke", "#f1f2f4")
+      .attr("stroke-width", 1.6)
+      .attr("stroke-linejoin", "round")
+      .attr("stroke-linecap", "round")
+      .attr("pointer-events", "none");
+
+    const dotR = Math.min(3.25, Math.max(2, bw * 0.22));
+    svg.selectAll("circle.total-dot")
+      .data(totalPoints)
+      .join("circle")
+      .attr("class", "total-dot")
+      .attr("cx", (d) => x(d.i))
+      .attr("cy", (d) => y(d.total))
+      .attr("r", dotR)
+      .attr("fill", "#f1f2f4")
+      .attr("pointer-events", "none");
+  }
+
+  // X labels from entry dates
+  const tickCount = Math.min(14, rows.length);
+  const tickIndexes = [...new Set(Array.from(
+    { length: tickCount },
+    (_, index) => Math.round(index * (rows.length - 1) / Math.max(1, tickCount - 1)),
+  ))];
+  tickIndexes.forEach((idx) => {
+    svg.append("text")
+      .attr("x", x(idx))
+      .attr("y", height - 6)
+      .attr("text-anchor", "middle")
+      .attr("fill", "rgba(255,255,255,0.28)")
+      .attr("font-size", 12)
+      .text(formatAxisDate(new Date(rows[idx].entryTime)));
+  });
 };
 
 onMounted(() => {
@@ -214,7 +279,7 @@ onMounted(() => {
 onUnmounted(() => resizeObserver?.disconnect());
 
 watch(() => props.rows, draw);
-watch(sortMode, draw);
+watch(xAxisMode, draw);
 
 function exportPng({
   filename = "hedge-performance.png",
@@ -246,11 +311,11 @@ defineExpose({ exportPng });
 <template>
   <div class="chartWrap">
     <div ref="chartRef" class="chart"></div>
-    <div class="sortControl">
+    <div class="xAxisControl">
       <StyledSelectMenu
-        v-model="sortMode"
-        label="Sort"
-        :options="SORT_MODES"
+        v-model="xAxisMode"
+        label="X-axis"
+        :options="X_AXIS_MODES"
       />
     </div>
   </div>
@@ -270,20 +335,16 @@ defineExpose({ exportPng });
   min-height: 0;
   background: #0a0b0e;
   display: flex;
-  overflow: auto;
 }
 
 .chart :deep(svg) {
-  flex: none;
   display: block;
-  width: auto;
-  min-width: 100%;
-  max-width: none;
-  height: auto;
+  width: 100%;
+  height: 95%;
   margin-top: 2px;
 }
 
-.sortControl {
+.xAxisControl {
   position: absolute;
   top: 8px;
   right: 14px;
