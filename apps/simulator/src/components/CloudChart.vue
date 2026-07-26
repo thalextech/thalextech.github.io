@@ -2,8 +2,16 @@
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import * as d3 from "d3";
 import type { GBMParams } from "../lib/gbm";
+import {
+  sanitizePathModel,
+  type PathModelParams,
+} from "../lib/pathModel";
 import type { PositionLeg } from "../lib/position";
-import type { SimulationStats } from "../lib/simulation";
+import type {
+  HistogramBinHover,
+  HistogramBinStats,
+  SimulationStats,
+} from "../lib/simulation";
 import SimWorker from "../workers/sim.worker?worker";
 
 type OptionPricingInput = {
@@ -24,6 +32,7 @@ type StopPathSummary = {
 const props = defineProps<{
   seed: number;
   params: GBMParams;
+  pathModel: PathModelParams;
   valuationTs?: number;
   muMin?: number;
   muMax?: number;
@@ -44,6 +53,8 @@ const props = defineProps<{
   comparisonSeriesLabel?: string;
   comparisonReferencePrice?: number;
   pathFilter?: "all" | "stopped";
+  /** When false, hist hover updates emit only (no floating tooltip). Default true. */
+  showHistogramTooltip?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -53,6 +64,7 @@ const emit = defineEmits<{
   (event: "stats-update", value: SimulationStats): void;
   (event: "comparison-stats-update", value: SimulationStats): void;
   (event: "stop-path-update", value: StopPathSummary | null): void;
+  (event: "histogram-bin-hover", value: HistogramBinHover | null): void;
 }>();
 
 const svgRef = ref<SVGSVGElement | null>(null);
@@ -146,6 +158,7 @@ type SimWorkerRequest = {
   id: number;
   seed: number;
   params: GBMParams;
+  pathModel: PathModelParams;
   legs: PositionLeg[];
   optionPricingByLegId: Record<string, OptionPricingInput>;
   valuationTs: number;
@@ -165,6 +178,30 @@ type SimBin = {
   count: number;
   sumPayoff: number;
   medianPayoff: number;
+  winCount: number;
+  maxLossCount: number;
+  opportunityCostSum: number;
+};
+
+const statsFromBin = (
+  bin: SimBin | undefined,
+  totalCount: number,
+): HistogramBinStats | null => {
+  if (!bin || bin.count <= 0) return null;
+  const winCount = Number(bin.winCount) || 0;
+  const maxLossCount = Number(bin.maxLossCount) || 0;
+  const opportunityCostSum = Number(bin.opportunityCostSum) || 0;
+  return {
+    priceMin: bin.x0,
+    priceMax: bin.x1,
+    count: bin.count,
+    totalCount,
+    meanPayoff: bin.sumPayoff / bin.count,
+    medianPayoff: bin.medianPayoff,
+    winRate: winCount / bin.count,
+    maxLossRate: maxLossCount / bin.count,
+    opportunityCost: opportunityCostSum / bin.count,
+  };
 };
 
 const computeBreakEvenPrices = (bins: SimBin[]): number[] => {
@@ -512,6 +549,7 @@ const ensureScene = (): SceneHandles | null => {
 
 const clearDynamicScene = (sceneHandles: SceneHandles): void => {
   histogramTooltip.value = null;
+  emit("histogram-bin-hover", null);
   sceneHandles.defs.selectAll("*").remove();
   sceneHandles.plotGroup.selectAll("*").remove();
   sceneHandles.histogramGroup.selectAll("*").remove();
@@ -1359,6 +1397,7 @@ const updateDynamicScene = (
   const hideHistogramTooltip = (): void => {
     histogramHoverHighlight.style("display", "none");
     histogramTooltip.value = null;
+    emit("histogram-bin-hover", null);
     if (activeHistogramBin != null) {
       activeHistogramBin = null;
       renderCloudForHistogramBin(null);
@@ -1383,12 +1422,21 @@ const updateDynamicScene = (
     if (activeHistogramBin !== binIndex) {
       activeHistogramBin = binIndex;
       renderCloudForHistogramBin(binIndex);
+      emit("histogram-bin-hover", {
+        primary: statsFromBin(bin, totalPathCount),
+        comparison: statsFromBin(comparisonBin, comparisonPathCount),
+      });
     }
 
     histogramHoverHighlight
       .style("display", null)
       .attr("y", histBarY(bin))
       .attr("height", histBarHeight(bin));
+
+    if (props.showHistogramTooltip === false) {
+      histogramTooltip.value = null;
+      return;
+    }
 
     const layerRect = layerNode.getBoundingClientRect();
     const localY = event.clientY - layerRect.top;
@@ -1806,6 +1854,7 @@ const draw = async (): Promise<void> => {
     sim = await requestSimulation({
       seed: props.seed,
       params: workerParams,
+      pathModel: sanitizePathModel(props.pathModel),
       legs: sanitizeLegsForWorker(props.legs),
       optionPricingByLegId: sanitizeOptionPricingForWorker(
         props.optionPricingByLegId,
@@ -1827,6 +1876,7 @@ const draw = async (): Promise<void> => {
       comparisonSim = await requestSimulation({
         seed: props.seed,
         params: workerParams,
+        pathModel: sanitizePathModel(props.pathModel),
         legs: sanitizeLegsForWorker(props.comparisonLegs),
         optionPricingByLegId: sanitizeOptionPricingForWorker(
           props.comparisonOptionPricingByLegId,
@@ -1914,6 +1964,7 @@ watch(
     props.params.T,
     props.params.dt,
     props.params.rows,
+    JSON.stringify(sanitizePathModel(props.pathModel)),
     props.histBins,
     props.histBinsMultiplier,
     props.samplePathLimit,

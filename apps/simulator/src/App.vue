@@ -5,6 +5,10 @@ import PositionBuilder from "./components/PositionBuilder.vue";
 import StopLossSimulator from "./components/StopLossSimulator.vue";
 import type { AtmOptionExpiryQuote } from "./lib/atmOptionChain";
 import type { GBMParams } from "./lib/gbm";
+import {
+  DEFAULT_PATH_MODEL,
+  type PathModelParams,
+} from "./lib/pathModel";
 import type { PositionLeg, OptionLeg } from "./lib/position";
 import {
   fetchInstruments,
@@ -50,6 +54,8 @@ const guideMu = ref<number | null>(null);
 const guideVol = ref<number | null>(null);
 const histogramMode = ref<"price" | "payoff" | "prob">("payoff");
 const settingsOpen = ref(false);
+const pathModel = reactive<PathModelParams>({ ...DEFAULT_PATH_MODEL });
+const pathModelDraft = reactive<PathModelParams>({ ...DEFAULT_PATH_MODEL });
 const exportInProgress = ref(false);
 const cloudPathLimit = ref(2000);
 const colorMinPercent = ref(15);
@@ -429,7 +435,7 @@ const horizonDaysLabel = computed(() => {
   return `T+${days}d`;
 });
 const nLabelRef = ref<HTMLElement | null>(null);
-const settingsPopoverRef = ref<HTMLElement | null>(null);
+const settingsMenuRef = ref<HTMLElement | null>(null);
 const rowsSlider = ref(appliedParams.rows);
 const nPopoverOpen = ref(false);
 const nPopoverAnchor = ref<{
@@ -440,14 +446,6 @@ const nPopoverAnchor = ref<{
 } | null>(null);
 let nPopoverHideTimer: ReturnType<typeof setTimeout> | null = null;
 let rowsApplyTimer: ReturnType<typeof setTimeout> | null = null;
-let simSettingsHideTimer: ReturnType<typeof setTimeout> | null = null;
-const settingsFocusWithin = ref(false);
-
-const isSettingsFocusActive = (): boolean => {
-  if (typeof document === "undefined") return false;
-  const active = document.activeElement;
-  return !!(active && settingsPopoverRef.value?.contains(active));
-};
 
 const clampInt = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, Math.round(value)));
@@ -458,6 +456,13 @@ const simTimeSteps = ref(
     TIME_STEPS_MAX,
   ),
 );
+const graphSettingsDraft = reactive({
+  timeSteps: simTimeSteps.value,
+  pathLimit: cloudPathLimit.value,
+  colorMin: colorMinPercent.value,
+  colorMax: colorMaxPercent.value,
+  binsMultiplier: histBinsMultiplier.value,
+});
 
 const setSimTimeSteps = (value: number): void => {
   const next = clampInt(
@@ -502,51 +507,132 @@ const setHistBinsMultiplier = (value: number): void => {
   histBinsMultiplier.value = next;
 };
 
-const clearSimSettingsHideTimer = (): void => {
-  if (!simSettingsHideTimer) return;
-  clearTimeout(simSettingsHideTimer);
-  simSettingsHideTimer = null;
-};
-
-const showSimSettings = (): void => {
-  clearSimSettingsHideTimer();
-  settingsOpen.value = true;
-};
-
-const scheduleSimSettingsHide = (): void => {
-  if (settingsFocusWithin.value || isSettingsFocusActive()) return;
-  clearSimSettingsHideTimer();
-  simSettingsHideTimer = setTimeout(() => {
-    if (settingsFocusWithin.value || isSettingsFocusActive()) return;
-    settingsOpen.value = false;
-  }, 1000);
+const syncSettingsDraft = (): void => {
+  Object.assign(pathModelDraft, pathModel);
+  graphSettingsDraft.timeSteps = simTimeSteps.value;
+  graphSettingsDraft.pathLimit = cloudPathLimit.value;
+  graphSettingsDraft.colorMin = colorMinPercent.value;
+  graphSettingsDraft.colorMax = colorMaxPercent.value;
+  graphSettingsDraft.binsMultiplier = histBinsMultiplier.value;
 };
 
 const toggleSimSettings = (): void => {
-  clearSimSettingsHideTimer();
-  settingsOpen.value = !settingsOpen.value;
-};
-
-const handleSettingsFocusIn = (): void => {
-  settingsFocusWithin.value = true;
-  showSimSettings();
-};
-
-const handleSettingsFocusOut = (): void => {
-  if (typeof requestAnimationFrame === "undefined") {
-    settingsFocusWithin.value = isSettingsFocusActive();
-    if (!settingsFocusWithin.value) scheduleSimSettingsHide();
+  if (settingsOpen.value) {
+    settingsOpen.value = false;
     return;
   }
-  requestAnimationFrame(() => {
-    settingsFocusWithin.value = isSettingsFocusActive();
-    if (
-      !settingsFocusWithin.value &&
-      !settingsPopoverRef.value?.matches(":hover")
-    ) {
-      scheduleSimSettingsHide();
-    }
-  });
+  syncSettingsDraft();
+  settingsOpen.value = true;
+};
+
+const closeSimSettings = (): void => {
+  settingsOpen.value = false;
+};
+
+const handleSettingsPointerDown = (event: PointerEvent): void => {
+  if (!settingsOpen.value || !(event.target instanceof Node)) return;
+  if (settingsMenuRef.value?.contains(event.target)) return;
+  closeSimSettings();
+};
+
+const handleSettingsKeydown = (event: KeyboardEvent): void => {
+  if (event.key === "Escape") closeSimSettings();
+};
+
+type NumericPathModelKey =
+  | "meanReversion"
+  | "longRunVol"
+  | "volOfVol"
+  | "correlation"
+  | "jumpIntensity"
+  | "maxJumpVarianceShare"
+  | "jumpMean"
+  | "jumpVol";
+
+const setPathModelNumber = (
+  key: NumericPathModelKey,
+  value: number,
+  min: number,
+  max: number,
+  decimals: number,
+): void => {
+  if (!Number.isFinite(value)) return;
+  pathModelDraft[key] = roundTo(clamp(value, min, max), decimals);
+};
+
+const setPathModelPercent = (
+  key:
+    | "longRunVol"
+    | "maxJumpVarianceShare"
+    | "jumpMean"
+    | "jumpVol",
+  value: number,
+  minPercent: number,
+  maxPercent: number,
+): void => {
+  setPathModelNumber(key, value / 100, minPercent / 100, maxPercent / 100, 5);
+};
+
+const resetPathModel = (): void => {
+  Object.assign(pathModelDraft, DEFAULT_PATH_MODEL);
+};
+
+const setDraftTimeSteps = (value: number): void => {
+  if (!Number.isFinite(value)) return;
+  graphSettingsDraft.timeSteps = clampInt(
+    Math.round(value / TIME_STEPS_STEP) * TIME_STEPS_STEP,
+    TIME_STEPS_MIN,
+    TIME_STEPS_MAX,
+  );
+};
+
+const setDraftPathLimit = (value: number): void => {
+  if (!Number.isFinite(value)) return;
+  const snapped = Math.round(value / DRAWN_PATHS_STEP) * DRAWN_PATHS_STEP;
+  graphSettingsDraft.pathLimit = clampInt(
+    snapped,
+    DRAWN_PATHS_MIN,
+    Math.min(DRAWN_PATHS_MAX, appliedParams.rows),
+  );
+};
+
+const setDraftColorMin = (value: number): void => {
+  if (!Number.isFinite(value)) return;
+  graphSettingsDraft.colorMin = clamp(
+    roundTo(value, 1),
+    0,
+    graphSettingsDraft.colorMax - 1,
+  );
+};
+
+const setDraftColorMax = (value: number): void => {
+  if (!Number.isFinite(value)) return;
+  graphSettingsDraft.colorMax = clamp(
+    roundTo(value, 1),
+    graphSettingsDraft.colorMin + 1,
+    100,
+  );
+};
+
+const setDraftBinsMultiplier = (value: number): void => {
+  if (!Number.isFinite(value)) return;
+  graphSettingsDraft.binsMultiplier = clamp(roundTo(value, 2), 1, 2);
+};
+
+const confirmSimSettings = (): void => {
+  Object.assign(pathModel, pathModelDraft);
+  if (graphSettingsDraft.timeSteps !== simTimeSteps.value) {
+    setSimTimeSteps(graphSettingsDraft.timeSteps);
+  }
+  if (graphSettingsDraft.pathLimit !== cloudPathLimit.value) {
+    setCloudPathLimit(graphSettingsDraft.pathLimit);
+  }
+  colorMinPercent.value = graphSettingsDraft.colorMin;
+  colorMaxPercent.value = graphSettingsDraft.colorMax;
+  if (graphSettingsDraft.binsMultiplier !== histBinsMultiplier.value) {
+    setHistBinsMultiplier(graphSettingsDraft.binsMultiplier);
+  }
+  closeSimSettings();
 };
 
 const clearNPopoverHideTimer = (): void => {
@@ -1384,7 +1470,8 @@ watch(
 onUnmounted(() => {
   clearNPopoverHideTimer();
   clearRowsApplyTimer();
-  clearSimSettingsHideTimer();
+  document.removeEventListener("pointerdown", handleSettingsPointerDown);
+  document.removeEventListener("keydown", handleSettingsKeydown);
   for (const timer of markRetryTimers.values()) {
     clearTimeout(timer);
   }
@@ -1394,6 +1481,8 @@ onUnmounted(() => {
 });
 
 onMounted(async () => {
+  document.addEventListener("pointerdown", handleSettingsPointerDown);
+  document.addEventListener("keydown", handleSettingsKeydown);
   try {
     instruments.value = await fetchInstruments();
   } catch (error) {
@@ -1505,6 +1594,402 @@ watch(
         >
           Trade on Thalex
         </a>
+        <div ref="settingsMenuRef" class="top-settings-wrap">
+          <button
+            type="button"
+            class="top-settings-button"
+            title="Simulation settings"
+            aria-label="Simulation settings"
+            aria-haspopup="dialog"
+            :aria-expanded="settingsOpen"
+            @click="toggleSimSettings"
+          ></button>
+          <section
+            v-if="settingsOpen"
+            class="sim-settings-popover"
+            role="dialog"
+            aria-label="Simulation settings"
+          >
+            <header class="settings-popover-header">
+              <div>
+                <strong>Simulation settings</strong>
+                <small>Path dynamics and graph rendering</small>
+              </div>
+              <button
+                type="button"
+                class="settings-reset"
+                @click="resetPathModel"
+              >
+                Reset model
+              </button>
+            </header>
+
+            <div class="settings-section">
+              <div class="settings-section-heading">
+                <span>Path model</span>
+                <small>σ remains the annual variance target</small>
+              </div>
+              <div class="path-model-toggle" role="group" aria-label="Path model">
+                <button
+                  type="button"
+                  :class="{ 'is-active': pathModelDraft.kind === 'gbm' }"
+                  :aria-pressed="pathModelDraft.kind === 'gbm'"
+                  @click="pathModelDraft.kind = 'gbm'"
+                >
+                  Constant vol
+                </button>
+                <button
+                  type="button"
+                  :class="{ 'is-active': pathModelDraft.kind === 'bates' }"
+                  :aria-pressed="pathModelDraft.kind === 'bates'"
+                  @click="pathModelDraft.kind = 'bates'"
+                >
+                  Bates
+                </button>
+              </div>
+              <p class="settings-model-note">
+                Bates defaults are calibrated from BTC hourly history. Adjustments
+                preserve the selected σ²T budget. The jump cap keeps low-vol paths
+                from losing their diffusive component.
+              </p>
+
+              <div
+                class="settings-fields"
+                :class="{ 'is-disabled': pathModelDraft.kind !== 'bates' }"
+              >
+                <label class="sim-settings-row">
+                  <span>
+                    Mean reversion <i>κ / yr</i>
+                  </span>
+                  <input
+                    class="sim-settings-input"
+                    type="number"
+                    min="0.1"
+                    max="30"
+                    step="0.1"
+                    :disabled="pathModelDraft.kind !== 'bates'"
+                    :value="pathModelDraft.meanReversion"
+                    @input="
+                      setPathModelNumber(
+                        'meanReversion',
+                        Number(($event.target as HTMLInputElement).value),
+                        0.1,
+                        30,
+                        2,
+                      )
+                    "
+                  />
+                </label>
+                <label class="sim-settings-row">
+                  <span>
+                    Long-run vol <i>√θ</i>
+                  </span>
+                  <span class="settings-input-unit">
+                    <input
+                      class="sim-settings-input"
+                      type="number"
+                      min="5"
+                      max="200"
+                      step="0.1"
+                      :disabled="pathModelDraft.kind !== 'bates'"
+                      :value="roundTo(pathModelDraft.longRunVol * 100, 2)"
+                      @input="
+                        setPathModelPercent(
+                          'longRunVol',
+                          Number(($event.target as HTMLInputElement).value),
+                          5,
+                          200,
+                        )
+                      "
+                    />
+                    <i>%</i>
+                  </span>
+                </label>
+                <label class="sim-settings-row">
+                  <span>
+                    Vol of vol <i>ξ</i>
+                  </span>
+                  <input
+                    class="sim-settings-input"
+                    type="number"
+                    min="0"
+                    max="3"
+                    step="0.01"
+                    :disabled="pathModelDraft.kind !== 'bates'"
+                    :value="pathModelDraft.volOfVol"
+                    @input="
+                      setPathModelNumber(
+                        'volOfVol',
+                        Number(($event.target as HTMLInputElement).value),
+                        0,
+                        3,
+                        3,
+                      )
+                    "
+                  />
+                </label>
+                <label class="sim-settings-row">
+                  <span>
+                    Spot / vol corr. <i>ρ</i>
+                  </span>
+                  <input
+                    class="sim-settings-input"
+                    type="number"
+                    min="-0.99"
+                    max="0.99"
+                    step="0.01"
+                    :disabled="pathModelDraft.kind !== 'bates'"
+                    :value="pathModelDraft.correlation"
+                    @input="
+                      setPathModelNumber(
+                        'correlation',
+                        Number(($event.target as HTMLInputElement).value),
+                        -0.99,
+                        0.99,
+                        3,
+                      )
+                    "
+                  />
+                </label>
+                <div class="sim-settings-row">
+                  <span>Price jumps</span>
+                  <button
+                    type="button"
+                    class="settings-switch"
+                    role="switch"
+                    aria-label="Price jumps"
+                    :disabled="pathModelDraft.kind !== 'bates'"
+                    :aria-checked="pathModelDraft.jumpsEnabled"
+                    :class="{ 'is-active': pathModelDraft.jumpsEnabled }"
+                    @click="
+                      pathModelDraft.jumpsEnabled =
+                        !pathModelDraft.jumpsEnabled
+                    "
+                  >
+                    <i></i>
+                  </button>
+                </div>
+                <label class="sim-settings-row">
+                  <span>Jump intensity <i>/ yr</i></span>
+                  <input
+                    class="sim-settings-input"
+                    type="number"
+                    min="0"
+                    max="500"
+                    step="1"
+                    :disabled="
+                      pathModelDraft.kind !== 'bates' ||
+                      !pathModelDraft.jumpsEnabled
+                    "
+                    :value="pathModelDraft.jumpIntensity"
+                    @input="
+                      setPathModelNumber(
+                        'jumpIntensity',
+                        Number(($event.target as HTMLInputElement).value),
+                        0,
+                        500,
+                        1,
+                      )
+                    "
+                  />
+                </label>
+                <label class="sim-settings-row">
+                  <span>Jump variance cap <i>of σ²T</i></span>
+                  <span class="settings-input-unit">
+                    <input
+                      class="sim-settings-input"
+                      type="number"
+                      min="0"
+                      max="90"
+                      step="1"
+                      :disabled="
+                        pathModelDraft.kind !== 'bates' ||
+                        !pathModelDraft.jumpsEnabled
+                      "
+                      :value="
+                        roundTo(pathModelDraft.maxJumpVarianceShare * 100, 1)
+                      "
+                      @input="
+                        setPathModelPercent(
+                          'maxJumpVarianceShare',
+                          Number(($event.target as HTMLInputElement).value),
+                          0,
+                          90,
+                        )
+                      "
+                    />
+                    <i>%</i>
+                  </span>
+                </label>
+                <label class="sim-settings-row">
+                  <span>Mean jump</span>
+                  <span class="settings-input-unit">
+                    <input
+                      class="sim-settings-input"
+                      type="number"
+                      min="-20"
+                      max="20"
+                      step="0.01"
+                      :disabled="
+                        pathModelDraft.kind !== 'bates' ||
+                        !pathModelDraft.jumpsEnabled
+                      "
+                      :value="roundTo(pathModelDraft.jumpMean * 100, 3)"
+                      @input="
+                        setPathModelPercent(
+                          'jumpMean',
+                          Number(($event.target as HTMLInputElement).value),
+                          -20,
+                          20,
+                        )
+                      "
+                    />
+                    <i>%</i>
+                  </span>
+                </label>
+                <label class="sim-settings-row">
+                  <span>Jump volatility</span>
+                  <span class="settings-input-unit">
+                    <input
+                      class="sim-settings-input"
+                      type="number"
+                      min="0"
+                      max="20"
+                      step="0.01"
+                      :disabled="
+                        pathModelDraft.kind !== 'bates' ||
+                        !pathModelDraft.jumpsEnabled
+                      "
+                      :value="roundTo(pathModelDraft.jumpVol * 100, 3)"
+                      @input="
+                        setPathModelPercent(
+                          'jumpVol',
+                          Number(($event.target as HTMLInputElement).value),
+                          0,
+                          20,
+                        )
+                      "
+                    />
+                    <i>%</i>
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            <div class="settings-section settings-section--graph">
+              <div class="settings-section-heading">
+                <span>Graph</span>
+              </div>
+              <div class="settings-fields">
+                <label class="sim-settings-row">
+                  <span>Time steps</span>
+                  <input
+                    class="sim-settings-input"
+                    type="number"
+                    :min="TIME_STEPS_MIN"
+                    :max="TIME_STEPS_MAX"
+                    :step="TIME_STEPS_STEP"
+                    :value="graphSettingsDraft.timeSteps"
+                    @input="
+                      setDraftTimeSteps(
+                        Number(($event.target as HTMLInputElement).value),
+                      )
+                    "
+                  />
+                </label>
+                <label class="sim-settings-row">
+                  <span>Paths drawn</span>
+                  <input
+                    class="sim-settings-input"
+                    type="number"
+                    :min="DRAWN_PATHS_MIN"
+                    :max="Math.min(DRAWN_PATHS_MAX, appliedParams.rows)"
+                    :step="DRAWN_PATHS_STEP"
+                    :value="graphSettingsDraft.pathLimit"
+                    @input="
+                      setDraftPathLimit(
+                        Number(($event.target as HTMLInputElement).value),
+                      )
+                    "
+                  />
+                </label>
+                <label class="sim-settings-row">
+                  <span>Color min</span>
+                  <span class="settings-input-unit">
+                    <input
+                      class="sim-settings-input"
+                      type="number"
+                      min="0"
+                      max="99"
+                      step="1"
+                      :value="graphSettingsDraft.colorMin"
+                      @input="
+                        setDraftColorMin(
+                          Number(($event.target as HTMLInputElement).value),
+                        )
+                      "
+                    />
+                    <i>%</i>
+                  </span>
+                </label>
+                <label class="sim-settings-row">
+                  <span>Color max</span>
+                  <span class="settings-input-unit">
+                    <input
+                      class="sim-settings-input"
+                      type="number"
+                      min="1"
+                      max="100"
+                      step="1"
+                      :value="graphSettingsDraft.colorMax"
+                      @input="
+                        setDraftColorMax(
+                          Number(($event.target as HTMLInputElement).value),
+                        )
+                      "
+                    />
+                    <i>%</i>
+                  </span>
+                </label>
+                <label class="sim-settings-row">
+                  <span>Histogram bins</span>
+                  <span class="settings-input-unit">
+                    <i>×</i>
+                    <input
+                      class="sim-settings-input"
+                      type="number"
+                      min="1"
+                      max="2"
+                      step="0.05"
+                      :value="graphSettingsDraft.binsMultiplier"
+                      @input="
+                        setDraftBinsMultiplier(
+                          Number(($event.target as HTMLInputElement).value),
+                        )
+                      "
+                    />
+                  </span>
+                </label>
+              </div>
+            </div>
+            <footer class="settings-actions">
+              <button
+                type="button"
+                class="settings-action settings-action--cancel"
+                @click="closeSimSettings"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                class="settings-action settings-action--confirm"
+                @click="confirmSimSettings"
+              >
+                Confirm changes
+              </button>
+            </footer>
+          </section>
+        </div>
       </div>
     </header>
 
@@ -1527,17 +2012,6 @@ watch(
         <section ref="chartSectionRef" class="chart-section">
           <div class="chart-header">
             <div class="chart-header-left">
-              <button
-                type="button"
-                class="sim-settings-btn"
-                :aria-expanded="settingsOpen"
-                aria-label="Simulation settings"
-                @mouseenter="showSimSettings"
-                @mouseleave="scheduleSimSettingsHide"
-                @click="toggleSimSettings"
-              >
-                ⚙
-              </button>
               <div class="chart-meta">
                 <span class="chart-meta-key">μ</span>
                 <span class="chart-meta-value">{{ guideMuPercent }}%</span>
@@ -1582,122 +2056,6 @@ watch(
               Prob
             </button>
           </div>
-          <div
-        v-if="settingsOpen"
-        class="sim-settings-popover"
-        ref="settingsPopoverRef"
-        @mouseenter="showSimSettings"
-        @mouseleave="scheduleSimSettingsHide"
-        @focusin="handleSettingsFocusIn"
-        @focusout="handleSettingsFocusOut"
-      >
-        <div class="sim-settings-row">
-          <label for="time-steps">Time steps</label>
-          <input
-            id="time-steps"
-            class="sim-settings-input"
-            type="number"
-            :min="TIME_STEPS_MIN"
-            :max="TIME_STEPS_MAX"
-            :step="TIME_STEPS_STEP"
-            :value="simTimeSteps"
-            @change="
-              setSimTimeSteps(Number(($event.target as HTMLInputElement).value))
-            "
-            @blur="
-              setSimTimeSteps(Number(($event.target as HTMLInputElement).value))
-            "
-          />
-        </div>
-        <div class="sim-settings-row">
-          <label for="paths-drawn">Paths drawn</label>
-          <input
-            id="paths-drawn"
-            class="sim-settings-input"
-            type="number"
-            :min="DRAWN_PATHS_MIN"
-            :max="Math.min(DRAWN_PATHS_MAX, appliedParams.rows)"
-            :step="DRAWN_PATHS_STEP"
-            :value="cloudPathLimit"
-            @change="
-              setCloudPathLimit(
-                Number(($event.target as HTMLInputElement).value),
-              )
-            "
-            @blur="
-              setCloudPathLimit(
-                Number(($event.target as HTMLInputElement).value),
-              )
-            "
-          />
-        </div>
-        <div class="sim-settings-row">
-          <label for="color-min">Color min %</label>
-          <input
-            id="color-min"
-            class="sim-settings-input"
-            type="number"
-            min="0"
-            max="99"
-            step="1"
-            :value="colorMinPercent"
-            @change="
-              setColorMinPercent(
-                Number(($event.target as HTMLInputElement).value),
-              )
-            "
-            @blur="
-              setColorMinPercent(
-                Number(($event.target as HTMLInputElement).value),
-              )
-            "
-          />
-        </div>
-        <div class="sim-settings-row">
-          <label for="color-max">Color max %</label>
-          <input
-            id="color-max"
-            class="sim-settings-input"
-            type="number"
-            min="1"
-            max="100"
-            step="1"
-            :value="colorMaxPercent"
-            @change="
-              setColorMaxPercent(
-                Number(($event.target as HTMLInputElement).value),
-              )
-            "
-            @blur="
-              setColorMaxPercent(
-                Number(($event.target as HTMLInputElement).value),
-              )
-            "
-          />
-        </div>
-        <div class="sim-settings-row">
-          <label for="bins-mult">Bins x</label>
-          <input
-            id="bins-mult"
-            class="sim-settings-input"
-            type="number"
-            min="1"
-            max="2"
-            step="0.05"
-            :value="histBinsMultiplier"
-            @change="
-              setHistBinsMultiplier(
-                Number(($event.target as HTMLInputElement).value),
-              )
-            "
-            @blur="
-              setHistBinsMultiplier(
-                Number(($event.target as HTMLInputElement).value),
-              )
-            "
-          />
-        </div>
-      </div>
       <div
         v-if="nPopoverOpen && nPopoverAnchor"
         class="rows-popover"
@@ -1733,6 +2091,7 @@ watch(
         v-if="strategySimulationReady"
         :seed="seed"
         :params="appliedParams"
+        :pathModel="pathModel"
         :valuationTs="quoteValuationTs"
         :samplePathLimit="cloudPathLimit"
         :muMin="driftBounds.min"
@@ -1783,6 +2142,7 @@ watch(
         :key="underlying"
         :seed="seed"
         :params="appliedParams"
+        :pathModel="pathModel"
         :valuationTs="quoteValuationTs"
         :samplePathLimit="cloudPathLimit"
         :colorMin="colorMinPercent / 100"
@@ -1868,6 +2228,8 @@ watch(
 
 .top-bar {
   --top-control-height: 32px;
+  position: relative;
+  z-index: 40;
   width: 100%;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   flex-shrink: 0;
@@ -2056,27 +2418,6 @@ watch(
   text-transform: uppercase;
 }
 
-.sim-settings-btn {
-  width: 12px;
-  height: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border-radius: 50%;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 7px;
-  line-height: 1;
-  flex-shrink: 0;
-  transform: translateY(1px);
-}
-
-.sim-settings-btn:hover {
-  color: var(--text-primary);
-}
-
 .save-png-button {
   box-sizing: border-box;
   flex-shrink: 0;
@@ -2101,19 +2442,175 @@ watch(
   opacity: 0.45;
 }
 
+.top-settings-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.top-settings-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.top-settings-button::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #e8ebf2;
+}
+
+.top-settings-button:hover,
+.top-settings-button[aria-expanded="true"] {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.top-settings-button:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.7);
+  outline-offset: 2px;
+}
+
 .sim-settings-popover {
   position: absolute;
-  top: calc(var(--chart-header-height) + 4px);
-  left: 8px;
-  z-index: 12;
-  width: 220px;
-  padding: 10px 12px;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 50;
+  width: min(344px, calc(100vw - 32px));
+  max-height: calc(100vh - 82px);
+  padding: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-radius: 8px;
-  border: 1px solid var(--color-border);
-  background: var(--color-bg);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(8, 10, 15, 0.98);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(12px);
+}
+
+.settings-popover-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 1px 12px;
+}
+
+.settings-popover-header > div {
   display: grid;
-  gap: 8px;
+  gap: 3px;
+}
+
+.settings-popover-header strong {
+  color: #f1f5f9;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.settings-popover-header small {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.settings-reset {
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: #8e959e;
+  font-size: 9px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.settings-reset:hover {
+  color: #f1f5f9;
+}
+
+.settings-section {
+  padding: 12px 1px 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.settings-section--graph {
+  margin-top: 10px;
+}
+
+.settings-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+
+.settings-section-heading > span {
+  color: #d8dde5;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.settings-section-heading small {
+  color: #666d76;
+  font-size: 8px;
+  font-weight: 500;
+}
+
+.path-model-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.path-model-toggle button {
+  height: 26px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #777f89;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.path-model-toggle button:hover {
+  color: #d8dde5;
+}
+
+.path-model-toggle button.is-active {
+  background: rgba(255, 255, 255, 0.105);
+  color: #f1f5f9;
+}
+
+.settings-model-note {
+  margin: 8px 2px 11px;
+  color: #676e77;
+  font-size: 8.5px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.settings-fields {
+  display: grid;
+  gap: 7px;
+  transition: opacity 120ms ease;
+}
+
+.settings-fields.is-disabled {
+  opacity: 0.42;
 }
 
 .sim-settings-row {
@@ -2121,30 +2618,136 @@ watch(
   grid-template-columns: 1fr auto;
   align-items: center;
   column-gap: 10px;
-  font-size: 11px;
-  color: var(--text-muted);
+  min-height: 28px;
+  color: #969da7;
+  font-size: 10px;
+  font-weight: 550;
   letter-spacing: 0;
 }
 
+.sim-settings-row > span:first-child {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.sim-settings-row i {
+  color: #666d76;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 500;
+}
+
 .sim-settings-input {
-  width: 92px;
+  width: 84px;
   height: 28px;
   padding: 0 8px;
-  border-radius: 6px;
-  border: 1px solid var(--color-border-strong);
-  background: #111114;
-  color: var(--text-primary);
-  font-size: 12px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  background: rgba(255, 255, 255, 0.045);
+  color: #e5e9ef;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   text-align: right;
   appearance: textfield;
   -moz-appearance: textfield;
 }
 
+.sim-settings-input:focus {
+  border-color: rgba(255, 255, 255, 0.32);
+  outline: none;
+}
+
+.sim-settings-input:disabled {
+  cursor: default;
+  color: #777e87;
+}
+
 .sim-settings-input::-webkit-inner-spin-button,
 .sim-settings-input::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
+}
+
+.settings-input-unit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.settings-switch {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.settings-switch > i {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #8b929b;
+  transition:
+    left 120ms ease,
+    background 120ms ease;
+}
+
+.settings-switch.is-active {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.settings-switch.is-active > i {
+  left: 15px;
+  background: #f1f5f9;
+}
+
+.settings-switch:disabled {
+  cursor: default;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.settings-action {
+  height: 29px;
+  padding: 0 11px;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 650;
+}
+
+.settings-action--cancel {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: #8d949d;
+}
+
+.settings-action--cancel:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #d8dde5;
+}
+
+.settings-action--confirm {
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: #eef1f5;
+  color: #111318;
+}
+
+.settings-action--confirm:hover {
+  background: #ffffff;
 }
 
 .chart-section {
@@ -2425,6 +3028,18 @@ watch(
 
   .top-spacer {
     display: none;
+  }
+
+  .top-settings-wrap {
+    position: static;
+  }
+
+  .sim-settings-popover {
+    top: calc(100% + 8px);
+    right: 16px;
+    left: 16px;
+    width: auto;
+    max-height: calc(100vh - 128px);
   }
 
   .trade-thalex-button {

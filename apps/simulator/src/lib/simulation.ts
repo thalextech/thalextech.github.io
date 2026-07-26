@@ -10,3 +10,21 @@ export type SimulationStats = {
   /** Expected price opportunity cost from stopped paths that later recovered. */
   opportunityCost: number;
 };
+
+/** Metrics for paths ending in a single histogram price bin. */
+export type HistogramBinStats = {
+  priceMin: number;
+  priceMax: number;
+  count: number;
+  totalCount: number;
+  meanPayoff: number;
+  medianPayoff: number;
+  winRate: number;
+  maxLossRate: number;
+  opportunityCost: number;
+};
+
+export type HistogramBinHover = {
+  primary: HistogramBinStats | null;
+  comparison: HistogramBinStats | null;
+};

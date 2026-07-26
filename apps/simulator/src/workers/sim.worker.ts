@@ -1,6 +1,15 @@
 import { blackScholesGreeks } from "../lib/blackScholes";
 import type { GBMParams } from "../lib/gbm";
+import type { PathModelParams } from "../lib/pathModel";
 import type { FutureLeg, OptionLeg, PositionLeg } from "../lib/position";
+import {
+  advanceBatesState,
+  buildQuadraticVariationBudget,
+  createBatesProcess,
+  createBatesState,
+  type BatesCalibration,
+  type BatesProcess,
+} from "../../../../lib/batesSimulation.js";
 
 type OptionPricingInput = {
   iv: number | null;
@@ -12,6 +21,7 @@ type SimWorkerRequest = {
   id: number;
   seed: number;
   params: GBMParams;
+  pathModel: PathModelParams;
   legs: PositionLeg[];
   optionPricingByLegId: Record<string, OptionPricingInput>;
   valuationTs: number;
@@ -31,6 +41,9 @@ type SimBin = {
   count: number;
   sumPayoff: number;
   medianPayoff: number;
+  winCount: number;
+  maxLossCount: number;
+  opportunityCostSum: number;
 };
 
 type SimWorkerSuccess = {
@@ -93,6 +106,7 @@ type Randn = () => number;
 const SECONDS_PER_YEAR = 365.25 * 24 * 60 * 60;
 const RISK_FREE_RATE = 0.0;
 const TAIL_PATH_POOL_SIZE = 20;
+const BATES_SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
@@ -153,6 +167,57 @@ const quantileSorted = (sorted: Float64Array, p: number): number => {
   if (lo === hi) return sorted[lo];
   const t = idx - lo;
   return sorted[lo] * (1 - t) + sorted[hi] * t;
+};
+
+const prepareBatesProcess = (
+  request: SimWorkerRequest,
+): BatesProcess | null => {
+  if (request.pathModel.kind !== "bates") return null;
+  const model = request.pathModel;
+  const jumpIntensity = model.jumpsEnabled ? model.jumpIntensity : 0;
+  const jumpVariance = model.jumpVol ** 2;
+  const jumpSecondMoment = jumpVariance + model.jumpMean ** 2;
+  const regimeJumpParameters = {
+    low: { intensity: jumpIntensity },
+    medium: { intensity: jumpIntensity },
+    high: { intensity: jumpIntensity },
+  };
+  const calibration: BatesCalibration = {
+    variance: {
+      kappa: model.meanReversion,
+      theta: model.longRunVol ** 2,
+      sigma: model.volOfVol,
+      rho: model.correlation,
+      initialVariance: request.params.vol ** 2,
+    },
+    jumps: {
+      logMean: model.jumpMean,
+      logStdDev: model.jumpVol,
+      logSecondMoment: jumpSecondMoment,
+      compensatorMean: Math.exp(model.jumpMean + 0.5 * jumpVariance) - 1,
+      byRegime: regimeJumpParameters,
+    },
+    regimeCutoffs: {
+      lowToMedium: Number.NEGATIVE_INFINITY,
+      mediumToHigh: Number.POSITIVE_INFINITY,
+    },
+  };
+  const entryTs = request.valuationTs;
+  const cycle = {
+    entryTs,
+    exitTs: entryTs + request.params.T * BATES_SECONDS_PER_YEAR,
+    sigma: request.params.vol,
+  };
+  const budget = buildQuadraticVariationBudget({
+    cycle,
+    calibration,
+    maxJumpVarianceShare: model.maxJumpVarianceShare,
+  });
+  return createBatesProcess({
+    calibration,
+    budget,
+    annualDrift: request.params.mu,
+  });
 };
 
 const computeAdaptiveBinCount = (
@@ -333,6 +398,9 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
 
   const finalPrices = new Float64Array(rows);
   const payoffs = new Float64Array(rows);
+  const pathWin = new Uint8Array(rows);
+  const pathMaxLoss = new Uint8Array(rows);
+  const pathOpportunityCost = new Float64Array(rows);
 
   const drift =
     (request.params.mu - 0.5 * request.params.vol * request.params.vol) *
@@ -340,6 +408,7 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   const volStep = request.params.vol * Math.sqrt(request.params.dt);
   const rng = mulberry32(request.seed);
   const randn = makeRandn(rng);
+  const batesProcess = prepareBatesProcess(request);
 
   const { hasPositionLegs, optionLegs, futureLegs } = prepareLegs(request);
 
@@ -368,6 +437,9 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
 
   for (let r = 0; r < rows; r += 1) {
     let s = baseline;
+    const batesState = batesProcess
+      ? createBatesState(baseline, batesProcess)
+      : null;
     let peak = baseline;
     let worstDrawdown = 0;
     let samplingStopHit = false;
@@ -379,8 +451,18 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
         : null;
 
     for (let c = 0; c < steps; c += 1) {
-      const z = randn();
-      s *= Math.exp(drift + volStep * z);
+      if (batesProcess && batesState) {
+        s = advanceBatesState(
+          batesState,
+          batesProcess,
+          request.params.dt,
+          randn,
+          rng,
+        ).spot;
+      } else {
+        const z = randn();
+        s *= Math.exp(drift + volStep * z);
+      }
 
       if (s < pathMin) pathMin = s;
       if (s > pathMax) pathMax = s;
@@ -450,7 +532,9 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
             (leg.isBuy && s > leg.stopLoss) ||
             (!leg.isBuy && s < leg.stopLoss);
           if (recovered) {
-            opportunityCostSum += leg.sign * leg.qty * (s - leg.stopLoss);
+            const pathOpp = leg.sign * leg.qty * (s - leg.stopLoss);
+            pathOpportunityCost[r] += pathOpp;
+            opportunityCostSum += pathOpp;
           }
         }
         const fundedSteps =
@@ -469,7 +553,10 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
 
     payoffs[r] = total;
     payoffSum += total;
-    if (total > 0) wins += 1;
+    if (total > 0) {
+      wins += 1;
+      pathWin[r] = 1;
+    }
     const stopped = stopHit?.some((value) => value === 1) ?? false;
     if (
       (futureLegs.length > 0 && stopped) ||
@@ -478,6 +565,7 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
         total <= -0.99 * optionPremiumAtRisk)
     ) {
       maxLossHits += 1;
+      pathMaxLoss[r] = 1;
     }
     if ((stopped || samplingStopHit) && s > highestStoppedFinalPrice) {
       highestStoppedFinalPrice = s;
@@ -540,6 +628,9 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
 
   const counts = new Uint32Array(histBins);
   const sums = new Float64Array(histBins);
+  const winCounts = new Uint32Array(histBins);
+  const maxLossCounts = new Uint32Array(histBins);
+  const opportunityCostSums = new Float64Array(histBins);
   const payoffLists: number[][] = Array.from({ length: histBins }, () => []);
 
   const findBinIndex = (value: number): number => {
@@ -556,6 +647,9 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
     const idx = findBinIndex(finalPrices[i]);
     counts[idx] += 1;
     sums[idx] += payoffs[i];
+    winCounts[idx] += pathWin[i];
+    maxLossCounts[idx] += pathMaxLoss[i];
+    opportunityCostSums[idx] += pathOpportunityCost[i];
     payoffLists[idx].push(payoffs[i]);
   }
 
@@ -569,6 +663,9 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
       count: counts[i],
       sumPayoff: sums[i],
       medianPayoff: medianOfArray(payoffLists[i]),
+      winCount: winCounts[i],
+      maxLossCount: maxLossCounts[i],
+      opportunityCostSum: opportunityCostSums[i],
     };
   }
 
@@ -624,11 +721,24 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   const replayRandn = makeRandn(replayRng);
   for (let r = 0; r < rows; r += 1) {
     let s = baseline;
+    const batesState = batesProcess
+      ? createBatesState(baseline, batesProcess)
+      : null;
     const sampleRow = sampleIndexToRow.get(r);
     const writeOffset = sampleRow != null ? sampleRow * steps : -1;
     for (let c = 0; c < steps; c += 1) {
-      const z = replayRandn();
-      s *= Math.exp(drift + volStep * z);
+      if (batesProcess && batesState) {
+        s = advanceBatesState(
+          batesState,
+          batesProcess,
+          request.params.dt,
+          replayRandn,
+          replayRng,
+        ).spot;
+      } else {
+        const z = replayRandn();
+        s *= Math.exp(drift + volStep * z);
+      }
       if (writeOffset >= 0) {
         sampledPaths[writeOffset + c] = s;
       }

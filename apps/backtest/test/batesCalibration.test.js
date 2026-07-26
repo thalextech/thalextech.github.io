@@ -3,11 +3,14 @@ import assert from "node:assert/strict";
 import {
   calibrateBatesModel,
   resolveVarianceAt,
-} from "../src/lib/batesCalibration.js";
+} from "../../../lib/batesCalibration.js";
 import {
+  advanceBatesState,
   buildQuadraticVariationBudget,
+  createBatesProcess,
+  createBatesState,
   generateBatesPath,
-} from "../src/lib/batesSimulation.js";
+} from "../../../lib/batesSimulation.js";
 import {
   buildFairValueCycleState,
   createSeededRandom,
@@ -116,4 +119,66 @@ test("Bates path budget matches ATM IV squared times T without double counting",
   assert.equal(path.at(-1).ts, cycle.exitTs);
   assert.ok(path.every((point) =>
     point.spot > 0 && point.variance >= 0 && Number.isInteger(point.jumpCount)));
+
+  const replayUniform = createSeededRandom(42);
+  let replaySpare = null;
+  const replayNormal = () => {
+    if (replaySpare != null) {
+      const value = replaySpare;
+      replaySpare = null;
+      return value;
+    }
+    const radius = Math.sqrt(-2 * Math.log(Math.max(1e-12, replayUniform())));
+    const angle = 2 * Math.PI * replayUniform();
+    replaySpare = radius * Math.sin(angle);
+    return radius * Math.cos(angle);
+  };
+  const process = createBatesProcess({ calibration, budget });
+  const state = createBatesState(cycle.entrySpot, process);
+  let previousElapsedSeconds = 0;
+  const replay = path.map(({ elapsedSeconds }) => {
+    const point = advanceBatesState(
+      state,
+      process,
+      (elapsedSeconds - previousElapsedSeconds) / (365 * 86_400),
+      replayNormal,
+      replayUniform,
+    );
+    previousElapsedSeconds = elapsedSeconds;
+    return point;
+  });
+  assert.deepEqual(
+    replay,
+    path.map(({ spot, variance: pathVariance, jumpCount }) => ({
+      spot,
+      variance: pathVariance,
+      jumpCount,
+    })),
+  );
+});
+
+test("Bates path budget preserves diffusion when target volatility is low", () => {
+  const calibration = calibrateBatesModel({ rows: buildHistory(), jumpThreshold: 4 });
+  const cycle = {
+    ...buildCycle(),
+    sigma: 0.11,
+  };
+  const maxJumpVarianceShare = 0.35;
+  const budget = buildQuadraticVariationBudget({
+    cycle,
+    calibration,
+    maxJumpVarianceShare,
+  });
+
+  assert.ok(Math.abs(budget.expectedTotalQv - budget.targetQv) < 1e-12);
+  assert.ok(
+    budget.expectedJumpQv
+      <= budget.targetQv * maxJumpVarianceShare + 1e-12,
+  );
+  assert.ok(
+    budget.expectedDiffusiveQv
+      >= budget.targetQv * (1 - maxJumpVarianceShare) - 1e-12,
+  );
+  assert.ok(budget.jumpIntensityCapped);
+  assert.ok(budget.effectiveJumpIntensity < budget.calibratedJumpIntensity);
 });

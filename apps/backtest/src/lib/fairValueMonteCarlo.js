@@ -1,13 +1,13 @@
 import { blackScholesPrice } from "./optionPricing.js";
 import { blackScholesDelta, normalizeVol } from "./optionRisk.js";
 import { mean } from "./statistics.js";
-import { calibrateBatesModel } from "./batesCalibration.js";
+import { calibrateBatesModel } from "../../../../lib/batesCalibration.js";
 import {
   buildIntraWeekSimulationTimes,
   buildQuadraticVariationBudget,
   generateBatesPath,
   simulateBatesRealizedVol,
-} from "./batesSimulation.js";
+} from "../../../../lib/batesSimulation.js";
 
 const SECONDS_PER_YEAR = 365 * 86_400;
 const EPSILON = 1e-12;

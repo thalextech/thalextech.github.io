@@ -4,12 +4,18 @@ import CloudChart from "./CloudChart.vue";
 import StyledSelectMenu from "./StyledSelectMenu.vue";
 import type { AtmOptionExpiryQuote } from "../lib/atmOptionChain";
 import type { GBMParams } from "../lib/gbm";
+import type { PathModelParams } from "../lib/pathModel";
 import type { PositionLeg } from "../lib/position";
-import type { SimulationStats } from "../lib/simulation";
+import type {
+  HistogramBinHover,
+  HistogramBinStats,
+  SimulationStats,
+} from "../lib/simulation";
 
 const props = defineProps<{
   seed: number;
   params: GBMParams;
+  pathModel: PathModelParams;
   valuationTs: number;
   samplePathLimit: number;
   colorMin: number;
@@ -53,7 +59,32 @@ const horizonDays = ref(14);
 const targetMaturityDays = ref<number>(60);
 const optionStats = ref<SimulationStats | null>(null);
 const perpStats = ref<SimulationStats | null>(null);
+const hoveredBinStats = ref<HistogramBinHover | null>(null);
 const stopPathSummary = ref<StopPathSummary | null>(null);
+
+type TableStats = Pick<
+  SimulationStats,
+  | "meanPayoff"
+  | "medianPayoff"
+  | "winRate"
+  | "maxLossRate"
+  | "opportunityCost"
+>;
+
+const binToTableStats = (
+  bin: HistogramBinStats | null | undefined,
+): TableStats | null => {
+  if (!bin) return null;
+  return {
+    meanPayoff: bin.meanPayoff,
+    medianPayoff: bin.medianPayoff,
+    winRate: bin.winRate,
+    maxLossRate: bin.maxLossRate,
+    opportunityCost: bin.opportunityCost,
+  };
+};
+
+
 const leverageDetailsRef = ref<HTMLDetailsElement | null>(null);
 
 const clamp = (value: number, min: number, max: number): number =>
@@ -207,6 +238,7 @@ watch(
   () => {
     optionStats.value = null;
     perpStats.value = null;
+    hoveredBinStats.value = null;
     stopPathSummary.value = null;
   },
 );
@@ -323,6 +355,29 @@ const optionMarketReady = computed(
 const optionResultStats = computed(() =>
   optionMarketReady.value ? optionStats.value : null,
 );
+
+const optionDisplayStats = computed<TableStats | null>(() => {
+  if (!optionMarketReady.value) return null;
+  if (hoveredBinStats.value) {
+    return binToTableStats(hoveredBinStats.value.primary);
+  }
+  return optionResultStats.value;
+});
+
+const perpDisplayStats = computed<TableStats | null>(() => {
+  if (hoveredBinStats.value) {
+    return binToTableStats(hoveredBinStats.value.comparison);
+  }
+  return perpStats.value;
+});
+
+const hoveredPriceRangeLabel = computed(() => {
+  const primary = hoveredBinStats.value?.primary;
+  const comparison = hoveredBinStats.value?.comparison;
+  const bin = primary ?? comparison;
+  if (!bin) return null;
+  return `${formatUsd(bin.priceMin)} – ${formatUsd(bin.priceMax)}`;
+});
 </script>
 
 <template>
@@ -504,6 +559,7 @@ const optionResultStats = computed(() =>
           v-if="optionMarketReady"
           :seed="seed"
           :params="comparisonParams"
+          :pathModel="pathModel"
           :valuationTs="valuationTs"
           :samplePathLimit="samplePathLimit"
           :muMin="-5"
@@ -523,64 +579,90 @@ const optionResultStats = computed(() =>
           :comparisonSeriesLabel="perpLabel"
           :comparisonReferencePrice="stopPrice"
           :pathFilter="pathFilter"
+          :showHistogramTooltip="false"
           @set-mu="emit('set-mu', $event)"
           @set-vol="emit('set-vol', $event)"
           @stats-update="optionStats = $event"
           @comparison-stats-update="perpStats = $event"
           @stop-path-update="stopPathSummary = $event"
+          @histogram-bin-hover="hoveredBinStats = $event"
         />
         <div v-else class="comparison-chart-loading">
           Loading selected option quote…
         </div>
       </div>
-      <div class="comparison-table-wrap" aria-live="polite">
+      <div
+        class="comparison-table-wrap"
+        :class="{ 'is-bin-filtered': hoveredBinStats != null }"
+        aria-live="polite"
+      >
         <table class="comparison-table">
           <thead>
             <tr>
-              <th scope="col">Metric</th>
+              <th scope="col">
+                Metric
+                <small v-if="hoveredPriceRangeLabel" class="bin-filter-label">
+                  {{ hoveredPriceRangeLabel }}
+                </small>
+              </th>
               <th scope="col"><i class="option-swatch"></i>Option</th>
               <th scope="col"><i class="perp-swatch"></i>Perp</th>
               <th scope="col">Option − perp</th>
             </tr>
           </thead>
           <tbody>
-            <tr class="average-row">
-              <th scope="row">Median PnL</th>
+            <tr class="pnl-row">
+              <th scope="row">Average PnL</th>
               <td>
-                {{ formatSignedUsd(optionResultStats?.medianPayoff ?? NaN) }}
+                {{ formatSignedUsd(optionDisplayStats?.meanPayoff ?? NaN) }}
               </td>
-              <td>{{ formatSignedUsd(perpStats?.medianPayoff ?? NaN) }}</td>
+              <td>{{ formatSignedUsd(perpDisplayStats?.meanPayoff ?? NaN) }}</td>
               <td>
                 {{
                   formatSignedUsd(
-                    (optionResultStats?.medianPayoff ?? NaN) -
-                      (perpStats?.medianPayoff ?? NaN),
+                    (optionDisplayStats?.meanPayoff ?? NaN) -
+                      (perpDisplayStats?.meanPayoff ?? NaN),
+                  )
+                }}
+              </td>
+            </tr>
+            <tr class="pnl-row">
+              <th scope="row">Median PnL</th>
+              <td>
+                {{ formatSignedUsd(optionDisplayStats?.medianPayoff ?? NaN) }}
+              </td>
+              <td>{{ formatSignedUsd(perpDisplayStats?.medianPayoff ?? NaN) }}</td>
+              <td>
+                {{
+                  formatSignedUsd(
+                    (optionDisplayStats?.medianPayoff ?? NaN) -
+                      (perpDisplayStats?.medianPayoff ?? NaN),
                   )
                 }}
               </td>
             </tr>
             <tr>
               <th scope="row">Win probability</th>
-              <td>{{ formatPercent(optionResultStats?.winRate ?? NaN) }}</td>
-              <td>{{ formatPercent(perpStats?.winRate ?? NaN) }}</td>
+              <td>{{ formatPercent(optionDisplayStats?.winRate ?? NaN) }}</td>
+              <td>{{ formatPercent(perpDisplayStats?.winRate ?? NaN) }}</td>
               <td>
                 {{
                   formatSignedPercentagePoints(
-                    (optionResultStats?.winRate ?? NaN) -
-                      (perpStats?.winRate ?? NaN),
+                    (optionDisplayStats?.winRate ?? NaN) -
+                      (perpDisplayStats?.winRate ?? NaN),
                   )
                 }}
               </td>
             </tr>
             <tr class="max-loss-row">
               <th scope="row">Max loss probability</th>
-              <td>{{ formatPercent(optionResultStats?.maxLossRate ?? NaN) }}</td>
-              <td>{{ formatPercent(perpStats?.maxLossRate ?? NaN) }}</td>
+              <td>{{ formatPercent(optionDisplayStats?.maxLossRate ?? NaN) }}</td>
+              <td>{{ formatPercent(perpDisplayStats?.maxLossRate ?? NaN) }}</td>
               <td>
                 {{
                   formatSignedPercentagePoints(
-                    (optionResultStats?.maxLossRate ?? NaN) -
-                      (perpStats?.maxLossRate ?? NaN),
+                    (optionDisplayStats?.maxLossRate ?? NaN) -
+                      (perpDisplayStats?.maxLossRate ?? NaN),
                   )
                 }}
               </td>
@@ -589,12 +671,12 @@ const optionResultStats = computed(() =>
               <th scope="row">Opportunity cost</th>
               <td>{{ formatSignedUsd(0) }}</td>
               <td>
-                {{ formatSignedUsd(perpStats?.opportunityCost ?? NaN) }}
+                {{ formatSignedUsd(perpDisplayStats?.opportunityCost ?? NaN) }}
               </td>
               <td>
                 {{
                   formatSignedUsd(
-                    0 - (perpStats?.opportunityCost ?? NaN),
+                    0 - (perpDisplayStats?.opportunityCost ?? NaN),
                   )
                 }}
               </td>
@@ -1242,6 +1324,20 @@ const optionResultStats = computed(() =>
     "Segoe UI", sans-serif;
 }
 
+.comparison-table thead th .bin-filter-label {
+  display: block;
+  margin-top: 3px;
+  color: #9aa3ab;
+  font-size: 8px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.comparison-table-wrap.is-bin-filtered .comparison-table tbody td {
+  transition: color 80ms ease;
+}
+
 .comparison-table thead th:last-child {
   font-weight: 400;
 }
@@ -1256,17 +1352,17 @@ const optionResultStats = computed(() =>
   font-weight: 400;
 }
 
-.comparison-table .average-row th,
-.comparison-table .average-row td {
+.comparison-table .pnl-row th,
+.comparison-table .pnl-row td {
   background: rgba(255, 255, 255, 0.025);
 }
 
-.comparison-table .average-row td:nth-child(2) {
+.comparison-table .pnl-row td:nth-child(2) {
   color: #9fcdf0;
   background: rgba(102, 174, 232, 0.08);
 }
 
-.comparison-table .average-row td:nth-child(3) {
+.comparison-table .pnl-row td:nth-child(3) {
   color: #efaa63;
   background: rgba(223, 127, 36, 0.08);
 }
