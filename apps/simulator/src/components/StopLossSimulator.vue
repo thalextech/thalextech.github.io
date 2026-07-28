@@ -50,6 +50,7 @@ const DAY_OPTIONS = MATURITY_DAYS.map((days) => ({
 const EMPTY_OPTION_PRICING = Object.freeze({});
 const direction = ref<Direction>("up");
 const histogramMode = ref<ComparisonHistogramMode>("prob");
+const evCurveMode = ref(false);
 const pathFilter = ref<"all" | "stopped">("all");
 const riskBudget = ref(10_000);
 const leverage = ref(10);
@@ -220,6 +221,12 @@ const toggleHistogramMode = (): void => {
     histogramMode.value === "prob" ? "payoff" : "prob";
 };
 
+const setEvCurveMode = (enabled: boolean): void => {
+  evCurveMode.value = enabled;
+  pathFilter.value = "all";
+  hoveredBinStats.value = null;
+};
+
 watch(
   () => [
     props.seed,
@@ -234,6 +241,7 @@ watch(
     targetMaturityDays.value,
     selectedExpiryQuote.value?.callIv,
     selectedOptionMark.value,
+    evCurveMode.value,
   ],
   () => {
     optionStats.value = null;
@@ -497,6 +505,7 @@ const hoveredPriceRangeLabel = computed(() => {
         </span>
       </div>
       <button
+        v-if="!evCurveMode"
         type="button"
         class="histogram-mode-button"
         :aria-label="`Histogram mode: ${
@@ -506,6 +515,24 @@ const hoveredPriceRangeLabel = computed(() => {
       >
         {{ histogramMode === "prob" ? "Prob × PnL" : "PnL" }}
       </button>
+      <div class="path-mode-toggle" role="group" aria-label="Path display mode">
+        <button
+          type="button"
+          :class="{ 'is-active': !evCurveMode }"
+          :aria-pressed="!evCurveMode"
+          @click="setEvCurveMode(false)"
+        >
+          Cloud
+        </button>
+        <button
+          type="button"
+          :class="{ 'is-active': evCurveMode }"
+          :aria-pressed="evCurveMode"
+          @click="setEvCurveMode(true)"
+        >
+          Cumul
+        </button>
+      </div>
     </div>
 
     <article class="comparison-row">
@@ -531,6 +558,7 @@ const hoveredPriceRangeLabel = computed(() => {
             </small>
           </div>
           <button
+            v-if="!evCurveMode"
             type="button"
             class="stopped-path-filter"
             role="checkbox"
@@ -579,6 +607,7 @@ const hoveredPriceRangeLabel = computed(() => {
           :comparisonSeriesLabel="perpLabel"
           :comparisonReferencePrice="stopPrice"
           :pathFilter="pathFilter"
+          :evCurveMode="evCurveMode"
           :showHistogramTooltip="false"
           @set-mu="emit('set-mu', $event)"
           @set-vol="emit('set-vol', $event)"
@@ -592,6 +621,7 @@ const hoveredPriceRangeLabel = computed(() => {
         </div>
       </div>
       <div
+        v-if="!evCurveMode"
         class="comparison-table-wrap"
         :class="{ 'is-bin-filtered': hoveredBinStats != null }"
         aria-live="polite"
@@ -1265,6 +1295,39 @@ const hoveredPriceRangeLabel = computed(() => {
 .histogram-mode-button:hover,
 .histogram-mode-button:focus-visible {
   border-color: rgba(255, 255, 255, 0.22);
+}
+
+.path-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  box-sizing: border-box;
+  height: 36px;
+  margin-left: auto;
+  padding: 3px;
+  border-radius: 7px;
+  background: #111216;
+}
+
+.path-mode-toggle button {
+  min-width: 48px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #7b828a;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.path-mode-toggle button:hover {
+  color: #d4d8dc;
+}
+
+.path-mode-toggle button.is-active {
+  background: #1a1c21;
+  color: #f1f3f5;
 }
 
 .comparison-chart {

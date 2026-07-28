@@ -54,6 +54,8 @@ type SimWorkerSuccess = {
   sampledPathsBuffer: ArrayBuffer;
   sampledFinalPricesBuffer: ArrayBuffer;
   sampledPayoffsBuffer: ArrayBuffer;
+  cumulativePayoffsBuffer: ArrayBuffer;
+  cumulativeContributionsBuffer: ArrayBuffer;
   bins: SimBin[];
   pathMin: number;
   pathMax: number;
@@ -600,6 +602,12 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   const opportunityCost = rows > 0 ? opportunityCostSum / rows : 0;
   const sortedPayoffs = Float64Array.from(payoffs);
   sortedPayoffs.sort();
+  const cumulativeContributions = new Float64Array(rows);
+  let cumulativeContribution = 0;
+  for (let i = 0; i < rows; i += 1) {
+    cumulativeContribution += sortedPayoffs[i] / rows;
+    cumulativeContributions[i] = cumulativeContribution;
+  }
   const p05Payoff = quantileSorted(sortedPayoffs, 0.05);
   const p95Payoff = quantileSorted(sortedPayoffs, 0.95);
 
@@ -753,6 +761,8 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
     sampledPathsBuffer: sampledPaths.buffer,
     sampledFinalPricesBuffer: sampledFinalPrices.buffer,
     sampledPayoffsBuffer: sampledPayoffs.buffer,
+    cumulativePayoffsBuffer: sortedPayoffs.buffer,
+    cumulativeContributionsBuffer: cumulativeContributions.buffer,
     bins,
     pathMin,
     pathMax,
@@ -788,6 +798,8 @@ const processQueue = (): void => {
         response.sampledPathsBuffer,
         response.sampledFinalPricesBuffer,
         response.sampledPayoffsBuffer,
+        response.cumulativePayoffsBuffer,
+        response.cumulativeContributionsBuffer,
       ]);
     } catch (error) {
       const response: SimWorkerError = {

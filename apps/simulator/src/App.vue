@@ -507,7 +507,61 @@ const setHistBinsMultiplier = (value: number): void => {
   histBinsMultiplier.value = next;
 };
 
+// Draft text while a settings field is focused so typing is not clamped /
+// reformatted on every keystroke (which made values "append" weirdly).
+const settingsFieldDraft = ref<{ key: string; text: string } | null>(null);
+
+const settingsFieldValue = (
+  key: string,
+  committed: number | string,
+): string => {
+  if (settingsFieldDraft.value?.key === key) {
+    return settingsFieldDraft.value.text;
+  }
+  return String(committed);
+};
+
+const beginSettingsFieldEdit = (key: string, event: FocusEvent): void => {
+  const input = event.target as HTMLInputElement;
+  settingsFieldDraft.value = { key, text: input.value };
+  // Replace existing value on the next keystroke instead of appending.
+  requestAnimationFrame(() => {
+    if (document.activeElement === input) input.select();
+  });
+};
+
+const updateSettingsFieldDraft = (key: string, text: string): void => {
+  settingsFieldDraft.value = { key, text };
+};
+
+const commitSettingsField = (
+  key: string,
+  commit: (value: number) => void,
+): void => {
+  if (settingsFieldDraft.value?.key !== key) return;
+  const text = settingsFieldDraft.value.text.trim().replace(/,/g, "");
+  settingsFieldDraft.value = null;
+  if (
+    text === "" ||
+    text === "-" ||
+    text === "+" ||
+    text === "." ||
+    text === "-." ||
+    text === "+."
+  ) {
+    return;
+  }
+  const value = Number(text);
+  if (!Number.isFinite(value)) return;
+  commit(value);
+};
+
+const onSettingsFieldEnter = (event: KeyboardEvent): void => {
+  (event.target as HTMLInputElement).blur();
+};
+
 const syncSettingsDraft = (): void => {
+  settingsFieldDraft.value = null;
   Object.assign(pathModelDraft, pathModel);
   graphSettingsDraft.timeSteps = simTimeSteps.value;
   graphSettingsDraft.pathLimit = cloudPathLimit.value;
@@ -526,6 +580,7 @@ const toggleSimSettings = (): void => {
 };
 
 const closeSimSettings = (): void => {
+  settingsFieldDraft.value = null;
   settingsOpen.value = false;
 };
 
@@ -574,6 +629,7 @@ const setPathModelPercent = (
 };
 
 const resetPathModel = (): void => {
+  settingsFieldDraft.value = null;
   Object.assign(pathModelDraft, DEFAULT_PATH_MODEL);
 };
 
@@ -1663,21 +1719,30 @@ watch(
                   </span>
                   <input
                     class="sim-settings-input"
-                    type="number"
-                    min="0.1"
-                    max="30"
-                    step="0.1"
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    spellcheck="false"
                     :disabled="pathModelDraft.kind !== 'bates'"
-                    :value="pathModelDraft.meanReversion"
-                    @input="
-                      setPathModelNumber(
+                    :value="
+                      settingsFieldValue(
                         'meanReversion',
-                        Number(($event.target as HTMLInputElement).value),
-                        0.1,
-                        30,
-                        2,
+                        pathModelDraft.meanReversion,
                       )
                     "
+                    @focus="beginSettingsFieldEdit('meanReversion', $event)"
+                    @input="
+                      updateSettingsFieldDraft(
+                        'meanReversion',
+                        ($event.target as HTMLInputElement).value,
+                      )
+                    "
+                    @blur="
+                      commitSettingsField('meanReversion', (n) =>
+                        setPathModelNumber('meanReversion', n, 0.1, 30, 2),
+                      )
+                    "
+                    @keydown.enter="onSettingsFieldEnter"
                   />
                 </label>
                 <label class="sim-settings-row">
@@ -1687,20 +1752,30 @@ watch(
                   <span class="settings-input-unit">
                     <input
                       class="sim-settings-input"
-                      type="number"
-                      min="5"
-                      max="200"
-                      step="0.1"
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      spellcheck="false"
                       :disabled="pathModelDraft.kind !== 'bates'"
-                      :value="roundTo(pathModelDraft.longRunVol * 100, 2)"
-                      @input="
-                        setPathModelPercent(
+                      :value="
+                        settingsFieldValue(
                           'longRunVol',
-                          Number(($event.target as HTMLInputElement).value),
-                          5,
-                          200,
+                          roundTo(pathModelDraft.longRunVol * 100, 2),
                         )
                       "
+                      @focus="beginSettingsFieldEdit('longRunVol', $event)"
+                      @input="
+                        updateSettingsFieldDraft(
+                          'longRunVol',
+                          ($event.target as HTMLInputElement).value,
+                        )
+                      "
+                      @blur="
+                        commitSettingsField('longRunVol', (n) =>
+                          setPathModelPercent('longRunVol', n, 5, 200),
+                        )
+                      "
+                      @keydown.enter="onSettingsFieldEnter"
                     />
                     <i>%</i>
                   </span>
@@ -1711,21 +1786,27 @@ watch(
                   </span>
                   <input
                     class="sim-settings-input"
-                    type="number"
-                    min="0"
-                    max="3"
-                    step="0.01"
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    spellcheck="false"
                     :disabled="pathModelDraft.kind !== 'bates'"
-                    :value="pathModelDraft.volOfVol"
+                    :value="
+                      settingsFieldValue('volOfVol', pathModelDraft.volOfVol)
+                    "
+                    @focus="beginSettingsFieldEdit('volOfVol', $event)"
                     @input="
-                      setPathModelNumber(
+                      updateSettingsFieldDraft(
                         'volOfVol',
-                        Number(($event.target as HTMLInputElement).value),
-                        0,
-                        3,
-                        3,
+                        ($event.target as HTMLInputElement).value,
                       )
                     "
+                    @blur="
+                      commitSettingsField('volOfVol', (n) =>
+                        setPathModelNumber('volOfVol', n, 0, 3, 3),
+                      )
+                    "
+                    @keydown.enter="onSettingsFieldEnter"
                   />
                 </label>
                 <label class="sim-settings-row">
@@ -1734,21 +1815,30 @@ watch(
                   </span>
                   <input
                     class="sim-settings-input"
-                    type="number"
-                    min="-0.99"
-                    max="0.99"
-                    step="0.01"
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    spellcheck="false"
                     :disabled="pathModelDraft.kind !== 'bates'"
-                    :value="pathModelDraft.correlation"
-                    @input="
-                      setPathModelNumber(
+                    :value="
+                      settingsFieldValue(
                         'correlation',
-                        Number(($event.target as HTMLInputElement).value),
-                        -0.99,
-                        0.99,
-                        3,
+                        pathModelDraft.correlation,
                       )
                     "
+                    @focus="beginSettingsFieldEdit('correlation', $event)"
+                    @input="
+                      updateSettingsFieldDraft(
+                        'correlation',
+                        ($event.target as HTMLInputElement).value,
+                      )
+                    "
+                    @blur="
+                      commitSettingsField('correlation', (n) =>
+                        setPathModelNumber('correlation', n, -0.99, 0.99, 3),
+                      )
+                    "
+                    @keydown.enter="onSettingsFieldEnter"
                   />
                 </label>
                 <div class="sim-settings-row">
@@ -1773,24 +1863,33 @@ watch(
                   <span>Jump intensity <i>/ yr</i></span>
                   <input
                     class="sim-settings-input"
-                    type="number"
-                    min="0"
-                    max="500"
-                    step="1"
+                    type="text"
+                    inputmode="decimal"
+                    autocomplete="off"
+                    spellcheck="false"
                     :disabled="
                       pathModelDraft.kind !== 'bates' ||
                       !pathModelDraft.jumpsEnabled
                     "
-                    :value="pathModelDraft.jumpIntensity"
-                    @input="
-                      setPathModelNumber(
+                    :value="
+                      settingsFieldValue(
                         'jumpIntensity',
-                        Number(($event.target as HTMLInputElement).value),
-                        0,
-                        500,
-                        1,
+                        pathModelDraft.jumpIntensity,
                       )
                     "
+                    @focus="beginSettingsFieldEdit('jumpIntensity', $event)"
+                    @input="
+                      updateSettingsFieldDraft(
+                        'jumpIntensity',
+                        ($event.target as HTMLInputElement).value,
+                      )
+                    "
+                    @blur="
+                      commitSettingsField('jumpIntensity', (n) =>
+                        setPathModelNumber('jumpIntensity', n, 0, 500, 1),
+                      )
+                    "
+                    @keydown.enter="onSettingsFieldEnter"
                   />
                 </label>
                 <label class="sim-settings-row">
@@ -1798,25 +1897,40 @@ watch(
                   <span class="settings-input-unit">
                     <input
                       class="sim-settings-input"
-                      type="number"
-                      min="0"
-                      max="90"
-                      step="1"
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      spellcheck="false"
                       :disabled="
                         pathModelDraft.kind !== 'bates' ||
                         !pathModelDraft.jumpsEnabled
                       "
                       :value="
-                        roundTo(pathModelDraft.maxJumpVarianceShare * 100, 1)
-                      "
-                      @input="
-                        setPathModelPercent(
+                        settingsFieldValue(
                           'maxJumpVarianceShare',
-                          Number(($event.target as HTMLInputElement).value),
-                          0,
-                          90,
+                          roundTo(pathModelDraft.maxJumpVarianceShare * 100, 1),
                         )
                       "
+                      @focus="
+                        beginSettingsFieldEdit('maxJumpVarianceShare', $event)
+                      "
+                      @input="
+                        updateSettingsFieldDraft(
+                          'maxJumpVarianceShare',
+                          ($event.target as HTMLInputElement).value,
+                        )
+                      "
+                      @blur="
+                        commitSettingsField('maxJumpVarianceShare', (n) =>
+                          setPathModelPercent(
+                            'maxJumpVarianceShare',
+                            n,
+                            0,
+                            90,
+                          ),
+                        )
+                      "
+                      @keydown.enter="onSettingsFieldEnter"
                     />
                     <i>%</i>
                   </span>
@@ -1826,23 +1940,33 @@ watch(
                   <span class="settings-input-unit">
                     <input
                       class="sim-settings-input"
-                      type="number"
-                      min="-20"
-                      max="20"
-                      step="0.01"
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      spellcheck="false"
                       :disabled="
                         pathModelDraft.kind !== 'bates' ||
                         !pathModelDraft.jumpsEnabled
                       "
-                      :value="roundTo(pathModelDraft.jumpMean * 100, 3)"
-                      @input="
-                        setPathModelPercent(
+                      :value="
+                        settingsFieldValue(
                           'jumpMean',
-                          Number(($event.target as HTMLInputElement).value),
-                          -20,
-                          20,
+                          roundTo(pathModelDraft.jumpMean * 100, 3),
                         )
                       "
+                      @focus="beginSettingsFieldEdit('jumpMean', $event)"
+                      @input="
+                        updateSettingsFieldDraft(
+                          'jumpMean',
+                          ($event.target as HTMLInputElement).value,
+                        )
+                      "
+                      @blur="
+                        commitSettingsField('jumpMean', (n) =>
+                          setPathModelPercent('jumpMean', n, -20, 20),
+                        )
+                      "
+                      @keydown.enter="onSettingsFieldEnter"
                     />
                     <i>%</i>
                   </span>
@@ -1852,23 +1976,33 @@ watch(
                   <span class="settings-input-unit">
                     <input
                       class="sim-settings-input"
-                      type="number"
-                      min="0"
-                      max="20"
-                      step="0.01"
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      spellcheck="false"
                       :disabled="
                         pathModelDraft.kind !== 'bates' ||
                         !pathModelDraft.jumpsEnabled
                       "
-                      :value="roundTo(pathModelDraft.jumpVol * 100, 3)"
-                      @input="
-                        setPathModelPercent(
+                      :value="
+                        settingsFieldValue(
                           'jumpVol',
-                          Number(($event.target as HTMLInputElement).value),
-                          0,
-                          20,
+                          roundTo(pathModelDraft.jumpVol * 100, 3),
                         )
                       "
+                      @focus="beginSettingsFieldEdit('jumpVol', $event)"
+                      @input="
+                        updateSettingsFieldDraft(
+                          'jumpVol',
+                          ($event.target as HTMLInputElement).value,
+                        )
+                      "
+                      @blur="
+                        commitSettingsField('jumpVol', (n) =>
+                          setPathModelPercent('jumpVol', n, 0, 20),
+                        )
+                      "
+                      @keydown.enter="onSettingsFieldEnter"
                     />
                     <i>%</i>
                   </span>
@@ -1885,32 +2019,54 @@ watch(
                   <span>Time steps</span>
                   <input
                     class="sim-settings-input"
-                    type="number"
-                    :min="TIME_STEPS_MIN"
-                    :max="TIME_STEPS_MAX"
-                    :step="TIME_STEPS_STEP"
-                    :value="graphSettingsDraft.timeSteps"
-                    @input="
-                      setDraftTimeSteps(
-                        Number(($event.target as HTMLInputElement).value),
+                    type="text"
+                    inputmode="numeric"
+                    autocomplete="off"
+                    spellcheck="false"
+                    :value="
+                      settingsFieldValue(
+                        'timeSteps',
+                        graphSettingsDraft.timeSteps,
                       )
                     "
+                    @focus="beginSettingsFieldEdit('timeSteps', $event)"
+                    @input="
+                      updateSettingsFieldDraft(
+                        'timeSteps',
+                        ($event.target as HTMLInputElement).value,
+                      )
+                    "
+                    @blur="
+                      commitSettingsField('timeSteps', setDraftTimeSteps)
+                    "
+                    @keydown.enter="onSettingsFieldEnter"
                   />
                 </label>
                 <label class="sim-settings-row">
                   <span>Paths drawn</span>
                   <input
                     class="sim-settings-input"
-                    type="number"
-                    :min="DRAWN_PATHS_MIN"
-                    :max="Math.min(DRAWN_PATHS_MAX, appliedParams.rows)"
-                    :step="DRAWN_PATHS_STEP"
-                    :value="graphSettingsDraft.pathLimit"
-                    @input="
-                      setDraftPathLimit(
-                        Number(($event.target as HTMLInputElement).value),
+                    type="text"
+                    inputmode="numeric"
+                    autocomplete="off"
+                    spellcheck="false"
+                    :value="
+                      settingsFieldValue(
+                        'pathLimit',
+                        graphSettingsDraft.pathLimit,
                       )
                     "
+                    @focus="beginSettingsFieldEdit('pathLimit', $event)"
+                    @input="
+                      updateSettingsFieldDraft(
+                        'pathLimit',
+                        ($event.target as HTMLInputElement).value,
+                      )
+                    "
+                    @blur="
+                      commitSettingsField('pathLimit', setDraftPathLimit)
+                    "
+                    @keydown.enter="onSettingsFieldEnter"
                   />
                 </label>
                 <label class="sim-settings-row">
@@ -1918,16 +2074,27 @@ watch(
                   <span class="settings-input-unit">
                     <input
                       class="sim-settings-input"
-                      type="number"
-                      min="0"
-                      max="99"
-                      step="1"
-                      :value="graphSettingsDraft.colorMin"
-                      @input="
-                        setDraftColorMin(
-                          Number(($event.target as HTMLInputElement).value),
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      spellcheck="false"
+                      :value="
+                        settingsFieldValue(
+                          'colorMin',
+                          graphSettingsDraft.colorMin,
                         )
                       "
+                      @focus="beginSettingsFieldEdit('colorMin', $event)"
+                      @input="
+                        updateSettingsFieldDraft(
+                          'colorMin',
+                          ($event.target as HTMLInputElement).value,
+                        )
+                      "
+                      @blur="
+                        commitSettingsField('colorMin', setDraftColorMin)
+                      "
+                      @keydown.enter="onSettingsFieldEnter"
                     />
                     <i>%</i>
                   </span>
@@ -1937,16 +2104,27 @@ watch(
                   <span class="settings-input-unit">
                     <input
                       class="sim-settings-input"
-                      type="number"
-                      min="1"
-                      max="100"
-                      step="1"
-                      :value="graphSettingsDraft.colorMax"
-                      @input="
-                        setDraftColorMax(
-                          Number(($event.target as HTMLInputElement).value),
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      spellcheck="false"
+                      :value="
+                        settingsFieldValue(
+                          'colorMax',
+                          graphSettingsDraft.colorMax,
                         )
                       "
+                      @focus="beginSettingsFieldEdit('colorMax', $event)"
+                      @input="
+                        updateSettingsFieldDraft(
+                          'colorMax',
+                          ($event.target as HTMLInputElement).value,
+                        )
+                      "
+                      @blur="
+                        commitSettingsField('colorMax', setDraftColorMax)
+                      "
+                      @keydown.enter="onSettingsFieldEnter"
                     />
                     <i>%</i>
                   </span>
@@ -1957,16 +2135,30 @@ watch(
                     <i>×</i>
                     <input
                       class="sim-settings-input"
-                      type="number"
-                      min="1"
-                      max="2"
-                      step="0.05"
-                      :value="graphSettingsDraft.binsMultiplier"
-                      @input="
-                        setDraftBinsMultiplier(
-                          Number(($event.target as HTMLInputElement).value),
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      spellcheck="false"
+                      :value="
+                        settingsFieldValue(
+                          'binsMultiplier',
+                          graphSettingsDraft.binsMultiplier,
                         )
                       "
+                      @focus="beginSettingsFieldEdit('binsMultiplier', $event)"
+                      @input="
+                        updateSettingsFieldDraft(
+                          'binsMultiplier',
+                          ($event.target as HTMLInputElement).value,
+                        )
+                      "
+                      @blur="
+                        commitSettingsField(
+                          'binsMultiplier',
+                          setDraftBinsMultiplier,
+                        )
+                      "
+                      @keydown.enter="onSettingsFieldEnter"
                     />
                   </span>
                 </label>

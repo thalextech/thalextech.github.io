@@ -22,8 +22,6 @@ const layout = {
   height: 900,
   margin: { top: 90, right: 220, bottom: 80, left: 90 },
 };
-const BTC_SPOT_MIN = 30_000;
-const BTC_SPOT_MAX = 120_000;
 
 const TEXT_STYLES = {
   axisText: { fill: "#d4d7e2", size: "12px" },
@@ -157,11 +155,25 @@ const render = () => {
 
   const xAccessor = (d) => Number(d.index_price_close);
   const yAccessor = (d) => normalizeGreekValue(greekKey, d[greekKey]);
+  const xExtent = d3.extent(points, xAccessor);
   const yExtent = d3.extent(points, yAccessor);
-  if (!Number.isFinite(yExtent[0]) || !Number.isFinite(yExtent[1])) {
+  if (
+    !Number.isFinite(xExtent[0]) ||
+    !Number.isFinite(xExtent[1]) ||
+    !Number.isFinite(yExtent[0]) ||
+    !Number.isFinite(yExtent[1])
+  ) {
     return;
   }
 
+  const xSpan = xExtent[1] - xExtent[0];
+  const xDomain =
+    xSpan > 0
+      ? xExtent
+      : [
+          xExtent[0] - Math.max(1, Math.abs(xExtent[0]) * 0.05),
+          xExtent[1] + Math.max(1, Math.abs(xExtent[1]) * 0.05),
+        ];
   const ySpan = yExtent[1] - yExtent[0];
   const yPad = ySpan > 0 ? ySpan * 0.12 : Math.max(0.2, Math.abs(yExtent[0]) * 0.2);
 
@@ -169,7 +181,7 @@ const render = () => {
 
   const x = d3
     .scaleLinear()
-    .domain([BTC_SPOT_MIN, BTC_SPOT_MAX])
+    .domain(xDomain)
     .range([margin.left, chartRight]);
 
   const y = d3
@@ -179,6 +191,17 @@ const render = () => {
     .range([chartBottom, margin.top]);
 
   const mainGroup = svg.append("g");
+  const clipId = "combo-greeks-plot-clip";
+
+  svg
+    .append("defs")
+    .append("clipPath")
+    .attr("id", clipId)
+    .append("rect")
+    .attr("x", margin.left)
+    .attr("y", margin.top)
+    .attr("width", chartRight - margin.left)
+    .attr("height", chartBottom - margin.top);
 
   mainGroup
     .append("g")
@@ -245,8 +268,12 @@ const render = () => {
     .y((point) => y(yAccessor(point)))
     .curve(d3.curveCatmullRom.alpha(0.35));
 
+  const seriesGroup = mainGroup
+    .append("g")
+    .attr("clip-path", `url(#${clipId})`);
+
   for (const series of seriesList) {
-    mainGroup
+    seriesGroup
       .append("path")
       .datum(series.rows)
       .attr("fill", "none")
