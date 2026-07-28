@@ -1286,6 +1286,7 @@ watch(
 
 <style scoped>
 .appRoot {
+  --selector-section-width: 100%;
   max-width: 1320px;
   margin: 0 auto;
   padding: 28px 40px 40px;
@@ -1302,7 +1303,7 @@ watch(
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  width: min(100%, 960px);
+  width: calc(var(--selector-section-width) - 8px);
   margin-left: 8px;
   margin-bottom: 12px;
 }
@@ -1674,6 +1675,7 @@ watch(
 }
 
 .builderMain :deep(.legs-section) {
+  width: var(--selector-section-width);
   --layout-gap: 8px;
   --leg-row-gap-total: 32px;
   --leg-greeks-gap-total: 44px;
@@ -1714,7 +1716,7 @@ watch(
 
 .chartBlock {
   margin-top: 28px;
-  width: min(100%, 960px);
+  width: calc(var(--selector-section-width) - 8px);
   margin-left: 8px;
   display: flex;
   flex-direction: column;
@@ -1730,6 +1732,12 @@ watch(
 
 .error {
   color: #ff8282;
+}
+
+@media (min-width: 1200px) {
+  .appRoot {
+    --selector-section-width: 95.5%;
+  }
 }
 
 @media (max-width: 900px) {
@@ -1751,6 +1759,7 @@ watch(
   }
 
   .underlyingRow {
+    width: 100%;
     margin-left: 0;
   }
 
