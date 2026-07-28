@@ -11,6 +11,7 @@ import {
 import PositionBuilder from "../../simulator/src/components/PositionBuilder.vue";
 import IndexMarkComboChart from "./components/Chart.vue";
 import {
+  calcGreeks,
   computeGreeksPnlSeries,
   fetchAllInstruments,
   fetchIndexHistory,
@@ -37,6 +38,7 @@ const DEFAULT_VOL = 0.4;
 const DEFAULT_T = 30 / 365.25;
 const MARK_CONCURRENCY = 10;
 const LOAD_DEBOUNCE_MS = 140;
+const GREEK_EVOLUTION_POINT_COUNT = 101;
 const MIN_HEDGE_FREQUENCY_HOURS = 1;
 const MAX_HEDGE_FREQUENCY_HOURS = 24;
 const DEFAULT_HEDGE_FREQUENCY_HOURS = 1;
@@ -74,6 +76,8 @@ const comboSeries = ref([]);
 const indexHistoryRows = ref([]);
 const markHistoryByInstrument = ref({});
 const chartAnchorTs = ref(null);
+const chartRangeTs = ref(null);
+const chartLowerMode = ref("mark");
 const chartRef = ref(null);
 const chartBlockRef = ref(null);
 const topSettingsMenuRef = ref(null);
@@ -586,6 +590,121 @@ const getAnchorRow = (rows, anchorTs) => {
   return firstAtOrAfter ?? rows[rows.length - 1] ?? null;
 };
 
+const normalizeIv = (value) => {
+  const iv = Number(value);
+  if (!Number.isFinite(iv) || iv <= 0) return null;
+  return iv > 3 ? iv / 100 : iv;
+};
+
+const resolveGreekEvolutionState = (anchorTs, label) => {
+  const indexRow = getAnchorRow(indexHistoryRows.value, anchorTs);
+  const indexPrice = Number(
+    indexRow?.index_price_close ?? indexRow?.close ?? indexRow?.price,
+  );
+  const ts = normalizeTimestampSeconds(indexRow?.ts ?? anchorTs);
+  if (!Number.isFinite(indexPrice) || !Number.isFinite(ts)) return null;
+
+  const selected = selectedLegInstruments.value;
+  const legs = selected
+    .map((leg) => {
+      const markRow = getAnchorRow(
+        markHistoryByInstrument.value[leg.instrumentName] || [],
+        ts,
+      );
+      const iv = normalizeIv(
+        markRow?.iv_close ??
+          markRow?.iv ??
+          markRow?.mark_iv ??
+          markRow?.implied_volatility,
+      );
+      if (!Number.isFinite(iv)) return null;
+      return {
+        signedQty: Number(leg.signedQty),
+        strike: Number(leg.strike),
+        expirationTs: Number(leg.expirationTs),
+        optionType: leg.optionType,
+        iv,
+      };
+    })
+    .filter(Boolean);
+
+  if (!legs.length || legs.length !== selected.length) return null;
+  return { label, ts, indexPrice, legs };
+};
+
+const greekEvolutionData = computed(() => {
+  const history = indexHistoryRows.value || [];
+  if (!history.length || !selectedLegInstruments.value.length) return [];
+
+  const explicitRange = Array.isArray(chartRangeTs.value)
+    ? chartRangeTs.value.map(normalizeTimestampSeconds)
+    : [];
+  const firstTs = normalizeTimestampSeconds(history[0]?.ts);
+  const lastTs = normalizeTimestampSeconds(history[history.length - 1]?.ts);
+  const startTs = Number.isFinite(explicitRange[0])
+    ? explicitRange[0]
+    : firstTs;
+  const endTs = Number.isFinite(explicitRange[1]) ? explicitRange[1] : lastTs;
+  const states = [
+    resolveGreekEvolutionState(startTs, "Start"),
+    resolveGreekEvolutionState(endTs, "End"),
+  ].filter(Boolean);
+  if (states.length !== 2) return [];
+
+  const domainReferences = [
+    ...states.map((state) => state.indexPrice),
+    ...selectedLegInstruments.value.map((leg) => Number(leg.strike)),
+  ].filter((value) => Number.isFinite(value) && value > 0);
+  if (!domainReferences.length) return [];
+
+  const minReference = Math.min(...domainReferences);
+  const maxReference = Math.max(...domainReferences);
+  const minPrice = Math.max(1, minReference * 0.65);
+  const maxPrice = maxReference * 1.35;
+  const scenarioPrices = Array.from(
+    { length: GREEK_EVOLUTION_POINT_COUNT },
+    (_unused, index) =>
+      minPrice +
+      ((maxPrice - minPrice) * index) /
+        Math.max(1, GREEK_EVOLUTION_POINT_COUNT - 1),
+  );
+  scenarioPrices.push(...states.map((state) => state.indexPrice));
+  const uniquePrices = Array.from(
+    new Set(scenarioPrices.map((price) => Number(price.toFixed(8)))),
+  ).sort((a, b) => a - b);
+
+  return states.map((state) => {
+    const points = uniquePrices.map((price) => {
+      const totals = { delta: 0, gamma: 0, theta: 0, vega: 0 };
+      for (const leg of state.legs) {
+        const tteSeconds = leg.expirationTs - state.ts;
+        if (!Number.isFinite(tteSeconds) || tteSeconds <= 0) continue;
+        const greeks = calcGreeks(
+          price,
+          leg.strike,
+          tteSeconds,
+          leg.iv,
+          leg.optionType,
+        );
+        for (const key of Object.keys(totals)) {
+          const value = Number(greeks?.[key]);
+          if (Number.isFinite(value)) {
+            totals[key] += leg.signedQty * value;
+          }
+        }
+      }
+      return { price, ...totals };
+    });
+
+    return {
+      label: state.label,
+      ts: state.ts,
+      indexPrice: state.indexPrice,
+      points,
+    };
+  });
+});
+
 const resolveEffectiveAnchorTs = () => {
   const explicitAnchor = normalizeTimestampSeconds(chartAnchorTs.value);
   if (Number.isFinite(explicitAnchor)) return explicitAnchor;
@@ -1073,6 +1192,7 @@ const switchUnderlying = async (next) => {
   if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
   underlying.value = next;
   positionLegs.value = [];
+  chartRangeTs.value = null;
   indexHistoryRows.value = [];
   indexByName.value = {};
   markHistoryByInstrument.value = {};
@@ -1238,6 +1358,7 @@ watch(
         </div>
       </div>
       <div
+        v-if="chartLowerMode !== 'greekEvolution'"
         class="settingsWrap settingsWrap--chart-lower"
         ref="bottomSettingsMenuRef"
         :style="settingsWrapStyle"
@@ -1277,8 +1398,11 @@ watch(
         :resolution-key="ui.resolutionKey"
         :resolution-options="RESOLUTION_OPTIONS"
         :show-higher-order-greeks="ui.showHigherOrderGreeks"
+        :greek-evolution-data="greekEvolutionData"
         @update:resolution-key="ui.resolutionKey = $event"
         @update:time-anchor-ts="chartAnchorTs = $event"
+        @update:time-range-ts="chartRangeTs = $event"
+        @update:lower-mode="chartLowerMode = $event"
       />
     </div>
   </div>

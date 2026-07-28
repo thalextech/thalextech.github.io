@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 
 type SelectValue = string | number;
 type SelectOption = {
@@ -24,7 +24,10 @@ const emit = defineEmits<{
 }>();
 
 const open = ref(false);
+const rootRef = ref<HTMLElement | null>(null);
+const triggerRef = ref<HTMLButtonElement | null>(null);
 const menuRef = ref<HTMLElement | null>(null);
+const menuStyle = ref<Record<string, string>>({});
 
 const selectedIndex = computed(() =>
   props.options.findIndex(
@@ -36,17 +39,54 @@ const selectedLabel = computed(
   () => props.options[selectedIndex.value]?.label ?? String(props.modelValue),
 );
 
+const updateMenuPosition = (): void => {
+  const trigger = triggerRef.value;
+  if (!trigger) return;
+  const rect = trigger.getBoundingClientRect();
+  menuStyle.value = {
+    top: `${rect.bottom + 5}px`,
+    left: `${rect.left}px`,
+    minWidth: `${Math.max(rect.width, 126)}px`,
+  };
+};
+
+const handleDocumentPointerdown = (event: PointerEvent): void => {
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  if (rootRef.value?.contains(target) || menuRef.value?.contains(target)) return;
+  close();
+};
+
+const removeOverlayListeners = (): void => {
+  window.removeEventListener("resize", updateMenuPosition);
+  window.removeEventListener("scroll", updateMenuPosition, true);
+  document.removeEventListener("pointerdown", handleDocumentPointerdown);
+};
+
+const addOverlayListeners = (): void => {
+  window.addEventListener("resize", updateMenuPosition);
+  window.addEventListener("scroll", updateMenuPosition, true);
+  document.addEventListener("pointerdown", handleDocumentPointerdown);
+};
+
 const close = (): void => {
   open.value = false;
+  removeOverlayListeners();
 };
 
 const focusOption = async (index: number): Promise<void> => {
-  open.value = true;
+  if (!open.value) {
+    open.value = true;
+    addOverlayListeners();
+  }
   await nextTick();
+  updateMenuPosition();
   const buttons = menuRef.value?.querySelectorAll<HTMLButtonElement>(
     '[role="option"]',
   );
-  buttons?.[Math.max(0, Math.min(props.options.length - 1, index))]?.focus();
+  buttons?.[
+    Math.max(0, Math.min(props.options.length - 1, index))
+  ]?.focus({ preventScroll: true });
 };
 
 const openAtSelection = (): void => {
@@ -60,22 +100,28 @@ const selectOption = (option: SelectOption): void => {
 
 const handleFocusout = (event: FocusEvent): void => {
   const nextTarget = event.relatedTarget;
-  if (!(nextTarget instanceof Node) || !event.currentTarget) {
+  if (!(nextTarget instanceof Node)) {
     close();
     return;
   }
-  if (!(event.currentTarget as HTMLElement).contains(nextTarget)) close();
+  const remainsInside =
+    rootRef.value?.contains(nextTarget) || menuRef.value?.contains(nextTarget);
+  if (!remainsInside) close();
 };
+
+onBeforeUnmount(removeOverlayListeners);
 </script>
 
 <template>
   <div
+    ref="rootRef"
     class="styled-select"
     :class="{ 'is-embedded': embedded }"
     @focusout="handleFocusout"
     @keydown.esc.stop="close"
   >
     <button
+      ref="triggerRef"
       class="styled-select-trigger"
       type="button"
       aria-haspopup="listbox"
@@ -88,36 +134,41 @@ const handleFocusout = (event: FocusEvent): void => {
       <span>{{ selectedLabel }}</span>
     </button>
 
-    <div
-      v-if="open"
-      ref="menuRef"
-      class="styled-select-menu"
-      role="listbox"
-      :aria-label="label"
-    >
-      <button
-        v-for="(option, index) in options"
-        :key="String(option.value)"
-        type="button"
-        role="option"
-        :aria-selected="index === selectedIndex"
-        :class="{ active: index === selectedIndex }"
-        @click="selectOption(option)"
-        @keydown.down.prevent="focusOption((index + 1) % options.length)"
-        @keydown.up.prevent="
-          focusOption((index - 1 + options.length) % options.length)
-        "
-        @keydown.home.prevent="focusOption(0)"
-        @keydown.end.prevent="focusOption(options.length - 1)"
+    <Teleport to="body">
+      <div
+        v-if="open"
+        ref="menuRef"
+        class="styled-select-menu"
+        :style="menuStyle"
+        role="listbox"
+        :aria-label="label"
+        @focusout="handleFocusout"
+        @keydown.esc.stop="close"
       >
-        <span>{{ option.label }}</span>
-        <span
-          v-if="index === selectedIndex"
-          class="styled-select-check"
-          aria-hidden="true"
-        >✓</span>
-      </button>
-    </div>
+        <button
+          v-for="(option, index) in options"
+          :key="String(option.value)"
+          type="button"
+          role="option"
+          :aria-selected="index === selectedIndex"
+          :class="{ active: index === selectedIndex }"
+          @click="selectOption(option)"
+          @keydown.down.prevent="focusOption((index + 1) % options.length)"
+          @keydown.up.prevent="
+            focusOption((index - 1 + options.length) % options.length)
+          "
+          @keydown.home.prevent="focusOption(0)"
+          @keydown.end.prevent="focusOption(options.length - 1)"
+        >
+          <span>{{ option.label }}</span>
+          <span
+            v-if="index === selectedIndex"
+            class="styled-select-check"
+            aria-hidden="true"
+          >✓</span>
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -170,13 +221,8 @@ const handleFocusout = (event: FocusEvent): void => {
 }
 
 .styled-select-menu {
-  position: absolute;
-  top: calc(100% + 5px);
-  right: 0;
-  z-index: 30;
-  min-width: max(100%, 126px);
-  max-height: 260px;
-  overflow-y: auto;
+  position: fixed;
+  z-index: 1000;
   padding: 4px;
   border: 1px solid rgba(255, 255, 255, 0.13);
   border-radius: 6px;

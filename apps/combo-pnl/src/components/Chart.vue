@@ -14,8 +14,14 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   resolutionKey: { type: String, default: "900" },
   resolutionOptions: { type: Array, default: () => [] },
+  greekEvolutionData: { type: Array, default: () => [] },
 });
-const emit = defineEmits(["update:resolutionKey", "update:timeAnchorTs"]);
+const emit = defineEmits([
+  "update:resolutionKey",
+  "update:timeAnchorTs",
+  "update:timeRangeTs",
+  "update:lowerMode",
+]);
 
 const svgRef = ref(null);
 const SVG_FONT_FAMILY =
@@ -45,12 +51,14 @@ let bottomMode = "mark";
 let resolutionMenuOpen = false;
 let lastResolutionKey = null;
 let lastEmittedTimeAnchorTs = null;
+let lastEmittedTimeRangeKey = null;
 
 const layout = {
   width: 1200,
   headerHeight: 38,
   topPanelHeight: 300,
   bottomPanelHeight: 420,
+  greekEvolutionPanelHeight: 860,
   panelGap: 34,
   margin: { top: 14, right: 38, bottom: 54, left: 74 },
 };
@@ -63,6 +71,13 @@ const BOTTOM_MODE_OPTIONS = [
   { key: "mark", label: "Mark" },
   { key: "greeks", label: "Greeks P&L" },
   { key: "hedge", label: "Hedge P&L" },
+  { key: "greekEvolution", label: "Greek evol" },
+];
+const GREEK_EVOLUTION_OPTIONS = [
+  { key: "delta", label: "Delta", color: CHART_COLORS.delta },
+  { key: "gamma", label: "Gamma", color: CHART_COLORS.gammaTheta },
+  { key: "theta", label: "Theta", color: CHART_COLORS.charm },
+  { key: "vega", label: "Vega", color: CHART_COLORS.vega },
 ];
 
 const DETAIL_SERIES_ORDER = [
@@ -512,6 +527,10 @@ const drawResolutionControl = (svg) => {
             emit("update:timeAnchorTs", null);
             lastEmittedTimeAnchorTs = null;
           }
+          if (lastEmittedTimeRangeKey !== null) {
+            emit("update:timeRangeTs", null);
+            lastEmittedTimeRangeKey = null;
+          }
           emit("update:resolutionKey", nextKey);
           return;
         }
@@ -557,6 +576,7 @@ const drawLowerModeToggle = (group) => {
         event.stopPropagation();
         if (bottomMode === option.key) return;
         bottomMode = option.key;
+        emit("update:lowerMode", bottomMode);
         render();
       });
 
@@ -589,32 +609,349 @@ const drawLowerModeToggle = (group) => {
   }
 };
 
-const emitTimeAnchorIfChanged = (indexPoints, domain = null) => {
+const emitTimeAnchorIfChanged = (
+  indexPoints,
+  domain = null,
+  emitRange = false,
+) => {
   const points = Array.isArray(indexPoints) ? indexPoints : [];
   if (!points.length) {
     if (lastEmittedTimeAnchorTs !== null) {
       emit("update:timeAnchorTs", null);
       lastEmittedTimeAnchorTs = null;
     }
+    if (emitRange && lastEmittedTimeRangeKey !== null) {
+      emit("update:timeRangeTs", null);
+      lastEmittedTimeRangeKey = null;
+    }
     return;
   }
 
-  let anchorPoint = points[0];
+  let startPoint = points[0];
+  let endPoint = points[points.length - 1];
   if (Array.isArray(domain) && domain.length === 2 && domain[0] instanceof Date) {
     const domainStartMs = domain[0].getTime();
+    const domainEndMs = domain[1].getTime();
     const firstInsideDomain = points.find(
       (point) => point?.date instanceof Date && point.date.getTime() >= domainStartMs,
     );
-    anchorPoint = firstInsideDomain ?? points[points.length - 1] ?? points[0];
+    const lastInsideDomain = points
+      .slice()
+      .reverse()
+      .find(
+        (point) =>
+          point?.date instanceof Date && point.date.getTime() <= domainEndMs,
+      );
+    startPoint = firstInsideDomain ?? endPoint ?? points[0];
+    endPoint = lastInsideDomain ?? startPoint;
   }
 
-  const nextAnchorTs = Number.isFinite(Number(anchorPoint?.ts))
-    ? Number(anchorPoint.ts)
+  const nextAnchorTs = Number.isFinite(Number(startPoint?.ts))
+    ? Number(startPoint.ts)
     : null;
   if (nextAnchorTs !== lastEmittedTimeAnchorTs) {
     emit("update:timeAnchorTs", nextAnchorTs);
     lastEmittedTimeAnchorTs = nextAnchorTs;
   }
+
+  if (emitRange) {
+    const startTs = Number(startPoint?.ts);
+    const endTs = Number(endPoint?.ts);
+    const nextRange =
+      Number.isFinite(startTs) && Number.isFinite(endTs)
+        ? [startTs, endTs]
+        : null;
+    const nextRangeKey = nextRange ? `${startTs}:${endTs}` : null;
+    if (nextRangeKey !== lastEmittedTimeRangeKey) {
+      emit("update:timeRangeTs", nextRange);
+      lastEmittedTimeRangeKey = nextRangeKey;
+    }
+  }
+};
+
+const normalizeEvolutionGreek = (key, value) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return NaN;
+  if (key === "gamma") return numeric * 1e4;
+  if (key === "vega") return numeric / 100;
+  return numeric;
+};
+
+const drawGreekEvolutionPanels = ({
+  plotGroup,
+  innerWidth,
+  bottomInnerHeight,
+}) => {
+  const snapshots = (props.greekEvolutionData || [])
+    .slice(0, 2)
+    .map((snapshot) => ({
+      ...snapshot,
+      indexPrice: Number(snapshot?.indexPrice),
+      points: (snapshot?.points || [])
+        .map((point) => ({
+          ...point,
+          price: Number(point?.price),
+        }))
+        .filter((point) => Number.isFinite(point.price))
+        .sort((a, b) => a.price - b.price),
+    }))
+    .filter(
+      (snapshot) =>
+        Number.isFinite(snapshot.indexPrice) && snapshot.points.length > 1,
+    );
+
+  if (snapshots.length !== 2) {
+    plotGroup
+      .append("text")
+      .attr("x", innerWidth / 2)
+      .attr("y", bottomInnerHeight / 2)
+      .attr("text-anchor", "middle")
+      .attr("fill", CHART_COLORS.secondaryText)
+      .style("font-size", "10px")
+      .text("No Greek evolution data in selected range");
+    return;
+  }
+
+  const [startSnapshot, endSnapshot] = snapshots;
+  const xExtent = d3.extent(
+    snapshots.flatMap((snapshot) => snapshot.points),
+    (point) => point.price,
+  );
+  const columnGap = 64;
+  const rowGap = 38;
+  const gridTop = 40;
+  const panelWidth = (innerWidth - columnGap) / 2;
+  const panelHeight = (bottomInnerHeight - gridTop - rowGap) / 2;
+  const plotTop = 48;
+  const plotBottom = panelHeight - 42;
+  const xLabel =
+    String(props.optionInstrumentName || "Index").replace(/USD$/, "") + " Price";
+  const formatGreek = d3.format(".3~g");
+  const formatSpot = d3.format(",.0f");
+  const startDate = Number.isFinite(Number(startSnapshot.ts))
+    ? formatDate(new Date(Number(startSnapshot.ts) * 1000))
+    : "Start";
+  const endDate = Number.isFinite(Number(endSnapshot.ts))
+    ? formatDate(new Date(Number(endSnapshot.ts) * 1000))
+    : "End";
+
+  plotGroup
+    .append("g")
+    .attr("transform", `translate(${innerWidth - 386},5)`)
+    .call((legend) => {
+      const entries = [
+        {
+          label: `Start · ${startDate}`,
+          color: "#9196a2",
+          opacity: 0.7,
+        },
+        {
+          label: `End · ${endDate}`,
+          color: CHART_COLORS.primaryText,
+          opacity: 1,
+        },
+      ];
+      const items = legend
+        .selectAll("g")
+        .data(entries)
+        .join("g")
+        .attr("transform", (_entry, index) => `translate(${index * 195},0)`);
+      items
+        .append("line")
+        .attr("x1", 0)
+        .attr("x2", 18)
+        .attr("stroke", (entry) => entry.color)
+        .attr("stroke-opacity", (entry) => entry.opacity)
+        .attr("stroke-width", 1.8)
+        .attr("stroke-linecap", "round");
+      items
+        .append("text")
+        .attr("x", 25)
+        .attr("y", 3)
+        .attr("fill", CHART_COLORS.secondaryText)
+        .style("font-size", "10px")
+        .style("font-weight", 550)
+        .text((entry) => entry.label);
+    });
+
+  plotGroup
+    .append("line")
+    .attr("x1", panelWidth + columnGap / 2)
+    .attr("x2", panelWidth + columnGap / 2)
+    .attr("y1", gridTop)
+    .attr("y2", bottomInnerHeight)
+    .attr("stroke", "#242a34");
+
+  plotGroup
+    .append("line")
+    .attr("x1", 0)
+    .attr("x2", innerWidth)
+    .attr("y1", gridTop + panelHeight + rowGap / 2)
+    .attr("y2", gridTop + panelHeight + rowGap / 2)
+    .attr("stroke", "#242a34");
+
+  GREEK_EVOLUTION_OPTIONS.forEach((greekOption, panelIndex) => {
+    const column = panelIndex % 2;
+    const row = Math.floor(panelIndex / 2);
+    const panelX = column * (panelWidth + columnGap);
+    const panelY = gridTop + row * (panelHeight + rowGap);
+    const group = plotGroup
+      .append("g")
+      .attr("transform", `translate(${panelX},${panelY})`);
+    const series = snapshots.map((snapshot) => ({
+      ...snapshot,
+      values: snapshot.points
+        .map((point) => ({
+          price: point.price,
+          value: normalizeEvolutionGreek(
+            greekOption.key,
+            point?.[greekOption.key],
+          ),
+        }))
+        .filter((point) => Number.isFinite(point.value)),
+    }));
+    const yValues = series.flatMap((snapshot) =>
+      snapshot.values.map((point) => point.value),
+    );
+    const includeZero = greekOption.key !== "delta";
+    let yMin = includeZero ? Math.min(0, ...yValues) : Math.min(...yValues);
+    let yMax = includeZero ? Math.max(0, ...yValues) : Math.max(...yValues);
+    if (yMin === yMax) {
+      const pad = yMin === 0 ? 1 : Math.abs(yMin) * 0.1;
+      yMin -= pad;
+      yMax += pad;
+    } else {
+      const pad = (yMax - yMin) * 0.08;
+      yMin -= pad;
+      yMax += pad;
+    }
+    const x = d3
+      .scaleLinear()
+      .domain(xExtent)
+      .range([0, panelWidth]);
+    const y = d3
+      .scaleLinear()
+      .domain([yMin, yMax])
+      .nice()
+      .range([plotBottom, plotTop]);
+    const title =
+      greekOption.key === "gamma"
+        ? "Gamma (×10⁴)"
+        : greekOption.key === "vega"
+          ? "Vega (per 1 vol pt)"
+          : greekOption.label;
+
+    group
+      .append("text")
+      .attr("x", panelWidth / 2)
+      .attr("y", 20)
+      .attr("text-anchor", "middle")
+      .attr("fill", CHART_COLORS.primaryText)
+      .style("font-size", "13px")
+      .style("font-weight", 650)
+      .text(title);
+
+    group
+      .append("g")
+      .attr("transform", `translate(0,${plotBottom})`)
+      .call(
+        d3
+          .axisBottom(x)
+          .ticks(4)
+          .tickSize(0)
+          .tickPadding(10)
+          .tickFormat(formatSpot),
+      )
+      .call(axisStyle);
+
+    group
+      .append("g")
+      .call(
+        d3
+          .axisLeft(y)
+          .ticks(5)
+          .tickSize(0)
+          .tickPadding(10)
+          .tickFormat(formatGreek),
+      )
+      .call(axisStyle);
+
+    group
+      .append("text")
+      .attr("x", panelWidth / 2)
+      .attr("y", plotBottom + 38)
+      .attr("text-anchor", "middle")
+      .attr("fill", CHART_COLORS.axisText)
+      .style("font-size", "10px")
+      .style("font-weight", 700)
+      .text(xLabel);
+
+    const line = d3
+      .line()
+      .x((point) => x(point.price))
+      .y((point) => y(point.value))
+      .curve(d3.curveMonotoneX);
+
+    series.forEach((snapshot, snapshotIndex) => {
+      const isStart = snapshotIndex === 0;
+      const color = isStart ? "#9196a2" : greekOption.color;
+      const opacity = isStart ? 0.62 : 1;
+
+      group
+        .append("path")
+        .datum(snapshot.values)
+        .attr("fill", "none")
+        .attr("stroke", color)
+        .attr("stroke-opacity", opacity)
+        .attr("stroke-width", isStart ? 1.45 : 1.9)
+        .attr("stroke-linecap", "round")
+        .attr("stroke-linejoin", "round")
+        .attr("d", line);
+
+      const prevailingPoint = snapshot.values.reduce((closest, point) =>
+        Math.abs(point.price - snapshot.indexPrice) <
+        Math.abs(closest.price - snapshot.indexPrice)
+          ? point
+          : closest,
+      );
+      const markerX = x(prevailingPoint.price);
+      const markerY = y(prevailingPoint.value);
+
+      group
+        .append("line")
+        .attr("x1", markerX)
+        .attr("x2", markerX)
+        .attr("y1", markerY + 6)
+        .attr("y2", plotBottom)
+        .attr("stroke", color)
+        .attr("stroke-opacity", isStart ? 0.14 : 0.2)
+        .attr("stroke-dasharray", "2 4");
+
+      group
+        .append("circle")
+        .attr("cx", markerX)
+        .attr("cy", markerY)
+        .attr("r", isStart ? 6 : 8)
+        .attr("fill", color)
+        .attr("fill-opacity", isStart ? 0.12 : 0.16);
+
+      group
+        .append("circle")
+        .attr("cx", markerX)
+        .attr("cy", markerY)
+        .attr("r", isStart ? 3.3 : 4)
+        .attr("fill", color)
+        .attr("fill-opacity", opacity)
+        .attr("stroke", "#05070a")
+        .attr("stroke-width", 2)
+        .append("title")
+        .text(
+          `${isStart ? "Start" : "End"} index ${formatSpot(
+            snapshot.indexPrice,
+          )} · ${greekOption.label} ${formatGreek(prevailingPoint.value)}`,
+        );
+    });
+  });
 };
 
 const render = () => {
@@ -633,13 +970,17 @@ const render = () => {
   const innerWidth = layout.width - layout.margin.left - layout.margin.right;
   const topInnerHeight =
     layout.topPanelHeight - layout.margin.top - layout.margin.bottom;
+  const activeBottomPanelHeight =
+    bottomMode === "greekEvolution"
+      ? layout.greekEvolutionPanelHeight
+      : layout.bottomPanelHeight;
   const bottomInnerHeight =
-    layout.bottomPanelHeight - layout.margin.top - layout.margin.bottom;
+    activeBottomPanelHeight - layout.margin.top - layout.margin.bottom;
   const totalHeight =
     layout.headerHeight +
     layout.topPanelHeight +
     layout.panelGap +
-    layout.bottomPanelHeight;
+    activeBottomPanelHeight;
 
   const topPanelY = layout.headerHeight;
   const bottomPanelY =
@@ -670,7 +1011,7 @@ const render = () => {
     .attr("fill", "#000");
 
   if (!index.length) {
-    emitTimeAnchorIfChanged([], null);
+    emitTimeAnchorIfChanged([], null, true);
     svg
       .append("text")
       .attr("x", layout.width / 2)
@@ -792,6 +1133,15 @@ const render = () => {
         "transform",
         `translate(${layout.margin.left},${layout.margin.top})`,
       );
+
+    if (bottomMode === "greekEvolution") {
+      drawGreekEvolutionPanels({
+        plotGroup,
+        innerWidth,
+        bottomInnerHeight,
+      });
+      return;
+    }
 
     if (!comboFiltered.length) {
       const emptyMessageByMode = {
@@ -1662,25 +2012,25 @@ const render = () => {
     .on("brush", (event) => {
       if (!event.selection) {
         drawBottom(null);
-        emitTimeAnchorIfChanged(index, null);
+        emitTimeAnchorIfChanged(index, null, false);
         return;
       }
       const [from, to] = event.selection.map(xTop.invert);
       const domain = from <= to ? [from, to] : [to, from];
       drawBottom(domain);
-      emitTimeAnchorIfChanged(index, domain);
+      emitTimeAnchorIfChanged(index, domain, false);
     })
     .on("end", (event) => {
       if (!event.selection) {
         brushedDomain = null;
         drawBottom(null);
-        emitTimeAnchorIfChanged(index, null);
+        emitTimeAnchorIfChanged(index, null, true);
         return;
       }
       const [from, to] = event.selection.map(xTop.invert);
       brushedDomain = from <= to ? [from, to] : [to, from];
       drawBottom(brushedDomain);
-      emitTimeAnchorIfChanged(index, brushedDomain);
+      emitTimeAnchorIfChanged(index, brushedDomain, true);
     });
 
   const brushGroup = topGroup.append("g").attr("class", "brush");
@@ -1695,7 +2045,7 @@ const render = () => {
   }
 
   drawBottom(brushedDomain);
-  emitTimeAnchorIfChanged(index, brushedDomain);
+  emitTimeAnchorIfChanged(index, brushedDomain, true);
   drawResolutionControl(svg);
 };
 
@@ -1711,6 +2061,7 @@ watch(
     props.resolutionKey,
     props.resolutionOptions,
     props.showHigherOrderGreeks,
+    props.greekEvolutionData,
   ],
   () => {
     render();
