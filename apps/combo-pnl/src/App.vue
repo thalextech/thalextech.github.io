@@ -590,6 +590,18 @@ const getAnchorRow = (rows, anchorTs) => {
   return firstAtOrAfter ?? rows[rows.length - 1] ?? null;
 };
 
+const getLastRowAtOrBefore = (rows, anchorTs) => {
+  const normalizedAnchorTs = normalizeTimestampSeconds(anchorTs);
+  if (!rows?.length || !Number.isFinite(normalizedAnchorTs)) return null;
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const rowTs = normalizeTimestampSeconds(rows[i]?.ts);
+    if (Number.isFinite(rowTs) && rowTs <= normalizedAnchorTs) {
+      return rows[i];
+    }
+  }
+  return null;
+};
+
 const normalizeIv = (value) => {
   const iv = Number(value);
   if (!Number.isFinite(iv) || iv <= 0) return null;
@@ -629,7 +641,17 @@ const resolveGreekEvolutionState = (anchorTs, label) => {
     .filter(Boolean);
 
   if (!legs.length || legs.length !== selected.length) return null;
-  return { label, ts, indexPrice, legs };
+  const hedgeRow = ui.deltaHedgeEnabled
+    ? getLastRowAtOrBefore(comboSeries.value, ts)
+    : null;
+  const hedgeRatio = Number(hedgeRow?.hedge_ratio);
+  return {
+    label,
+    ts,
+    indexPrice,
+    legs,
+    hedgeRatio: Number.isFinite(hedgeRatio) ? hedgeRatio : 0,
+  };
 };
 
 const greekEvolutionData = computed(() => {
@@ -675,7 +697,12 @@ const greekEvolutionData = computed(() => {
 
   return states.map((state) => {
     const points = uniquePrices.map((price) => {
-      const totals = { delta: 0, gamma: 0, theta: 0, vega: 0 };
+      const totals = {
+        delta: state.hedgeRatio,
+        gamma: 0,
+        theta: 0,
+        vega: 0,
+      };
       for (const leg of state.legs) {
         const tteSeconds = leg.expirationTs - state.ts;
         if (!Number.isFinite(tteSeconds) || tteSeconds <= 0) continue;
@@ -853,6 +880,7 @@ const applyTimeBasedDeltaHedge = (rows, intervalSeconds) => {
       row.hedge_rehedge = true;
     }
 
+    row.hedge_ratio = hedgePosition;
     const unrealizedHedgePnl =
       Number.isFinite(indexClose) &&
       Math.abs(hedgePosition) > 1e-12 &&

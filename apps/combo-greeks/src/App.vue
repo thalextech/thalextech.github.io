@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import PositionBuilder from "../../simulator/src/components/PositionBuilder.vue";
 import Greeks from "./components/Greeks.vue";
+import { buildScenarioSpotGrid } from "./scenario-range.js";
 import {
   calcGreeks,
   fetchAllInstruments,
@@ -45,8 +46,7 @@ const MAX_POINTS_PER_FETCH = 1000;
 const MARK_CONCURRENCY = 10;
 const LOAD_DEBOUNCE_MS = 140;
 const SCENARIO_POINT_COUNT = 91;
-const SCENARIO_SPOT_MIN_FACTOR = 0.32;
-const SCENARIO_SPOT_MAX_FACTOR = 1.32;
+const SCENARIO_RANGE_STANDARD_DEVIATIONS = 3;
 const CHARM_FD_STEP_SECONDS = 24 * 60 * 60;
 const LEG_VOL_MULTIPLIERS = [0.6, 0.7, 0.8, 0.9, 1.1, 1.2, 1.3, 1.4];
 const LEG_VOL_LINE_OPACITY = 0.28;
@@ -551,24 +551,6 @@ const rebuildBuilderSnapshots = (anchorTs = null) => {
   }
 };
 
-const buildScenarioSpotGrid = () => {
-  const points = [];
-  const referenceSpot = getFetchedReferenceSpot() ?? spot.value;
-  if (!Number.isFinite(referenceSpot) || referenceSpot <= 0) return points;
-  const minSpot = referenceSpot * SCENARIO_SPOT_MIN_FACTOR;
-  const maxSpot = referenceSpot * SCENARIO_SPOT_MAX_FACTOR;
-  for (let i = 0; i < SCENARIO_POINT_COUNT; i += 1) {
-    const t = SCENARIO_POINT_COUNT === 1 ? 0.5 : i / (SCENARIO_POINT_COUNT - 1);
-    const scenarioSpot = minSpot + (maxSpot - minSpot) * t;
-    if (!Number.isFinite(scenarioSpot) || scenarioSpot <= 0) continue;
-    points.push({
-      scenarioIndex: i,
-      scenarioSpot,
-    });
-  }
-  return points;
-};
-
 const buildSimulationRows = (selected, indexRows, markByInstrument) => {
   if (!selected.length || !indexRows.length) {
     return {
@@ -608,7 +590,19 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
     Number.isFinite(anchorSpotRaw) && anchorSpotRaw > 0
       ? anchorSpotRaw
       : latestSpot;
-  const scenarios = buildScenarioSpotGrid().map((scenario) => {
+  const fastForwardRatio = Math.max(
+    0,
+    Math.min(1, Number(ui.timeProgress) / 100),
+  );
+  const scenarios = buildScenarioSpotGrid({
+    spot: anchorSpot,
+    anchorTs,
+    expirationTimestamps: selected.map((leg) => leg.expirationTs),
+    pointCount: SCENARIO_POINT_COUNT,
+    annualizedVol: DEFAULT_VOL,
+    standardDeviations: SCENARIO_RANGE_STANDARD_DEVIATIONS,
+    remainingTimeFraction: 1 - fastForwardRatio,
+  }).map((scenario) => {
     const scenarioSpot = Number(scenario.scenarioSpot);
     const scenarioM =
       Number.isFinite(anchorSpot) && anchorSpot > 0
@@ -692,12 +686,7 @@ const buildSimulationRows = (selected, indexRows, markByInstrument) => {
     const markTs = extractMarkTs(anchorMarkRow);
     const referenceTs = Number.isFinite(markTs) ? markTs : anchorTs;
     const fullTteSeconds = Math.max(60, Number(leg.expirationTs) - referenceTs);
-    const fastForwardRatio = Math.max(
-      0,
-      Math.min(1, Number(ui.timeProgress) / 100),
-    );
     const tteSeconds = Math.max(60, fullTteSeconds * (1 - fastForwardRatio));
-
     for (let i = 0; i < scenarios.length; i += 1) {
       const scenario = scenarios[i];
       const scenarioSpot = Number(scenario.scenarioSpot);

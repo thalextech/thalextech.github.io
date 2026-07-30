@@ -23,6 +23,11 @@ const layout = {
   margin: { top: 90, right: 220, bottom: 80, left: 90 },
 };
 
+const EXPORT_LINE_WIDTH = {
+  leg: 3.2,
+  total: 5,
+};
+
 const TEXT_STYLES = {
   axisText: { fill: "#d4d7e2", size: "12px" },
   axisLabel: { fill: "#f7f8fb", size: "16px", weight: 600 },
@@ -57,8 +62,17 @@ const normalizeGreekValue = (key, value) => {
 };
 
 function exportPng({ filename = "combo-greeks.png", scale = 4, padding = 24 } = {}) {
+  const exportSvg = svgRef.value?.cloneNode(true);
+  if (!exportSvg) return;
+
+  d3.select(exportSvg)
+    .selectAll("[data-export-stroke-width]")
+    .attr("stroke-width", function applyExportStrokeWidth() {
+      return this.getAttribute("data-export-stroke-width");
+    });
+
   exportChartToPng({
-    element: svgRef.value,
+    element: exportSvg,
     filename,
     scale,
     padding,
@@ -279,6 +293,14 @@ const render = () => {
       .attr("fill", "none")
       .attr("stroke", series.color)
       .attr("stroke-width", series.lineWidth ?? (series.isTotal ? 3 : 1.6))
+      .attr(
+        "data-export-stroke-width",
+        series.legendHidden
+          ? null
+          : series.isTotal
+            ? EXPORT_LINE_WIDTH.total
+            : EXPORT_LINE_WIDTH.leg,
+      )
       .attr("stroke-linecap", "round")
       .attr("stroke-linejoin", "round")
       .attr("opacity", series.opacity ?? (series.isTotal ? 1 : 0.9))
