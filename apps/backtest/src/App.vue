@@ -5,6 +5,7 @@ import FairValueDistributionPanel from "./components/FairValueDistributionPanel.
 import GreekPnlChart from "./components/GreekPnlChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
 import IvRvChart from "./components/IvRvChart.vue";
+import VolPnlBarChart from "./components/VolPnlBarChart.vue";
 import StyledSelectMenu from "./components/StyledSelectMenu.vue";
 import VarianceStandardizedVrHeatmap from "./components/VarianceStandardizedVrHeatmap.vue";
 import VarianceRatioDashboard from "./components/VarianceRatioDashboard.vue";
@@ -20,6 +21,7 @@ import {
 } from "./lib/backtestWorkerClient.js";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
 import {
+  addTrailingParkinsonRv,
   buildIvRvChartRows,
   buildHourlyIvHeatmap,
   buildHourlyIvRows,
@@ -33,10 +35,7 @@ import {
 } from "./lib/ivRv.js";
 import { blackScholesPrice } from "./lib/optionPricing.js";
 import { computeZeroMtmContours } from "./lib/zeroMtmContours.js";
-import {
-  buildWeeklyPnlCsv,
-  downloadCsv,
-} from "./lib/weeklyPnlCsv.js";
+import { buildWeeklyPnlCsv, downloadCsv } from "./lib/weeklyPnlCsv.js";
 import {
   buildForwardVarianceRatioSeasonality,
   calculateVarianceRatioDashboard,
@@ -65,15 +64,78 @@ const MATURITY_OPTIONS = [
 ];
 
 const CALENDAR_MATURITY_OPTIONS = [
-  { value: "7-14", label: "7–14D", nearDays: 7, farDays: 14, minDteDays: 5, maxDteDays: 10 },
-  { value: "7-30", label: "7–30D", nearDays: 7, farDays: 30, minDteDays: 5, maxDteDays: 10 },
-  { value: "14-30", label: "14–30D", nearDays: 14, farDays: 30, minDteDays: 7, maxDteDays: 28 },
-  { value: "30-60", label: "30–60D", nearDays: 30, farDays: 60, minDteDays: 14, maxDteDays: 60 },
-  { value: "30-90", label: "30–90D", nearDays: 30, farDays: 90, minDteDays: 14, maxDteDays: 60 },
-  { value: "30-180", label: "30–180D", nearDays: 30, farDays: 180, minDteDays: 14, maxDteDays: 60 },
-  { value: "60-90", label: "60–90D", nearDays: 60, farDays: 90, minDteDays: 45, maxDteDays: 75 },
-  { value: "60-180", label: "60–180D", nearDays: 60, farDays: 180, minDteDays: 45, maxDteDays: 75 },
-  { value: "90-180", label: "90–180D", nearDays: 90, farDays: 180, minDteDays: 75, maxDteDays: 135 },
+  {
+    value: "7-14",
+    label: "7–14D",
+    nearDays: 7,
+    farDays: 14,
+    minDteDays: 5,
+    maxDteDays: 10,
+  },
+  {
+    value: "7-30",
+    label: "7–30D",
+    nearDays: 7,
+    farDays: 30,
+    minDteDays: 5,
+    maxDteDays: 10,
+  },
+  {
+    value: "14-30",
+    label: "14–30D",
+    nearDays: 14,
+    farDays: 30,
+    minDteDays: 7,
+    maxDteDays: 28,
+  },
+  {
+    value: "30-60",
+    label: "30–60D",
+    nearDays: 30,
+    farDays: 60,
+    minDteDays: 14,
+    maxDteDays: 60,
+  },
+  {
+    value: "30-90",
+    label: "30–90D",
+    nearDays: 30,
+    farDays: 90,
+    minDteDays: 14,
+    maxDteDays: 60,
+  },
+  {
+    value: "30-180",
+    label: "30–180D",
+    nearDays: 30,
+    farDays: 180,
+    minDteDays: 14,
+    maxDteDays: 60,
+  },
+  {
+    value: "60-90",
+    label: "60–90D",
+    nearDays: 60,
+    farDays: 90,
+    minDteDays: 45,
+    maxDteDays: 75,
+  },
+  {
+    value: "60-180",
+    label: "60–180D",
+    nearDays: 60,
+    farDays: 180,
+    minDteDays: 45,
+    maxDteDays: 75,
+  },
+  {
+    value: "90-180",
+    label: "90–180D",
+    nearDays: 90,
+    farDays: 180,
+    minDteDays: 75,
+    maxDteDays: 135,
+  },
 ];
 
 const STRUCTURE_OPTIONS = [
@@ -93,7 +155,9 @@ const DELTA_OPTIONS = [
   { value: 0.35, label: "35D" },
   { value: 0.45, label: "45D" },
 ];
-const DEFAULT_DELTA_OPTION = DELTA_OPTIONS.find((option) => option.value === 0.25);
+const DEFAULT_DELTA_OPTION = DELTA_OPTIONS.find(
+  (option) => option.value === 0.25,
+);
 
 const WEEKDAY_OPTIONS = [
   { value: 1, label: "Monday" },
@@ -166,17 +230,27 @@ const maxExitHoldDays = computed(() => {
 });
 
 const maturityOptions = computed(() =>
-  ui.structure === "calendar_spread" ? CALENDAR_MATURITY_OPTIONS : MATURITY_OPTIONS,
+  ui.structure === "calendar_spread"
+    ? CALENDAR_MATURITY_OPTIONS
+    : MATURITY_OPTIONS,
 );
-const currentMaturity = computed(() =>
-  maturityOptions.value.find((option) => String(option.value) === String(ui.maturityDays))
-    || maturityOptions.value.find((option) => option.value === DEFAULT_MATURITY_DAYS)
-    || maturityOptions.value[0],
+const currentMaturity = computed(
+  () =>
+    maturityOptions.value.find(
+      (option) => String(option.value) === String(ui.maturityDays),
+    ) ||
+    maturityOptions.value.find(
+      (option) => option.value === DEFAULT_MATURITY_DAYS,
+    ) ||
+    maturityOptions.value[0],
 );
-const showDelta = computed(() => !["straddle", "calendar_spread"].includes(ui.structure));
+const showDelta = computed(
+  () => !["straddle", "calendar_spread"].includes(ui.structure),
+);
 const rollDayOptions = computed(() =>
-  [1, 2, 3, 4, 5, 6, 7, 14, 30, 60, 90, 180]
-    .filter((days) => days <= maxExitHoldDays.value),
+  [1, 2, 3, 4, 5, 6, 7, 14, 30, 60, 90, 180].filter(
+    (days) => days <= maxExitHoldDays.value,
+  ),
 );
 
 const openMenu = ref(null);
@@ -194,7 +268,10 @@ function selectMaturity(value) {
     if (ui.exitMode === "after_days") ui.exitHoldDays = 1;
     return;
   }
-  if (Number(previous) === 1 && Number(ui.entryWeekday) === ENTRY_WEEKDAY_EVERY_DAY) {
+  if (
+    Number(previous) === 1 &&
+    Number(ui.entryWeekday) === ENTRY_WEEKDAY_EVERY_DAY
+  ) {
     ui.entryWeekday = 5;
   }
 }
@@ -203,14 +280,14 @@ function selectMaturity(value) {
 watch(openMenu, (val) => {
   if (!val) return;
   const handler = (e) => {
-    const targetPill = e.target.closest('.pill');
+    const targetPill = e.target.closest(".pill");
     if (!targetPill) {
       openMenu.value = null;
     }
-    document.removeEventListener('click', handler);
+    document.removeEventListener("click", handler);
   };
   setTimeout(() => {
-    document.addEventListener('click', handler, { once: true });
+    document.addEventListener("click", handler, { once: true });
   }, 0);
 });
 
@@ -222,7 +299,7 @@ function updateHedgeInterval(val) {
 
 const hedgePct = computed(() => {
   const val = Number(ui.hedgeIntervalHours) || 1;
-  return ((val - 1) / 23) * 100 + '%';
+  return ((val - 1) / 23) * 100 + "%";
 });
 
 const mode = ref("single");
@@ -256,12 +333,14 @@ const ivRangeStart = ref(0);
 const ivRangeEnd = ref(100);
 const IV_RV_TENORS = [7, 14, 30];
 const IV_RV_RESOLUTIONS = [1, 4, 8, 24];
-const fullIvRvRows = computed(() => buildIvRvChartRows({
-  rows: ivRvSourceRows.value,
-  tenorDays: ivRvTenor.value,
-  resolutionHours: ivRvResolution.value,
-  alignForwardRv: ivRvAlignForward.value,
-}));
+const fullIvRvRows = computed(() =>
+  buildIvRvChartRows({
+    rows: ivRvSourceRows.value,
+    tenorDays: ivRvTenor.value,
+    resolutionHours: ivRvResolution.value,
+    alignForwardRv: ivRvAlignForward.value,
+  }),
+);
 const ivRvExtent = computed(() => {
   const rows = fullIvRvRows.value;
   if (!rows.length) return null;
@@ -272,38 +351,48 @@ const ivRvSelectedRange = computed(() => {
   if (!extent) return null;
   const span = extent.max - extent.min;
   return {
-    start: extent.min + span * ivRvRangeStart.value / 100,
-    end: extent.min + span * ivRvRangeEnd.value / 100,
+    start: extent.min + (span * ivRvRangeStart.value) / 100,
+    end: extent.min + (span * ivRvRangeEnd.value) / 100,
   };
 });
 const ivRvRows = computed(() => {
   const range = ivRvSelectedRange.value;
   if (!range) return fullIvRvRows.value;
-  return fullIvRvRows.value.filter((row) => row.ts >= range.start && row.ts <= range.end);
+  return fullIvRvRows.value.filter(
+    (row) => row.ts >= range.start && row.ts <= range.end,
+  );
 });
 const ivRvRangeStartModel = computed({
   get: () => ivRvRangeStart.value,
-  set: (value) => { ivRvRangeStart.value = Math.min(Number(value), ivRvRangeEnd.value - 0.1); },
+  set: (value) => {
+    ivRvRangeStart.value = Math.min(Number(value), ivRvRangeEnd.value - 0.1);
+  },
 });
 const ivRvRangeEndModel = computed({
   get: () => ivRvRangeEnd.value,
-  set: (value) => { ivRvRangeEnd.value = Math.max(Number(value), ivRvRangeStart.value + 0.1); },
+  set: (value) => {
+    ivRvRangeEnd.value = Math.max(Number(value), ivRvRangeStart.value + 0.1);
+  },
 });
 const ivRvRangeStyle = computed(() => ({
   "--range-start": `${ivRvRangeStart.value}%`,
   "--range-end": `${ivRvRangeEnd.value}%`,
 }));
-const formatIvRvRangeDate = (ts) => Number.isFinite(ts)
-  ? new Date(ts * 1000).toISOString().slice(0, 10)
-  : "—";
+const formatIvRvRangeDate = (ts) =>
+  Number.isFinite(ts) ? new Date(ts * 1000).toISOString().slice(0, 10) : "—";
 const ivRvRangeLabel = computed(() => {
   const range = ivRvSelectedRange.value;
-  return range ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}` : "No range";
+  return range
+    ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}`
+    : "No range";
 });
 const ivRvStats = computed(() => summarizeIvRvRows(ivRvRows.value));
-const formatVol = (value) => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+const formatVol = (value) =>
+  Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
 const aggregateVol = (values, metric) => {
-  const sorted = values.filter(Number.isFinite).sort((first, second) => first - second);
+  const sorted = values
+    .filter(Number.isFinite)
+    .sort((first, second) => first - second);
   if (!sorted.length) return Number.NaN;
   if (metric !== "median") {
     return sorted.reduce((sum, value) => sum + value, 0) / sorted.length;
@@ -313,35 +402,42 @@ const aggregateVol = (values, metric) => {
     ? sorted[middle]
     : (sorted[middle - 1] + sorted[middle]) / 2;
 };
-const ivHourlyRows = computed(() => buildHourlyIvRows(
-  ivRvSourceRows.value,
-  ivRvTenor.value,
-));
-const ivExtent = computed(() => ivHourlyRows.value.length
-  ? { min: ivHourlyRows.value[0].ts, max: ivHourlyRows.value.at(-1).ts }
-  : null);
+const ivHourlyRows = computed(() =>
+  buildHourlyIvRows(ivRvSourceRows.value, ivRvTenor.value),
+);
+const ivExtent = computed(() =>
+  ivHourlyRows.value.length
+    ? { min: ivHourlyRows.value[0].ts, max: ivHourlyRows.value.at(-1).ts }
+    : null,
+);
 const ivSelectedRange = computed(() => {
   const extent = ivExtent.value;
   if (!extent) return null;
   const span = extent.max - extent.min;
   return {
-    start: extent.min + span * ivRangeStart.value / 100,
-    end: extent.min + span * ivRangeEnd.value / 100,
+    start: extent.min + (span * ivRangeStart.value) / 100,
+    end: extent.min + (span * ivRangeEnd.value) / 100,
   };
 });
 const ivFilteredRows = computed(() => {
   const range = ivSelectedRange.value;
   return range
-    ? ivHourlyRows.value.filter((row) => row.ts >= range.start && row.ts <= range.end)
+    ? ivHourlyRows.value.filter(
+        (row) => row.ts >= range.start && row.ts <= range.end,
+      )
     : ivHourlyRows.value;
 });
 const ivRangeStartModel = computed({
   get: () => ivRangeStart.value,
-  set: (value) => { ivRangeStart.value = Math.min(Number(value), ivRangeEnd.value - 0.1); },
+  set: (value) => {
+    ivRangeStart.value = Math.min(Number(value), ivRangeEnd.value - 0.1);
+  },
 });
 const ivRangeEndModel = computed({
   get: () => ivRangeEnd.value,
-  set: (value) => { ivRangeEnd.value = Math.max(Number(value), ivRangeStart.value + 0.1); },
+  set: (value) => {
+    ivRangeEnd.value = Math.max(Number(value), ivRangeStart.value + 0.1);
+  },
 });
 const ivRangeStyle = computed(() => ({
   "--range-start": `${ivRangeStart.value}%`,
@@ -349,60 +445,88 @@ const ivRangeStyle = computed(() => ({
 }));
 const ivRangeLabel = computed(() => {
   const range = ivSelectedRange.value;
-  return range ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}` : "No range";
+  return range
+    ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}`
+    : "No range";
 });
-const ivHeatmapCells = computed(() => buildHourlyIvHeatmap(ivFilteredRows.value, {
-  metric: ivHeatmapMetric.value,
-}));
-const ivMeasureLabel = computed(() => `${ivRvTenor.value}D constant-maturity IV`);
-const ivHeatmapMethodology = "Method: exact total-variance interpolation · open/open marks.";
+const ivHeatmapCells = computed(() =>
+  buildHourlyIvHeatmap(ivFilteredRows.value, {
+    metric: ivHeatmapMetric.value,
+  }),
+);
+const ivMeasureLabel = computed(
+  () => `${ivRvTenor.value}D constant-maturity IV`,
+);
+const ivHeatmapMethodology =
+  "Method: exact total-variance interpolation · open/open marks.";
 const ivBoxplotRows = computed(() => {
   const selected = new Set((ivBoxplotMonths.value || []).map(Number));
   if (selected.size === MONTH_OPTIONS.length) return ivFilteredRows.value;
-  return ivFilteredRows.value.filter((row) =>
-    row.date instanceof Date && selected.has(row.date.getUTCMonth()),
+  return ivFilteredRows.value.filter(
+    (row) => row.date instanceof Date && selected.has(row.date.getUTCMonth()),
   );
 });
-const ivBoxplotGroups = computed(() => buildHourlyIvWeekdayGroups(ivBoxplotRows.value));
-const ivWeekdayInsights = computed(() => summarizeRvWeekdayGroups(ivBoxplotGroups.value));
+const ivBoxplotGroups = computed(() =>
+  buildHourlyIvWeekdayGroups(ivBoxplotRows.value),
+);
+const ivWeekdayInsights = computed(() =>
+  summarizeRvWeekdayGroups(ivBoxplotGroups.value),
+);
 const ivHeatmapInsights = computed(() => {
   const rows = ivFilteredRows.value.filter((row) => Number.isFinite(row.iv));
-  const cells = ivHeatmapCells.value.filter((cell) => Number.isFinite(cell.average));
+  const cells = ivHeatmapCells.value.filter((cell) =>
+    Number.isFinite(cell.average),
+  );
   if (!rows.length || !cells.length) return null;
-  const ranked = cells.slice().sort((first, second) => first.average - second.average);
+  const ranked = cells
+    .slice()
+    .sort((first, second) => first.average - second.average);
   return {
-    average: aggregateVol(rows.map((row) => row.iv), ivHeatmapMetric.value),
+    average: aggregateVol(
+      rows.map((row) => row.iv),
+      ivHeatmapMetric.value,
+    ),
     lowest: ranked[0],
     highest: ranked.at(-1),
     count: rows.length,
   };
 });
-const rvHourlyRows = computed(() => buildHourlyParkinsonRows(ivRvSourceRows.value));
-const rvExtent = computed(() => rvHourlyRows.value.length
-  ? { min: rvHourlyRows.value[0].ts, max: rvHourlyRows.value.at(-1).ts }
-  : null);
+const rvHourlyRows = computed(() =>
+  buildHourlyParkinsonRows(ivRvSourceRows.value),
+);
+const rvExtent = computed(() =>
+  rvHourlyRows.value.length
+    ? { min: rvHourlyRows.value[0].ts, max: rvHourlyRows.value.at(-1).ts }
+    : null,
+);
 const rvSelectedRange = computed(() => {
   const extent = rvExtent.value;
   if (!extent) return null;
   const span = extent.max - extent.min;
   return {
-    start: extent.min + span * rvRangeStart.value / 100,
-    end: extent.min + span * rvRangeEnd.value / 100,
+    start: extent.min + (span * rvRangeStart.value) / 100,
+    end: extent.min + (span * rvRangeEnd.value) / 100,
   };
 });
 const rvFilteredRows = computed(() => {
   const range = rvSelectedRange.value;
   return range
-    ? rvHourlyRows.value.filter((row) => row.ts >= range.start && row.ts <= range.end)
+    ? rvHourlyRows.value.filter(
+        (row) => row.ts >= range.start && row.ts <= range.end,
+      )
     : rvHourlyRows.value;
 });
 const rvRangeStartModel = computed({
   get: () => rvRangeStart.value,
-  set: (value) => { rvRangeStart.value = Math.min(Number(value), rvRangeEnd.value - 0.1); },
+  set: (value) => {
+    rvRangeStart.value = Math.min(Number(value), rvRangeEnd.value - 0.1);
+  },
 });
 const rvRangeEndModel = computed({
   get: () => rvRangeEnd.value,
-  set: (value) => { rvRangeEnd.value = Math.max(Number(value), rvRangeStart.value + 0.1); },
+  set: (value) => {
+    rvRangeEnd.value = Math.max(Number(value), rvRangeStart.value + 0.1);
+  },
 });
 const rvRangeStyle = computed(() => ({
   "--range-start": `${rvRangeStart.value}%`,
@@ -410,20 +534,28 @@ const rvRangeStyle = computed(() => ({
 }));
 const rvRangeLabel = computed(() => {
   const range = rvSelectedRange.value;
-  return range ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}` : "No range";
+  return range
+    ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}`
+    : "No range";
 });
-const rvWeekdayGroups = computed(() => buildHourlyRvWeekdayGroups(rvFilteredRows.value));
+const rvWeekdayGroups = computed(() =>
+  buildHourlyRvWeekdayGroups(rvFilteredRows.value),
+);
 const rvBoxplotRows = computed(() => {
   const selected = new Set((rvBoxplotMonths.value || []).map(Number));
   if (selected.size === MONTH_OPTIONS.length) return rvFilteredRows.value;
-  return rvFilteredRows.value.filter((row) =>
-    row.date instanceof Date && selected.has(row.date.getUTCMonth()),
+  return rvFilteredRows.value.filter(
+    (row) => row.date instanceof Date && selected.has(row.date.getUTCMonth()),
   );
 });
-const rvBoxplotGroups = computed(() => buildHourlyRvWeekdayGroups(rvBoxplotRows.value));
-const rvHeatmapCells = computed(() => buildHourlyRvHeatmap(rvFilteredRows.value, {
-  metric: rvHeatmapMetric.value,
-}));
+const rvBoxplotGroups = computed(() =>
+  buildHourlyRvWeekdayGroups(rvBoxplotRows.value),
+);
+const rvHeatmapCells = computed(() =>
+  buildHourlyRvHeatmap(rvFilteredRows.value, {
+    metric: rvHeatmapMetric.value,
+  }),
+);
 const rvFilteredSourceRows = computed(() =>
   ivRvSourceRows.value.filter((row) => {
     const range = rvSelectedRange.value;
@@ -435,25 +567,27 @@ const standardizedVrHeatmapCells = computed(() =>
     adjustment: RETURN_ADJUSTMENT.VARIANCE_STANDARDIZED,
   }),
 );
-const varianceRatioAnalysis = computed(() => calculateVarianceRatioDashboard(
-  rvFilteredSourceRows.value,
-  {
+const varianceRatioAnalysis = computed(() =>
+  calculateVarianceRatioDashboard(rvFilteredSourceRows.value, {
     adjustment: RETURN_ADJUSTMENT.RAW,
     closeHour: serialAnchorHour.value,
     closeWeekday: serialAnchorWeekday.value,
     anchorMode: "start",
     bootstrapReplications: 400,
- },
-));
-const serialAnchorWeekdayLabel = computed(() =>
-  WEEKDAY_OPTIONS.find((option) => option.value === serialAnchorWeekday.value)?.label
-    || "All weekdays",
+  }),
+);
+const serialAnchorWeekdayLabel = computed(
+  () =>
+    WEEKDAY_OPTIONS.find((option) => option.value === serialAnchorWeekday.value)
+      ?.label || "All weekdays",
 );
 const selectStandardizedVrCell = ({ weekday, hour }) => {
   serialAnchorWeekday.value = weekday;
   serialAnchorHour.value = hour;
 };
-const rvWeekdayInsights = computed(() => summarizeRvWeekdayGroups(rvWeekdayGroups.value));
+const rvWeekdayInsights = computed(() =>
+  summarizeRvWeekdayGroups(rvWeekdayGroups.value),
+);
 const sweepDimension = ref("entry_hour");
 const sweepResults = ref([]);
 const sweepRunning = ref(false);
@@ -461,7 +595,6 @@ const sweepProgress = ref("");
 const sweepTiming = ref(null);
 let sweepRunDebounce = null;
 let sweepRerunPending = false;
-
 
 const state = reactive({
   error: "",
@@ -480,10 +613,15 @@ const SWEEP_DIMENSIONS = [
 ];
 
 const availableSweepDimensions = computed(() =>
-  SWEEP_DIMENSIONS.filter((dimension) => dimension.value !== "delta_band" || showDelta.value),
+  SWEEP_DIMENSIONS.filter(
+    (dimension) => dimension.value !== "delta_band" || showDelta.value,
+  ),
 );
-const sweepDimensionLabel = computed(() =>
-  SWEEP_DIMENSIONS.find((dimension) => dimension.value === sweepDimension.value)?.label || sweepDimension.value,
+const sweepDimensionLabel = computed(
+  () =>
+    SWEEP_DIMENSIONS.find(
+      (dimension) => dimension.value === sweepDimension.value,
+    )?.label || sweepDimension.value,
 );
 
 const formatUsd = new Intl.NumberFormat("en-US", {
@@ -496,33 +634,47 @@ const formatNumber = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
-const hoursFor = (hour, enabled, interval, scheduledExitHour = null, includeExpiryRoll = false) => {
+const hoursFor = (
+  hour,
+  enabled,
+  interval,
+  scheduledExitHour = null,
+  includeExpiryRoll = false,
+) => {
   const hs = new Set([Number(hour), 8]);
-  if (Number.isInteger(Number(scheduledExitHour))) hs.add(Number(scheduledExitHour));
+  if (Number.isInteger(Number(scheduledExitHour)))
+    hs.add(Number(scheduledExitHour));
   if (enabled) {
     const step = Math.max(1, Math.min(24, Number(interval)));
     const addHedgeCycle = (startHour) => {
       let h = Number(startHour);
-      do { hs.add(h); h = (h + step) % 24; } while (h !== Number(startHour));
+      do {
+        hs.add(h);
+        h = (h + step) % 24;
+      } while (h !== Number(startHour));
     };
     addHedgeCycle(hour);
     if (includeExpiryRoll) addHedgeCycle(8);
   }
   return [...hs].sort((a, b) => a - b);
 };
-const requiredHours = computed(() => hoursFor(
-  ui.entryHourUtc,
-  ui.hedgeEnabled,
-  ui.hedgeIntervalHours,
-  ui.exitMode === "weekly_schedule" ? ui.exitHourUtc : null,
-  ui.exitMode === "after_days",
-));
-const requiredMaxDteDays = computed(() => Math.max(
-  Number(currentMaturity.value.maxDteDays) || 0,
-  Number(currentMaturity.value.farDays) || 0,
-));
-const requiredDataKey = computed(() =>
-  `${requiredHours.value.join(",")}|dte:${requiredMaxDteDays.value}`,
+const requiredHours = computed(() =>
+  hoursFor(
+    ui.entryHourUtc,
+    ui.hedgeEnabled,
+    ui.hedgeIntervalHours,
+    ui.exitMode === "weekly_schedule" ? ui.exitHourUtc : null,
+    ui.exitMode === "after_days",
+  ),
+);
+const requiredMaxDteDays = computed(() =>
+  Math.max(
+    Number(currentMaturity.value.maxDteDays) || 0,
+    Number(currentMaturity.value.farDays) || 0,
+  ),
+);
+const requiredDataKey = computed(
+  () => `${requiredHours.value.join(",")}|dte:${requiredMaxDteDays.value}`,
 );
 let loadedDataKey = "";
 
@@ -584,7 +736,10 @@ const sweepInsights = computed(() => {
   const pnlValues = [];
   for (const row of rows) {
     if (row.pnl > bestPnl.pnl) bestPnl = row;
-    if (Number.isFinite(row.sharpe) && (!bestSharpe || row.sharpe > bestSharpe.sharpe)) {
+    if (
+      Number.isFinite(row.sharpe) &&
+      (!bestSharpe || row.sharpe > bestSharpe.sharpe)
+    ) {
       bestSharpe = row;
     }
     if (row.pnl > 0) profitable += 1;
@@ -592,9 +747,10 @@ const sweepInsights = computed(() => {
   }
   const sortedPnl = pnlValues.sort((a, b) => a - b);
   const middle = Math.floor(sortedPnl.length / 2);
-  const medianPnl = sortedPnl.length % 2
-    ? sortedPnl[middle]
-    : (sortedPnl[middle - 1] + sortedPnl[middle]) / 2;
+  const medianPnl =
+    sortedPnl.length % 2
+      ? sortedPnl[middle]
+      : (sortedPnl[middle - 1] + sortedPnl[middle]) / 2;
   return {
     bestPnl,
     bestSharpe,
@@ -604,18 +760,23 @@ const sweepInsights = computed(() => {
   };
 });
 
-const entryWeekdayOption = computed(() =>
-  ENTRY_WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.entryWeekday))
-  || WEEKDAY_OPTIONS[4],
+const entryWeekdayOption = computed(
+  () =>
+    ENTRY_WEEKDAY_OPTIONS.find(
+      (option) => option.value === Number(ui.entryWeekday),
+    ) || WEEKDAY_OPTIONS[4],
 );
 
 const exitModeExplanation = computed(() => {
   const entryWeekday = entryWeekdayOption.value;
-  const exitWeekday = WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.exitWeekday)) || WEEKDAY_OPTIONS[0];
+  const exitWeekday =
+    WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.exitWeekday)) ||
+    WEEKDAY_OPTIONS[0];
   const hourLabel = `${String(ui.entryHourUtc).padStart(2, "0")}:00`;
-  const entryTime = entryWeekday.value === ENTRY_WEEKDAY_EVERY_DAY
-    ? `daily ${hourLabel}`
-    : `${entryWeekday.label.slice(0, 3)} ${hourLabel}`;
+  const entryTime =
+    entryWeekday.value === ENTRY_WEEKDAY_EVERY_DAY
+      ? `daily ${hourLabel}`
+      : `${entryWeekday.label.slice(0, 3)} ${hourLabel}`;
   const exitTime = `${exitWeekday.label.slice(0, 3)} ${String(ui.exitHourUtc).padStart(2, "0")}:00`;
 
   if (ui.exitMode === "expiry") {
@@ -625,13 +786,16 @@ const exitModeExplanation = computed(() => {
     if (entryWeekday.value === ENTRY_WEEKDAY_EVERY_DAY) {
       return `Close at the next ${exitTime} UTC after entry, then re-enter at the next daily ${hourLabel} UTC slot. If the option expires first, close at expiry.`;
     }
-    const entryHourOfWeek = Number(ui.entryWeekday) * 24 + Number(ui.entryHourUtc);
+    const entryHourOfWeek =
+      Number(ui.entryWeekday) * 24 + Number(ui.entryHourUtc);
     const exitHourOfWeek = Number(ui.exitWeekday) * 24 + Number(ui.exitHourUtc);
     let holdingHours = (exitHourOfWeek - entryHourOfWeek + 7 * 24) % (7 * 24);
     if (holdingHours === 0) holdingHours = 7 * 24;
     const days = Math.floor(holdingHours / 24);
     const hours = holdingHours % 24;
-    const duration = [days ? `${days}d` : "", hours ? `${hours}h` : ""].filter(Boolean).join(" ");
+    const duration = [days ? `${days}d` : "", hours ? `${hours}h` : ""]
+      .filter(Boolean)
+      .join(" ");
     return `Close at the next ${exitTime} UTC after entry (${duration} later), then stay in cash until the next ${entryTime} entry. If the option expires first, close at expiry.`;
   }
   if (entryWeekday.value === ENTRY_WEEKDAY_EVERY_DAY) {
@@ -656,9 +820,10 @@ const strategyLabels = computed(() => {
     WEEKDAY_OPTIONS[0];
   const exitHour = String(ui.exitHourUtc).padStart(2, "0");
   const option = showDelta.value ? `${delta.label} ${structure.label}` : "ATM";
-  const entryLabel = weekday.value === ENTRY_WEEKDAY_EVERY_DAY
-    ? `Daily ${hour}:00`
-    : `${weekday.label.slice(0, 3)} ${hour}:00`;
+  const entryLabel =
+    weekday.value === ENTRY_WEEKDAY_EVERY_DAY
+      ? `Daily ${hour}:00`
+      : `${weekday.label.slice(0, 3)} ${hour}:00`;
 
   let chartStrategy = `${side} straddle ${maturity.label}`;
   if (ui.structure === "strangle") {
@@ -680,11 +845,12 @@ const strategyLabels = computed(() => {
       : ui.hedgeIntervalHours === 24
         ? `Daily ${hour}:00 · Perp`
         : `Every ${ui.hedgeIntervalHours}h · Perp`,
-    exit: ui.exitMode === "expiry"
-      ? "Option expiry"
-      : ui.exitMode === "weekly_schedule"
-        ? `Pick close · ${exitWeekday.label.slice(0, 3)} ${exitHour}:00`
-        : `Roll every ${ui.exitHoldDays}D`,
+    exit:
+      ui.exitMode === "expiry"
+        ? "Option expiry"
+        : ui.exitMode === "weekly_schedule"
+          ? `Pick close · ${exitWeekday.label.slice(0, 3)} ${exitHour}:00`
+          : `Roll every ${ui.exitHoldDays}D`,
     chart: `${chartStrategy}, ${ui.hedgeEnabled ? `hedged every ${ui.hedgeIntervalHours}h` : "unhedged"}`,
   };
 });
@@ -729,6 +895,22 @@ const cycleDetailError = ref("");
 const cycleDetailCache = new Map();
 let currentCycleDetailSequence = 0;
 const cycleRows = computed(() => result.value?.cycleSummary || []);
+const trailingSevenDayRvByTs = computed(
+  () =>
+    new Map(
+      addTrailingParkinsonRv(ivRvSourceRows.value, 7)
+        .filter((row) => Number.isFinite(row.rv))
+        .map((row) => [row.ts, row.rv]),
+    ),
+);
+const volPnlCycleRows = computed(() =>
+  cycleRows.value.map((cycle) => ({
+    ...cycle,
+    trailingSevenDayRealizedVol: trailingSevenDayRvByTs.value.get(
+      cycle.entryTs,
+    ),
+  })),
+);
 
 const clearAttribution = () => {
   currentAttributionSequence += 1;
@@ -754,12 +936,15 @@ const clearCycleDetail = ({ clearCache = false } = {}) => {
 
 const chartTitle = computed(() => {
   if (selectedCycle.value) {
-    const entry = new Date(selectedCycle.value.entryTime).toLocaleDateString("en-GB", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-      timeZone: "UTC",
-    });
+    const entry = new Date(selectedCycle.value.entryTime).toLocaleDateString(
+      "en-GB",
+      {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        timeZone: "UTC",
+      },
+    );
     return `${entry} cycle · hourly detail`;
   }
   return strategyLabels.value.chart;
@@ -772,7 +957,10 @@ const chartSubtitle = computed(() => {
       .join(" · ");
     if (cycleBreakEvens.value) {
       const be = cycleBreakEvens.value;
-      const fmt = (v) => Number.isFinite(v) ? v.toLocaleString("en-US", { maximumFractionDigits: 0 }) : null;
+      const fmt = (v) =>
+        Number.isFinite(v)
+          ? v.toLocaleString("en-US", { maximumFractionDigits: 0 })
+          : null;
       const parts = [];
       if (Number.isFinite(be.lower)) parts.push(`BE low ${fmt(be.lower)}`);
       if (Number.isFinite(be.upper)) parts.push(`BE high ${fmt(be.upper)}`);
@@ -782,14 +970,19 @@ const chartSubtitle = computed(() => {
   }
   const weekday = entryWeekdayOption.value;
   const entryTime = `${String(ui.entryHourUtc).padStart(2, "0")}:00 UTC`;
-  const exitWeekday = WEEKDAY_OPTIONS.find(o => o.value === Number(ui.exitWeekday)) || WEEKDAY_OPTIONS[0];
-  const exit = ui.exitMode === "expiry"
-    ? "Held to expiry"
-    : ui.exitMode === "weekly_schedule"
-      ? `Exited ${exitWeekday.label} at ${String(ui.exitHourUtc).padStart(2, "0")}:00 UTC; cash until next entry`
-      : `Rolled every ${ui.exitHoldDays}D at ${entryTime}; expiry-first gaps allowed`;
-  const sizing = ui.investmentMode === "btc" ? "1 BTC per leg" : "$100k notional";
-  const entryDay = weekday.value === ENTRY_WEEKDAY_EVERY_DAY ? "every day" : weekday.label;
+  const exitWeekday =
+    WEEKDAY_OPTIONS.find((o) => o.value === Number(ui.exitWeekday)) ||
+    WEEKDAY_OPTIONS[0];
+  const exit =
+    ui.exitMode === "expiry"
+      ? "Held to expiry"
+      : ui.exitMode === "weekly_schedule"
+        ? `Exited ${exitWeekday.label} at ${String(ui.exitHourUtc).padStart(2, "0")}:00 UTC; cash until next entry`
+        : `Rolled every ${ui.exitHoldDays}D at ${entryTime}; expiry-first gaps allowed`;
+  const sizing =
+    ui.investmentMode === "btc" ? "1 BTC per leg" : "$100k notional";
+  const entryDay =
+    weekday.value === ENTRY_WEEKDAY_EVERY_DAY ? "every day" : weekday.label;
   return `Entered ${entryDay} at ${entryTime} · ${exit} · ${sizing}`;
 });
 
@@ -797,12 +990,13 @@ const chartSourceSubtitle = computed(() => {
   if (!result.value) return "Source: Thalex";
   const start = DEFAULT_BACKTEST_CONFIG.start;
   const end = result.value.dataEnd || new Date();
-  const formatPeriodDate = (date) => date.toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
+  const formatPeriodDate = (date) =>
+    date.toLocaleDateString("en-GB", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    });
   return `Source: Thalex · Backtest: ${formatPeriodDate(start)} – ${formatPeriodDate(end)}`;
 });
 
@@ -848,17 +1042,25 @@ const runSweep = async () => {
   const cells = sweepConfigs.value;
   const sweepEnd = new Date();
   const configs = cells.map((cell) =>
-    buildConfig({ ...cell.overrides, end: sweepEnd, includeGreekAttribution: false }),
+    buildConfig({
+      ...cell.overrides,
+      end: sweepEnd,
+      includeGreekAttribution: false,
+    }),
   );
-  const sweepHours = [...new Set(configs.flatMap((config) =>
-    hoursFor(
-      config.entryHourUtc,
-      config.hedgeEnabled,
-      config.hedgeIntervalHours,
-      config.exitMode === "weekly_schedule" ? config.exitHourUtc : null,
-      config.exitMode === "after_days",
+  const sweepHours = [
+    ...new Set(
+      configs.flatMap((config) =>
+        hoursFor(
+          config.entryHourUtc,
+          config.hedgeEnabled,
+          config.hedgeIntervalHours,
+          config.exitMode === "weekly_schedule" ? config.exitHourUtc : null,
+          config.exitMode === "after_days",
+        ),
+      ),
     ),
-  ))].sort((a, b) => a - b);
+  ].sort((a, b) => a - b);
   const sweepHoursKey = sweepHours.join(",");
   const sweepMaxDteDays = Math.max(...configs.map(requiredQuoteDteDays));
   const sweepDataKey = `${sweepHoursKey}|dte:${sweepMaxDteDays}`;
@@ -972,7 +1174,10 @@ const switchMode = (nextMode) => {
     if (!result.value) scheduleBacktest();
   } else if (nextMode === "sweep" && previousMode !== "sweep") {
     void runSweep();
-  } else if (["iv-rv", "rv", "iv"].includes(nextMode) && !ivRvSourceRows.value.length) {
+  } else if (
+    ["iv-rv", "rv", "iv"].includes(nextMode) &&
+    !ivRvSourceRows.value.length
+  ) {
     loadIvRv();
   }
 };
@@ -983,8 +1188,11 @@ const selectSingleView = (nextChartMode) => {
   selectedCycle.value = null;
   if (!result.value) scheduleBacktest();
   else if (nextChartMode === "greeks") void loadAttribution();
+  if (nextChartMode === "vol-pnl" && !ivRvSourceRows.value.length)
+    void loadIvRv();
   requestAnimationFrame(() => {
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    if (document.activeElement instanceof HTMLElement)
+      document.activeElement.blur();
   });
 };
 
@@ -992,7 +1200,8 @@ const STUDY_MODES = ["rv", "iv", "iv-rv"];
 const selectStudy = (nextMode) => {
   switchMode(nextMode);
   requestAnimationFrame(() => {
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    if (document.activeElement instanceof HTMLElement)
+      document.activeElement.blur();
   });
 };
 
@@ -1025,7 +1234,8 @@ const runCurrent = async () => {
       datasetKey: loadedDataKey,
       config,
       onProgress: ({ message }) => {
-        if (runSequence === currentRunSequence && message) state.progress = message;
+        if (runSequence === currentRunSequence && message)
+          state.progress = message;
       },
     });
     if (runSequence !== currentRunSequence) return;
@@ -1060,15 +1270,17 @@ const loadAttribution = () => {
         config: buildConfig(),
       });
       if (
-        attributionSequence !== currentAttributionSequence
-        || sourceResult !== result.value
-      ) return;
+        attributionSequence !== currentAttributionSequence ||
+        sourceResult !== result.value
+      )
+        return;
       attributionRows.value = response.result?.timeline || [];
       attributionCycleRows.value = response.result?.cycles || [];
       attributionResult = sourceResult;
     } catch (error) {
       if (attributionSequence !== currentAttributionSequence) return;
-      attributionError.value = error?.message || "Unable to calculate PnL attribution";
+      attributionError.value =
+        error?.message || "Unable to calculate PnL attribution";
     } finally {
       if (attributionSequence === currentAttributionSequence) {
         attributionLoading.value = false;
@@ -1111,7 +1323,10 @@ const handleCycleSelect = async (cycle) => {
   cycleDetailLoading.value = true;
   cycleDetailRows.value = [];
   try {
-    const config = buildConfig({ start: new Date(cycle.entryTime), end: new Date(cycle.exitTime) });
+    const config = buildConfig({
+      start: new Date(cycle.entryTime),
+      end: new Date(cycle.exitTime),
+    });
     const detailMaxDteDays = Math.max(
       ...cycle.legs.map((leg) => (leg.expirationTs - cycle.entryTs) / 86_400),
     );
@@ -1128,7 +1343,11 @@ const handleCycleSelect = async (cycle) => {
       instruments: loaded.artifact.instruments,
       config,
     });
-    const rows = buildCycleDetail({ plan: cycle, preparedData: detailData, config });
+    const rows = buildCycleDetail({
+      plan: cycle,
+      preparedData: detailData,
+      config,
+    });
     const contours = computeZeroMtmContours({
       plan: cycle,
       preparedData: detailData,
@@ -1142,7 +1361,8 @@ const handleCycleSelect = async (cycle) => {
     cycleContours.value = contours;
   } catch (error) {
     if (detailSequence !== currentCycleDetailSequence) return;
-    cycleDetailError.value = error?.message || "Unable to load hourly cycle detail";
+    cycleDetailError.value =
+      error?.message || "Unable to load hourly cycle detail";
   } finally {
     if (detailSequence === currentCycleDetailSequence) {
       cycleDetailLoading.value = false;
@@ -1170,7 +1390,8 @@ const loadBacktest = async () => {
       },
       config,
       onProgress: ({ message }) => {
-        if (runSequence === currentRunSequence && message) state.progress = message;
+        if (runSequence === currentRunSequence && message)
+          state.progress = message;
       },
     });
     if (runSequence !== currentRunSequence) return;
@@ -1309,7 +1530,7 @@ function handleSavePng() {
     return;
   }
 
-  if (mode.value === 'sweep') {
+  if (mode.value === "sweep") {
     if (!sweepChartRef.value) return;
     const filename = `sweep-${sweepDimension.value}-${date}.png`;
     sweepChartRef.value.exportPng({
@@ -1328,25 +1549,28 @@ function handleSavePng() {
   const filename = selectedCycle.value
     ? `cycle-detail-${date}.png`
     : chartMode.value === "greeks"
-    ? `pnl-attribution-${date}.png`
-    : chartMode.value === "distribution"
-    ? `fair-value-distribution-${date}.png`
-    : chartMode.value === "hedge"
-    ? `hedge-performance-${date}.png`
-    : `backtest-${date}.png`;
+      ? `pnl-attribution-${date}.png`
+      : chartMode.value === "distribution"
+        ? `fair-value-distribution-${date}.png`
+        : chartMode.value === "vol-pnl"
+          ? `vol-sorted-pnl-${date}.png`
+          : chartMode.value === "hedge"
+            ? `hedge-performance-${date}.png`
+            : `backtest-${date}.png`;
   chartRef.value.exportPng({
     filename,
     scale: 4,
     title: chartTitle.value,
     subtitle: chartSubtitle.value,
     source: chartSourceSubtitle.value,
-    metrics: selectedCycle.value || chartMode.value !== "weekly"
-      ? []
-      : [
-          { label: "FINAL PNL", value: finalPnlValue.value },
-          { label: "SHARPE", value: sharpeValue.value },
-          { label: "MAX DRAWDOWN", value: maxDdValue.value, muted: true },
-        ],
+    metrics:
+      selectedCycle.value || chartMode.value !== "weekly"
+        ? []
+        : [
+            { label: "FINAL PNL", value: finalPnlValue.value },
+            { label: "SHARPE", value: sharpeValue.value },
+            { label: "MAX DRAWDOWN", value: maxDdValue.value, muted: true },
+          ],
   });
 }
 
@@ -1388,8 +1612,14 @@ function saveRvBoxplot(date = new Date().toISOString().slice(0, 10)) {
   });
 }
 
-function saveStandardizedVrHeatmap(date = new Date().toISOString().slice(0, 10)) {
-  if (!standardizedVrHeatmapRef.value || !standardizedVrHeatmapCells.value.length) return;
+function saveStandardizedVrHeatmap(
+  date = new Date().toISOString().slice(0, 10),
+) {
+  if (
+    !standardizedVrHeatmapRef.value ||
+    !standardizedVrHeatmapCells.value.length
+  )
+    return;
   standardizedVrHeatmapRef.value.exportPng({
     filename: `btc-variance-standardized-vr24-heatmap-${date}.png`,
     scale: 4,
@@ -1398,7 +1628,8 @@ function saveStandardizedVrHeatmap(date = new Date().toISOString().slice(0, 10))
 }
 
 function saveVarianceRatio(date = new Date().toISOString().slice(0, 10)) {
-  if (!varianceRatioRef.value || !varianceRatioAnalysis.value.sampleSize) return;
+  if (!varianceRatioRef.value || !varianceRatioAnalysis.value.sampleSize)
+    return;
   varianceRatioRef.value.exportPng({
     filename: `btc-forward-variance-ratio-raw-${serialAnchorWeekdayLabel.value.toLowerCase()}-${String(serialAnchorHour.value).padStart(2, "0")}utc-${date}.png`,
     scale: 4,
@@ -1418,10 +1649,18 @@ onMounted(loadBacktest);
 
       <div class="configPills">
         <!-- Instrument -->
-        <div class="pill instrumentPill" style="position: relative;" @click="toggleMenu('instrument')">
+        <div
+          class="pill instrumentPill"
+          style="position: relative"
+          @click="toggleMenu('instrument')"
+        >
           <span class="pillLabel">Instrument</span>
           <span class="pillValue">{{ strategyLabels.instrument }}</span>
-          <div v-if="openMenu === 'instrument'" class="dropdown instrument-dropdown" @click.stop>
+          <div
+            v-if="openMenu === 'instrument'"
+            class="dropdown instrument-dropdown"
+            @click.stop
+          >
             <div class="inst-field">
               <label class="inst-label">Side</label>
               <div class="inst-choices side-choices">
@@ -1458,7 +1697,10 @@ onMounted(loadBacktest);
                 <div
                   v-for="m in maturityOptions"
                   :key="m.value"
-                  :class="['inst-choice', { active: String(ui.maturityDays) === String(m.value) }]"
+                  :class="[
+                    'inst-choice',
+                    { active: String(ui.maturityDays) === String(m.value) },
+                  ]"
                   @click="selectMaturity(m.value)"
                 >
                   {{ m.label }}
@@ -1471,7 +1713,10 @@ onMounted(loadBacktest);
                 <div
                   v-for="d in DELTA_OPTIONS"
                   :key="d.value"
-                  :class="['inst-choice', { active: Number(ui.targetDelta) === d.value }]"
+                  :class="[
+                    'inst-choice',
+                    { active: Number(ui.targetDelta) === d.value },
+                  ]"
                   @click="ui.targetDelta = d.value"
                 >
                   {{ d.label }}
@@ -1482,13 +1727,19 @@ onMounted(loadBacktest);
               <label class="inst-label">Investment amount</label>
               <div class="inst-choices side-choices">
                 <div
-                  :class="['inst-choice', { active: ui.investmentMode === 'notional' }]"
+                  :class="[
+                    'inst-choice',
+                    { active: ui.investmentMode === 'notional' },
+                  ]"
                   @click="ui.investmentMode = 'notional'"
                 >
                   $100k notional
                 </div>
                 <div
-                  :class="['inst-choice', { active: ui.investmentMode === 'btc' }]"
+                  :class="[
+                    'inst-choice',
+                    { active: ui.investmentMode === 'btc' },
+                  ]"
                   @click="ui.investmentMode = 'btc'"
                 >
                   1 BTC
@@ -1499,34 +1750,58 @@ onMounted(loadBacktest);
         </div>
 
         <!-- Entry -->
-        <div class="pill entryPill" style="position: relative;" @click="toggleMenu('entry')">
+        <div
+          class="pill entryPill"
+          style="position: relative"
+          @click="toggleMenu('entry')"
+        >
           <span class="pillLabel">Entry</span>
           <span class="pillValue">{{ strategyLabels.entry }}</span>
-          <div v-if="openMenu === 'entry'" class="dropdown entry-dropdown" @click.stop>
-            <label class="inst-label" style="margin-bottom: 3px;">Entry days</label>
+          <div
+            v-if="openMenu === 'entry'"
+            class="dropdown entry-dropdown"
+            @click.stop
+          >
+            <label class="inst-label" style="margin-bottom: 3px"
+              >Entry days</label
+            >
             <div class="inst-choices weekday-choices">
               <div
                 v-for="w in ENTRY_WEEKDAY_OPTIONS"
                 :key="w.value"
-                :class="['inst-choice', { active: Number(ui.entryWeekday) === w.value }]"
+                :class="[
+                  'inst-choice',
+                  { active: Number(ui.entryWeekday) === w.value },
+                ]"
                 @click="ui.entryWeekday = w.value"
               >
-                {{ w.value === ENTRY_WEEKDAY_EVERY_DAY ? "Daily" : w.label.slice(0, 3) }}
+                {{
+                  w.value === ENTRY_WEEKDAY_EVERY_DAY
+                    ? "Daily"
+                    : w.label.slice(0, 3)
+                }}
               </div>
             </div>
             <div class="entry-picker">
               <div class="entry-picker__header">
-                <span class="entry-picker__day">{{ strategyLabels.weekday }}</span>
-                <span class="entry-picker__time">{{ String(ui.entryHourUtc).padStart(2,'0') }}:00</span>
+                <span class="entry-picker__day">{{
+                  strategyLabels.weekday
+                }}</span>
+                <span class="entry-picker__time"
+                  >{{ String(ui.entryHourUtc).padStart(2, "0") }}:00</span
+                >
               </div>
               <div class="hour-grid">
                 <button
                   v-for="h in 24"
-                  :key="h-1"
-                  :class="{ active: ui.entryHourUtc === h-1 }"
-                  @click="ui.entryHourUtc = h-1; openMenu = null"
+                  :key="h - 1"
+                  :class="{ active: ui.entryHourUtc === h - 1 }"
+                  @click="
+                    ui.entryHourUtc = h - 1;
+                    openMenu = null;
+                  "
                 >
-                  {{ String(h-1).padStart(2, '0') }}
+                  {{ String(h - 1).padStart(2, "0") }}
                 </button>
               </div>
             </div>
@@ -1534,7 +1809,11 @@ onMounted(loadBacktest);
         </div>
 
         <!-- Hedge -->
-        <div class="pill hedgePill" style="position: relative;" @click="toggleMenu('hedge')">
+        <div
+          class="pill hedgePill"
+          style="position: relative"
+          @click="toggleMenu('hedge')"
+        >
           <span class="pillLabel">Hedge</span>
           <span class="pillValue">{{ strategyLabels.hedge }}</span>
           <div v-if="openMenu === 'hedge'" class="dropdown" @click.stop>
@@ -1546,37 +1825,71 @@ onMounted(loadBacktest);
               </label>
             </div>
             <label class="freq-row__label" for="freq">Frequency</label>
-            <input 
-              id="freq" 
-              class="freq-slider" 
-              type="range" 
-              min="1" 
-              max="24" 
-              step="1" 
+            <input
+              id="freq"
+              class="freq-slider"
+              type="range"
+              min="1"
+              max="24"
+              step="1"
               :value="ui.hedgeIntervalHours"
               @input="updateHedgeInterval(Number($event.target.value))"
               :style="{ '--pct': hedgePct }"
               :disabled="!ui.hedgeEnabled"
               @change="openMenu = null"
-            >
+            />
             <div class="freq-footer">
               <span class="freq-footer__edge">1h</span>
-              <span class="freq-footer__value">Every {{ ui.hedgeIntervalHours }}h</span>
+              <span class="freq-footer__value"
+                >Every {{ ui.hedgeIntervalHours }}h</span
+              >
               <span class="freq-footer__edge">24h</span>
             </div>
           </div>
         </div>
 
         <!-- Exit -->
-        <div class="pill exitPill" style="position: relative;" @click="toggleMenu('exit')">
+        <div
+          class="pill exitPill"
+          style="position: relative"
+          @click="toggleMenu('exit')"
+        >
           <span class="pillLabel">Exit</span>
           <span class="pillValue">{{ strategyLabels.exit }}</span>
-          <div v-if="openMenu === 'exit'" class="dropdown exit-dropdown" @click.stop>
+          <div
+            v-if="openMenu === 'exit'"
+            class="dropdown exit-dropdown"
+            @click.stop
+          >
             <label class="freq-row__label">Close position</label>
             <div class="inst-choices exit-mode-choices">
-              <button type="button" :class="['inst-choice', { active: ui.exitMode === 'after_days' }]" @click="ui.exitMode = 'after_days'">Roll</button>
-              <button type="button" :class="['inst-choice', { active: ui.exitMode === 'expiry' }]" @click="ui.exitMode = 'expiry'">Option expiry</button>
-              <button type="button" :class="['inst-choice', { active: ui.exitMode === 'weekly_schedule' }]" @click="ui.exitMode = 'weekly_schedule'">Pick close</button>
+              <button
+                type="button"
+                :class="[
+                  'inst-choice',
+                  { active: ui.exitMode === 'after_days' },
+                ]"
+                @click="ui.exitMode = 'after_days'"
+              >
+                Roll
+              </button>
+              <button
+                type="button"
+                :class="['inst-choice', { active: ui.exitMode === 'expiry' }]"
+                @click="ui.exitMode = 'expiry'"
+              >
+                Option expiry
+              </button>
+              <button
+                type="button"
+                :class="[
+                  'inst-choice',
+                  { active: ui.exitMode === 'weekly_schedule' },
+                ]"
+                @click="ui.exitMode = 'weekly_schedule'"
+              >
+                Pick close
+              </button>
             </div>
             <p class="exit-mode-explanation">{{ exitModeExplanation }}</p>
             <div v-if="ui.exitMode === 'after_days'" class="exit-mode-detail">
@@ -1587,27 +1900,40 @@ onMounted(loadBacktest);
                   :key="days"
                   type="button"
                   :class="['inst-choice', { active: ui.exitHoldDays === days }]"
-                  @click="ui.exitHoldDays = days; openMenu = null"
+                  @click="
+                    ui.exitHoldDays = days;
+                    openMenu = null;
+                  "
                 >
                   {{ days }}D
                 </button>
               </div>
             </div>
-            <div v-else-if="ui.exitMode === 'weekly_schedule'" class="exit-mode-detail">
+            <div
+              v-else-if="ui.exitMode === 'weekly_schedule'"
+              class="exit-mode-detail"
+            >
               <label class="freq-row__label">Pick close day</label>
               <div class="inst-choices weekday-choices">
                 <button
                   v-for="weekday in WEEKDAY_OPTIONS"
                   :key="weekday.value"
                   type="button"
-                  :class="['inst-choice', { active: Number(ui.exitWeekday) === weekday.value }]"
+                  :class="[
+                    'inst-choice',
+                    { active: Number(ui.exitWeekday) === weekday.value },
+                  ]"
                   @click="ui.exitWeekday = weekday.value"
-                >{{ weekday.label.slice(0, 3) }}</button>
+                >
+                  {{ weekday.label.slice(0, 3) }}
+                </button>
               </div>
               <div class="entry-picker exit-time-picker">
                 <div class="entry-picker__header">
                   <span class="entry-picker__day">Pick close time</span>
-                  <span class="entry-picker__time">{{ String(ui.exitHourUtc).padStart(2, '0') }}:00</span>
+                  <span class="entry-picker__time"
+                    >{{ String(ui.exitHourUtc).padStart(2, "0") }}:00</span
+                  >
                 </div>
                 <div class="hour-grid">
                   <button
@@ -1615,8 +1941,13 @@ onMounted(loadBacktest);
                     :key="hour - 1"
                     type="button"
                     :class="{ active: ui.exitHourUtc === hour - 1 }"
-                    @click="ui.exitHourUtc = hour - 1; openMenu = null"
-                  >{{ String(hour - 1).padStart(2, '0') }}</button>
+                    @click="
+                      ui.exitHourUtc = hour - 1;
+                      openMenu = null;
+                    "
+                  >
+                    {{ String(hour - 1).padStart(2, "0") }}
+                  </button>
                 </div>
               </div>
             </div>
@@ -1630,21 +1961,76 @@ onMounted(loadBacktest);
         <div class="viewMenu">
           <button
             type="button"
-            :class="['segment', 'viewMenuTrigger', { active: mode === 'single' }]"
+            :class="[
+              'segment',
+              'viewMenuTrigger',
+              { active: mode === 'single' },
+            ]"
             aria-haspopup="menu"
             @click="mode !== 'single' && switchMode('single')"
           >
             <span>Single run</span>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
               <path d="M6 9l6 6 6-6" />
             </svg>
           </button>
           <div class="viewDropdown" role="menu" aria-label="Single run view">
             <div class="viewDropdownSurface">
-              <button type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'weekly' }" @click="selectSingleView('weekly')">PnL by cycle</button>
-              <button type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'greeks' }" @click="selectSingleView('greeks')">PnL attribution</button>
-              <button v-if="ui.hedgeEnabled" type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'hedge' }" @click="selectSingleView('hedge')">Hedge performance</button>
-              <button type="button" role="menuitem" :class="{ active: mode === 'single' && chartMode === 'distribution' }" @click="selectSingleView('distribution')">Distribution</button>
+              <button
+                type="button"
+                role="menuitem"
+                :class="{ active: mode === 'single' && chartMode === 'weekly' }"
+                @click="selectSingleView('weekly')"
+              >
+                PnL by cycle
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                :class="{ active: mode === 'single' && chartMode === 'greeks' }"
+                @click="selectSingleView('greeks')"
+              >
+                PnL attribution
+              </button>
+              <button
+                v-if="ui.hedgeEnabled"
+                type="button"
+                role="menuitem"
+                :class="{ active: mode === 'single' && chartMode === 'hedge' }"
+                @click="selectSingleView('hedge')"
+              >
+                Hedge performance
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                :class="{
+                  active: mode === 'single' && chartMode === 'distribution',
+                }"
+                @click="selectSingleView('distribution')"
+              >
+                Distribution
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                :class="{
+                  active: mode === 'single' && chartMode === 'vol-pnl',
+                }"
+                @click="selectSingleView('vol-pnl')"
+              >
+                Vol-sorted PnL
+              </button>
             </div>
           </div>
         </div>
@@ -1658,20 +2044,55 @@ onMounted(loadBacktest);
         <div class="viewMenu">
           <button
             type="button"
-            :class="['segment', 'viewMenuTrigger', { active: STUDY_MODES.includes(mode) }]"
+            :class="[
+              'segment',
+              'viewMenuTrigger',
+              { active: STUDY_MODES.includes(mode) },
+            ]"
             aria-haspopup="menu"
             @click="!STUDY_MODES.includes(mode) && switchMode('rv')"
           >
             <span>Study</span>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
               <path d="M6 9l6 6 6-6" />
             </svg>
           </button>
           <div class="viewDropdown" role="menu" aria-label="Study view">
             <div class="viewDropdownSurface">
-              <button type="button" role="menuitem" :class="{ active: mode === 'rv' }" @click="selectStudy('rv')">RV</button>
-              <button type="button" role="menuitem" :class="{ active: mode === 'iv' }" @click="selectStudy('iv')">IV</button>
-              <button type="button" role="menuitem" :class="{ active: mode === 'iv-rv' }" @click="selectStudy('iv-rv')">IV-RV</button>
+              <button
+                type="button"
+                role="menuitem"
+                :class="{ active: mode === 'rv' }"
+                @click="selectStudy('rv')"
+              >
+                RV
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                :class="{ active: mode === 'iv' }"
+                @click="selectStudy('iv')"
+              >
+                IV
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                :class="{ active: mode === 'iv-rv' }"
+                @click="selectStudy('iv-rv')"
+              >
+                IV-RV
+              </button>
             </div>
           </div>
         </div>
@@ -1685,9 +2106,24 @@ onMounted(loadBacktest);
           title="Export one attribution-ready row per closed cycle"
           @click="handleExportCsv"
         >
-          {{ csvExporting ? 'Preparing CSV…' : 'Export CSV' }}
+          {{ csvExporting ? "Preparing CSV…" : "Export CSV" }}
         </button>
-        <button class="saveButton topSaveButton" type="button" :disabled="mode === 'single' ? (cycleDetailLoading || attributionLoading) : mode === 'sweep' ? (sweepRunning || !sweepResults.length) : mode === 'rv' ? (ivRvLoading || !rvWeekdayInsights) : mode === 'iv' ? (ivRvLoading || !ivHeatmapInsights) : (ivRvLoading || !ivRvRows.length)" @click="handleSavePng">
+        <button
+          class="saveButton topSaveButton"
+          type="button"
+          :disabled="
+            mode === 'single'
+              ? cycleDetailLoading || attributionLoading
+              : mode === 'sweep'
+                ? sweepRunning || !sweepResults.length
+                : mode === 'rv'
+                  ? ivRvLoading || !rvWeekdayInsights
+                  : mode === 'iv'
+                    ? ivRvLoading || !ivHeatmapInsights
+                    : ivRvLoading || !ivRvRows.length
+          "
+          @click="handleSavePng"
+        >
           Save PNG
         </button>
       </div>
@@ -1697,31 +2133,46 @@ onMounted(loadBacktest);
       <!-- Left metrics column -->
       <div class="metricsColumn">
         <template v-if="mode === 'single'">
-        <div class="metric">
-          <div class="metricValue">{{ finalPnlValue }}</div>
-          <div class="metricLabel">FINAL PNL</div>
-        </div>
-        <div class="metric">
-          <div class="metricValue">{{ sharpeValue }}</div>
-          <div class="metricLabel">SHARPE</div>
-        </div>
-        <div class="metric">
-          <div class="metricValue maxdd">{{ maxDdValue }}</div>
-          <div class="metricLabel">MAX DRAWDOWN</div>
-        </div>
+          <div class="metric">
+            <div class="metricValue">{{ finalPnlValue }}</div>
+            <div class="metricLabel">FINAL PNL</div>
+          </div>
+          <div class="metric">
+            <div class="metricValue">{{ sharpeValue }}</div>
+            <div class="metricLabel">SHARPE</div>
+          </div>
+          <div class="metric">
+            <div class="metricValue maxdd">{{ maxDdValue }}</div>
+            <div class="metricLabel">MAX DRAWDOWN</div>
+          </div>
         </template>
         <template v-else-if="mode === 'sweep' && sweepInsights">
           <div class="metric">
             <div class="metricValue">{{ sweepInsights.bestPnl.label }}</div>
-            <div class="metricLabel">BEST PNL · {{ formatUsd.format(sweepInsights.bestPnl.pnl) }}</div>
+            <div class="metricLabel">
+              BEST PNL · {{ formatUsd.format(sweepInsights.bestPnl.pnl) }}
+            </div>
           </div>
           <div class="metric">
-            <div class="metricValue">{{ sweepInsights.bestSharpe?.label || '—' }}</div>
-            <div class="metricLabel">BEST SHARPE · {{ sweepInsights.bestSharpe ? formatNumber.format(sweepInsights.bestSharpe.sharpe) : '—' }}</div>
+            <div class="metricValue">
+              {{ sweepInsights.bestSharpe?.label || "—" }}
+            </div>
+            <div class="metricLabel">
+              BEST SHARPE ·
+              {{
+                sweepInsights.bestSharpe
+                  ? formatNumber.format(sweepInsights.bestSharpe.sharpe)
+                  : "—"
+              }}
+            </div>
           </div>
           <div class="metric">
-            <div class="metricValue">{{ sweepInsights.profitable }}/{{ sweepInsights.total }}</div>
-            <div class="metricLabel">PROFIT · {{ formatUsd.format(sweepInsights.medianPnl) }}</div>
+            <div class="metricValue">
+              {{ sweepInsights.profitable }}/{{ sweepInsights.total }}
+            </div>
+            <div class="metricLabel">
+              PROFIT · {{ formatUsd.format(sweepInsights.medianPnl) }}
+            </div>
           </div>
         </template>
         <template v-else-if="mode === 'iv-rv' && ivRvStats">
@@ -1740,30 +2191,52 @@ onMounted(loadBacktest);
         </template>
         <template v-else-if="mode === 'rv' && rvWeekdayInsights">
           <div class="metric">
-            <div class="metricValue">{{ formatVol(rvWeekdayInsights.average) }}</div>
+            <div class="metricValue">
+              {{ formatVol(rvWeekdayInsights.average) }}
+            </div>
             <div class="metricLabel">AVERAGE HOURLY RV</div>
           </div>
           <div class="metric">
             <div class="metricValue">{{ rvWeekdayInsights.lowest.label }}</div>
-            <div class="metricLabel">LOWEST MEDIAN · {{ formatVol(rvWeekdayInsights.lowest.median) }}</div>
+            <div class="metricLabel">
+              LOWEST MEDIAN · {{ formatVol(rvWeekdayInsights.lowest.median) }}
+            </div>
           </div>
           <div class="metric">
             <div class="metricValue">{{ rvWeekdayInsights.highest.label }}</div>
-            <div class="metricLabel">HIGHEST MEDIAN · {{ formatVol(rvWeekdayInsights.highest.median) }}</div>
+            <div class="metricLabel">
+              HIGHEST MEDIAN · {{ formatVol(rvWeekdayInsights.highest.median) }}
+            </div>
           </div>
         </template>
         <template v-else-if="mode === 'iv' && ivHeatmapInsights">
           <div class="metric">
-            <div class="metricValue">{{ formatVol(ivHeatmapInsights.average) }}</div>
-            <div class="metricLabel">{{ ivHeatmapMetric === 'median' ? 'MEDIAN' : 'AVERAGE' }} {{ ivMeasureLabel }}</div>
+            <div class="metricValue">
+              {{ formatVol(ivHeatmapInsights.average) }}
+            </div>
+            <div class="metricLabel">
+              {{ ivHeatmapMetric === "median" ? "MEDIAN" : "AVERAGE" }}
+              {{ ivMeasureLabel }}
+            </div>
           </div>
           <div class="metric">
-            <div class="metricValue">{{ ivHeatmapInsights.lowest.weekdayLabel }} {{ String(ivHeatmapInsights.lowest.hour).padStart(2, '0') }}:00</div>
-            <div class="metricLabel">LOWEST BUCKET · {{ formatVol(ivHeatmapInsights.lowest.average) }}</div>
+            <div class="metricValue">
+              {{ ivHeatmapInsights.lowest.weekdayLabel }}
+              {{ String(ivHeatmapInsights.lowest.hour).padStart(2, "0") }}:00
+            </div>
+            <div class="metricLabel">
+              LOWEST BUCKET · {{ formatVol(ivHeatmapInsights.lowest.average) }}
+            </div>
           </div>
           <div class="metric">
-            <div class="metricValue">{{ ivHeatmapInsights.highest.weekdayLabel }} {{ String(ivHeatmapInsights.highest.hour).padStart(2, '0') }}:00</div>
-            <div class="metricLabel">HIGHEST BUCKET · {{ formatVol(ivHeatmapInsights.highest.average) }}</div>
+            <div class="metricValue">
+              {{ ivHeatmapInsights.highest.weekdayLabel }}
+              {{ String(ivHeatmapInsights.highest.hour).padStart(2, "0") }}:00
+            </div>
+            <div class="metricLabel">
+              HIGHEST BUCKET ·
+              {{ formatVol(ivHeatmapInsights.highest.average) }}
+            </div>
           </div>
         </template>
       </div>
@@ -1779,7 +2252,16 @@ onMounted(loadBacktest);
               @click="closeCycleDetail"
               title="Back to cycles"
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.25"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
                 <path d="M15 18l-6-6 6-6" />
               </svg>
             </button>
@@ -1794,10 +2276,20 @@ onMounted(loadBacktest);
         <div v-else-if="mode === 'sweep'" class="sweepHeader">
           <div>
             <div class="chartTitle">Parameter sweep</div>
-            <div v-if="!sweepResults.length && !sweepRunning" class="chartSubtitle">Compare one dimension while holding the current strategy settings fixed.</div>
+            <div
+              v-if="!sweepResults.length && !sweepRunning"
+              class="chartSubtitle"
+            >
+              Compare one dimension while holding the current strategy settings
+              fixed.
+            </div>
           </div>
           <div class="sweepControls">
-            <div class="sweepDimensionControl" role="group" aria-label="Sweep dimension">
+            <div
+              class="sweepDimensionControl"
+              role="group"
+              aria-label="Sweep dimension"
+            >
               <button
                 v-for="dimension in availableSweepDimensions"
                 :key="dimension.value"
@@ -1805,14 +2297,19 @@ onMounted(loadBacktest);
                 :class="{ active: sweepDimension === dimension.value }"
                 :disabled="sweepRunning"
                 @click="sweepDimension = dimension.value"
-              >{{ dimension.label }}</button>
+              >
+                {{ dimension.label }}
+              </button>
             </div>
           </div>
         </div>
         <div v-else-if="mode === 'iv-rv'" class="sweepHeader">
           <div>
             <div class="chartTitle">BTC ATM IV vs Parkinson RV</div>
-            <div class="chartSubtitle">Hourly source data · RV uses the {{ ivRvAlignForward ? 'following' : 'trailing' }} tenor window</div>
+            <div class="chartSubtitle">
+              Hourly source data · RV uses the
+              {{ ivRvAlignForward ? "following" : "trailing" }} tenor window
+            </div>
           </div>
           <div class="ivRvRangeInline">
             <span class="ivRvRangeLabel">{{ ivRvRangeLabel }}</span>
@@ -1820,25 +2317,86 @@ onMounted(loadBacktest);
               <div class="dateRangeSlider" :style="ivRvRangeStyle">
                 <span class="dateRangeTrack" aria-hidden="true"></span>
                 <span class="dateRangeSelection" aria-hidden="true"></span>
-                <input v-model.number="ivRvRangeStartModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="Chart period start" />
-                <input v-model.number="ivRvRangeEndModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="Chart period end" />
+                <input
+                  v-model.number="ivRvRangeStartModel"
+                  class="dateRangeInput"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  aria-label="Chart period start"
+                />
+                <input
+                  v-model.number="ivRvRangeEndModel"
+                  class="dateRangeInput"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  aria-label="Chart period end"
+                />
               </div>
             </div>
           </div>
           <div class="sweepControls">
-            <div class="sweepDimensionControl" role="group" aria-label="Volatility tenor">
-              <button v-for="tenor in IV_RV_TENORS" :key="tenor" type="button" :class="{ active: ivRvTenor === tenor }" @click="ivRvTenor = tenor">{{ tenor }}D</button>
+            <div
+              class="sweepDimensionControl"
+              role="group"
+              aria-label="Volatility tenor"
+            >
+              <button
+                v-for="tenor in IV_RV_TENORS"
+                :key="tenor"
+                type="button"
+                :class="{ active: ivRvTenor === tenor }"
+                @click="ivRvTenor = tenor"
+              >
+                {{ tenor }}D
+              </button>
             </div>
-            <div class="sweepDimensionControl" role="group" aria-label="Chart sampling resolution">
-              <button v-for="resolution in IV_RV_RESOLUTIONS" :key="resolution" type="button" :class="{ active: ivRvResolution === resolution }" @click="ivRvResolution = resolution">{{ resolution }}h</button>
+            <div
+              class="sweepDimensionControl"
+              role="group"
+              aria-label="Chart sampling resolution"
+            >
+              <button
+                v-for="resolution in IV_RV_RESOLUTIONS"
+                :key="resolution"
+                type="button"
+                :class="{ active: ivRvResolution === resolution }"
+                @click="ivRvResolution = resolution"
+              >
+                {{ resolution }}h
+              </button>
             </div>
-            <div class="sweepDimensionControl" role="group" aria-label="Chart overlays">
-              <button type="button" :class="{ active: ivRvShowIndex }" :aria-pressed="ivRvShowIndex" @click="ivRvShowIndex = !ivRvShowIndex">Index</button>
-              <button type="button" :class="{ active: ivRvAlignForward }" :aria-pressed="ivRvAlignForward" title="Compare each IV point with realized volatility over the following tenor" @click="ivRvAlignForward = !ivRvAlignForward">Shift RV</button>
+            <div
+              class="sweepDimensionControl"
+              role="group"
+              aria-label="Chart overlays"
+            >
+              <button
+                type="button"
+                :class="{ active: ivRvShowIndex }"
+                :aria-pressed="ivRvShowIndex"
+                @click="ivRvShowIndex = !ivRvShowIndex"
+              >
+                Index
+              </button>
+              <button
+                type="button"
+                :class="{ active: ivRvAlignForward }"
+                :aria-pressed="ivRvAlignForward"
+                title="Compare each IV point with realized volatility over the following tenor"
+                @click="ivRvAlignForward = !ivRvAlignForward"
+              >
+                Shift RV
+              </button>
             </div>
           </div>
         </div>
-        <div v-if="state.error" class="cycleDetailState error">{{ state.error }}</div>
+        <div v-if="state.error" class="cycleDetailState error">
+          {{ state.error }}
+        </div>
         <div
           v-else-if="mode === 'single' && state.progress && !result"
           class="cycleDetailState"
@@ -1846,35 +2404,103 @@ onMounted(loadBacktest);
           {{ state.progress }}
         </div>
         <WeeklyBacktestChart
-          v-else-if="mode === 'single' && !selectedCycle && chartMode === 'weekly'"
+          v-else-if="
+            mode === 'single' && !selectedCycle && chartMode === 'weekly'
+          "
           ref="chartRef"
           :rows="cycleRows"
           :design-spec="true"
           @select="handleCycleSelect"
         />
         <HedgePerformanceChart
-          v-else-if="mode === 'single' && !selectedCycle && chartMode === 'hedge'"
+          v-else-if="
+            mode === 'single' && !selectedCycle && chartMode === 'hedge'
+          "
           ref="chartRef"
           :rows="cycleRows"
           @select="handleCycleSelect"
         />
-        <div v-else-if="mode === 'single' && !selectedCycle && chartMode === 'greeks' && attributionLoading" class="cycleDetailState">Calculating PnL attribution…</div>
-        <div v-else-if="mode === 'single' && !selectedCycle && chartMode === 'greeks' && attributionError" class="cycleDetailState error">{{ attributionError }}</div>
+        <div
+          v-else-if="
+            mode === 'single' &&
+            !selectedCycle &&
+            chartMode === 'greeks' &&
+            attributionLoading
+          "
+          class="cycleDetailState"
+        >
+          Calculating PnL attribution…
+        </div>
+        <div
+          v-else-if="
+            mode === 'single' &&
+            !selectedCycle &&
+            chartMode === 'greeks' &&
+            attributionError
+          "
+          class="cycleDetailState error"
+        >
+          {{ attributionError }}
+        </div>
         <GreekPnlChart
-          v-else-if="mode === 'single' && !selectedCycle && chartMode === 'greeks'"
+          v-else-if="
+            mode === 'single' && !selectedCycle && chartMode === 'greeks'
+          "
           ref="chartRef"
           :rows="attributionRows"
           :cycle-rows="attributionCycleRows"
         />
         <FairValueDistributionPanel
-          v-else-if="mode === 'single' && !selectedCycle && chartMode === 'distribution'"
+          v-else-if="
+            mode === 'single' && !selectedCycle && chartMode === 'distribution'
+          "
           ref="chartRef"
           v-model:view-mode="distributionViewMode"
           :rows="cycleRows"
           :hedge-enabled="ui.hedgeEnabled"
         />
-        <div v-else-if="mode === 'single' && cycleDetailLoading" class="cycleDetailState">Loading hourly detail…</div>
-        <div v-else-if="mode === 'single' && cycleDetailError" class="cycleDetailState error">{{ cycleDetailError }}</div>
+        <div
+          v-else-if="
+            mode === 'single' &&
+            !selectedCycle &&
+            chartMode === 'vol-pnl' &&
+            ivRvLoading
+          "
+          class="cycleDetailState"
+        >
+          Loading trailing realized volatility…
+        </div>
+        <div
+          v-else-if="
+            mode === 'single' &&
+            !selectedCycle &&
+            chartMode === 'vol-pnl' &&
+            ivRvError
+          "
+          class="cycleDetailState error"
+        >
+          {{ ivRvError }}
+        </div>
+        <VolPnlBarChart
+          v-else-if="
+            mode === 'single' && !selectedCycle && chartMode === 'vol-pnl'
+          "
+          ref="chartRef"
+          :rows="volPnlCycleRows"
+          @select="handleCycleSelect"
+        />
+        <div
+          v-else-if="mode === 'single' && cycleDetailLoading"
+          class="cycleDetailState"
+        >
+          Loading hourly detail…
+        </div>
+        <div
+          v-else-if="mode === 'single' && cycleDetailError"
+          class="cycleDetailState error"
+        >
+          {{ cycleDetailError }}
+        </div>
         <CycleDetailChart
           v-else-if="mode === 'single'"
           ref="chartRef"
@@ -1884,7 +2510,9 @@ onMounted(loadBacktest);
         />
 
         <div v-else-if="mode === 'sweep'" class="sweepPanel">
-          <div v-if="sweepRunning && !sweepResults.length" class="sweepEmpty">{{ sweepProgress || 'Preparing sweep…' }}</div>
+          <div v-if="sweepRunning && !sweepResults.length" class="sweepEmpty">
+            {{ sweepProgress || "Preparing sweep…" }}
+          </div>
 
           <SweepResultsChart
             v-else-if="sweepResults.length"
@@ -1895,11 +2523,19 @@ onMounted(loadBacktest);
             :dimension-label="sweepDimensionLabel"
             @select="applySweepResult"
           />
-          <div v-else class="sweepEmpty">No sweep results are available. Results include PnL, Sharpe, drawdown, and sample size.</div>
+          <div v-else class="sweepEmpty">
+            No sweep results are available. Results include PnL, Sharpe,
+            drawdown, and sample size.
+          </div>
           <div v-if="sweepTiming" class="sweepPerformance">
-            {{ sweepTiming.cells }} runs in {{ (sweepTiming.totalMs / 1000).toFixed(2) }}s
-            · strategy {{ (sweepTiming.runMs / 1000).toFixed(2) }}s
-            · {{ sweepTiming.reusedPreparedData ? 'reused loaded data' : `load ${(sweepTiming.loadMs / 1000).toFixed(2)}s · prepare ${(sweepTiming.prepareMs / 1000).toFixed(2)}s` }}
+            {{ sweepTiming.cells }} runs in
+            {{ (sweepTiming.totalMs / 1000).toFixed(2) }}s · strategy
+            {{ (sweepTiming.runMs / 1000).toFixed(2) }}s ·
+            {{
+              sweepTiming.reusedPreparedData
+                ? "reused loaded data"
+                : `load ${(sweepTiming.loadMs / 1000).toFixed(2)}s · prepare ${(sweepTiming.prepareMs / 1000).toFixed(2)}s`
+            }}
           </div>
         </div>
 
@@ -1919,65 +2555,126 @@ onMounted(loadBacktest);
           <div v-if="ivRvError" class="sweepEmpty">{{ ivRvError }}</div>
           <div v-else class="rvCombinedCharts">
             <section class="rvChartSection rvHeatmapSection">
-            <div class="rvSectionHeader">
-              <div class="sweepDimensionControl" role="group" aria-label="IV tenor">
-                <button
-                  v-for="tenor in IV_RV_TENORS"
-                  :key="tenor"
-                  type="button"
-                  :class="{ active: ivRvTenor === tenor }"
-                  @click="ivRvTenor = tenor"
-                >{{ tenor }}D</button>
-              </div>
-              <div class="ivRvRangeInline rvHeatmapRange">
-                <span class="ivRvRangeLabel">{{ ivRangeLabel }}</span>
-                <div class="ivRvRangeControl">
-                  <div class="dateRangeSlider" :style="ivRangeStyle">
-                    <span class="dateRangeTrack" aria-hidden="true"></span>
-                    <span class="dateRangeSelection" aria-hidden="true"></span>
-                    <input v-model.number="ivRangeStartModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="IV data period start" />
-                    <input v-model.number="ivRangeEndModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="IV data period end" />
+              <div class="rvSectionHeader">
+                <div
+                  class="sweepDimensionControl"
+                  role="group"
+                  aria-label="IV tenor"
+                >
+                  <button
+                    v-for="tenor in IV_RV_TENORS"
+                    :key="tenor"
+                    type="button"
+                    :class="{ active: ivRvTenor === tenor }"
+                    @click="ivRvTenor = tenor"
+                  >
+                    {{ tenor }}D
+                  </button>
+                </div>
+                <div class="ivRvRangeInline rvHeatmapRange">
+                  <span class="ivRvRangeLabel">{{ ivRangeLabel }}</span>
+                  <div class="ivRvRangeControl">
+                    <div class="dateRangeSlider" :style="ivRangeStyle">
+                      <span class="dateRangeTrack" aria-hidden="true"></span>
+                      <span
+                        class="dateRangeSelection"
+                        aria-hidden="true"
+                      ></span>
+                      <input
+                        v-model.number="ivRangeStartModel"
+                        class="dateRangeInput"
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        aria-label="IV data period start"
+                      />
+                      <input
+                        v-model.number="ivRangeEndModel"
+                        class="dateRangeInput"
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        aria-label="IV data period end"
+                      />
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div class="rvSectionActions">
-                <div class="sweepDimensionControl heatmapMetricControl" role="group" aria-label="IV heatmap metric">
-                  <button type="button" :class="{ active: ivHeatmapMetric === 'average' }" @click="ivHeatmapMetric = 'average'">Avg</button>
-                  <button type="button" :class="{ active: ivHeatmapMetric === 'median' }" @click="ivHeatmapMetric = 'median'">Median</button>
+                <div class="rvSectionActions">
+                  <div
+                    class="sweepDimensionControl heatmapMetricControl"
+                    role="group"
+                    aria-label="IV heatmap metric"
+                  >
+                    <button
+                      type="button"
+                      :class="{ active: ivHeatmapMetric === 'average' }"
+                      @click="ivHeatmapMetric = 'average'"
+                    >
+                      Avg
+                    </button>
+                    <button
+                      type="button"
+                      :class="{ active: ivHeatmapMetric === 'median' }"
+                      @click="ivHeatmapMetric = 'median'"
+                    >
+                      Median
+                    </button>
+                  </div>
+                  <button
+                    class="rvScreenshotButton rvDataLabelsButton"
+                    :class="{ active: showIvHeatmapDataLabels }"
+                    type="button"
+                    :aria-pressed="showIvHeatmapDataLabels"
+                    title="Show IV values in each heatmap cell"
+                    @click="showIvHeatmapDataLabels = !showIvHeatmapDataLabels"
+                  >
+                    Data labels
+                  </button>
+                  <button
+                    class="rvScreenshotButton"
+                    type="button"
+                    :disabled="ivRvLoading || !ivHeatmapInsights"
+                    title="Save IV heatmap as PNG"
+                    @click="saveIvHeatmap()"
+                  >
+                    <svg
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z"
+                      />
+                      <circle cx="12" cy="13" r="4" />
+                    </svg>
+                    Screenshot
+                  </button>
                 </div>
-                <button
-                  class="rvScreenshotButton rvDataLabelsButton"
-                  :class="{ active: showIvHeatmapDataLabels }"
-                  type="button"
-                  :aria-pressed="showIvHeatmapDataLabels"
-                  title="Show IV values in each heatmap cell"
-                  @click="showIvHeatmapDataLabels = !showIvHeatmapDataLabels"
-                >
-                  Data labels
-                </button>
-                <button class="rvScreenshotButton" type="button" :disabled="ivRvLoading || !ivHeatmapInsights" title="Save IV heatmap as PNG" @click="saveIvHeatmap()">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
-                    <circle cx="12" cy="13" r="4" />
-                  </svg>
-                  Screenshot
-                </button>
               </div>
-            </div>
-            <WeekdayHourHeatmap
-              ref="ivChartRef"
-              :cells="ivHeatmapCells"
-              :loading="ivRvLoading"
-              :aggregate-label="ivHeatmapMetric === 'median' ? 'Median' : 'Mean'"
-              :legend-label="`${ivHeatmapMetric === 'median' ? 'Median' : 'Avg'} ${ivRvTenor}D IV`"
-              loading-message="Loading hourly implied volatility…"
-              empty-message="No hourly implied-volatility observations."
-              :aria-label="`${ivMeasureLabel} by weekday and UTC hour`"
-              gradient-id="iv-hourly-red-gradient"
-              :show-data-labels="showIvHeatmapDataLabels"
-              :chart-title="`BTC ${ivMeasureLabel.toUpperCase()} · WEEKDAY × UTC HOUR`"
-              :methodology="ivHeatmapMethodology"
-            />
+              <WeekdayHourHeatmap
+                ref="ivChartRef"
+                :cells="ivHeatmapCells"
+                :loading="ivRvLoading"
+                :aggregate-label="
+                  ivHeatmapMetric === 'median' ? 'Median' : 'Mean'
+                "
+                :legend-label="`${ivHeatmapMetric === 'median' ? 'Median' : 'Avg'} ${ivRvTenor}D IV`"
+                loading-message="Loading hourly implied volatility…"
+                empty-message="No hourly implied-volatility observations."
+                :aria-label="`${ivMeasureLabel} by weekday and UTC hour`"
+                gradient-id="iv-hourly-red-gradient"
+                :show-data-labels="showIvHeatmapDataLabels"
+                :chart-title="`BTC ${ivMeasureLabel.toUpperCase()} · WEEKDAY × UTC HOUR`"
+                :methodology="ivHeatmapMethodology"
+              />
             </section>
             <section class="rvChartSection rvBoxplotSection">
               <div class="rvBoxplotToolbar">
@@ -1996,8 +2693,20 @@ onMounted(loadBacktest);
                     title="Save weekday IV boxplot as PNG"
                     @click="saveIvBoxplot()"
                   >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                    <svg
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z"
+                      />
                       <circle cx="12" cy="13" r="4" />
                     </svg>
                     Screenshot
@@ -2029,16 +2738,51 @@ onMounted(loadBacktest);
                   <div class="ivRvRangeControl">
                     <div class="dateRangeSlider" :style="rvRangeStyle">
                       <span class="dateRangeTrack" aria-hidden="true"></span>
-                      <span class="dateRangeSelection" aria-hidden="true"></span>
-                      <input v-model.number="rvRangeStartModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period start" />
-                      <input v-model.number="rvRangeEndModel" class="dateRangeInput" type="range" min="0" max="100" step="0.1" aria-label="RV data period end" />
+                      <span
+                        class="dateRangeSelection"
+                        aria-hidden="true"
+                      ></span>
+                      <input
+                        v-model.number="rvRangeStartModel"
+                        class="dateRangeInput"
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        aria-label="RV data period start"
+                      />
+                      <input
+                        v-model.number="rvRangeEndModel"
+                        class="dateRangeInput"
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        aria-label="RV data period end"
+                      />
                     </div>
                   </div>
                 </div>
                 <div class="rvSectionActions">
-                  <div class="sweepDimensionControl heatmapMetricControl" role="group" aria-label="RV heatmap metric">
-                    <button type="button" :class="{ active: rvHeatmapMetric === 'average' }" @click="rvHeatmapMetric = 'average'">Avg</button>
-                    <button type="button" :class="{ active: rvHeatmapMetric === 'median' }" @click="rvHeatmapMetric = 'median'">Median</button>
+                  <div
+                    class="sweepDimensionControl heatmapMetricControl"
+                    role="group"
+                    aria-label="RV heatmap metric"
+                  >
+                    <button
+                      type="button"
+                      :class="{ active: rvHeatmapMetric === 'average' }"
+                      @click="rvHeatmapMetric = 'average'"
+                    >
+                      Avg
+                    </button>
+                    <button
+                      type="button"
+                      :class="{ active: rvHeatmapMetric === 'median' }"
+                      @click="rvHeatmapMetric = 'median'"
+                    >
+                      Median
+                    </button>
                   </div>
                   <button
                     class="rvScreenshotButton rvDataLabelsButton"
@@ -2050,9 +2794,27 @@ onMounted(loadBacktest);
                   >
                     Data labels
                   </button>
-                  <button class="rvScreenshotButton" type="button" :disabled="ivRvLoading || !rvWeekdayInsights" title="Save heatmap as PNG" @click="saveRvHeatmap()">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                  <button
+                    class="rvScreenshotButton"
+                    type="button"
+                    :disabled="ivRvLoading || !rvWeekdayInsights"
+                    title="Save heatmap as PNG"
+                    @click="saveRvHeatmap()"
+                  >
+                    <svg
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z"
+                      />
                       <circle cx="12" cy="13" r="4" />
                     </svg>
                     Screenshot
@@ -2063,8 +2825,14 @@ onMounted(loadBacktest);
                 ref="rvChartRef"
                 :cells="rvHeatmapCells"
                 :loading="ivRvLoading"
-                :aggregate-label="rvHeatmapMetric === 'median' ? 'Median' : 'Mean'"
-                :legend-label="rvHeatmapMetric === 'median' ? 'Median RV (ann.)' : 'Avg RV (ann.)'"
+                :aggregate-label="
+                  rvHeatmapMetric === 'median' ? 'Median' : 'Mean'
+                "
+                :legend-label="
+                  rvHeatmapMetric === 'median'
+                    ? 'Median RV (ann.)'
+                    : 'Avg RV (ann.)'
+                "
                 :measure-label="`${rvHeatmapMetric === 'median' ? 'Median' : 'Mean'} annualized hourly RV`"
                 :show-data-labels="showHeatmapDataLabels"
                 chart-title="HOURLY REALIZED VOLATILITY · WEEKDAY × UTC HOUR"
@@ -2088,8 +2856,20 @@ onMounted(loadBacktest);
                     title="Save weekday RV boxplot as PNG"
                     @click="saveRvBoxplot()"
                   >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                    <svg
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z"
+                      />
                       <circle cx="12" cy="13" r="4" />
                     </svg>
                     Screenshot
@@ -2108,12 +2888,26 @@ onMounted(loadBacktest);
                   <button
                     class="rvScreenshotButton"
                     type="button"
-                    :disabled="ivRvLoading || !standardizedVrHeatmapCells.length"
+                    :disabled="
+                      ivRvLoading || !standardizedVrHeatmapCells.length
+                    "
                     title="Save variance-standardized VR(24) heatmap as PNG"
                     @click="saveStandardizedVrHeatmap()"
                   >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                      <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                    <svg
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z"
+                      />
                       <circle cx="12" cy="13" r="4" />
                     </svg>
                     Screenshot
@@ -2145,12 +2939,26 @@ onMounted(loadBacktest);
                     <button
                       class="rvScreenshotButton"
                       type="button"
-                      :disabled="ivRvLoading || !varianceRatioAnalysis.sampleSize"
+                      :disabled="
+                        ivRvLoading || !varianceRatioAnalysis.sampleSize
+                      "
                       title="Save variance-ratio analysis as PNG"
                       @click="saveVarianceRatio()"
                     >
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z" />
+                      <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z"
+                        />
                         <circle cx="12" cy="13" r="4" />
                       </svg>
                       Screenshot
@@ -2166,7 +2974,6 @@ onMounted(loadBacktest);
             </section>
           </div>
         </div>
-
       </div>
     </div>
   </main>
@@ -2195,7 +3002,11 @@ onMounted(loadBacktest);
   min-width: 320px;
   background: var(--color-bg);
   color: var(--color-text);
-  font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  font-family:
+    "Helvetica Neue",
+    Helvetica,
+    -apple-system,
+    sans-serif;
   color-scheme: dark;
 }
 
@@ -2228,7 +3039,7 @@ onMounted(loadBacktest);
 .divider {
   width: 1px;
   height: 20px;
-  background: rgba(255,255,255,0.08);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .configPills {
@@ -2236,10 +3047,18 @@ onMounted(loadBacktest);
   gap: 8px;
 }
 
-.instrumentPill { order: 0; }
-.hedgePill { order: 1; }
-.entryPill { order: 2; }
-.exitPill { order: 3; }
+.instrumentPill {
+  order: 0;
+}
+.hedgePill {
+  order: 1;
+}
+.entryPill {
+  order: 2;
+}
+.exitPill {
+  order: 3;
+}
 
 .pill {
   display: flex;
@@ -2289,7 +3108,7 @@ onMounted(loadBacktest);
 
 /* In dropdowns, no borders on inner inputs */
 .dropdown select {
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   background: var(--color-bg);
   color: var(--color-text);
   padding: 6px 8px;
@@ -2324,18 +3143,16 @@ onMounted(loadBacktest);
   color: #565c63;
 }
 
-
-
 .dropdown {
   position: absolute;
   top: 100%;
   left: 0;
   min-width: 340px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
   background: #0a0b0e;
   padding: 10px;
   border-radius: 6px;
-  border: 1px solid rgba(255,255,255,0.15);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   z-index: 10;
 }
 
@@ -2374,14 +3191,15 @@ onMounted(loadBacktest);
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 18px;
   padding: 10px;
-  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.8),
-              0 0 0 1px rgba(255, 255, 255, 0.02);
+  box-shadow:
+    0 24px 60px -12px rgba(0, 0, 0, 0.8),
+    0 0 0 1px rgba(255, 255, 255, 0.02);
 }
 
 .exit-dropdown {
   width: 340px;
   background: #0f0f12;
-  border-color: rgba(255,255,255,0.09);
+  border-color: rgba(255, 255, 255, 0.09);
   border-radius: 12px;
 }
 
@@ -2461,7 +3279,9 @@ onMounted(loadBacktest);
   font-size: 12px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  transition: background 0.12s, border-color 0.12s;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
 }
 
 .hour-grid button:hover {
@@ -2572,7 +3392,7 @@ onMounted(loadBacktest);
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0;
   overflow: hidden;
-  border: 1px solid rgba(255,255,255,0.18);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 4px;
 }
 .structure-choices .inst-choice {
@@ -2583,11 +3403,11 @@ onMounted(loadBacktest);
 .structure-choices .inst-choice:nth-child(3n + 2),
 .structure-choices .inst-choice:nth-child(3n + 3) {
   margin-left: 0;
-  border-left: 1px solid rgba(255,255,255,0.18);
+  border-left: 1px solid rgba(255, 255, 255, 0.18);
 }
 .structure-choices .inst-choice:nth-child(n + 4) {
   margin-top: 0;
-  border-top: 1px solid rgba(255,255,255,0.18);
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 .maturity-choices {
@@ -2595,7 +3415,7 @@ onMounted(loadBacktest);
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0;
   overflow: hidden;
-  border: 1px solid rgba(255,255,255,0.18);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 4px;
 }
 .maturity-choices .inst-choice {
@@ -2606,11 +3426,11 @@ onMounted(loadBacktest);
 .maturity-choices .inst-choice:nth-child(3n + 2),
 .maturity-choices .inst-choice:nth-child(3n + 3) {
   margin-left: 0;
-  border-left: 1px solid rgba(255,255,255,0.18);
+  border-left: 1px solid rgba(255, 255, 255, 0.18);
 }
 .maturity-choices .inst-choice:nth-child(n + 4) {
   margin-top: 0;
-  border-top: 1px solid rgba(255,255,255,0.18);
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 .weekday-choices .inst-choice {
@@ -2636,7 +3456,7 @@ onMounted(loadBacktest);
   font-size: 11px;
   background: #0a0b0e;
   color: #e8eaed;
-  border: 1px solid rgba(255,255,255,0.18);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 3px;
   cursor: pointer;
   transition: all 0.1s;
@@ -2645,7 +3465,7 @@ onMounted(loadBacktest);
 
 .inst-choice:hover:not(.is-disabled) {
   background: #111114;
-  border-color: rgba(255,255,255,0.3);
+  border-color: rgba(255, 255, 255, 0.3);
 }
 
 .inst-choice.active {
@@ -2664,7 +3484,14 @@ onMounted(loadBacktest);
 /* Frequency Dropdown Menu styles from spec */
 .freq-menu {
   position: relative;
-  font-family: var(--font, 'Inter Tight', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  font-family: var(
+    --font,
+    "Inter Tight",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif
+  );
   -webkit-font-smoothing: antialiased;
   width: auto;
 }
@@ -2684,41 +3511,56 @@ onMounted(loadBacktest);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: background .15s, border-color .15s;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
   min-width: 120px;
 }
 .freq-trigger:hover {
   background: var(--surface-hover, #1a1a1f);
   border-color: var(--border-hover, rgba(255, 255, 255, 0.14));
 }
-.freq-trigger__lead { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.freq-trigger__lead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
 .freq-trigger__dot {
-  width: 6px; height: 6px; border-radius: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
   background: #7dd3fc;
   box-shadow: 0 0 6px #7dd3fc;
 }
 
-
 .freq-panel {
   position: absolute;
-  top: 100%; left: 0; margin-top: 4px;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
   background: var(--panel, #0f0f12);
   border: 1px solid var(--border, rgba(255, 255, 255, 0.09));
   border-radius: 18px;
   padding: 8px;
-  box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.8),
-              0 0 0 1px rgba(255, 255, 255, 0.02);
+  box-shadow:
+    0 24px 60px -12px rgba(0, 0, 0, 0.8),
+    0 0 0 1px rgba(255, 255, 255, 0.02);
   z-index: 10;
   min-width: 220px;
 }
-.freq-menu[data-open="false"] .freq-panel { display: none; }
+.freq-menu[data-open="false"] .freq-panel {
+  display: none;
+}
 
 .freq-row {
   padding: 12px 10px 10px;
   border-radius: 12px;
-  transition: background .15s;
+  transition: background 0.15s;
 }
-.freq-row:hover { background: var(--row-hover, rgba(255, 255, 255, 0.02)); }
+.freq-row:hover {
+  background: var(--row-hover, rgba(255, 255, 255, 0.02));
+}
 .freq-row__label {
   display: block;
   margin-bottom: 12px;
@@ -2741,7 +3583,8 @@ onMounted(loadBacktest);
   --pct: 32%;
 }
 .freq-slider::-webkit-slider-runnable-track {
-  height: 6px; border-radius: 99px;
+  height: 6px;
+  border-radius: 99px;
   background: linear-gradient(
     to right,
     var(--fill, #f4f4f5) 0 var(--pct),
@@ -2749,23 +3592,37 @@ onMounted(loadBacktest);
   );
 }
 .freq-slider::-moz-range-track {
-  height: 6px; border-radius: 99px; background: var(--track, #2b2b30);
+  height: 6px;
+  border-radius: 99px;
+  background: var(--track, #2b2b30);
 }
 .freq-slider::-moz-range-progress {
-  height: 6px; border-radius: 99px; background: var(--fill, #f4f4f5);
+  height: 6px;
+  border-radius: 99px;
+  background: var(--fill, #f4f4f5);
 }
 .freq-slider::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none;
-  width: 14px; height: 14px; margin-top: -4px;
-  border-radius: 50%; border: none;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4px;
+  border-radius: 50%;
+  border: none;
   background: var(--handle, #ffffff);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  box-shadow:
+    0 1px 4px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.06);
 }
 .freq-slider::-moz-range-thumb {
-  width: 14px; height: 14px;
-  border-radius: 50%; border: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: none;
   background: var(--handle, #ffffff);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.06);
+  box-shadow:
+    0 1px 4px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(0, 0, 0, 0.06);
 }
 
 .freq-footer {
@@ -2775,7 +3632,9 @@ onMounted(loadBacktest);
   margin-top: 10px;
 }
 .freq-footer__edge {
-  color: var(--text-muted, #71717a); font-size: 11px; font-weight: 500;
+  color: var(--text-muted, #71717a);
+  font-size: 11px;
+  font-weight: 500;
 }
 .freq-footer__value {
   padding: 4px 10px;
@@ -2783,7 +3642,8 @@ onMounted(loadBacktest);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   color: var(--text, #f4f4f5);
-  font-size: 11px; font-weight: 600;
+  font-size: 11px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
@@ -2819,8 +3679,8 @@ onMounted(loadBacktest);
   bottom: 0;
   background-color: #333;
   border-radius: 20px;
-  transition: .3s;
-  border: 1px solid rgba(255,255,255,0.2);
+  transition: 0.3s;
+  border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
 .toggle-slider:before {
@@ -2832,7 +3692,7 @@ onMounted(loadBacktest);
   bottom: 2px;
   background-color: white;
   border-radius: 50%;
-  transition: .3s;
+  transition: 0.3s;
 }
 
 .toggle-switch input:checked + .toggle-slider {
@@ -2867,7 +3727,7 @@ onMounted(loadBacktest);
   align-items: center;
   height: 30px;
   box-sizing: border-box;
-  background: rgba(255,255,255,0.05);
+  background: rgba(255, 255, 255, 0.05);
   border-radius: 8px;
   padding: 2px;
 }
@@ -2887,7 +3747,7 @@ onMounted(loadBacktest);
 }
 
 .segment.active {
-  background: rgba(255,255,255,0.1);
+  background: rgba(255, 255, 255, 0.1);
   color: #e8eaed;
 }
 
@@ -2922,7 +3782,10 @@ onMounted(loadBacktest);
   opacity: 0;
   pointer-events: none;
   transform: translateY(-3px);
-  transition: opacity 100ms ease, transform 100ms ease, visibility 100ms;
+  transition:
+    opacity 100ms ease,
+    transform 100ms ease,
+    visibility 100ms;
   z-index: 30;
 }
 
@@ -2939,10 +3802,10 @@ onMounted(loadBacktest);
   flex-direction: column;
   gap: 2px;
   padding: 5px;
-  border: 1px solid rgba(255,255,255,0.10);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   background: #0f0f12;
-  box-shadow: 0 16px 38px rgba(0,0,0,0.58);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.58);
 }
 
 .viewDropdown button {
@@ -2961,13 +3824,13 @@ onMounted(loadBacktest);
 
 .viewDropdown button:hover,
 .viewDropdown button:focus-visible {
-  background: rgba(255,255,255,0.06);
+  background: rgba(255, 255, 255, 0.06);
   color: #e8eaed;
   outline: none;
 }
 
 .viewDropdown button.active {
-  background: rgba(255,255,255,0.10);
+  background: rgba(255, 255, 255, 0.1);
   color: #e8eaed;
 }
 
@@ -2985,8 +3848,12 @@ onMounted(loadBacktest);
   text-align: left;
 }
 
-.sweepHeader .chartTitle { font-size: 17px; }
-.sweepHeader .chartSubtitle { font-size: 15px; }
+.sweepHeader .chartTitle {
+  font-size: 17px;
+}
+.sweepHeader .chartSubtitle {
+  font-size: 15px;
+}
 
 .sweepControls {
   display: flex;
@@ -3000,7 +3867,7 @@ onMounted(loadBacktest);
   height: 30px;
   box-sizing: border-box;
   padding: 2px;
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 7px;
   background: #0d0e11;
 }
@@ -3013,19 +3880,26 @@ onMounted(loadBacktest);
   padding: 0 11px;
   background: transparent;
   color: #747a82;
-  font: 500 12px/1 "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  font:
+    500 12px/1 "Helvetica Neue",
+    Helvetica,
+    -apple-system,
+    sans-serif;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
 }
 
 .sweepDimensionControl button:hover:not(:disabled) {
   color: #d8dadd;
-  background: rgba(255,255,255,0.045);
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .sweepDimensionControl button.active {
   color: #f0f1f2;
-  background: rgba(255,255,255,0.1);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .sweepDimensionControl button:disabled {
@@ -3038,7 +3912,7 @@ onMounted(loadBacktest);
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid rgba(255,255,255,0.055);
+  border: 1px solid rgba(255, 255, 255, 0.055);
   border-radius: 8px;
   background: #090a0d;
 }
@@ -3047,9 +3921,15 @@ onMounted(loadBacktest);
   overflow: hidden;
 }
 
-.rvCombinedPanel :deep(.styledSelect) { font-size: 10px; }
-.rvCombinedPanel :deep(.styledSelectMenu button) { font-size: 11px; }
-.rvCombinedPanel :deep(.styledSelectCheck) { font-size: 12px; }
+.rvCombinedPanel :deep(.styledSelect) {
+  font-size: 10px;
+}
+.rvCombinedPanel :deep(.styledSelectMenu button) {
+  font-size: 11px;
+}
+.rvCombinedPanel :deep(.styledSelectCheck) {
+  font-size: 12px;
+}
 
 .rvCombinedCharts {
   --study-edge-x: 18px;
@@ -3130,7 +4010,7 @@ onMounted(loadBacktest);
   top: calc(-1 * var(--study-divider-offset));
   left: 0;
   right: 0;
-  border-top: 1px solid rgba(255,255,255,0.08);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .rvBoxplotToolbar {
@@ -3153,7 +4033,7 @@ onMounted(loadBacktest);
   top: calc(-1 * var(--study-divider-offset));
   left: 0;
   right: 0;
-  border-top: 1px solid rgba(255,255,255,0.08);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .rvSectionHeader {
@@ -3201,7 +4081,7 @@ onMounted(loadBacktest);
   top: calc(-1 * var(--study-divider-offset));
   left: 0;
   right: 0;
-  border-top: 1px solid rgba(255,255,255,0.08);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .rvTermStructureToolbar {
@@ -3224,9 +4104,9 @@ onMounted(loadBacktest);
   align-items: center;
   gap: 6px;
   padding: 0 9px;
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 5px;
-  background: rgba(255,255,255,0.025);
+  background: rgba(255, 255, 255, 0.025);
   color: #8f949b;
   font: inherit;
   font-size: 11.5px;
@@ -3234,8 +4114,8 @@ onMounted(loadBacktest);
 }
 
 .rvScreenshotButton:hover:not(:disabled) {
-  border-color: rgba(255,255,255,0.2);
-  background: rgba(255,255,255,0.06);
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
   color: #f2f3f5;
 }
 
@@ -3245,8 +4125,8 @@ onMounted(loadBacktest);
 }
 
 .rvDataLabelsButton.active {
-  border-color: rgba(255,255,255,0.28);
-  background: rgba(255,255,255,0.12);
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.12);
   color: #f2f3f5;
 }
 
@@ -3276,7 +4156,7 @@ onMounted(loadBacktest);
   bottom: 8px;
   padding: 5px 8px;
   border-radius: 5px;
-  background: rgba(10,11,14,0.88);
+  background: rgba(10, 11, 14, 0.88);
   color: #626870;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
@@ -3344,8 +4224,13 @@ onMounted(loadBacktest);
   pointer-events: none;
 }
 
-.dateRangeInput:focus { outline: none; }
-.dateRangeInput::-webkit-slider-runnable-track { height: 3px; background: transparent; }
+.dateRangeInput:focus {
+  outline: none;
+}
+.dateRangeInput::-webkit-slider-runnable-track {
+  height: 3px;
+  background: transparent;
+}
 .dateRangeInput::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
@@ -3358,7 +4243,10 @@ onMounted(loadBacktest);
   cursor: pointer;
   pointer-events: auto;
 }
-.dateRangeInput::-moz-range-track { height: 3px; background: transparent; }
+.dateRangeInput::-moz-range-track {
+  height: 3px;
+  background: transparent;
+}
 .dateRangeInput::-moz-range-thumb {
   width: 8px;
   height: 8px;
@@ -3611,8 +4499,6 @@ onMounted(loadBacktest);
   line-height: 1.25;
   text-align: right;
 }
-
-
 
 .chartPanel {
   width: 100%;
