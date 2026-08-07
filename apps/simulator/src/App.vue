@@ -123,6 +123,7 @@ const SVG_EXPORT_STYLE = `
   .break-even-band { fill: rgba(100, 116, 139, 0.12); }
   .break-even-region text { fill: rgba(148, 163, 184, 0.92); stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-size: 11px; }
   .axis .average-payoff-guide { stroke: rgba(226, 232, 240, 0.55); stroke-width: 1; stroke-dasharray: 3 5; }
+  .axis .average-payoff-label { fill: rgba(148, 163, 184, 0.92); stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-variant-numeric: tabular-nums; }
   .annotation-label-leader { stroke: rgba(148, 163, 184, 0.45); stroke-width: 1; }
   .forward-value-label { fill: rgba(148, 163, 184, 0.88); font-size: 11px; font-variant-numeric: tabular-nums; }
 `;

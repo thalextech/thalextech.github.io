@@ -1657,10 +1657,11 @@ const updateDynamicScene = (
     }
     axisGroup
       .append("text")
+      .attr("class", "average-payoff-label")
       .attr("x", 8)
       .attr("y", averageLabelY)
       .attr("dominant-baseline", "middle")
-      .text(payoffFormat(activeMeanPayoff));
+      .text(`Average PnL · ${payoffFormat(activeMeanPayoff)}`);
 
     [
       { rawY: dataTopY, labelY: maxLabelY },
@@ -2731,6 +2732,14 @@ onUnmounted(() => {
   stroke-width: 1;
   stroke-dasharray: 3 5;
   shape-rendering: crispEdges;
+}
+
+:deep(.axis .average-payoff-label) {
+  fill: rgba(148, 163, 184, 0.92);
+  stroke: #0a0b0e;
+  stroke-width: 4;
+  paint-order: stroke;
+  font-variant-numeric: tabular-nums;
 }
 
 :deep(.annotation-label-leader) {
