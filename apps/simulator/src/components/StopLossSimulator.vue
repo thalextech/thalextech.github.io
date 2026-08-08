@@ -608,7 +608,6 @@ const hoveredPriceRangeLabel = computed(() => {
           :comparisonReferencePrice="stopPrice"
           :pathFilter="pathFilter"
           :evCurveMode="evCurveMode"
-          :showHistogramTooltip="false"
           @set-mu="emit('set-mu', $event)"
           @set-vol="emit('set-vol', $event)"
           @stats-update="optionStats = $event"

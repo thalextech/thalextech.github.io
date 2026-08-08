@@ -55,8 +55,6 @@ const props = defineProps<{
   pathFilter?: "all" | "stopped";
   /** Replace the price cloud with cumulative payoff-contribution curves. */
   evCurveMode?: boolean;
-  /** When false, hist hover updates emit only (no floating tooltip). Default true. */
-  showHistogramTooltip?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -920,6 +918,7 @@ const updateDynamicScene = (
     payoffMin,
     payoffMax,
     meanPayoff,
+    medianPayoff,
   } = sim;
   const evCurveMode =
     props.evCurveMode === true && comparisonSim != null;
@@ -1296,6 +1295,7 @@ const updateDynamicScene = (
     comparisonSim?.payoffMax ?? payoffMax,
   );
   const activeMeanPayoff = meanPayoff;
+  const activeMedianPayoff = medianPayoff;
   const maxAbsAvgPayoff = Math.max(
     Math.abs(activePayoffMin),
     Math.abs(activePayoffMax),
@@ -1511,6 +1511,10 @@ const updateDynamicScene = (
     payoffToY != null
       ? payoffToY(activeMeanPayoff)
       : (dataTopY + dataBottomY) * 0.5;
+  const rawMedianY =
+    payoffToY != null
+      ? payoffToY(activeMedianPayoff)
+      : (dataTopY + dataBottomY) * 0.5;
   const visibleBreakEvens = breakEvenPrices
     .slice(0, 2)
     .map((price) => ({ price, y: margin.top + y(price) }))
@@ -1536,7 +1540,12 @@ const updateDynamicScene = (
             { id: "payoff-average", rawY: margin.top + rawAverageY },
             { id: "payoff-min", rawY: margin.top + dataBottomY },
           ]
-        : []),
+        : histogramMode === "prob"
+          ? [
+              { id: "payoff-average", rawY: margin.top + rawAverageY },
+              { id: "payoff-median", rawY: margin.top + rawMedianY },
+            ]
+          : []),
       ...visibleBreakEvens.map((breakEven, index) => ({
         id: `break-even-${index}`,
         rawY: breakEven.y,
@@ -1613,61 +1622,27 @@ const updateDynamicScene = (
       .text(`${label} · ${priceFormat(breakEven.price)}`);
   });
 
-  if (histogramMode === "payoff") {
-    // Payoff mode uses a payoff axis mapped onto the histogram's vertical span.
-    const maxLabelY =
-      (rightLabelPositions.get("payoff-max") ?? margin.top + dataTopY) -
-      margin.top;
-    const averageLabelY =
-      (rightLabelPositions.get("payoff-average") ??
-        margin.top + rawAverageY) - margin.top;
-    const minLabelY =
-      (rightLabelPositions.get("payoff-min") ?? margin.top + dataBottomY) -
-      margin.top;
-
-    axisGroup
-      .append("text")
-      .attr("x", 8)
-      .attr("y", maxLabelY)
-      .attr("dominant-baseline", "middle")
-      .text(payoffFormat(maxPayoffValue));
-
-    axisGroup
-      .append("text")
-      .attr("x", 8)
-      .attr("y", minLabelY)
-      .attr("dominant-baseline", "middle")
-      .text(payoffFormat(minPayoff));
-
+  const appendPayoffSummary = ({
+    id,
+    rawY,
+    guideClass,
+    label,
+  }: {
+    id: string;
+    rawY: number;
+    guideClass: string;
+    label: string;
+  }): void => {
+    const labelY =
+      (rightLabelPositions.get(id) ?? margin.top + rawY) - margin.top;
     axisGroup
       .append("line")
-      .attr("class", "average-payoff-guide")
+      .attr("class", guideClass)
       .attr("x1", -(histogramWidth + HISTOGRAM_GAP + 4))
       .attr("x2", 0)
-      .attr("y1", rawAverageY)
-      .attr("y2", rawAverageY);
-    if (Math.abs(averageLabelY - rawAverageY) > 0.5) {
-      axisGroup
-        .append("line")
-        .attr("class", "annotation-label-leader")
-        .attr("x1", 0)
-        .attr("x2", 6)
-        .attr("y1", rawAverageY)
-        .attr("y2", averageLabelY);
-    }
-    axisGroup
-      .append("text")
-      .attr("class", "average-payoff-label")
-      .attr("x", 8)
-      .attr("y", averageLabelY)
-      .attr("dominant-baseline", "middle")
-      .text(`Average PnL · ${payoffFormat(activeMeanPayoff)}`);
-
-    [
-      { rawY: dataTopY, labelY: maxLabelY },
-      { rawY: dataBottomY, labelY: minLabelY },
-    ].forEach(({ rawY, labelY }) => {
-      if (Math.abs(labelY - rawY) <= 0.5) return;
+      .attr("y1", rawY)
+      .attr("y2", rawY);
+    if (Math.abs(labelY - rawY) > 0.5) {
       axisGroup
         .append("line")
         .attr("class", "annotation-label-leader")
@@ -1675,7 +1650,68 @@ const updateDynamicScene = (
         .attr("x2", 6)
         .attr("y1", rawY)
         .attr("y2", labelY);
+    }
+    axisGroup
+      .append("text")
+      .attr("class", "payoff-summary-label")
+      .attr("x", 8)
+      .attr("y", labelY)
+      .attr("dominant-baseline", "middle")
+      .text(label);
+  };
+
+  if (histogramMode === "payoff" || histogramMode === "prob") {
+    appendPayoffSummary({
+      id: "payoff-average",
+      rawY: rawAverageY,
+      guideClass: "average-payoff-guide",
+      label: `Average PnL · ${payoffFormat(activeMeanPayoff)}`,
     });
+
+    if (histogramMode === "prob") {
+      appendPayoffSummary({
+        id: "payoff-median",
+        rawY: rawMedianY,
+        guideClass: "median-payoff-guide",
+        label: `Median PnL · ${payoffFormat(activeMedianPayoff)}`,
+      });
+    } else {
+      // Payoff mode uses a payoff axis mapped onto the histogram's vertical span.
+      const maxLabelY =
+        (rightLabelPositions.get("payoff-max") ?? margin.top + dataTopY) -
+        margin.top;
+      const minLabelY =
+        (rightLabelPositions.get("payoff-min") ?? margin.top + dataBottomY) -
+        margin.top;
+
+      axisGroup
+        .append("text")
+        .attr("x", 8)
+        .attr("y", maxLabelY)
+        .attr("dominant-baseline", "middle")
+        .text(payoffFormat(maxPayoffValue));
+
+      axisGroup
+        .append("text")
+        .attr("x", 8)
+        .attr("y", minLabelY)
+        .attr("dominant-baseline", "middle")
+        .text(payoffFormat(minPayoff));
+
+      [
+        { rawY: dataTopY, labelY: maxLabelY },
+        { rawY: dataBottomY, labelY: minLabelY },
+      ].forEach(({ rawY, labelY }) => {
+        if (Math.abs(labelY - rawY) <= 0.5) return;
+        axisGroup
+          .append("line")
+          .attr("class", "annotation-label-leader")
+          .attr("x1", 0)
+          .attr("x2", 6)
+          .attr("y1", rawY)
+          .attr("y2", labelY);
+      });
+    }
   } else if (histogramMode === "price") {
     // Price mode: explicit axis limited to histogram data span.
     const priceTicks = d3.ticks(safeFinalMin, safeFinalMax, 4);
@@ -1737,20 +1773,16 @@ const updateDynamicScene = (
       .attr("y", histBarY(bin))
       .attr("height", histBarHeight(bin));
 
-    if (props.showHistogramTooltip === false) {
-      histogramTooltip.value = null;
-      return;
-    }
-
     const layerRect = layerNode.getBoundingClientRect();
     const localY = event.clientY - layerRect.top;
-    const hoverTarget = event.currentTarget as Element | null;
-    const histogramRect =
-      hoverTarget?.getBoundingClientRect() ??
-      histogramNode.getBoundingClientRect();
-    // Prefer the right side so the tooltip doesn't cover the cloud chart.
-    const x =
-      histogramRect.right - layerRect.left + HISTOGRAM_TOOLTIP_GAP;
+    // Place the tooltip beyond the chart when the viewport has room. On
+    // narrower screens, keep it as far right as possible without clipping.
+    const preferredX = layerRect.width + HISTOGRAM_TOOLTIP_GAP;
+    const viewportMaxX =
+      window.innerWidth -
+      layerRect.left -
+      HISTOGRAM_TOOLTIP_WIDTH -
+      8;
     const yPosition = clamp(
       localY - HISTOGRAM_TOOLTIP_HEIGHT * 0.5,
       48,
@@ -1765,7 +1797,7 @@ const updateDynamicScene = (
     const averagePayoff =
       bin.count > 0 ? bin.sumPayoff / bin.count : Number.NaN;
     histogramTooltip.value = {
-      x: clamp(x, 8, Math.max(8, layerRect.width - HISTOGRAM_TOOLTIP_WIDTH - 8)),
+      x: clamp(preferredX, 8, Math.max(8, viewportMaxX)),
       y: yPosition,
       priceRange: `${formatTooltipPrice(bin.x0)} – ${formatTooltipPrice(bin.x1)}`,
       probability: formatTooltipProbability(probability),
@@ -2365,7 +2397,7 @@ onUnmounted(() => {
         <div class="histogram-tooltip-divider"></div>
         <dl class="histogram-tooltip-stats">
           <div>
-            <dt>Probability</dt>
+            <dt>% of paths</dt>
             <dd>{{ histogramTooltip.probability }}</dd>
           </div>
           <div>
@@ -2373,19 +2405,25 @@ onUnmounted(() => {
             <dd>{{ histogramTooltip.cumulativeProbability }}</dd>
           </div>
           <div v-if="histogramTooltip.primaryContribution">
-            <dt>{{ primarySeriesLabel ?? "Primary" }}</dt>
+            <dt>{{ primarySeriesLabel ? `${primarySeriesLabel} PnL` : "Primary PnL" }}</dt>
             <dd>{{ histogramTooltip.primaryContribution }}</dd>
           </div>
           <div v-if="histogramTooltip.comparisonContribution">
-            <dt>{{ comparisonSeriesLabel ?? "Comparison" }}</dt>
+            <dt>
+              {{
+                comparisonSeriesLabel
+                  ? `${comparisonSeriesLabel} PnL`
+                  : "Comparison PnL"
+              }}
+            </dt>
             <dd>{{ histogramTooltip.comparisonContribution }}</dd>
           </div>
           <div v-if="!histogramTooltip.primaryContribution">
-            <dt>Median PnL</dt>
+            <dt>PnL (median)</dt>
             <dd>{{ histogramTooltip.medianPayoff }}</dd>
           </div>
           <div v-if="!histogramTooltip.primaryContribution">
-            <dt>Average PnL</dt>
+            <dt>PnL (average)</dt>
             <dd>{{ histogramTooltip.averagePayoff }}</dd>
           </div>
           <div>
@@ -2734,7 +2772,14 @@ onUnmounted(() => {
   shape-rendering: crispEdges;
 }
 
-:deep(.axis .average-payoff-label) {
+:deep(.axis .median-payoff-guide) {
+  stroke: rgba(148, 163, 184, 0.55);
+  stroke-width: 1;
+  stroke-dasharray: 7 4;
+  shape-rendering: crispEdges;
+}
+
+:deep(.axis .payoff-summary-label) {
   fill: rgba(148, 163, 184, 0.92);
   stroke: #0a0b0e;
   stroke-width: 4;

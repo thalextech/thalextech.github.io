@@ -123,7 +123,8 @@ const SVG_EXPORT_STYLE = `
   .break-even-band { fill: rgba(100, 116, 139, 0.12); }
   .break-even-region text { fill: rgba(148, 163, 184, 0.92); stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-size: 11px; }
   .axis .average-payoff-guide { stroke: rgba(226, 232, 240, 0.55); stroke-width: 1; stroke-dasharray: 3 5; }
-  .axis .average-payoff-label { fill: rgba(148, 163, 184, 0.92); stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-variant-numeric: tabular-nums; }
+  .axis .median-payoff-guide { stroke: rgba(148, 163, 184, 0.55); stroke-width: 1; stroke-dasharray: 7 4; }
+  .axis .payoff-summary-label { fill: rgba(148, 163, 184, 0.92); stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-variant-numeric: tabular-nums; }
   .annotation-label-leader { stroke: rgba(148, 163, 184, 0.45); stroke-width: 1; }
   .forward-value-label { fill: rgba(148, 163, 184, 0.88); font-size: 11px; font-variant-numeric: tabular-nums; }
 `;
@@ -2313,7 +2314,7 @@ watch(
                 Terminal price
               </span>
             </template>
-            <template v-else>
+            <template v-else-if="histogramMode === 'payoff'">
               <span class="histogram-legend-item">
                 <span class="histogram-legend-mark histogram-legend-mark--axis"></span>
                 Top / bottom: max / min PnL
@@ -2321,6 +2322,20 @@ watch(
               <span class="histogram-legend-item">
                 <span class="histogram-legend-mark histogram-legend-mark--average"></span>
                 Dotted: average PnL
+              </span>
+              <span class="histogram-legend-item">
+                <span class="histogram-legend-mark histogram-legend-mark--break-even"></span>
+                Shaded: break-even prices
+              </span>
+            </template>
+            <template v-else>
+              <span class="histogram-legend-item">
+                <span class="histogram-legend-mark histogram-legend-mark--average"></span>
+                Dotted: average PnL
+              </span>
+              <span class="histogram-legend-item">
+                <span class="histogram-legend-mark histogram-legend-mark--median"></span>
+                Dashed: median PnL
               </span>
               <span class="histogram-legend-item">
                 <span class="histogram-legend-mark histogram-legend-mark--break-even"></span>
@@ -3054,6 +3069,15 @@ watch(
     to right,
     rgba(226, 232, 240, 0.65) 0 3px,
     transparent 3px 6px
+  );
+}
+
+.histogram-legend-mark--median {
+  height: 1px;
+  background: repeating-linear-gradient(
+    to right,
+    rgba(148, 163, 184, 0.65) 0 7px,
+    transparent 7px 11px
   );
 }
 
