@@ -11,6 +11,16 @@ const props = defineProps({
 });
 
 const svgRef = ref(null);
+const pnlTooltip = ref({
+  visible: false,
+  left: 0,
+  top: 0,
+  timestamp: "",
+  initialOptionMark: "",
+  optionPnl: "",
+  replicationPnl: "",
+  difference: "",
+});
 let resizeObserver = null;
 
 const layout = {
@@ -21,6 +31,17 @@ const layout = {
 
 const fontFamily =
   "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif";
+const trackingWhite = "#f4f4f5";
+const optionSalmon = "#d28a6f";
+const replicationBlue = "#78b9e6";
+const tooltipDateFormat = d3.utcFormat("%b %d, %Y %H:%M UTC");
+const tooltipNumberFormat = d3.format(",.2f");
+
+const formatUsd = (value, signed = false) => {
+  if (!Number.isFinite(value)) return "—";
+  const sign = value < 0 ? "−" : signed && value > 0 ? "+" : "";
+  return `${sign}$${tooltipNumberFormat(Math.abs(value))}`;
+};
 
 function exportPng({ filename = "dfollow.png", scale = 4, padding = 24 } = {}) {
   exportChartToPng({
@@ -46,6 +67,8 @@ const axisStyle = (axisG) => {
 function render() {
   const svgEl = svgRef.value;
   if (!svgEl) return;
+
+  pnlTooltip.value.visible = false;
 
   const svg = d3.select(svgEl);
   svg.selectAll("*").remove();
@@ -214,10 +237,28 @@ function render() {
         .text((d) => d.label);
     });
 
-  const pnlRows = rows.filter((row) => Number.isFinite(row?.cumulativePnl));
+  const pnlRows = rows.filter(
+    (row) =>
+      Number.isFinite(row?.cumulativePnl) &&
+      Number.isFinite(row?.optionPnl) &&
+      Number.isFinite(row?.botPnl),
+  );
   if (!pnlRows.length) return;
 
-  const pnlExtent = d3.extent([0, ...pnlRows.map((row) => row.cumulativePnl)]);
+  const pnlSeries = [
+    {
+      label: "Tracking cost (Option - Replication)",
+      key: "cumulativePnl",
+      color: trackingWhite,
+      dash: "5 4",
+    },
+    { label: "Option MTM", key: "optionPnl", color: optionSalmon },
+    { label: "Replication MTM", key: "botPnl", color: replicationBlue },
+  ];
+  const pnlValues = pnlSeries.flatMap((series) =>
+    pnlRows.map((row) => row[series.key]),
+  );
+  const pnlExtent = d3.extent([0, ...pnlValues]);
   const pnlPad = Math.max(1, (pnlExtent[1] - pnlExtent[0]) * 0.12);
   const yPnl = d3
     .scaleLinear()
@@ -262,32 +303,52 @@ function render() {
     .style("font-size", "14px")
     .style("font-weight", 650)
     .style("font-family", fontFamily)
-    .text("Cumulative PnL");
+    .text("Cumulative MTM / PnL");
 
-  const cumulativePnlLine = d3
-    .line()
-    .x((d) => x(d.date))
-    .y((d) => yPnl(d.cumulativePnl))
-    .curve(d3.curveStepAfter);
+  const pnlLine = (key) =>
+    d3
+      .line()
+      .x((d) => x(d.date))
+      .y((d) => yPnl(d[key]))
+      .curve(d3.curveStepAfter);
 
   pnlG
-    .append("path")
-    .datum(pnlRows)
+    .append("g")
+    .selectAll("path")
+    .data(pnlSeries)
+    .join("path")
     .attr("fill", "none")
-    .attr("stroke", "#7aa2ff")
-    .attr("stroke-width", 2)
-    .attr("d", cumulativePnlLine);
+    .attr("stroke", (d) => d.color)
+    .attr("stroke-width", 1.5)
+    .attr("stroke-dasharray", (d) => d.dash || null)
+    .attr("d", (d) => pnlLine(d.key)(pnlRows));
+
+  const replicationEdge = -pnlRows[pnlRows.length - 1].cumulativePnl;
+  const replicationEdgeLabel = pnlG
+    .append("text")
+    .attr("x", innerWidth - 12)
+    .attr("y", 22)
+    .attr("text-anchor", "end")
+    .attr("fill", "#aeb4c2")
+    .style("font-size", "13px")
+    .style("font-family", fontFamily);
+
+  replicationEdgeLabel.append("tspan").text("Replication edge: ");
+  replicationEdgeLabel
+    .append("tspan")
+    .attr("fill", trackingWhite)
+    .style("font-weight", 700)
+    .text(d3.format("+,.2f")(replicationEdge));
 
   const pnlLegend = pnlG
     .append("g")
-    .attr("transform", `translate(${innerWidth - 170},${-28})`);
-  const pnlLegendItems = [{ label: "Option - Hedge PnL", color: "#7aa2ff" }];
+    .attr("transform", `translate(${Math.max(0, innerWidth - 650)},${-28})`);
 
   pnlLegend
     .selectAll("g")
-    .data(pnlLegendItems)
+    .data(pnlSeries)
     .join("g")
-    .attr("transform", (_, i) => `translate(${i * 150},0)`)
+    .attr("transform", (_, i) => `translate(${i * 220},0)`)
     .call((item) => {
       item
         .append("line")
@@ -296,7 +357,8 @@ function render() {
         .attr("y1", 0)
         .attr("y2", 0)
         .attr("stroke", (d) => d.color)
-        .attr("stroke-width", 3);
+        .attr("stroke-width", 3)
+        .attr("stroke-dasharray", (d) => d.dash || null);
       item
         .append("text")
         .attr("x", 30)
@@ -305,6 +367,66 @@ function render() {
         .style("font-size", "12px")
         .style("font-family", fontFamily)
         .text((d) => d.label);
+    });
+
+  const hoverGuide = pnlG
+    .append("line")
+    .attr("y1", 0)
+    .attr("y2", pnlHeight)
+    .attr("stroke", "rgba(255,255,255,0.36)")
+    .attr("stroke-width", 1)
+    .attr("stroke-dasharray", "3 3")
+    .attr("pointer-events", "none")
+    .style("display", "none");
+  const nearestPnlRow = d3.bisector((row) => row.date).center;
+  const initialOptionMark = pnlRows[0].targetPrice;
+
+  pnlG
+    .append("rect")
+    .attr("width", innerWidth)
+    .attr("height", pnlHeight)
+    .attr("fill", "transparent")
+    .style("cursor", "crosshair")
+    .on("pointermove", (event) => {
+      const [pointerX] = d3.pointer(event, pnlG.node());
+      const hoveredDate = x.invert(
+        Math.max(0, Math.min(innerWidth, pointerX)),
+      );
+      const row = pnlRows[nearestPnlRow(pnlRows, hoveredDate)];
+      if (!row) return;
+
+      hoverGuide.attr("x1", x(row.date)).attr("x2", x(row.date)).style("display", null);
+
+      const wrapRect = wrap.getBoundingClientRect();
+      const eventX = event.clientX - wrapRect.left;
+      const eventY = event.clientY - wrapRect.top;
+      const tooltipWidth = Math.min(280, Math.max(220, wrapRect.width - 16));
+      const tooltipHeight = 164;
+      const preferredLeft =
+        eventX + tooltipWidth + 22 <= wrapRect.width
+          ? eventX + 14
+          : eventX - tooltipWidth - 14;
+
+      pnlTooltip.value = {
+        visible: true,
+        left: Math.max(
+          8,
+          Math.min(wrapRect.width - tooltipWidth - 8, preferredLeft),
+        ),
+        top: Math.max(
+          8,
+          Math.min(wrapRect.height - tooltipHeight - 8, eventY - tooltipHeight / 2),
+        ),
+        timestamp: tooltipDateFormat(row.date),
+        initialOptionMark: formatUsd(initialOptionMark),
+        optionPnl: formatUsd(row.optionPnl, true),
+        replicationPnl: formatUsd(row.botPnl, true),
+        difference: formatUsd(row.cumulativePnl, true),
+      };
+    })
+    .on("pointerleave", () => {
+      hoverGuide.style("display", "none");
+      pnlTooltip.value.visible = false;
     });
 }
 
@@ -335,6 +457,29 @@ onBeforeUnmount(() => {
 <template>
   <div class="chartWrap">
     <svg ref="svgRef" class="chartSvg" />
+    <div
+      v-show="pnlTooltip.visible"
+      class="pnlTooltip"
+      :style="{ left: `${pnlTooltip.left}px`, top: `${pnlTooltip.top}px` }"
+    >
+      <div class="pnlTooltipTime">{{ pnlTooltip.timestamp }}</div>
+      <div class="pnlTooltipRow">
+        <span>Initial option mark</span>
+        <strong>{{ pnlTooltip.initialOptionMark }}</strong>
+      </div>
+      <div class="pnlTooltipRow">
+        <span>Option MTM PnL</span>
+        <strong>{{ pnlTooltip.optionPnl }}</strong>
+      </div>
+      <div class="pnlTooltipRow">
+        <span>Replication PnL</span>
+        <strong>{{ pnlTooltip.replicationPnl }}</strong>
+      </div>
+      <div class="pnlTooltipRow">
+        <span>Difference (Option − Replication)</span>
+        <strong>{{ pnlTooltip.difference }}</strong>
+      </div>
+    </div>
     <div v-if="loading" class="overlay">Loading...</div>
   </div>
 </template>
@@ -351,6 +496,45 @@ onBeforeUnmount(() => {
   display: block;
   width: 100%;
   height: auto;
+}
+
+.pnlTooltip {
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  width: min(280px, calc(100% - 16px));
+  padding: 11px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(10, 10, 14, 0.94);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color: #e5e7eb;
+  font-family: v-bind(fontFamily);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.pnlTooltipTime {
+  margin-bottom: 8px;
+  color: #aeb4c2;
+  font-size: 11px;
+}
+
+.pnlTooltipRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  line-height: 1.55;
+}
+
+.pnlTooltipRow span {
+  color: #aeb4c2;
+}
+
+.pnlTooltipRow strong {
+  color: #f4f4f5;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .overlay {

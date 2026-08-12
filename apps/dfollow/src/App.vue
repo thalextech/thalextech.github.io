@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import DfollowChart from "./components/DfollowChart.vue";
 import {
   calcGreeks,
@@ -13,8 +13,12 @@ const RESOLUTION_CONFIG = {
   300: { label: "5m", resolution: "5m", intervalSeconds: 5 * 60 },
   900: { label: "15m", resolution: "15m", intervalSeconds: 15 * 60 },
   3600: { label: "1h", resolution: "1h", intervalSeconds: 60 * 60 },
+  86400: { label: "1d", resolution: "1d", intervalSeconds: 24 * 60 * 60 },
 };
-const DEFAULT_POINT_LIMIT = 480;
+const MIN_HORIZON_HOURS = 1;
+const MAX_HORIZON_HOURS = 30 * 24;
+const MAX_POINTS_PER_FETCH = 10000;
+const LOAD_DEBOUNCE_MS = 160;
 
 const UNDERLYING_OPTIONS = [
   { value: "BTCUSD", label: "BTC" },
@@ -27,6 +31,7 @@ const ui = reactive({
   targetStrike: "",
   targetType: "put",
   targetAmount: 1,
+  horizonHours: 7 * 24,
   period: 12 * 60 * 60,
   threshold: 0.02,
   tolerance: 0.16,
@@ -46,6 +51,7 @@ const data = reactive({
 const chartRef = ref(null);
 const initialized = ref(false);
 let loadRequestId = 0;
+let loadTimer = null;
 
 const maturityFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -85,14 +91,68 @@ const normalizeInstrument = (instrument) => {
   };
 };
 
+const selectedHorizonHours = computed(() => {
+  const horizonHours = Number(ui.horizonHours);
+  return Number.isFinite(horizonHours)
+    ? Math.min(MAX_HORIZON_HOURS, Math.max(MIN_HORIZON_HOURS, horizonHours))
+    : 7 * 24;
+});
+
+const selectedHorizonSeconds = computed(
+  () => selectedHorizonHours.value * 60 * 60,
+);
+
+const activeResolutionEntry = computed(() => {
+  const requestedKey = Number(ui.resolutionKey);
+  const candidates = Object.entries(RESOLUTION_CONFIG)
+    .map(([key, config]) => ({ key, ...config }))
+    .filter((entry) => entry.intervalSeconds >= requestedKey)
+    .sort((a, b) => a.intervalSeconds - b.intervalSeconds);
+  const fallback = candidates[candidates.length - 1] || {
+    key: "3600",
+    ...RESOLUTION_CONFIG[3600],
+  };
+
+  return (
+    candidates.find(
+      (entry) =>
+        Math.floor(selectedHorizonSeconds.value / entry.intervalSeconds) + 1 <=
+        MAX_POINTS_PER_FETCH,
+    ) || fallback
+  );
+});
+
+const activeResolutionKey = computed(() => activeResolutionEntry.value.key);
+const activeResolutionLabel = computed(() => activeResolutionEntry.value.label);
+const requestedResolutionLabel = computed(
+  () => RESOLUTION_CONFIG[ui.resolutionKey]?.label || String(ui.resolutionKey),
+);
+const effectivePointCount = computed(
+  () =>
+    Math.floor(
+      selectedHorizonSeconds.value / activeResolutionEntry.value.intervalSeconds,
+    ) + 1,
+);
+const activeDataKey = computed(() => activeResolutionKey.value);
+const effectiveResolutionSummary = computed(() => {
+  const summary = `${activeResolutionLabel.value}, ${effectivePointCount.value} pts`;
+  if (activeResolutionKey.value === String(ui.resolutionKey)) return summary;
+  return `${requestedResolutionLabel.value} -> ${summary}`;
+});
+
 const getTimestampRange = () => {
   const now = Math.floor(Date.now() / 1000);
-  const config = RESOLUTION_CONFIG[ui.resolutionKey] || RESOLUTION_CONFIG[300];
-  const maxPoints = DEFAULT_POINT_LIMIT;
+  const config = activeResolutionEntry.value;
+  const horizonSeconds = selectedHorizonSeconds.value;
+  const maxPoints = Math.min(
+    MAX_POINTS_PER_FETCH,
+    Math.floor(horizonSeconds / config.intervalSeconds) + 1,
+  );
   const to = now - (now % config.intervalSeconds);
   return {
+    resolutionKey: config.key,
     resolution: config.resolution,
-    from: to - config.intervalSeconds * (maxPoints - 1),
+    from: to - horizonSeconds,
     to,
     maxPoints,
   };
@@ -194,10 +254,16 @@ const periodHours = computed(() => {
   if (period < 3600) return `${Math.round(period / 60)}m`;
   return `${Math.round((period / 3600) * 10) / 10}h`;
 });
+const horizonLabel = computed(() => {
+  const hours = Number(ui.horizonHours);
+  if (!Number.isFinite(hours)) return "0h";
+  if (hours < 24) return `${Math.round(hours)}h`;
+  return `${Math.round((hours / 24) * 10) / 10}d`;
+});
 
 const chartSubtitle = computed(() => {
   if (!targetTitle.value) return "";
-  return `${targetTitle.value} x ${amountFormatter.format(Number(ui.targetAmount))}, threshold ${deltaFormatter.format(thresholdValue.value)}, tolerance ${deltaFormatter.format(toleranceValue.value)}, period ${periodHours.value}`;
+  return `${targetTitle.value} x ${amountFormatter.format(Number(ui.targetAmount))}, horizon ${horizonLabel.value}, resolution ${effectiveResolutionSummary.value}, threshold ${deltaFormatter.format(thresholdValue.value)}, tolerance ${deltaFormatter.format(toleranceValue.value)}, hedging interval ${periodHours.value}`;
 });
 
 const thalexUrl = computed(() => {
@@ -340,9 +406,12 @@ function buildDfollowSimulation({
 
     const outsideTolerance = tolerance > 0 && absDeviation > tolerance;
     const outsideThreshold = absDeviation > threshold;
+    const isInitialTimestamp = rows.length === 0;
     let trigger = null;
 
-    if (outsideTolerance) {
+    if (isInitialTimestamp) {
+      trigger = "initial";
+    } else if (outsideTolerance) {
       trigger = "tolerance";
     } else if (outsideThreshold) {
       if (breachStartTs == null) breachStartTs = ts;
@@ -401,9 +470,9 @@ function buildDfollowSimulation({
 
 const simulation = computed(() =>
   buildDfollowSimulation({
-    indexRows: data.index[ui.resolutionKey] || [],
-    targetRows: data.targetMark[ui.resolutionKey] || [],
-    hedgeRows: data.hedgeMark[ui.resolutionKey] || [],
+    indexRows: data.index[activeDataKey.value] || [],
+    targetRows: data.targetMark[activeDataKey.value] || [],
+    hedgeRows: data.hedgeMark[activeDataKey.value] || [],
     target: targetInstrument.value,
     hedge: hedgeInstrument.value,
     settings: ui,
@@ -421,7 +490,8 @@ function handleSavePng() {
   const parts = [
     base,
     "dfollow",
-    `period_${periodHours.value}`,
+    `horizon_${horizonLabel.value}`,
+    `hedging_interval_${periodHours.value}`,
     `threshold_${thresholdValue.value}`,
     `tolerance_${toleranceValue.value}`,
   ].map(slugValue);
@@ -429,7 +499,7 @@ function handleSavePng() {
 }
 
 const chooseClosestStrike = () => {
-  const latestIndex = getLatestIndexClose(data.index[ui.resolutionKey] || []);
+  const latestIndex = getLatestIndexClose(data.index[activeDataKey.value] || []);
   const strikes = targetStrikes.value;
   if (!strikes.length) {
     ui.targetStrike = "";
@@ -520,7 +590,7 @@ async function loadSimulation() {
   ui.loading = true;
   ui.error = "";
 
-  const { resolution, from, to, maxPoints } = getTimestampRange();
+  const { resolutionKey, resolution, from, to, maxPoints } = getTimestampRange();
   try {
     const [indexRows, targetMarkRows, hedgeMarkRows] = await Promise.all([
       fetchIndexHistory({
@@ -547,18 +617,26 @@ async function loadSimulation() {
     ]);
 
     if (requestId !== loadRequestId) return;
-    data.index[ui.resolutionKey] = indexRows || [];
-    data.targetMark[ui.resolutionKey] = targetMarkRows || [];
-    data.hedgeMark[ui.resolutionKey] = hedgeMarkRows || [];
+    data.index[resolutionKey] = indexRows || [];
+    data.targetMark[resolutionKey] = targetMarkRows || [];
+    data.hedgeMark[resolutionKey] = hedgeMarkRows || [];
   } catch (error) {
     if (requestId !== loadRequestId) return;
     ui.error = error instanceof Error ? error.message : String(error);
-    data.index[ui.resolutionKey] = [];
-    data.targetMark[ui.resolutionKey] = [];
-    data.hedgeMark[ui.resolutionKey] = [];
+    data.index[resolutionKey] = [];
+    data.targetMark[resolutionKey] = [];
+    data.hedgeMark[resolutionKey] = [];
   } finally {
     if (requestId === loadRequestId) ui.loading = false;
   }
+}
+
+function scheduleLoadSimulation() {
+  if (loadTimer) clearTimeout(loadTimer);
+  loadTimer = setTimeout(() => {
+    loadTimer = null;
+    loadSimulation();
+  }, LOAD_DEBOUNCE_MS);
 }
 
 async function switchUnderlying(next) {
@@ -576,7 +654,7 @@ async function switchUnderlying(next) {
 
 onMounted(async () => {
   try {
-    const { resolution, from, to, maxPoints } = getTimestampRange();
+    const { resolutionKey, resolution, from, to, maxPoints } = getTimestampRange();
     const [instruments, indexRows] = await Promise.all([
       fetchInstruments(),
       fetchIndexHistory({
@@ -588,7 +666,7 @@ onMounted(async () => {
       }),
     ]);
     allInstruments.value = instruments || [];
-    data.index[ui.resolutionKey] = indexRows || [];
+    data.index[resolutionKey] = indexRows || [];
     rebuildInstruments();
     chooseDefaultMaturity();
     chooseClosestStrike();
@@ -604,15 +682,31 @@ onMounted(async () => {
 watch(
   () => [
     ui.resolutionKey,
+    ui.horizonHours,
+    activeResolutionKey.value,
     ui.targetMaturity,
     ui.targetStrike,
     ui.targetType,
   ],
   async () => {
     if (!initialized.value) return;
-    await loadSimulation();
+    const hasSelectedStrike = targetStrikes.value.some(
+      (strike) => strike.value === ui.targetStrike,
+    );
+    if (!hasSelectedStrike) {
+      chooseClosestStrike();
+      return;
+    }
+    scheduleLoadSimulation();
   },
 );
+
+onBeforeUnmount(() => {
+  if (loadTimer) {
+    clearTimeout(loadTimer);
+    loadTimer = null;
+  }
+});
 </script>
 
 <template>
@@ -673,9 +767,9 @@ watch(
       <aside class="configPanel" aria-label="Delta follower configuration">
         <p class="botDescription">
           Replicates the delta of the target option with the perpetual. The bot
-          allows delta to drift within the threshold for the selected period,
-          then trades the perpetual back toward the target delta. If deviation
-          exceeds tolerance, it hedges immediately.
+          allows delta to drift within the threshold for the selected hedging
+          interval, then trades the perpetual back toward the target delta. If
+          deviation exceeds tolerance, it hedges immediately.
         </p>
 
         <label class="panelField">
@@ -692,6 +786,23 @@ watch(
         </label>
 
         <label class="panelField">
+          <span>Time Horizon</span>
+          <input
+            v-model.number="ui.horizonHours"
+            class="rangeInput"
+            type="range"
+            :min="MIN_HORIZON_HOURS"
+            :max="MAX_HORIZON_HOURS"
+            step="1"
+          />
+          <div class="rangeLabels">
+            <span>1h</span>
+            <strong>{{ horizonLabel }} | {{ effectiveResolutionSummary }}</strong>
+            <span>30d</span>
+          </div>
+        </label>
+
+        <label class="panelField">
           <span>Amount</span>
           <div class="inputShell">
             <input v-model.number="ui.targetAmount" type="number" step="0.01" />
@@ -700,7 +811,7 @@ watch(
         </label>
 
         <label class="panelField">
-          <span>Period</span>
+          <span>Hedging Interval</span>
           <input
             v-model.number="ui.period"
             class="rangeInput"
@@ -722,7 +833,7 @@ watch(
             <span
               class="infoDot infoDotTooltip"
               tabindex="0"
-              data-tooltip="The bot allows the deltas to stay outside of [target_delta - threshold, target_delta + threshold] for period seconds before making any adjustments to the portfolio."
+              data-tooltip="The bot allows the deltas to stay outside of [target_delta - threshold, target_delta + threshold] for the hedging interval before making any adjustments to the portfolio."
             >i</span>
           </span>
           <input v-model.number="ui.threshold" type="number" min="0" step="0.01" />
@@ -734,7 +845,7 @@ watch(
             <span
               class="infoDot infoDotTooltip"
               tabindex="0"
-              data-tooltip="If the deltas are outside of [target_delta - tolerance, target_delta + tolerance], the bot will hedge them immediately, without waiting period seconds. Set to 0 to disable immediate hedging."
+              data-tooltip="If the deltas are outside of [target_delta - tolerance, target_delta + tolerance], the bot will hedge them immediately, without waiting for the hedging interval. Set to 0 to disable immediate hedging."
             >i</span>
           </span>
           <input v-model.number="ui.tolerance" type="number" min="0" step="0.01" />
