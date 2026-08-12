@@ -86,7 +86,11 @@ function render() {
   const innerWidth = width - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
   const panelGap = Math.min(58, Math.max(36, innerHeight * 0.07));
-  const pnlHeight = Math.min(280, Math.max(160, innerHeight * 0.28));
+  const hasRoomForLargerPnl = innerHeight >= 700;
+  const pnlHeight = Math.min(
+    hasRoomForLargerPnl ? 340 : 280,
+    Math.max(160, innerHeight * (hasRoomForLargerPnl ? 0.4 : 0.28)),
+  );
   const priceHeight = innerHeight - pnlHeight - panelGap;
 
   svg.attr("viewBox", `0 0 ${width} ${height}`);
@@ -421,7 +425,7 @@ function render() {
         initialOptionMark: formatUsd(initialOptionMark),
         optionPnl: formatUsd(row.optionPnl, true),
         replicationPnl: formatUsd(row.botPnl, true),
-        difference: formatUsd(row.cumulativePnl, true),
+        difference: formatUsd(-row.cumulativePnl, true),
       };
     })
     .on("pointerleave", () => {
@@ -476,7 +480,7 @@ onBeforeUnmount(() => {
         <strong>{{ pnlTooltip.replicationPnl }}</strong>
       </div>
       <div class="pnlTooltipRow">
-        <span>Difference (Option − Replication)</span>
+        <span>Difference (Replication − Option)</span>
         <strong>{{ pnlTooltip.difference }}</strong>
       </div>
     </div>
