@@ -34,6 +34,13 @@ const fontFamily =
 const trackingWhite = "#f4f4f5";
 const optionSalmon = "#d28a6f";
 const replicationBlue = "#78b9e6";
+const exportOptionSalmon = "#ff9b87";
+const exportReplicationBlue = "#6fd3ff";
+const exportTrackingWhite = "#ffffff";
+const EXPORT_WIDTH = 1600;
+const EXPORT_HEIGHT = 900;
+const EXPORT_PADDING = 24;
+const EXPORT_SCALE = 2;
 const tooltipDateFormat = d3.utcFormat("%b %d, %Y %H:%M UTC");
 const tooltipNumberFormat = d3.format(",.2f");
 
@@ -43,12 +50,59 @@ const formatUsd = (value, signed = false) => {
   return `${sign}$${tooltipNumberFormat(Math.abs(value))}`;
 };
 
-function exportPng({ filename = "dfollow.png", scale = 4, padding = 24 } = {}) {
+function exportPng({
+  filename = "dfollow.png",
+  width = EXPORT_WIDTH,
+  height = EXPORT_HEIGHT,
+  padding = EXPORT_PADDING,
+} = {}) {
+  const safePadding = Math.max(0, Number(padding) || 0);
+  const exportSvg = document.createElementNS(
+    "http://www.w3.org/2000/svg",
+    "svg",
+  );
+  render({
+    svgEl: exportSvg,
+    width: Math.max(480, Number(width) - safePadding * 2),
+    height: Math.max(420, Number(height) - safePadding * 2),
+    interactive: false,
+  });
+
   exportChartToPng({
-    element: svgRef.value,
+    element: exportSvg,
     filename,
-    scale,
-    padding,
+    scale: EXPORT_SCALE,
+    padding: safePadding,
+    prepareSvgClone(svgClone) {
+      const exportSeriesStyles = {
+        cumulativePnl: { stroke: exportTrackingWhite, width: 2.4 },
+        optionPnl: { stroke: exportOptionSalmon, width: 2.4 },
+        botPnl: { stroke: exportReplicationBlue, width: 2.4 },
+      };
+
+      svgClone
+        .querySelectorAll('[data-export-series="hedgePrice"]')
+        .forEach((element) => {
+          element.setAttribute("stroke", exportTrackingWhite);
+          element.setAttribute("stroke-width", "2.5");
+        });
+
+      for (const [series, style] of Object.entries(exportSeriesStyles)) {
+        svgClone
+          .querySelectorAll(`[data-export-series="${series}"]`)
+          .forEach((element) => {
+            element.setAttribute("stroke", style.stroke);
+            element.setAttribute("stroke-width", String(style.width));
+          });
+      }
+
+      svgClone.querySelectorAll("[data-export-trade]").forEach((marker) => {
+        const isBuy = marker.getAttribute("data-export-trade") === "buy";
+        marker.setAttribute("fill", isBuy ? "#39ff88" : "#ff5964");
+        marker.setAttribute("r", "7");
+        marker.setAttribute("stroke-width", "1.8");
+      });
+    },
   });
 }
 
@@ -64,11 +118,16 @@ const axisStyle = (axisG) => {
     .style("font-family", fontFamily);
 };
 
-function render() {
-  const svgEl = svgRef.value;
+function render({
+  svgEl: targetSvgEl,
+  width: targetWidth,
+  height: targetHeight,
+  interactive = true,
+} = {}) {
+  const svgEl = targetSvgEl || svgRef.value;
   if (!svgEl) return;
 
-  pnlTooltip.value.visible = false;
+  if (interactive) pnlTooltip.value.visible = false;
 
   const svg = d3.select(svgEl);
   svg.selectAll("*").remove();
@@ -76,11 +135,19 @@ function render() {
   const wrap = svgEl.parentElement;
   const width = Math.max(
     480,
-    Math.round(wrap?.clientWidth || layout.fallbackWidth),
+    Math.round(
+      Number.isFinite(targetWidth)
+        ? targetWidth
+        : wrap?.clientWidth || layout.fallbackWidth,
+    ),
   );
   const height = Math.max(
     420,
-    Math.round(wrap?.clientHeight || layout.fallbackHeight),
+    Math.round(
+      Number.isFinite(targetHeight)
+        ? targetHeight
+        : wrap?.clientHeight || layout.fallbackHeight,
+    ),
   );
   const { margin } = layout;
   const innerWidth = width - margin.left - margin.right;
@@ -190,6 +257,7 @@ function render() {
     .attr("fill", "none")
     .attr("stroke", "mistyrose")
     .attr("stroke-width", 2)
+    .attr("data-export-series", "hedgePrice")
     .attr("d", priceLine);
 
   const tradeRows = (props.trades || []).filter(
@@ -208,6 +276,7 @@ function render() {
     .attr("cy", (d) => y(d.hedgePrice))
     .attr("r", 6.5)
     .attr("fill", (d) => (d.tradeAmount >= 0 ? "#16a34a" : "#dc2626"))
+    .attr("data-export-trade", (d) => (d.tradeAmount >= 0 ? "buy" : "sell"))
     .attr("stroke", "#020204")
     .attr("stroke-width", 1.8);
 
@@ -230,7 +299,10 @@ function render() {
         .attr("cx", 0)
         .attr("cy", 0)
         .attr("r", 6)
-        .attr("fill", (d) => d.color);
+        .attr("fill", (d) => d.color)
+        .attr("data-export-trade", (d) =>
+          d.label === "Buy" ? "buy" : "sell",
+        );
       item
         .append("text")
         .attr("x", 14)
@@ -251,7 +323,7 @@ function render() {
 
   const pnlSeries = [
     {
-      label: "Tracking cost (Option - Replication)",
+      label: "Tracking cost",
       key: "cumulativePnl",
       color: trackingWhite,
       dash: "5 4",
@@ -325,6 +397,7 @@ function render() {
     .attr("stroke", (d) => d.color)
     .attr("stroke-width", 1.5)
     .attr("stroke-dasharray", (d) => d.dash || null)
+    .attr("data-export-series", (d) => d.key)
     .attr("d", (d) => pnlLine(d.key)(pnlRows));
 
   const replicationEdge = -pnlRows[pnlRows.length - 1].cumulativePnl;
@@ -362,7 +435,8 @@ function render() {
         .attr("y2", 0)
         .attr("stroke", (d) => d.color)
         .attr("stroke-width", 3)
-        .attr("stroke-dasharray", (d) => d.dash || null);
+        .attr("stroke-dasharray", (d) => d.dash || null)
+        .attr("data-export-series", (d) => d.key);
       item
         .append("text")
         .attr("x", 30)
@@ -372,6 +446,8 @@ function render() {
         .style("font-family", fontFamily)
         .text((d) => d.label);
     });
+
+  if (!interactive) return;
 
   const hoverGuide = pnlG
     .append("line")
