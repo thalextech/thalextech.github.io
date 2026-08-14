@@ -3235,11 +3235,15 @@ onMounted(loadBacktest);
 .pillLabel {
   color: #70767d;
   font-size: 14px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .pillValue {
   color: #e8eaed;
   font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .pillValue.off {
@@ -4767,6 +4771,60 @@ onMounted(loadBacktest);
 
 .negative {
   color: #e46578;
+}
+
+@media (max-width: 1280px) {
+  .topBar {
+    padding-inline: 16px;
+    gap: 12px;
+  }
+
+  .configPills {
+    gap: 6px;
+  }
+
+  .pill {
+    gap: 5px;
+    padding: 6px 9px;
+    font-size: 11px;
+  }
+
+  .pillLabel {
+    font-size: 12px;
+  }
+
+  .segment {
+    padding-inline: 10px;
+  }
+}
+
+@media (max-width: 1080px) {
+  .topBar {
+    padding-inline: 12px;
+    gap: 8px;
+  }
+
+  .divider {
+    display: none;
+  }
+
+  .configPills {
+    gap: 4px;
+  }
+
+  .pill {
+    gap: 4px;
+    padding: 5px 7px;
+    font-size: 10px;
+  }
+
+  .pillLabel {
+    font-size: 11px;
+  }
+
+  .segment {
+    padding-inline: 8px;
+  }
 }
 
 @media (max-width: 960px) {
