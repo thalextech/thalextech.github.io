@@ -108,13 +108,16 @@ const parseExpiryToSeconds = (expiry) => {
   return Math.floor(Date.UTC(fullYear, monthIdx, day, 8, 0, 0) / 1000);
 };
 
-const formatExpiryFromTs = (expiryTs) =>
-  new Intl.DateTimeFormat("en-GB", {
-    day: "2-digit",
+const formatExpiryFromTs = (expiryTs) => {
+  const date = new Date(Number(expiryTs) * 1000);
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const month = date.toLocaleString("en-US", {
     month: "short",
-    year: "2-digit",
     timeZone: "UTC",
-  }).format(new Date(Number(expiryTs) * 1000));
+  });
+  const year = String(date.getUTCFullYear()).slice(-2);
+  return `${day} ${month} ${year}`;
+};
 
 const newLegId = () => {
   const uuid = globalThis.crypto?.randomUUID?.();
@@ -320,9 +323,23 @@ const seedDefaultLegs = () => {
   if (!options.length) return;
 
   const now = Math.floor(Date.now() / 1000);
-  const target = now + Math.max(1, Math.round(DEFAULT_T * 365.25)) * 24 * 60 * 60;
-  const upcoming = options.filter((instrument) => instrument.expiration_ts > now);
-  const source = upcoming.length ? upcoming : options;
+  const latestChartCandleTs = getTimestampRange().to;
+  // A new expiry can appear in all_instruments before its first mark candle.
+  const optionsWithMarkCoverage = options.filter((instrument) => {
+    const createTs = normalizeTimestampSeconds(
+      instrument.create_time ?? instrument.create_time_ms,
+    );
+    return !Number.isFinite(createTs) || createTs <= latestChartCandleTs;
+  });
+  const defaultableOptions = optionsWithMarkCoverage.length
+    ? optionsWithMarkCoverage
+    : options;
+  const target =
+    now + Math.max(1, Math.round(DEFAULT_T * 365.25)) * 24 * 60 * 60;
+  const upcoming = defaultableOptions.filter(
+    (instrument) => instrument.expiration_ts > now,
+  );
+  const source = upcoming.length ? upcoming : defaultableOptions;
   const expiries = Array.from(
     new Set(source.map((instrument) => instrument.expiration_ts)),
   ).sort((a, b) => a - b);
