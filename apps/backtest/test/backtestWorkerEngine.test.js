@@ -116,3 +116,40 @@ test("attribution reuses prepared data and is only calculated on its own request
   ]);
   assert.equal(attributionMessages.at(-1).timing.reusedPreparedData, true);
 });
+
+test("worker can prepare a full dataset while running a narrower config", async () => {
+  const preparedConfigs = [];
+  const runConfigs = [];
+  const engine = createBacktestWorkerEngine({
+    loadThalexHistory: async () => ({
+      indexRows: [],
+      quoteSnapshots: [],
+      artifact: { instruments: [] },
+    }),
+    prepareBacktestData: ({ config }) => {
+      preparedConfigs.push(config);
+      return { prepared: true };
+    },
+    runWeeklyStraddleBacktest: ({ config }) => {
+      runConfigs.push(config);
+      return { cycleSummary: [] };
+    },
+  });
+  const prepareConfig = { start: "all-start", end: "all-end" };
+  const config = { start: "selected-start", end: "selected-end" };
+
+  await engine.handleRequest(
+    {
+      requestId: 1,
+      type: "run-single",
+      datasetKey: "full-data",
+      loadRequest: {},
+      prepareConfig,
+      config,
+    },
+    () => {},
+  );
+
+  assert.deepEqual(preparedConfigs, [prepareConfig]);
+  assert.deepEqual(runConfigs, [config]);
+});

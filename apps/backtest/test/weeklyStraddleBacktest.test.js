@@ -319,6 +319,37 @@ test("fixed-day roll waits for the next configured entry slot after close", () =
   }
 });
 
+test("a cached full dataset honors a narrower run end date", () => {
+  const fixture = buildMultiExpiryEntryHourFixture();
+  const preparedData = prepareBacktestData(fixture);
+  const narrowConfig = {
+    ...fixture.config,
+    end: new Date(fixture.config.start.getTime() + 15 * DAY_SECONDS * 1000),
+  };
+  const cachedRun = runWeeklyStraddleBacktest({
+    preparedData,
+    config: narrowConfig,
+  });
+  const isolatedRun = runWeeklyStraddleBacktest({
+    indexRows: fixture.indexRows,
+    quoteSnapshots: fixture.quoteSnapshots,
+    instruments: fixture.instruments,
+    config: narrowConfig,
+  });
+
+  assert.deepEqual(
+    cachedRun.cycleSummary.map((cycle) => cycle.entryTs),
+    isolatedRun.cycleSummary.map((cycle) => cycle.entryTs),
+  );
+  assert.equal(cachedRun.dataEnd.getTime(), narrowConfig.end.getTime());
+  assert.ok(cachedRun.counts.closedCycles > 0);
+  assert.ok(
+    cachedRun.cycleSummary.every(
+      (cycle) => cycle.expiration.getTime() <= narrowConfig.end.getTime(),
+    ),
+  );
+});
+
 test("1D maturity selects daily options instead of rolling a 7D option after one day", () => {
   const fixture = buildOneDayMaturityFixture();
   const preparedData = prepareBacktestData(fixture);

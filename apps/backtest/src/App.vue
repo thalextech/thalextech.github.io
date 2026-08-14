@@ -5,7 +5,6 @@ import FairValueDistributionPanel from "./components/FairValueDistributionPanel.
 import GreekPnlChart from "./components/GreekPnlChart.vue";
 import HedgePerformanceChart from "./components/HedgePerformanceChart.vue";
 import IvRvChart from "./components/IvRvChart.vue";
-import VolPnlBarChart from "./components/VolPnlBarChart.vue";
 import StyledSelectMenu from "./components/StyledSelectMenu.vue";
 import VarianceStandardizedVrHeatmap from "./components/VarianceStandardizedVrHeatmap.vue";
 import VarianceRatioDashboard from "./components/VarianceRatioDashboard.vue";
@@ -21,7 +20,6 @@ import {
 } from "./lib/backtestWorkerClient.js";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
 import {
-  addTrailingParkinsonRv,
   buildIvRvChartRows,
   buildHourlyIvHeatmap,
   buildHourlyIvRows,
@@ -52,6 +50,10 @@ import {
 } from "./lib/weeklyStraddleBacktest.js";
 
 const DEFAULT_MATURITY_DAYS = 7;
+const DATA_RANGE_START = new Date(DEFAULT_BACKTEST_CONFIG.start);
+const DATA_RANGE_END = new Date();
+const DATA_RANGE_MIN_MS = 24 * 60 * 60 * 1000;
+const DATA_RANGE_RUN_DEBOUNCE_MS = 300;
 
 const MATURITY_OPTIONS = [
   { value: 1, label: "1D", minDteDays: 0.25, maxDteDays: 1.5 },
@@ -254,6 +256,75 @@ const rollDayOptions = computed(() =>
 );
 
 const openMenu = ref(null);
+const dataRangeStart = ref(0);
+const dataRangeEnd = ref(100);
+const dataRangeAvailableEnd = ref(new Date(DATA_RANGE_END));
+const dataRangeSpanMs = computed(
+  () => dataRangeAvailableEnd.value.getTime() - DATA_RANGE_START.getTime(),
+);
+const dataRangeMinGap = computed(
+  () => Math.max(0.1, (DATA_RANGE_MIN_MS / dataRangeSpanMs.value) * 100),
+);
+const selectedDataRange = computed(() => ({
+  start: new Date(
+    DATA_RANGE_START.getTime() +
+      (dataRangeSpanMs.value * dataRangeStart.value) / 100,
+  ),
+  end: new Date(
+    DATA_RANGE_START.getTime() +
+      (dataRangeSpanMs.value * dataRangeEnd.value) / 100,
+  ),
+}));
+const dataRangeStartModel = computed({
+  get: () => dataRangeStart.value,
+  set: (value) => {
+    dataRangeStart.value = Math.max(
+      0,
+      Math.min(Number(value), dataRangeEnd.value - dataRangeMinGap.value),
+    );
+  },
+});
+const dataRangeEndModel = computed({
+  get: () => dataRangeEnd.value,
+  set: (value) => {
+    dataRangeEnd.value = Math.min(
+      100,
+      Math.max(Number(value), dataRangeStart.value + dataRangeMinGap.value),
+    );
+  },
+});
+const dataRangeStyle = computed(() => ({
+  "--range-start": `${dataRangeStart.value}%`,
+  "--range-end": `${dataRangeEnd.value}%`,
+}));
+const isAllDataRange = computed(
+  () => dataRangeStart.value === 0 && dataRangeEnd.value === 100,
+);
+const dataRangeDateFormatter = new Intl.DateTimeFormat("en-GB", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  timeZone: "UTC",
+});
+const dataRangePillFormatter = new Intl.DateTimeFormat("en-GB", {
+  month: "short",
+  year: "2-digit",
+  timeZone: "UTC",
+});
+const dataRangeLabel = computed(() => {
+  if (isAllDataRange.value) return "All";
+  const range = selectedDataRange.value;
+  return `${dataRangePillFormatter.format(range.start)} – ${dataRangePillFormatter.format(range.end)}`;
+});
+const dataRangeDetailLabel = computed(() => {
+  const range = selectedDataRange.value;
+  return `${dataRangeDateFormatter.format(range.start)} – ${dataRangeDateFormatter.format(range.end)}`;
+});
+
+function resetDataRange() {
+  dataRangeStart.value = 0;
+  dataRangeEnd.value = 100;
+}
 
 function toggleMenu(name) {
   openMenu.value = openMenu.value === name ? null : name;
@@ -292,6 +363,7 @@ watch(openMenu, (val) => {
 });
 
 let runDebounce = null;
+let dataRangeRunDebounce = null;
 
 function updateHedgeInterval(val) {
   ui.hedgeIntervalHours = Number(val);
@@ -843,8 +915,8 @@ const strategyLabels = computed(() => {
     hedge: !ui.hedgeEnabled
       ? "Off"
       : ui.hedgeIntervalHours === 24
-        ? `Daily ${hour}:00 · Perp`
-        : `Every ${ui.hedgeIntervalHours}h · Perp`,
+        ? `Daily ${hour}:00`
+        : `Every ${ui.hedgeIntervalHours}h`,
     exit:
       ui.exitMode === "expiry"
         ? "Option expiry"
@@ -895,22 +967,6 @@ const cycleDetailError = ref("");
 const cycleDetailCache = new Map();
 let currentCycleDetailSequence = 0;
 const cycleRows = computed(() => result.value?.cycleSummary || []);
-const trailingSevenDayRvByTs = computed(
-  () =>
-    new Map(
-      addTrailingParkinsonRv(ivRvSourceRows.value, 7)
-        .filter((row) => Number.isFinite(row.rv))
-        .map((row) => [row.ts, row.rv]),
-    ),
-);
-const volPnlCycleRows = computed(() =>
-  cycleRows.value.map((cycle) => ({
-    ...cycle,
-    trailingSevenDayRealizedVol: trailingSevenDayRvByTs.value.get(
-      cycle.entryTs,
-    ),
-  })),
-);
 
 const clearAttribution = () => {
   currentAttributionSequence += 1;
@@ -988,7 +1044,7 @@ const chartSubtitle = computed(() => {
 
 const chartSourceSubtitle = computed(() => {
   if (!result.value) return "Source: Thalex";
-  const start = DEFAULT_BACKTEST_CONFIG.start;
+  const start = selectedDataRange.value.start;
   const end = result.value.dataEnd || new Date();
   const formatPeriodDate = (date) =>
     date.toLocaleDateString("en-GB", {
@@ -1002,8 +1058,10 @@ const chartSourceSubtitle = computed(() => {
 
 const buildConfig = (overrides = {}) => {
   const m = currentMaturity.value;
+  const range = selectedDataRange.value;
   return normalizeBacktestConfig({
-    end: new Date(),
+    start: range.start,
+    end: range.end,
     ...maturityConfigOverrides(m),
     structure: ui.structure,
     targetDelta: Number(ui.targetDelta),
@@ -1040,11 +1098,9 @@ const runSweep = async () => {
   // Let the running state paint before data preparation and synchronous simulations begin.
   await new Promise((resolve) => setTimeout(resolve, 0));
   const cells = sweepConfigs.value;
-  const sweepEnd = new Date();
   const configs = cells.map((cell) =>
     buildConfig({
       ...cell.overrides,
-      end: sweepEnd,
       includeGreekAttribution: false,
     }),
   );
@@ -1067,8 +1123,8 @@ const runSweep = async () => {
   const startedAt = performance.now();
   try {
     const loadRequest = {
-      start: configs[0].start,
-      end: configs[0].end,
+      start: DATA_RANGE_START,
+      end: DATA_RANGE_END,
       hourlyOffsets: sweepHours,
       maxDteDays: sweepMaxDteDays,
     };
@@ -1104,6 +1160,11 @@ const runSweep = async () => {
     const workerResult = await runSweepInWorker({
       datasetKey: sweepDataKey,
       loadRequest,
+      prepareConfig: {
+        ...configs[0],
+        start: DATA_RANGE_START,
+        end: DATA_RANGE_END,
+      },
       configs,
       onProgress: ({ message }) => {
         if (message) sweepProgress.value = message;
@@ -1188,8 +1249,6 @@ const selectSingleView = (nextChartMode) => {
   selectedCycle.value = null;
   if (!result.value) scheduleBacktest();
   else if (nextChartMode === "greeks") void loadAttribution();
-  if (nextChartMode === "vol-pnl" && !ivRvSourceRows.value.length)
-    void loadIvRv();
   requestAnimationFrame(() => {
     if (document.activeElement instanceof HTMLElement)
       document.activeElement.blur();
@@ -1383,10 +1442,15 @@ const loadBacktest = async () => {
     const response = await runSingleInWorker({
       datasetKey,
       loadRequest: {
-        start: config.start,
-        end: config.end,
+        start: DATA_RANGE_START,
+        end: DATA_RANGE_END,
         hourlyOffsets: requiredHours.value,
         maxDteDays: requiredMaxDteDays.value,
+      },
+      prepareConfig: {
+        ...config,
+        start: DATA_RANGE_START,
+        end: DATA_RANGE_END,
       },
       config,
       onProgress: ({ message }) => {
@@ -1397,6 +1461,13 @@ const loadBacktest = async () => {
     if (runSequence !== currentRunSequence) return;
     loadedDataKey = datasetKey;
     result.value = response.result;
+    if (
+      isAllDataRange.value &&
+      response.result?.dataEnd instanceof Date &&
+      response.result.dataEnd < dataRangeAvailableEnd.value
+    ) {
+      dataRangeAvailableEnd.value = new Date(response.result.dataEnd);
+    }
     state.progress = "";
     if (chartMode.value === "greeks") void loadAttribution();
   } catch (error) {
@@ -1484,6 +1555,18 @@ watch(
   },
 );
 
+watch([dataRangeStart, dataRangeEnd], () => {
+  clearTimeout(dataRangeRunDebounce);
+  dataRangeRunDebounce = setTimeout(() => {
+    dataRangeRunDebounce = null;
+    if (mode.value === "sweep") {
+      scheduleSweep();
+    } else if (mode.value === "single") {
+      scheduleBacktest();
+    }
+  }, DATA_RANGE_RUN_DEBOUNCE_MS);
+});
+
 watch(sweepDimension, () => {
   scheduleSweep();
 });
@@ -1552,11 +1635,9 @@ function handleSavePng() {
       ? `pnl-attribution-${date}.png`
       : chartMode.value === "distribution"
         ? `fair-value-distribution-${date}.png`
-        : chartMode.value === "vol-pnl"
-          ? `vol-sorted-pnl-${date}.png`
-          : chartMode.value === "hedge"
-            ? `hedge-performance-${date}.png`
-            : `backtest-${date}.png`;
+        : chartMode.value === "hedge"
+          ? `hedge-performance-${date}.png`
+          : `backtest-${date}.png`;
   chartRef.value.exportPng({
     filename,
     scale: 4,
@@ -1953,6 +2034,65 @@ onMounted(loadBacktest);
             </div>
           </div>
         </div>
+
+        <!-- Data range -->
+        <div
+          class="pill dataPill"
+          style="position: relative"
+          @click="toggleMenu('data')"
+        >
+          <span class="pillLabel">Data</span>
+          <span class="pillValue">{{ dataRangeLabel }}</span>
+          <div
+            v-if="openMenu === 'data'"
+            class="dropdown data-dropdown"
+            @click.stop
+          >
+            <div class="dataRangeHeader">
+              <span class="freq-row__label">Backtest period</span>
+              <button
+                type="button"
+                class="dataRangeReset"
+                :disabled="isAllDataRange"
+                @click="resetDataRange"
+              >
+                All data
+              </button>
+            </div>
+            <div class="dataRangeValue">{{ dataRangeDetailLabel }}</div>
+            <div class="dateRangeSlider dataRangeSlider" :style="dataRangeStyle">
+              <span class="dateRangeTrack" aria-hidden="true"></span>
+              <span class="dateRangeSelection" aria-hidden="true"></span>
+              <input
+                v-model.number="dataRangeStartModel"
+                class="dateRangeInput"
+                type="range"
+                min="0"
+                max="100"
+                step="0.1"
+                aria-label="Backtest period start"
+                :aria-valuetext="dataRangeDateFormatter.format(selectedDataRange.start)"
+              />
+              <input
+                v-model.number="dataRangeEndModel"
+                class="dateRangeInput"
+                type="range"
+                min="0"
+                max="100"
+                step="0.1"
+                aria-label="Backtest period end"
+                :aria-valuetext="dataRangeDateFormatter.format(selectedDataRange.end)"
+              />
+            </div>
+            <div class="dataRangeEndpoints">
+              <span>{{ dataRangeDateFormatter.format(DATA_RANGE_START) }}</span>
+              <span>{{ dataRangeDateFormatter.format(dataRangeAvailableEnd) }}</span>
+            </div>
+            <p class="dataRangeHint">
+              Drag either handle to limit every backtest result to that period.
+            </p>
+          </div>
+        </div>
       </div>
 
       <div class="spacer"></div>
@@ -2020,16 +2160,6 @@ onMounted(loadBacktest);
                 @click="selectSingleView('distribution')"
               >
                 Distribution
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                :class="{
-                  active: mode === 'single' && chartMode === 'vol-pnl',
-                }"
-                @click="selectSingleView('vol-pnl')"
-              >
-                Vol-sorted PnL
               </button>
             </div>
           </div>
@@ -2458,36 +2588,6 @@ onMounted(loadBacktest);
           v-model:view-mode="distributionViewMode"
           :rows="cycleRows"
           :hedge-enabled="ui.hedgeEnabled"
-        />
-        <div
-          v-else-if="
-            mode === 'single' &&
-            !selectedCycle &&
-            chartMode === 'vol-pnl' &&
-            ivRvLoading
-          "
-          class="cycleDetailState"
-        >
-          Loading trailing realized volatility…
-        </div>
-        <div
-          v-else-if="
-            mode === 'single' &&
-            !selectedCycle &&
-            chartMode === 'vol-pnl' &&
-            ivRvError
-          "
-          class="cycleDetailState error"
-        >
-          {{ ivRvError }}
-        </div>
-        <VolPnlBarChart
-          v-else-if="
-            mode === 'single' && !selectedCycle && chartMode === 'vol-pnl'
-          "
-          ref="chartRef"
-          :rows="volPnlCycleRows"
-          @select="handleCycleSelect"
         />
         <div
           v-else-if="mode === 'single' && cycleDetailLoading"
@@ -3059,6 +3159,9 @@ onMounted(loadBacktest);
 .exitPill {
   order: 3;
 }
+.dataPill {
+  order: 4;
+}
 
 .pill {
   display: flex;
@@ -3201,6 +3304,82 @@ onMounted(loadBacktest);
   background: #0f0f12;
   border-color: rgba(255, 255, 255, 0.09);
   border-radius: 12px;
+}
+
+.data-dropdown {
+  right: 0;
+  left: auto;
+  width: min(390px, calc(100vw - 20px));
+  min-width: min(390px, calc(100vw - 20px));
+  padding: 15px 16px 13px;
+  border-color: rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  background: #0f0f12;
+}
+
+.dataRangeHeader,
+.dataRangeEndpoints {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dataRangeReset {
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.07);
+  color: #cfd2d6;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.dataRangeReset:disabled {
+  color: #555b62;
+  cursor: default;
+}
+
+.dataRangeValue {
+  margin-top: 13px;
+  color: #e8eaed;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dataRangeSlider {
+  margin-top: 12px;
+}
+
+.pill .data-dropdown input.dateRangeInput {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  pointer-events: none;
+}
+
+.dataRangeEndpoints {
+  margin-top: 3px;
+  color: #626870;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dataRangeHint {
+  margin: 11px 0 0;
+  color: #777d85;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .exit-mode-choices {
@@ -4255,6 +4434,41 @@ onMounted(loadBacktest);
   background: #f5f5f7;
   cursor: pointer;
   pointer-events: auto;
+}
+
+.dataRangeSlider {
+  height: 26px;
+}
+
+.dataRangeSlider .dateRangeTrack,
+.dataRangeSlider .dateRangeSelection {
+  top: 11px;
+  height: 4px;
+}
+
+.dataRangeSlider .dateRangeSelection {
+  background: #fff;
+}
+
+.dataRangeSlider .dateRangeInput {
+  height: 26px;
+}
+
+.dataRangeSlider .dateRangeInput::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 2px solid #0f0f12;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.32);
+}
+
+.dataRangeSlider .dateRangeInput::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #0f0f12;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.32);
 }
 
 .configCluster {

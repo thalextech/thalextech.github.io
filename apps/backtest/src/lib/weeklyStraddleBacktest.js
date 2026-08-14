@@ -211,7 +211,10 @@ const buildDetailQuotes = ({
 const buildEntryExpirations = ({ entryCandidates, dataEnd, config }) => {
   const bestByEntryTs = new Map();
   const startTs = config.start.getTime() / 1000;
-  const dataEndTs = dataEnd.getTime() / 1000;
+  const dataEndTs = Math.min(
+    dataEnd.getTime() / 1000,
+    config.end.getTime() / 1000,
+  );
   for (const quote of entryCandidates) {
     if (
       quote.ts < startTs ||
@@ -1219,9 +1222,12 @@ export const runWeeklyStraddleBacktest = ({
   const {
     indexRows: pi = [],
     quotes,
-    dataEnd,
+    dataEnd: preparedDataEnd,
     instrumentNamesById = [],
   } = p;
+  const dataEnd = new Date(
+    Math.min(preparedDataEnd.getTime(), c.end.getTime()),
+  );
   const indexes = p.indexes || buildBacktestIndexes(p);
   // Fixed weekday/hour (or every day at that hour). Do not fall through to
   // another weekday when a slot is missing — weekday sweeps would otherwise

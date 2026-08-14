@@ -59,6 +59,7 @@ export const hasWorkerDataset = (datasetKey) =>
 export const runSingleInWorker = ({
   datasetKey,
   loadRequest,
+  prepareConfig,
   config,
   onProgress,
 }) => requestWorker(
@@ -66,6 +67,7 @@ export const runSingleInWorker = ({
     type: "run-single",
     datasetKey,
     loadRequest,
+    prepareConfig,
     config,
   },
   { onProgress },
@@ -89,6 +91,7 @@ export const runAttributionInWorker = ({
 export const runSweepInWorker = ({
   datasetKey,
   loadRequest,
+  prepareConfig,
   configs,
   onProgress,
   onResult,
@@ -97,6 +100,7 @@ export const runSweepInWorker = ({
     type: "run-sweep",
     datasetKey,
     loadRequest,
+    prepareConfig,
     configs,
   },
   { onProgress, onResult },

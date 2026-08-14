@@ -103,6 +103,7 @@ export const createBacktestWorkerEngine = ({
       type,
       datasetKey,
       loadRequest,
+      prepareConfig,
       config,
       configs = [],
     } = data;
@@ -111,7 +112,7 @@ export const createBacktestWorkerEngine = ({
         requestId,
         datasetKey,
         loadRequest,
-        config,
+        config: prepareConfig || config,
         emit,
       });
       emit({
@@ -182,7 +183,7 @@ export const createBacktestWorkerEngine = ({
       requestId,
       datasetKey,
       loadRequest,
-      config: configs[0],
+      config: prepareConfig || configs[0],
       emit,
     });
     const runStartedAt = now();
