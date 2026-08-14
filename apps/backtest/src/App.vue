@@ -2233,14 +2233,35 @@ onMounted(loadBacktest);
           class="saveButton topSaveButton"
           type="button"
           :disabled="csvExporting || attributionLoading || !cycleRows.length"
-          title="Export one attribution-ready row per closed cycle"
+          :title="
+            csvExporting
+              ? 'Preparing CSV…'
+              : 'Export one attribution-ready row per closed cycle as CSV'
+          "
+          aria-label="Export CSV"
           @click="handleExportCsv"
         >
-          {{ csvExporting ? "Preparing CSV…" : "Export CSV" }}
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 3v12" />
+            <path d="M8 11l4 4 4-4" />
+            <path d="M5 20h14" />
+          </svg>
         </button>
         <button
           class="saveButton topSaveButton"
           type="button"
+          title="Save current chart as PNG"
+          aria-label="Save PNG"
           :disabled="
             mode === 'single'
               ? cycleDetailLoading || attributionLoading
@@ -2254,7 +2275,22 @@ onMounted(loadBacktest);
           "
           @click="handleSavePng"
         >
-          Save PNG
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path
+              d="M14.5 4l1.4 2H20a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2h4.1l1.4-2h5z"
+            />
+            <circle cx="12" cy="13" r="4" />
+          </svg>
         </button>
       </div>
     </div>
@@ -3943,6 +3979,7 @@ onMounted(loadBacktest);
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
 }
 
 .viewMenuTrigger svg {
@@ -4657,9 +4694,13 @@ onMounted(loadBacktest);
 }
 
 .topSaveButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
   height: 30px;
   box-sizing: border-box;
-  padding: 0 12px;
+  padding: 0;
   border-radius: 6px;
 }
 

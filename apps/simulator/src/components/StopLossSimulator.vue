@@ -6,6 +6,12 @@ import type { AtmOptionExpiryQuote } from "../lib/atmOptionChain";
 import type { GBMParams } from "../lib/gbm";
 import type { PathModelParams } from "../lib/pathModel";
 import type { PositionLeg } from "../lib/position";
+import {
+  closestExpirationTs,
+  maturityOptionsForQuotes,
+  selectableExpiryQuotes,
+  type StopLossDirection,
+} from "../lib/stopLossMaturity";
 import type {
   HistogramBinHover,
   HistogramBinStats,
@@ -29,7 +35,6 @@ const emit = defineEmits<{
   (event: "set-vol", value: number): void;
 }>();
 
-type Direction = "up" | "down";
 type ComparisonHistogramMode = "payoff" | "prob";
 type StopPathSummary = {
   stoppedPathCount: number;
@@ -47,8 +52,9 @@ const DAY_OPTIONS = MATURITY_DAYS.map((days) => ({
   label: `${days}d`,
   value: days,
 }));
+const DEFAULT_MATURITY_DAYS = 60;
 const EMPTY_OPTION_PRICING = Object.freeze({});
-const direction = ref<Direction>("up");
+const direction = ref<StopLossDirection>("up");
 const histogramMode = ref<ComparisonHistogramMode>("prob");
 const evCurveMode = ref(false);
 const pathFilter = ref<"all" | "stopped">("all");
@@ -57,7 +63,7 @@ const leverage = ref(10);
 const leverageDraft = ref(10);
 const annualFundingPercent = ref(8);
 const horizonDays = ref(14);
-const targetMaturityDays = ref<number>(60);
+const selectedExpirationTs = ref(0);
 const optionStats = ref<SimulationStats | null>(null);
 const perpStats = ref<SimulationStats | null>(null);
 const hoveredBinStats = ref<HistogramBinHover | null>(null);
@@ -179,28 +185,44 @@ const setFunding = (value: number): void => {
     : 8;
 };
 
-const eligibleExpiryQuotes = computed(() => {
-  const minimumExpiry = props.valuationTs + horizonDays.value * SECONDS_PER_DAY;
-  return props.expiryQuotes.filter(
-    (quote) => quote.expirationTs >= minimumExpiry,
-  );
-});
+const selectableQuotes = computed(() =>
+  selectableExpiryQuotes(
+    props.expiryQuotes,
+    props.valuationTs,
+    horizonDays.value,
+    direction.value,
+  ),
+);
 
-const selectedExpiryQuote = computed(() => {
-  const candidates = eligibleExpiryQuotes.value.filter(
-    (quote) => direction.value === "up" || quote.putInstrumentName,
-  );
-  if (!candidates.length) return null;
-  const maturityDistance = (quote: AtmOptionExpiryQuote): number =>
-    Math.abs(
-      (quote.expirationTs - props.valuationTs) / SECONDS_PER_DAY -
-        targetMaturityDays.value,
-    );
-  return [...candidates].sort(
-    (first, second) =>
-      maturityDistance(first) - maturityDistance(second),
-  )[0];
-});
+const maturityOptions = computed(() =>
+  maturityOptionsForQuotes(selectableQuotes.value, props.valuationTs),
+);
+
+watch(
+  selectableQuotes,
+  (quotes) => {
+    if (
+      quotes.some(
+        (quote) => quote.expirationTs === selectedExpirationTs.value,
+      )
+    ) {
+      return;
+    }
+    const targetExpirationTs =
+      selectedExpirationTs.value ||
+      props.valuationTs + DEFAULT_MATURITY_DAYS * SECONDS_PER_DAY;
+    selectedExpirationTs.value =
+      closestExpirationTs(quotes, targetExpirationTs) ?? 0;
+  },
+  { immediate: true },
+);
+
+const selectedExpiryQuote = computed(
+  () =>
+    selectableQuotes.value.find(
+      (quote) => quote.expirationTs === selectedExpirationTs.value,
+    ) ?? null,
+);
 
 const selectedOptionMark = computed(() => {
   const quote = selectedExpiryQuote.value;
@@ -238,7 +260,7 @@ watch(
     leverage.value,
     annualFundingPercent.value,
     horizonDays.value,
-    targetMaturityDays.value,
+    selectedExpirationTs.value,
     selectedExpiryQuote.value?.callIv,
     selectedOptionMark.value,
     evCurveMode.value,
@@ -497,11 +519,13 @@ const hoveredPriceRangeLabel = computed(() => {
         <span class="pill-label">Maturity</span>
         <span class="pill-value">
           <StyledSelectMenu
-            v-model="targetMaturityDays"
+            v-if="maturityOptions.length"
+            v-model="selectedExpirationTs"
             label="Maturity"
-            :options="DAY_OPTIONS"
+            :options="maturityOptions"
             embedded
           />
+          <span v-else>—</span>
         </span>
       </div>
       <button
