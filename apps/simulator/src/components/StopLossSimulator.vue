@@ -3,6 +3,10 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import CloudChart from "./CloudChart.vue";
 import StyledSelectMenu from "./StyledSelectMenu.vue";
 import type { AtmOptionExpiryQuote } from "../lib/atmOptionChain";
+import {
+  blackScholesGreeks,
+  computeOptionOmega,
+} from "../lib/blackScholes";
 import type { GBMParams } from "../lib/gbm";
 import type { PathModelParams } from "../lib/pathModel";
 import type { PositionLeg } from "../lib/position";
@@ -10,7 +14,6 @@ import {
   closestExpirationTs,
   maturityOptionsForQuotes,
   selectableExpiryQuotes,
-  type StopLossDirection,
 } from "../lib/stopLossMaturity";
 import type {
   HistogramBinHover,
@@ -35,18 +38,10 @@ const emit = defineEmits<{
   (event: "set-vol", value: number): void;
 }>();
 
-type ComparisonHistogramMode = "payoff" | "prob";
-type StopPathSummary = {
-  stoppedPathCount: number;
-  sampledPathCount: number;
-  highlightedLoss: number;
-  stopDay: number;
-  finalPrice: number;
-  opportunityCost: number;
-};
-
 const SECONDS_PER_DAY = 24 * 60 * 60;
 const DAYS_PER_YEAR = 365.25;
+const RV_MIN_PERCENT = 10;
+const RV_MAX_PERCENT = 120;
 const MATURITY_DAYS = [7, 14, 30, 60, 90, 180] as const;
 const DAY_OPTIONS = MATURITY_DAYS.map((days) => ({
   label: `${days}d`,
@@ -54,20 +49,22 @@ const DAY_OPTIONS = MATURITY_DAYS.map((days) => ({
 }));
 const DEFAULT_MATURITY_DAYS = 60;
 const EMPTY_OPTION_PRICING = Object.freeze({});
-const direction = ref<StopLossDirection>("up");
-const histogramMode = ref<ComparisonHistogramMode>("prob");
-const evCurveMode = ref(false);
-const pathFilter = ref<"all" | "stopped">("all");
+const payoffDisplayMode = ref<"payoff" | "frequency">("payoff");
+const payoffChartMode = ref<"terminal" | "cumulative">("terminal");
 const riskBudget = ref(10_000);
 const leverage = ref(10);
 const leverageDraft = ref(10);
+const leverageOverridden = ref(false);
 const annualFundingPercent = ref(8);
 const horizonDays = ref(14);
 const selectedExpirationTs = ref(0);
 const optionStats = ref<SimulationStats | null>(null);
 const perpStats = ref<SimulationStats | null>(null);
+const payoffDifference = ref<{
+  optionWinRate: number;
+  medianAdvantage: number;
+} | null>(null);
 const hoveredBinStats = ref<HistogramBinHover | null>(null);
-const stopPathSummary = ref<StopPathSummary | null>(null);
 
 type TableStats = Pick<
   SimulationStats,
@@ -103,10 +100,17 @@ const setRiskBudget = (value: number): void => {
     : 10_000;
 };
 
-const setLeverage = (value: number): void => {
-  const next = Number.isFinite(value) ? clamp(value, 1, 100) : 10;
+const applyLeverage = (value: number): void => {
+  const next = Number.isFinite(value)
+    ? Math.round(clamp(value, 1, 100) * 100) / 100
+    : 10;
   leverage.value = next;
   leverageDraft.value = next;
+};
+
+const setLeverage = (value: number): void => {
+  leverageOverridden.value = true;
+  applyLeverage(value);
 };
 const LEVERAGE_DEBOUNCE_MS = 180;
 const LEVERAGE_AUTOCLOSE_MS = 2000;
@@ -185,12 +189,20 @@ const setFunding = (value: number): void => {
     : 8;
 };
 
+const setRealizedVolPercent = (value: number): void => {
+  if (!Number.isFinite(value)) return;
+  emit(
+    "set-vol",
+    clamp(value, RV_MIN_PERCENT, RV_MAX_PERCENT) / 100,
+  );
+};
+
 const selectableQuotes = computed(() =>
   selectableExpiryQuotes(
     props.expiryQuotes,
     props.valuationTs,
     horizonDays.value,
-    direction.value,
+    "up",
   ),
 );
 
@@ -227,25 +239,22 @@ const selectedExpiryQuote = computed(
 const selectedOptionMark = computed(() => {
   const quote = selectedExpiryQuote.value;
   if (!quote) return null;
-  return direction.value === "up" ? quote.callMark : quote.putMark;
+  return quote.callMark;
 });
 
 const selectedInstrumentName = computed(() => {
   const quote = selectedExpiryQuote.value;
   if (!quote) return "ATM option";
-  return direction.value === "up"
-    ? quote.callInstrumentName
-    : quote.putInstrumentName ?? quote.callInstrumentName;
+  return quote.callInstrumentName;
 });
 
-const toggleHistogramMode = (): void => {
-  histogramMode.value =
-    histogramMode.value === "prob" ? "payoff" : "prob";
+const setPayoffDisplayMode = (mode: "payoff" | "frequency"): void => {
+  payoffDisplayMode.value = mode;
+  hoveredBinStats.value = null;
 };
 
-const setEvCurveMode = (enabled: boolean): void => {
-  evCurveMode.value = enabled;
-  pathFilter.value = "all";
+const setPayoffChartMode = (mode: "terminal" | "cumulative"): void => {
+  payoffChartMode.value = mode;
   hoveredBinStats.value = null;
 };
 
@@ -255,7 +264,6 @@ watch(
     props.params.s0,
     props.params.mu,
     props.params.vol,
-    direction.value,
     riskBudget.value,
     leverage.value,
     annualFundingPercent.value,
@@ -263,13 +271,12 @@ watch(
     selectedExpirationTs.value,
     selectedExpiryQuote.value?.callIv,
     selectedOptionMark.value,
-    evCurveMode.value,
   ],
   () => {
     optionStats.value = null;
     perpStats.value = null;
+    payoffDifference.value = null;
     hoveredBinStats.value = null;
-    stopPathSummary.value = null;
   },
 );
 
@@ -282,19 +289,54 @@ const comparisonParams = computed<GBMParams>(() => {
   };
 });
 
-const optionType = computed(() => (direction.value === "up" ? "call" : "put"));
-const perpSide = computed(() => (direction.value === "up" ? "buy" : "sell"));
-const optionLabel = computed(() =>
-  direction.value === "up" ? "Long ATM call" : "Long ATM put",
-);
-const perpLabel = computed(() =>
-  direction.value === "up" ? "Long perpetual" : "Short perpetual",
-);
+const optionType = "call" as const;
+const perpSide = "buy" as const;
+const optionLabel = "Long ATM call";
+const perpLabel = "Long perpetual";
 
 const optionPremium = computed(() =>
   Number.isFinite(selectedOptionMark.value)
     ? Math.max(0, Number(selectedOptionMark.value))
     : 0,
+);
+
+const optionOmega = computed(() => {
+  const quote = selectedExpiryQuote.value;
+  const spot = Number(props.params.s0);
+  const strike = Number(quote?.strike);
+  const iv = Number(quote?.callIv);
+  const premium = optionPremium.value;
+  const timeToExpiry =
+    quote == null
+      ? 0
+      : Math.max(0, quote.expirationTs - props.valuationTs) /
+        (DAYS_PER_YEAR * SECONDS_PER_DAY);
+  if (
+    !Number.isFinite(spot) ||
+    !Number.isFinite(strike) ||
+    !Number.isFinite(iv) ||
+    timeToExpiry <= 0
+  ) {
+    return null;
+  }
+  const { delta } = blackScholesGreeks(
+    spot,
+    strike,
+    timeToExpiry,
+    iv,
+    0,
+    optionType,
+  );
+  return computeOptionOmega(delta, spot, premium);
+});
+
+watch(
+  optionOmega,
+  (omega) => {
+    if (leverageOverridden.value || omega == null) return;
+    applyLeverage(omega);
+  },
+  { immediate: true },
 );
 
 const optionContracts = computed(() =>
@@ -307,7 +349,7 @@ const optionLegs = computed<PositionLeg[]>(() => [
     kind: "option",
     side: "buy",
     qty: optionContracts.value,
-    optionType: optionType.value,
+    optionType,
     strike: selectedExpiryQuote.value?.strike ?? props.params.s0,
     premium: optionPremium.value,
   },
@@ -331,15 +373,13 @@ const stopDistance = computed(() =>
   perpContracts.value > 0 ? riskBudget.value / perpContracts.value : 0,
 );
 const stopPrice = computed(() =>
-  direction.value === "up"
-    ? Math.max(0, props.params.s0 - stopDistance.value)
-    : props.params.s0 + stopDistance.value,
+  Math.max(0, props.params.s0 - stopDistance.value),
 );
 const perpLegs = computed<PositionLeg[]>(() => [
   {
     id: "stop-loss-perp",
     kind: "future",
-    side: perpSide.value,
+    side: perpSide,
     qty: perpContracts.value,
     entry: props.params.s0,
     stopLoss: stopPrice.value,
@@ -373,6 +413,27 @@ const formatSignedPercentagePoints = (value: number): string => {
   const sign = points > 0 ? "+" : points < 0 ? "−" : "";
   return `${sign}${Math.abs(points).toFixed(1)} pp`;
 };
+
+const payoffChartContext = computed(() => {
+  const iv = Number(selectedExpiryQuote.value?.callIv);
+  const maturityDays = Math.max(
+    0,
+    Math.round(
+      (selectedExpirationTs.value - props.valuationTs) / SECONDS_PER_DAY,
+    ),
+  );
+  const funding = Number(annualFundingPercent.value.toFixed(1));
+  return [
+    selectedInstrumentName.value,
+    `IV ${Number.isFinite(iv) ? `${(iv * 100).toFixed(1)}%` : "—"}`,
+    `RV ${(props.params.vol * 100).toFixed(1)}%`,
+    `Risk ${formatUsd(riskBudget.value)}`,
+    `Perp ${leverage.value.toFixed(2)}×`,
+    `Funding ${funding}%/yr`,
+    `Horizon ${horizonDays.value}d`,
+    `Maturity ${maturityDays}d`,
+  ].join(" · ");
+});
 
 const optionMarketReady = computed(
   () =>
@@ -412,26 +473,8 @@ const hoveredPriceRangeLabel = computed(() => {
 
 <template>
   <section class="stop-loss-simulator">
-    <div class="comparison-bar">
-      <div class="direction-toggle" role="group" aria-label="Market direction">
-        <button
-          type="button"
-          :class="{ 'is-active': direction === 'up' }"
-          :aria-pressed="direction === 'up'"
-          @click="direction = 'up'"
-        >
-          Long
-        </button>
-        <button
-          type="button"
-          :class="{ 'is-active': direction === 'down' }"
-          :aria-pressed="direction === 'down'"
-          @click="direction = 'down'"
-        >
-          Short
-        </button>
-      </div>
-
+    <div class="comparison-shell">
+      <div class="comparison-bar">
       <label class="control-pill control-pill--risk">
         <span class="pill-label">Risk</span>
         <span class="pill-value">
@@ -470,7 +513,7 @@ const hoveredPriceRangeLabel = computed(() => {
             type="range"
             min="1"
             max="100"
-            step="1"
+            step="0.1"
             :value="leverageDraft"
             aria-label="Perpetual leverage"
             @input="
@@ -528,38 +571,76 @@ const hoveredPriceRangeLabel = computed(() => {
           <span v-else>—</span>
         </span>
       </div>
-      <button
-        v-if="!evCurveMode"
-        type="button"
-        class="histogram-mode-button"
-        :aria-label="`Histogram mode: ${
-          histogramMode === 'prob' ? 'probability times PnL' : 'PnL'
-        }`"
-        @click="toggleHistogramMode"
-      >
-        {{ histogramMode === "prob" ? "Prob × PnL" : "PnL" }}
-      </button>
-      <div class="path-mode-toggle" role="group" aria-label="Path display mode">
-        <button
-          type="button"
-          :class="{ 'is-active': !evCurveMode }"
-          :aria-pressed="!evCurveMode"
-          @click="setEvCurveMode(false)"
+      <label class="control-pill control-pill--rv">
+        <span class="pill-label">RV</span>
+        <span class="pill-value">
+          <input
+            type="number"
+            :min="RV_MIN_PERCENT"
+            :max="RV_MAX_PERCENT"
+            step="1"
+            :value="Math.round(params.vol * 100)"
+            aria-label="Annual realized volatility percentage"
+            @change="
+              setRealizedVolPercent(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
+            @blur="
+              setRealizedVolPercent(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
+          />
+          %
+        </span>
+      </label>
+      <div class="comparison-view-toggles">
+        <div class="path-mode-toggle" role="group" aria-label="Chart organization">
+          <button
+            type="button"
+            :class="{ 'is-active': payoffChartMode === 'terminal' }"
+            :aria-pressed="payoffChartMode === 'terminal'"
+            @click="setPayoffChartMode('terminal')"
+          >
+            Terminal bins
+          </button>
+          <button
+            type="button"
+            :class="{ 'is-active': payoffChartMode === 'cumulative' }"
+            :aria-pressed="payoffChartMode === 'cumulative'"
+            @click="setPayoffChartMode('cumulative')"
+          >
+            Cumulative
+          </button>
+        </div>
+        <div
+          v-if="payoffChartMode === 'terminal'"
+          class="path-mode-toggle"
+          role="group"
+          aria-label="Payoff display mode"
         >
-          Cloud
-        </button>
-        <button
-          type="button"
-          :class="{ 'is-active': evCurveMode }"
-          :aria-pressed="evCurveMode"
-          @click="setEvCurveMode(true)"
-        >
-          Cumul
-        </button>
+          <button
+            type="button"
+            :class="{ 'is-active': payoffDisplayMode === 'payoff' }"
+            :aria-pressed="payoffDisplayMode === 'payoff'"
+            @click="setPayoffDisplayMode('payoff')"
+          >
+            Payoff
+          </button>
+          <button
+            type="button"
+            :class="{ 'is-active': payoffDisplayMode === 'frequency' }"
+            :aria-pressed="payoffDisplayMode === 'frequency'"
+            @click="setPayoffDisplayMode('frequency')"
+          >
+            Freq × Payoff
+          </button>
+        </div>
       </div>
-    </div>
+      </div>
 
-    <article class="comparison-row">
+      <article class="comparison-row">
       <header>
         <div class="comparison-chart-title">
           <div class="instrument-meta">
@@ -581,72 +662,52 @@ const hoveredPriceRangeLabel = computed(() => {
               }}
             </small>
           </div>
-          <button
-            v-if="!evCurveMode"
-            type="button"
-            class="stopped-path-filter"
-            role="checkbox"
-            :class="{ 'is-active': pathFilter === 'stopped' }"
-            :aria-checked="pathFilter === 'stopped'"
-            @click="pathFilter = pathFilter === 'stopped' ? 'all' : 'stopped'"
-          >
-            <i aria-hidden="true"></i>
-            Stopped-out paths
-          </button>
-          <small
-            v-if="pathFilter === 'stopped'"
-            class="stop-summary-inline"
-          >
-            <template v-if="stopPathSummary">
-              {{ stopPathSummary.stoppedPathCount }} stopped · high
-              {{ formatUsd(stopPathSummary.finalPrice) }} · worst
-              {{ formatSignedUsd(stopPathSummary.highlightedLoss) }}
-            </template>
-            <template v-else>No displayed stops</template>
-          </small>
         </div>
       </header>
-      <div class="comparison-chart">
-        <CloudChart
-          v-if="optionMarketReady"
-          :seed="seed"
-          :params="comparisonParams"
-          :pathModel="pathModel"
-          :valuationTs="valuationTs"
-          :samplePathLimit="samplePathLimit"
-          :muMin="-5"
-          :muMax="5"
-          :volMin="0.1"
-          :volMax="1.2"
-          :histMode="histogramMode"
-          :histogramOpacity="0.45"
-          :colorMin="colorMin"
-          :colorMax="colorMax"
-          :histBinsMultiplier="histBinsMultiplier"
-          :legs="optionLegs"
-          :optionPricingByLegId="optionPricing"
-          :comparisonLegs="perpLegs"
-          :comparisonOptionPricingByLegId="EMPTY_OPTION_PRICING"
-          :primarySeriesLabel="optionLabel"
-          :comparisonSeriesLabel="perpLabel"
-          :comparisonReferencePrice="stopPrice"
-          :pathFilter="pathFilter"
-          :evCurveMode="evCurveMode"
-          @set-mu="emit('set-mu', $event)"
-          @set-vol="emit('set-vol', $event)"
-          @stats-update="optionStats = $event"
-          @comparison-stats-update="perpStats = $event"
-          @stop-path-update="stopPathSummary = $event"
-          @histogram-bin-hover="hoveredBinStats = $event"
-        />
-        <div v-else class="comparison-chart-loading">
-          Loading selected option quote…
+      <div class="comparison-main comparison-main--cumul">
+        <div class="comparison-chart">
+          <CloudChart
+            v-if="optionMarketReady"
+            :seed="seed"
+            :params="comparisonParams"
+            :pathModel="pathModel"
+            :valuationTs="valuationTs"
+            :samplePathLimit="samplePathLimit"
+            :muMin="-5"
+            :muMax="5"
+            :volMin="0.1"
+            :volMax="1.2"
+            :histogramOpacity="0.45"
+            :colorMin="colorMin"
+            :colorMax="colorMax"
+            :histBinsMultiplier="histBinsMultiplier"
+            :legs="optionLegs"
+            :optionPricingByLegId="optionPricing"
+            :comparisonLegs="perpLegs"
+            :comparisonOptionPricingByLegId="EMPTY_OPTION_PRICING"
+            :primarySeriesLabel="optionLabel"
+            :comparisonSeriesLabel="perpLabel"
+            :payoffDisplayMode="payoffDisplayMode"
+            :payoffChartMode="payoffChartMode"
+            :payoffChartContext="payoffChartContext"
+            @set-mu="emit('set-mu', $event)"
+            @set-vol="emit('set-vol', $event)"
+            @stats-update="optionStats = $event"
+            @comparison-stats-update="perpStats = $event"
+            @payoff-difference-update="payoffDifference = $event"
+            @histogram-bin-hover="hoveredBinStats = $event"
+          />
+          <div v-else class="comparison-chart-loading">
+            Loading selected option quote…
+          </div>
         </div>
       </div>
       <div
-        v-if="!evCurveMode"
         class="comparison-table-wrap"
-        :class="{ 'is-bin-filtered': hoveredBinStats != null }"
+        :class="{
+          'is-bin-filtered': hoveredBinStats != null,
+          'is-cumul': true,
+        }"
         aria-live="polite"
       >
         <table class="comparison-table">
@@ -688,8 +749,7 @@ const hoveredPriceRangeLabel = computed(() => {
               <td>
                 {{
                   formatSignedUsd(
-                    (optionDisplayStats?.medianPayoff ?? NaN) -
-                      (perpDisplayStats?.medianPayoff ?? NaN),
+                    payoffDifference?.medianAdvantage ?? NaN,
                   )
                 }}
               </td>
@@ -737,65 +797,54 @@ const hoveredPriceRangeLabel = computed(() => {
           </tbody>
         </table>
       </div>
-    </article>
-
+      </article>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .stop-loss-simulator {
+  box-sizing: border-box;
+  width: 100%;
   padding: 6px 0 56px;
   color: var(--color-text);
 }
 
-.direction-toggle {
+.comparison-shell {
+  --comparison-control-height: clamp(36px, 2.25cqw, 46px);
+  --comparison-gap: clamp(6px, 0.375cqw, 9px);
+  --comparison-padding: clamp(6px, 0.375cqw, 9px);
+  --comparison-font-small: clamp(10px, 0.625cqw, 13px);
+  --comparison-font-body: clamp(11px, 0.6875cqw, 14px);
   display: flex;
+  flex-direction: column;
   box-sizing: border-box;
-  height: 36px;
-  gap: 2px;
-  padding: 3px;
-  border: 0;
-  border-radius: 7px;
-  background: #111216;
+  width: 100%;
+  min-width: 0;
+  container-type: inline-size;
 }
 
-.direction-toggle button {
-  min-width: 58px;
-  height: 30px;
-  padding: 0 13px;
-  border-radius: 5px;
-  color: #8b929a;
-  font-size: 11px;
-  font-weight: 500;
-  text-align: center;
-}
-
-.direction-toggle button.is-active {
-  background: #1a1c21;
-  color: #f1f3f5;
+.comparison-shell > .comparison-bar,
+.comparison-shell > .comparison-row {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
 }
 
 .comparison-bar {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  gap: var(--comparison-gap);
   min-width: 0;
-  padding: 6px;
-  border-top: 1px solid var(--color-border);
-  border-bottom: 1px solid var(--color-border);
+  padding: var(--comparison-padding);
+  border: 1px solid var(--color-border);
   background: #0b0c0f;
   font-family: "Helvetica Neue", Helvetica, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
-}
-
-.comparison-bar .direction-toggle {
-  flex: 0 0 auto;
-}
-
-.comparison-bar .direction-toggle button {
-  min-width: 58px;
-  padding: 0 13px;
 }
 
 .control-pill {
@@ -803,10 +852,10 @@ const hoveredPriceRangeLabel = computed(() => {
   flex: 0 0 auto;
   align-items: center;
   box-sizing: border-box;
-  height: 36px;
-  gap: 10px;
+  height: var(--comparison-control-height);
+  gap: clamp(10px, 0.625cqw, 13px);
   min-width: 0;
-  padding: 0 11px;
+  padding: 0 clamp(11px, 0.6875cqw, 15px);
   border: 1px solid var(--color-border);
   border-radius: 7px;
   background: transparent;
@@ -821,7 +870,7 @@ const hoveredPriceRangeLabel = computed(() => {
 
 .pill-label {
   color: #70767d;
-  font-size: 10px;
+  font-size: var(--comparison-font-small);
   font-family: inherit;
   font-weight: 500;
   letter-spacing: 0.01em;
@@ -833,7 +882,7 @@ const hoveredPriceRangeLabel = computed(() => {
   align-items: center;
   min-width: 0;
   color: #e8eaed;
-  font-size: 11px;
+  font-size: var(--comparison-font-body);
   font-weight: 500;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -856,7 +905,8 @@ const hoveredPriceRangeLabel = computed(() => {
 }
 
 .control-pill--risk .pill-value,
-.control-pill--funding .pill-value {
+.control-pill--funding .pill-value,
+.control-pill--rv .pill-value {
   gap: 3px;
 }
 
@@ -866,6 +916,10 @@ const hoveredPriceRangeLabel = computed(() => {
 
 .control-pill--funding .pill-value input {
   width: 25px;
+}
+
+.control-pill--rv .pill-value input {
+  width: 28px;
 }
 
 .pill-value input::-webkit-inner-spin-button,
@@ -886,9 +940,9 @@ const hoveredPriceRangeLabel = computed(() => {
   display: flex;
   align-items: center;
   box-sizing: border-box;
-  height: 34px;
-  gap: 10px;
-  padding: 0 11px;
+  height: calc(var(--comparison-control-height) - 2px);
+  gap: clamp(10px, 0.625cqw, 13px);
+  padding: 0 clamp(11px, 0.6875cqw, 15px);
   cursor: pointer;
   list-style: none;
 }
@@ -1187,6 +1241,8 @@ const hoveredPriceRangeLabel = computed(() => {
 }
 
 .comparison-row {
+  box-sizing: border-box;
+  width: 100%;
   overflow: hidden;
   margin-top: 2px;
   border: 1px solid var(--color-border);
@@ -1199,9 +1255,9 @@ const hoveredPriceRangeLabel = computed(() => {
   align-items: center;
   justify-content: space-between;
   box-sizing: border-box;
-  height: 30px;
+  height: clamp(30px, 1.875cqw, 38px);
   min-height: 0;
-  padding: 0 16px;
+  padding: 0 clamp(16px, 1cqw, 22px);
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
@@ -1211,7 +1267,7 @@ const hoveredPriceRangeLabel = computed(() => {
   height: 100%;
   gap: 20px;
   min-width: 0;
-  font-size: 9px;
+  font-size: clamp(9px, 0.5625cqw, 12px);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1220,7 +1276,7 @@ const hoveredPriceRangeLabel = computed(() => {
   flex: 0 1 auto;
   align-items: center;
   min-width: 0;
-  gap: 12px;
+  gap: clamp(12px, 0.75cqw, 16px);
   line-height: 1;
 }
 
@@ -1320,11 +1376,22 @@ const hoveredPriceRangeLabel = computed(() => {
   border-color: rgba(255, 255, 255, 0.22);
 }
 
+.comparison-view-toggles {
+  display: flex;
+  align-items: center;
+  gap: var(--comparison-gap);
+  margin-left: auto;
+}
+
+.comparison-view-toggles .path-mode-toggle {
+  margin-left: 0;
+}
+
 .path-mode-toggle {
   display: grid;
   grid-template-columns: 1fr 1fr;
   box-sizing: border-box;
-  height: 36px;
+  height: var(--comparison-control-height);
   margin-left: auto;
   padding: 3px;
   border-radius: 7px;
@@ -1339,7 +1406,7 @@ const hoveredPriceRangeLabel = computed(() => {
   background: transparent;
   color: #7b828a;
   font-family: inherit;
-  font-size: 10px;
+  font-size: var(--comparison-font-small);
   font-weight: 550;
   white-space: nowrap;
 }
@@ -1353,12 +1420,27 @@ const hoveredPriceRangeLabel = computed(() => {
   color: #f1f3f5;
 }
 
+.comparison-main {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+
+.comparison-main--cumul {
+  min-height: 0;
+}
+
 .comparison-chart {
   position: relative;
   width: 100%;
   aspect-ratio: 2.15 / 1;
   --chart-header-height: 0px;
   --chart-legend-height: 0px;
+}
+
+.comparison-main--cumul .comparison-chart {
+  min-height: 0;
+  aspect-ratio: 1200 / 520;
 }
 
 .comparison-chart-loading {
@@ -1373,10 +1455,16 @@ const hoveredPriceRangeLabel = computed(() => {
 .comparison-table-wrap {
   position: relative;
   z-index: 3;
+  box-sizing: border-box;
+  width: 100%;
   overflow-x: auto;
   margin-top: -68px;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
   background: #0b0c0f;
+}
+
+.comparison-table-wrap.is-cumul {
+  margin-top: 0;
 }
 
 .comparison-table {
@@ -1384,13 +1472,13 @@ const hoveredPriceRangeLabel = computed(() => {
   border-collapse: collapse;
   table-layout: fixed;
   color: #cbd0d5;
-  font-size: 11px;
+  font-size: var(--comparison-font-body);
   font-variant-numeric: tabular-nums;
 }
 
 .comparison-table th,
 .comparison-table td {
-  padding: 10px 16px;
+  padding: clamp(8px, 0.5cqw, 11px) clamp(16px, 1cqw, 22px);
   border-bottom: 1px solid rgba(255, 255, 255, 0.055);
   text-align: right;
 }
@@ -1402,7 +1490,7 @@ const hoveredPriceRangeLabel = computed(() => {
 
 .comparison-table thead th {
   color: #6f7780;
-  font-size: 9px;
+  font-size: clamp(9px, 0.5625cqw, 12px);
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -1479,19 +1567,27 @@ const hoveredPriceRangeLabel = computed(() => {
   .expiry-field {
     grid-column: span 3;
   }
+
+}
+
+@media (max-width: 1280px) {
+  .comparison-bar {
+    flex-wrap: wrap;
+  }
+
+  .comparison-view-toggles {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
 }
 
 @media (max-width: 760px) {
-  .direction-toggle {
-    width: 100%;
+  .comparison-view-toggles {
+    align-items: stretch;
+    flex-direction: column;
   }
 
-  .direction-toggle button {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .comparison-bar .direction-toggle {
+  .comparison-view-toggles .path-mode-toggle {
     width: 100%;
   }
 
@@ -1531,8 +1627,9 @@ const hoveredPriceRangeLabel = computed(() => {
     padding-bottom: 12px;
   }
 
-  .comparison-chart {
-    aspect-ratio: 1.5 / 1;
+  .comparison-main--cumul .comparison-chart {
+    min-height: 0;
+    aspect-ratio: 1200 / 520;
   }
 
   .comparison-table-wrap {

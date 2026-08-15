@@ -40,15 +40,17 @@ const DRAWN_PATHS_STEP = 100;
 const TIME_STEPS_MIN = 24;
 const TIME_STEPS_MAX = 4000;
 const TIME_STEPS_STEP = 24;
-const EXPORT_PADDING_LEFT = 120;
-const EXPORT_PADDING_TOP = 100;
-const EXPORT_PADDING_RIGHT = 56;
-const EXPORT_PADDING_BOTTOM = 48;
+const EXPORT_WIDTH = 1600;
+const EXPORT_HEIGHT = 900;
+const EXPORT_PADDING_X = 48;
+const EXPORT_PADDING_Y = 42;
+const EXPORT_HTML_FONT_SCALE = 1.18;
 
 const generateSeed = (): number => Math.floor(Math.random() * 1_000_000_000);
 const seed = ref(generateSeed());
 const activeSimulatorTab = ref<"strategy" | "stop-loss">("strategy");
 const appMainRef = ref<HTMLElement | null>(null);
+const workspaceRef = ref<HTMLElement | null>(null);
 const chartSectionRef = ref<HTMLElement | null>(null);
 const guideMu = ref<number | null>(null);
 const guideVol = ref<number | null>(null);
@@ -127,6 +129,26 @@ const SVG_EXPORT_STYLE = `
   .axis .payoff-summary-label { fill: rgba(148, 163, 184, 0.92); stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-variant-numeric: tabular-nums; }
   .annotation-label-leader { stroke: rgba(148, 163, 184, 0.45); stroke-width: 1; }
   .forward-value-label { fill: rgba(148, 163, 184, 0.88); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .ev-grid line { stroke: rgba(255, 255, 255, 0.07); stroke-width: 1; }
+  .ev-zero-line { stroke: rgba(226, 232, 240, 0.38); stroke-width: 1.25; }
+  .ev-area { stroke: none; fill-opacity: 1; }
+  .ev-cumulative-chart .ev-area--option { fill-opacity: 0.18; }
+  .ev-cumulative-chart .ev-area--perp { fill-opacity: 0.13; }
+  .ev-line { fill: none; stroke-width: 2.8; stroke-linecap: round; stroke-linejoin: round; }
+  .ev-contour { fill: none; stroke-width: 1; stroke-opacity: 0.16; }
+  .ev-contour--perp { stroke-opacity: 0.12; }
+  .ev-axis text { fill: #7f8993; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .ev-axis-title { fill: #969fa8; font-size: 13px; font-weight: 600; }
+  .ev-region-label { fill: #8b949d; font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+  .ev-title { fill: #e2e7ec; font-size: 17px; font-weight: 700; }
+  .ev-subtitle { fill: #7d8791; font-size: 12px; font-weight: 500; }
+  .ev-context { fill: #939ca5; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .ev-endpoint { stroke: #0a0b0e; stroke-width: 1.25; }
+  .ev-endpoint-leader { stroke-width: 1.25; stroke-opacity: 0.8; }
+  .ev-endpoint-label { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; paint-order: stroke; stroke: #0a0b0e; stroke-width: 4px; }
+  .ev-annotation-dot { fill: #b3bdc6; stroke: #0b0c0f; stroke-width: 1.25; }
+  .ev-annotation-line { stroke: rgba(226, 232, 240, 0.7); stroke-width: 1.25; }
+  .ev-annotation-label { fill: #e1e6eb; font-size: 12px; font-weight: 550; paint-order: stroke; stroke: #0a0b0e; stroke-width: 4px; }
 `;
 
 const isVisibleForExport = (element: Element): boolean => {
@@ -145,6 +167,11 @@ const parseCssPixels = (value: string): number => {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+const scaleCanvasFont = (font: string, scale: number): string =>
+  font.replace(/(\d+(?:\.\d+)?)px/, (_match, size: string) =>
+    `${Number(size) * scale}px`,
+  );
 
 const isRenderableColor = (value: string): boolean =>
   !!value &&
@@ -244,17 +271,29 @@ const drawText = (
   rect: DOMRect,
   style: CSSStyleDeclaration,
   rootRect: DOMRect,
+  fontScale: number,
 ): void => {
   const trimmed = text.replace(/\s+/g, " ").trim();
   if (!trimmed || rect.width <= 0 || rect.height <= 0) return;
   ctx.fillStyle = style.color || "#fff";
-  ctx.font = style.font;
-  ctx.textAlign = style.textAlign === "right" ? "right" : "left";
+  ctx.font = scaleCanvasFont(style.font, fontScale);
+  ctx.textAlign =
+    style.textAlign === "right"
+      ? "right"
+      : style.textAlign === "center"
+        ? "center"
+        : "left";
   ctx.textBaseline = "alphabetic";
-  const fontSize = parseCssPixels(style.fontSize) || 12;
+  const fontSize = (parseCssPixels(style.fontSize) || 12) * fontScale;
   const x =
-    rect.left - rootRect.left + (ctx.textAlign === "right" ? rect.width : 0);
-  const y = rect.top - rootRect.top + rect.height - fontSize * 0.18;
+    rect.left -
+    rootRect.left +
+    (ctx.textAlign === "right"
+      ? rect.width
+      : ctx.textAlign === "center"
+        ? rect.width / 2
+        : 0);
+  const y = rect.top - rootRect.top + rect.height / 2 + fontSize * 0.34;
   ctx.fillText(trimmed, x, y);
   ctx.textAlign = "left";
 };
@@ -263,6 +302,7 @@ const drawFormValue = (
   ctx: CanvasRenderingContext2D,
   element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement,
   rootRect: DOMRect,
+  fontScale: number,
 ): void => {
   const rect = element.getBoundingClientRect();
   const style = window.getComputedStyle(element);
@@ -270,15 +310,25 @@ const drawFormValue = (
     element instanceof HTMLSelectElement
       ? (element.selectedOptions[0]?.textContent ?? element.value)
       : element.value;
-  const fontSize = parseCssPixels(style.fontSize) || 12;
+  const fontSize = (parseCssPixels(style.fontSize) || 12) * fontScale;
+  const textAlign =
+    style.textAlign === "right"
+      ? "right"
+      : style.textAlign === "center"
+        ? "center"
+        : "left";
   const x =
     rect.left -
     rootRect.left +
-    (style.textAlign === "right" ? rect.width - 8 : 8);
+    (textAlign === "right"
+      ? rect.width - 8
+      : textAlign === "center"
+        ? rect.width / 2
+        : 8);
   const y = rect.top - rootRect.top + rect.height / 2 + fontSize * 0.35;
   ctx.fillStyle = style.color || "#fff";
-  ctx.font = style.font;
-  ctx.textAlign = style.textAlign === "right" ? "right" : "left";
+  ctx.font = scaleCanvasFont(style.font, fontScale);
+  ctx.textAlign = textAlign;
   ctx.fillText(value, x, y);
   ctx.textAlign = "left";
 };
@@ -287,6 +337,7 @@ const renderElementToCanvas = async (
   ctx: CanvasRenderingContext2D,
   element: Element,
   rootRect: DOMRect,
+  fontScale: number,
 ): Promise<void> => {
   if (!isVisibleForExport(element)) return;
 
@@ -322,7 +373,7 @@ const renderElementToCanvas = async (
     element instanceof HTMLSelectElement ||
     element instanceof HTMLTextAreaElement
   ) {
-    drawFormValue(ctx, element, rootRect);
+    drawFormValue(ctx, element, rootRect, fontScale);
   }
 
   for (const node of Array.from(element.childNodes)) {
@@ -333,9 +384,16 @@ const renderElementToCanvas = async (
       range.selectNodeContents(node);
       const rect = range.getBoundingClientRect();
       range.detach();
-      drawText(ctx, text, rect, window.getComputedStyle(element), rootRect);
+      drawText(
+        ctx,
+        text,
+        rect,
+        window.getComputedStyle(element),
+        rootRect,
+        fontScale,
+      );
     } else if (node instanceof Element) {
-      await renderElementToCanvas(ctx, node, rootRect);
+      await renderElementToCanvas(ctx, node, rootRect, fontScale);
     }
   }
 };
@@ -365,29 +423,44 @@ const exportElementScreenshot = async (
 
   await document.fonts?.ready;
 
-  const scale = 4;
-  const exportWidth = width + EXPORT_PADDING_LEFT + EXPORT_PADDING_RIGHT;
-  const exportHeight = height + EXPORT_PADDING_TOP + EXPORT_PADDING_BOTTOM;
+  const availableWidth = EXPORT_WIDTH - EXPORT_PADDING_X * 2;
+  const availableHeight = EXPORT_HEIGHT - EXPORT_PADDING_Y * 2;
+  const fitScale = Math.min(
+    availableWidth / width,
+    availableHeight / height,
+  );
+  const renderedWidth = width * fitScale;
+  const renderedHeight = height * fitScale;
+  const offsetX = (EXPORT_WIDTH - renderedWidth) / 2;
+  const offsetY = (EXPORT_HEIGHT - renderedHeight) / 2;
+  // Compensate for fitting a wide workspace into the export frame so labels
+  // remain intentionally larger than their live-UI equivalents.
+  const fontScale = EXPORT_HTML_FONT_SCALE / fitScale;
   const output = document.createElement("canvas");
-  output.width = Math.round(exportWidth * scale);
-  output.height = Math.round(exportHeight * scale);
+  output.width = EXPORT_WIDTH;
+  output.height = EXPORT_HEIGHT;
   const ctx = output.getContext("2d");
   if (!ctx) return;
-  ctx.scale(scale, scale);
   ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, exportWidth, exportHeight);
+  ctx.fillRect(0, 0, EXPORT_WIDTH, EXPORT_HEIGHT);
   ctx.save();
-  ctx.translate(EXPORT_PADDING_LEFT, EXPORT_PADDING_TOP);
-  await renderElementToCanvas(ctx, element, rect);
+  ctx.translate(offsetX, offsetY);
+  ctx.scale(fitScale, fitScale);
+  await renderElementToCanvas(ctx, element, rect, fontScale);
   ctx.restore();
   downloadCanvas(output, filename);
 };
 
 const handleSavePng = (): void => {
-  if (!appMainRef.value || exportInProgress.value) return;
+  const exportRoot = workspaceRef.value ?? appMainRef.value;
+  if (!exportRoot || exportInProgress.value) return;
+  const appRoot = appMainRef.value;
+  if (activeSimulatorTab.value === "stop-loss") {
+    appRoot?.classList.add("is-exporting-stop-loss");
+  }
   exportInProgress.value = true;
   void exportElementScreenshot(
-    appMainRef.value,
+    exportRoot,
     activeSimulatorTab.value === "stop-loss"
       ? "simulator-stop-loss-comparison.png"
       : `simulator-${histogramMode.value}.png`,
@@ -396,6 +469,7 @@ const handleSavePng = (): void => {
       console.error("Failed to export simulator PNG", error);
     })
     .finally(() => {
+      appRoot?.classList.remove("is-exporting-stop-loss");
       exportInProgress.value = false;
     });
 };
@@ -597,8 +671,6 @@ const handleSettingsKeydown = (event: KeyboardEvent): void => {
 };
 
 type NumericPathModelKey =
-  | "meanReversion"
-  | "longRunVol"
   | "volOfVol"
   | "correlation"
   | "jumpIntensity"
@@ -619,7 +691,6 @@ const setPathModelNumber = (
 
 const setPathModelPercent = (
   key:
-    | "longRunVol"
     | "maxJumpVarianceShare"
     | "jumpMean"
     | "jumpVol",
@@ -1685,7 +1756,7 @@ watch(
             <div class="settings-section">
               <div class="settings-section-heading">
                 <span>Path model</span>
-                <small>σ remains the annual variance target</small>
+                <small>RV is the only volatility level</small>
               </div>
               <div class="path-model-toggle" role="group" aria-label="Path model">
                 <button
@@ -1702,86 +1773,19 @@ watch(
                   :aria-pressed="pathModelDraft.kind === 'bates'"
                   @click="pathModelDraft.kind = 'bates'"
                 >
-                  Bates
+                  Stochastic vol
                 </button>
               </div>
               <p class="settings-model-note">
-                Bates defaults are calibrated from BTC hourly history. Adjustments
-                preserve the selected σ²T budget. The jump cap keeps low-vol paths
-                from losing their diffusive component.
+                Variance starts at RV² and evolves through vol-of-vol shocks.
+                Spot/vol correlation controls the skew; there is no mean-reversion
+                or separate long-run volatility target.
               </p>
 
               <div
                 class="settings-fields"
                 :class="{ 'is-disabled': pathModelDraft.kind !== 'bates' }"
               >
-                <label class="sim-settings-row">
-                  <span>
-                    Mean reversion <i>κ / yr</i>
-                  </span>
-                  <input
-                    class="sim-settings-input"
-                    type="text"
-                    inputmode="decimal"
-                    autocomplete="off"
-                    spellcheck="false"
-                    :disabled="pathModelDraft.kind !== 'bates'"
-                    :value="
-                      settingsFieldValue(
-                        'meanReversion',
-                        pathModelDraft.meanReversion,
-                      )
-                    "
-                    @focus="beginSettingsFieldEdit('meanReversion', $event)"
-                    @input="
-                      updateSettingsFieldDraft(
-                        'meanReversion',
-                        ($event.target as HTMLInputElement).value,
-                      )
-                    "
-                    @blur="
-                      commitSettingsField('meanReversion', (n) =>
-                        setPathModelNumber('meanReversion', n, 0.1, 30, 2),
-                      )
-                    "
-                    @keydown.enter="onSettingsFieldEnter"
-                  />
-                </label>
-                <label class="sim-settings-row">
-                  <span>
-                    Long-run vol <i>√θ</i>
-                  </span>
-                  <span class="settings-input-unit">
-                    <input
-                      class="sim-settings-input"
-                      type="text"
-                      inputmode="decimal"
-                      autocomplete="off"
-                      spellcheck="false"
-                      :disabled="pathModelDraft.kind !== 'bates'"
-                      :value="
-                        settingsFieldValue(
-                          'longRunVol',
-                          roundTo(pathModelDraft.longRunVol * 100, 2),
-                        )
-                      "
-                      @focus="beginSettingsFieldEdit('longRunVol', $event)"
-                      @input="
-                        updateSettingsFieldDraft(
-                          'longRunVol',
-                          ($event.target as HTMLInputElement).value,
-                        )
-                      "
-                      @blur="
-                        commitSettingsField('longRunVol', (n) =>
-                          setPathModelPercent('longRunVol', n, 5, 200),
-                        )
-                      "
-                      @keydown.enter="onSettingsFieldEnter"
-                    />
-                    <i>%</i>
-                  </span>
-                </label>
                 <label class="sim-settings-row">
                   <span>
                     Vol of vol <i>ξ</i>
@@ -2187,7 +2191,13 @@ watch(
       </div>
     </header>
 
-    <div class="workspace-container">
+    <div
+      ref="workspaceRef"
+      class="workspace-container"
+      :class="{
+        'workspace-container--stop-loss': activeSimulatorTab === 'stop-loss',
+      }"
+    >
       <section v-if="activeSimulatorTab === 'strategy'" class="builder-section">
         <PositionBuilder
           v-model:legs="positionLegs"
@@ -2407,6 +2417,12 @@ watch(
   outline: none;
 }
 
+.app-main.is-exporting-stop-loss :deep(.comparison-bar),
+.app-main.is-exporting-stop-loss :deep(.comparison-row > header),
+.app-main.is-exporting-stop-loss :deep(.histogram-tooltip) {
+  display: none !important;
+}
+
 :deep(input),
 :deep(textarea),
 :deep(button) {
@@ -2458,6 +2474,13 @@ watch(
   max-width: var(--workspace-max-width);
   margin: 0 auto;
   padding: 0 28px 28px;
+}
+
+.workspace-container--stop-loss {
+  box-sizing: border-box;
+  max-width: 2200px;
+  padding-right: clamp(20px, 2vw, 40px);
+  padding-left: clamp(20px, 2vw, 40px);
 }
 
 .wordmark {

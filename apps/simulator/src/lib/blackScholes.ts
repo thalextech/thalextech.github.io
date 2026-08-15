@@ -6,6 +6,24 @@ export type OptionGreeks = {
   price: number;
 };
 
+export const computeOptionOmega = (
+  delta: number,
+  spot: number,
+  optionPrice: number,
+): number | null => {
+  if (
+    !Number.isFinite(delta) ||
+    !Number.isFinite(spot) ||
+    spot <= 0 ||
+    !Number.isFinite(optionPrice) ||
+    optionPrice <= 0
+  ) {
+    return null;
+  }
+  const omega = Math.abs((delta * spot) / optionPrice);
+  return Number.isFinite(omega) ? omega : null;
+};
+
 const normalCDF = (x: number): number => {
   const a1 = 0.254829592;
   const a2 = -0.284496736;

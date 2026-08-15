@@ -1,6 +1,9 @@
 import { blackScholesGreeks } from "../lib/blackScholes";
 import type { GBMParams } from "../lib/gbm";
-import type { PathModelParams } from "../lib/pathModel";
+import {
+  stochasticVarianceParameters,
+  type PathModelParams,
+} from "../lib/pathModel";
 import type { FutureLeg, OptionLeg, PositionLeg } from "../lib/position";
 import {
   advanceBatesState,
@@ -29,6 +32,7 @@ type SimWorkerRequest = {
   histBins: number;
   histBinsMultiplier: number;
   samplePathLimit: number;
+  returnSamplePaths?: boolean;
   samplingStopLoss?: {
     side: "buy" | "sell";
     price: number;
@@ -51,11 +55,12 @@ type SimWorkerSuccess = {
   steps: number;
   rows: number;
   sampleRows: number;
+  sampledPathRows: number;
   sampledPathsBuffer: ArrayBuffer;
   sampledFinalPricesBuffer: ArrayBuffer;
   sampledPayoffsBuffer: ArrayBuffer;
-  cumulativePayoffsBuffer: ArrayBuffer;
-  cumulativeContributionsBuffer: ArrayBuffer;
+  terminalPricesBuffer: ArrayBuffer;
+  terminalPayoffsBuffer: ArrayBuffer;
   bins: SimBin[];
   pathMin: number;
   pathMax: number;
@@ -86,7 +91,7 @@ type PreparedOptionLeg = {
   optionType: OptionLeg["optionType"];
   iv: number;
   entryPrice: number;
-  remainingYears: number;
+  entryRemainingYears: number;
 };
 
 type PreparedFuturePathLeg = {
@@ -185,13 +190,7 @@ const prepareBatesProcess = (
     high: { intensity: jumpIntensity },
   };
   const calibration: BatesCalibration = {
-    variance: {
-      kappa: model.meanReversion,
-      theta: model.longRunVol ** 2,
-      sigma: model.volOfVol,
-      rho: model.correlation,
-      initialVariance: request.params.vol ** 2,
-    },
+    variance: stochasticVarianceParameters(request.params.vol, model),
     jumps: {
       logMean: model.jumpMean,
       logStdDev: model.jumpVol,
@@ -368,10 +367,10 @@ const prepareLegs = (
       pricing?.expirationTs != null && Number.isFinite(pricing.expirationTs)
         ? pricing.expirationTs
         : null;
-    const remainingSeconds =
+    const entryRemainingSeconds =
       expiryTs != null
-        ? Math.max(0, expiryTs - request.valuationTs - request.horizonSeconds)
-        : 0;
+        ? Math.max(0, expiryTs - request.valuationTs)
+        : request.horizonSeconds;
     optionLegs.push({
       sign,
       qty,
@@ -379,11 +378,86 @@ const prepareLegs = (
       optionType: option.optionType,
       iv,
       entryPrice,
-      remainingYears: remainingSeconds / SECONDS_PER_YEAR,
+      entryRemainingYears: entryRemainingSeconds / SECONDS_PER_YEAR,
     });
   }
 
   return { hasPositionLegs, optionLegs, futureLegs };
+};
+
+const updateFutureStops = (
+  spot: number,
+  stepIndex: number,
+  futureLegs: PreparedFuturePathLeg[],
+  stopHit: Uint8Array | null,
+  stopHitStep: Int32Array | null,
+): void => {
+  if (!stopHit) return;
+  for (let index = 0; index < futureLegs.length; index += 1) {
+    if (stopHit[index]) continue;
+    const leg = futureLegs[index];
+    if (leg.stopLoss == null) continue;
+    if (
+      (leg.isBuy && Number.isFinite(spot) && spot <= leg.stopLoss) ||
+      (!leg.isBuy && Number.isFinite(spot) && spot >= leg.stopLoss)
+    ) {
+      stopHit[index] = 1;
+      if (stopHitStep) stopHitStep[index] = stepIndex;
+    }
+  }
+};
+
+const positionPnlAt = ({
+  spot,
+  elapsedYears,
+  elapsedSteps,
+  optionLegs,
+  futureLegs,
+  stopHit,
+  stopHitStep,
+  dt,
+}: {
+  spot: number;
+  elapsedYears: number;
+  elapsedSteps: number;
+  optionLegs: PreparedOptionLeg[];
+  futureLegs: PreparedFuturePathLeg[];
+  stopHit: Uint8Array | null;
+  stopHitStep: Int32Array | null;
+  dt: number;
+}): number => {
+  let total = 0;
+  for (const leg of optionLegs) {
+    const modelPrice = blackScholesGreeks(
+      spot,
+      leg.strike,
+      Math.max(0, leg.entryRemainingYears - elapsedYears),
+      leg.iv,
+      RISK_FREE_RATE,
+      leg.optionType,
+    ).price;
+    total += leg.sign * leg.qty * (modelPrice - leg.entryPrice);
+  }
+
+  for (let index = 0; index < futureLegs.length; index += 1) {
+    const leg = futureLegs[index];
+    const entryPrice = leg.entry ?? spot;
+    const exitPrice =
+      leg.stopLoss != null && stopHit?.[index] ? leg.stopLoss : spot;
+    total += leg.sign * leg.qty * (exitPrice - entryPrice);
+    const fundedSteps =
+      stopHitStep?.[index] != null && stopHitStep[index] >= 0
+        ? stopHitStep[index] + 1
+        : elapsedSteps;
+    total -=
+      leg.sign *
+      leg.qty *
+      entryPrice *
+      leg.annualFundingRate *
+      fundedSteps *
+      dt;
+  }
+  return total;
 };
 
 const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
@@ -475,20 +549,7 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
         if (drawdown > worstDrawdown) worstDrawdown = drawdown;
       }
 
-      if (stopHit) {
-        for (let i = 0; i < futureLegs.length; i += 1) {
-          if (stopHit[i]) continue;
-          const leg = futureLegs[i];
-          if (leg.stopLoss == null) continue;
-          if (
-            (leg.isBuy && Number.isFinite(s) && s <= leg.stopLoss) ||
-            (!leg.isBuy && Number.isFinite(s) && s >= leg.stopLoss)
-          ) {
-            stopHit[i] = 1;
-            if (stopHitStep) stopHitStep[i] = c;
-          }
-        }
-      }
+      updateFutureStops(s, c, futureLegs, stopHit, stopHitStep);
       if (!samplingStopHit && request.samplingStopLoss) {
         samplingStopHit =
           request.samplingStopLoss.side === "buy"
@@ -503,53 +564,32 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
     if (s < finalPriceMin) finalPriceMin = s;
     if (s > finalPriceMax) finalPriceMax = s;
 
-    let total = 0;
-    if (!hasPositionLegs) {
-      total = s - baseline;
-    } else {
-      for (const leg of optionLegs) {
-        const modelPrice = blackScholesGreeks(
-          s,
-          leg.strike,
-          leg.remainingYears,
-          leg.iv,
-          RISK_FREE_RATE,
-          leg.optionType,
-        ).price;
-        total += leg.sign * leg.qty * (modelPrice - leg.entryPrice);
-      }
+    const total = hasPositionLegs
+      ? positionPnlAt({
+          spot: s,
+          elapsedYears: request.params.T,
+          elapsedSteps: steps,
+          optionLegs,
+          futureLegs,
+          stopHit,
+          stopHitStep,
+          dt: request.params.dt,
+        })
+      : s - baseline;
 
-      for (let i = 0; i < futureLegs.length; i += 1) {
-        const leg = futureLegs[i];
-        const entryPrice = leg.entry ?? s;
-        const exitPrice =
-          leg.stopLoss != null && stopHit?.[i]
-            ? leg.stopLoss
-            : s;
-        total += leg.sign * leg.qty * (exitPrice - entryPrice);
-        // Opportunity cost of a bad stop: path hit the stop, then recovered
-        // past it by horizon. Price-only (matches stop-path highlight).
-        if (leg.stopLoss != null && stopHit?.[i]) {
-          const recovered =
-            (leg.isBuy && s > leg.stopLoss) ||
-            (!leg.isBuy && s < leg.stopLoss);
-          if (recovered) {
-            const pathOpp = leg.sign * leg.qty * (s - leg.stopLoss);
-            pathOpportunityCost[r] += pathOpp;
-            opportunityCostSum += pathOpp;
-          }
+    for (let i = 0; i < futureLegs.length; i += 1) {
+      const leg = futureLegs[i];
+      // Opportunity cost of a bad stop: path hit the stop, then recovered
+      // past it by horizon. Price-only (matches stop-path highlight).
+      if (leg.stopLoss != null && stopHit?.[i]) {
+        const recovered =
+          (leg.isBuy && s > leg.stopLoss) ||
+          (!leg.isBuy && s < leg.stopLoss);
+        if (recovered) {
+          const pathOpp = leg.sign * leg.qty * (s - leg.stopLoss);
+          pathOpportunityCost[r] += pathOpp;
+          opportunityCostSum += pathOpp;
         }
-        const fundedSteps =
-          stopHitStep?.[i] != null && stopHitStep[i] >= 0
-            ? stopHitStep[i] + 1
-            : steps;
-        const fundedYears = fundedSteps * request.params.dt;
-        total -=
-          leg.sign *
-          leg.qty *
-          entryPrice *
-          leg.annualFundingRate *
-          fundedYears;
       }
     }
 
@@ -602,12 +642,6 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   const opportunityCost = rows > 0 ? opportunityCostSum / rows : 0;
   const sortedPayoffs = Float64Array.from(payoffs);
   sortedPayoffs.sort();
-  const cumulativeContributions = new Float64Array(rows);
-  let cumulativeContribution = 0;
-  for (let i = 0; i < rows; i += 1) {
-    cumulativeContribution += sortedPayoffs[i] / rows;
-    cumulativeContributions[i] = cumulativeContribution;
-  }
   const p05Payoff = quantileSorted(sortedPayoffs, 0.05);
   const p95Payoff = quantileSorted(sortedPayoffs, 0.95);
 
@@ -715,7 +749,9 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   }
 
   const sampleRows = sampleIndices.length;
-  const sampledPaths = new Float64Array(sampleRows * steps);
+  const returnSamplePaths = request.returnSamplePaths !== false;
+  const sampledPathRows = returnSamplePaths ? sampleRows : 0;
+  const sampledPaths = new Float64Array(sampledPathRows * steps);
   const sampledFinalPrices = new Float64Array(sampleRows);
   const sampledPayoffs = new Float64Array(sampleRows);
 
@@ -733,7 +769,8 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
       ? createBatesState(baseline, batesProcess)
       : null;
     const sampleRow = sampleIndexToRow.get(r);
-    const writeOffset = sampleRow != null ? sampleRow * steps : -1;
+    const writeOffset =
+      returnSamplePaths && sampleRow != null ? sampleRow * steps : -1;
     for (let c = 0; c < steps; c += 1) {
       if (batesProcess && batesState) {
         s = advanceBatesState(
@@ -758,11 +795,12 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
     steps,
     rows,
     sampleRows,
+    sampledPathRows,
     sampledPathsBuffer: sampledPaths.buffer,
     sampledFinalPricesBuffer: sampledFinalPrices.buffer,
     sampledPayoffsBuffer: sampledPayoffs.buffer,
-    cumulativePayoffsBuffer: sortedPayoffs.buffer,
-    cumulativeContributionsBuffer: cumulativeContributions.buffer,
+    terminalPricesBuffer: finalPrices.buffer,
+    terminalPayoffsBuffer: payoffs.buffer,
     bins,
     pathMin,
     pathMax,
@@ -798,8 +836,8 @@ const processQueue = (): void => {
         response.sampledPathsBuffer,
         response.sampledFinalPricesBuffer,
         response.sampledPayoffsBuffer,
-        response.cumulativePayoffsBuffer,
-        response.cumulativeContributionsBuffer,
+        response.terminalPricesBuffer,
+        response.terminalPayoffsBuffer,
       ]);
     } catch (error) {
       const response: SimWorkerError = {

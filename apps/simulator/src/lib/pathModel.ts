@@ -1,7 +1,5 @@
 export type PathModelParams = {
   kind: "gbm" | "bates";
-  meanReversion: number;
-  longRunVol: number;
   volOfVol: number;
   correlation: number;
   jumpsEnabled: boolean;
@@ -13,8 +11,6 @@ export type PathModelParams = {
 
 export const DEFAULT_PATH_MODEL: PathModelParams = {
   kind: "bates",
-  meanReversion: 8.86,
-  longRunVol: 0.367,
   volOfVol: 0.1,
   correlation: -0.3,
   jumpsEnabled: false,
@@ -34,16 +30,6 @@ export const sanitizePathModel = (
   value: PathModelParams,
 ): PathModelParams => ({
   kind: value?.kind === "gbm" ? "gbm" : "bates",
-  meanReversion: clamp(
-    finiteOr(value?.meanReversion, DEFAULT_PATH_MODEL.meanReversion),
-    0.1,
-    30,
-  ),
-  longRunVol: clamp(
-    finiteOr(value?.longRunVol, DEFAULT_PATH_MODEL.longRunVol),
-    0.05,
-    2,
-  ),
   volOfVol: clamp(
     finiteOr(value?.volOfVol, DEFAULT_PATH_MODEL.volOfVol),
     0,
@@ -82,3 +68,28 @@ export const sanitizePathModel = (
     0.2,
   ),
 });
+
+export const stochasticVarianceParameters = (
+  realizedVol: number,
+  model: PathModelParams,
+): {
+  kappa: 0;
+  theta: number;
+  sigma: number;
+  rho: number;
+  initialVariance: number;
+} => {
+  const sanitized = sanitizePathModel(model);
+  const safeVol = clamp(finiteOr(realizedVol, 0.4), 0.01, 3);
+  const initialVariance = safeVol ** 2;
+  return {
+    kappa: 0,
+    // theta is immaterial when kappa is zero. Keeping it at the entered RV
+    // level makes the calibration self-describing without adding a second
+    // volatility target.
+    theta: initialVariance,
+    sigma: sanitized.volOfVol,
+    rho: sanitized.correlation,
+    initialVariance,
+  };
+};
