@@ -12,7 +12,10 @@ import type { PathModelParams } from "../lib/pathModel";
 import type { PositionLeg } from "../lib/position";
 import {
   closestExpirationTs,
+  displayedDaysToExpiry,
+  horizonOptionsForQuotes,
   maturityOptionsForQuotes,
+  resolveHorizonSeconds,
   selectableExpiryQuotes,
 } from "../lib/stopLossMaturity";
 import type {
@@ -40,13 +43,12 @@ const emit = defineEmits<{
 
 const SECONDS_PER_DAY = 24 * 60 * 60;
 const DAYS_PER_YEAR = 365.25;
+const STOP_LOSS_STEP_SECONDS = 60 * 60;
 const RV_MIN_PERCENT = 10;
 const RV_MAX_PERCENT = 120;
+const DRIFT_MIN_PERCENT = -500;
+const DRIFT_MAX_PERCENT = 500;
 const MATURITY_DAYS = [7, 14, 30, 60, 90, 180] as const;
-const DAY_OPTIONS = MATURITY_DAYS.map((days) => ({
-  label: `${days}d`,
-  value: days,
-}));
 const DEFAULT_MATURITY_DAYS = 60;
 const EMPTY_OPTION_PRICING = Object.freeze({});
 const payoffDisplayMode = ref<"payoff" | "frequency">("payoff");
@@ -61,20 +63,27 @@ const horizonDays = ref(14);
 const selectedExpirationTs = ref(0);
 const optionStats = ref<SimulationStats | null>(null);
 const perpStats = ref<SimulationStats | null>(null);
-const payoffDifference = ref<{
-  optionWinRate: number;
-  medianAdvantage: number;
-} | null>(null);
 const hoveredBinStats = ref<HistogramBinHover | null>(null);
 
 type TableStats = Pick<
   SimulationStats,
   | "meanPayoff"
-  | "medianPayoff"
+  | "p10Payoff"
+  | "p25Payoff"
+  | "p50Payoff"
+  | "p75Payoff"
+  | "p90Payoff"
   | "winRate"
   | "maxLossRate"
-  | "opportunityCost"
 >;
+
+const payoffPercentileRows = [
+  { label: "10th percentile", key: "p10Payoff" },
+  { label: "25th percentile", key: "p25Payoff" },
+  { label: "50th percentile", key: "p50Payoff" },
+  { label: "75th percentile", key: "p75Payoff" },
+  { label: "90th percentile", key: "p90Payoff" },
+] as const;
 
 const binToTableStats = (
   bin: HistogramBinStats | null | undefined,
@@ -82,10 +91,13 @@ const binToTableStats = (
   if (!bin) return null;
   return {
     meanPayoff: bin.meanPayoff,
-    medianPayoff: bin.medianPayoff,
+    p10Payoff: bin.p10Payoff,
+    p25Payoff: bin.p25Payoff,
+    p50Payoff: bin.p50Payoff,
+    p75Payoff: bin.p75Payoff,
+    p90Payoff: bin.p90Payoff,
     winRate: bin.winRate,
     maxLossRate: bin.maxLossRate,
-    opportunityCost: bin.opportunityCost,
   };
 };
 
@@ -199,6 +211,18 @@ const setRealizedVolPercent = (value: number): void => {
   );
 };
 
+const setDriftPercent = (value: number): void => {
+  if (!Number.isFinite(value)) return;
+  emit(
+    "set-mu",
+    clamp(value, DRIFT_MIN_PERCENT, DRIFT_MAX_PERCENT) / 100,
+  );
+};
+
+const selectAssumptionInput = (event: FocusEvent): void => {
+  (event.currentTarget as HTMLInputElement | null)?.select();
+};
+
 const selectableQuotes = computed(() =>
   selectableExpiryQuotes(
     props.expiryQuotes,
@@ -210,6 +234,14 @@ const selectableQuotes = computed(() =>
 
 const maturityOptions = computed(() =>
   maturityOptionsForQuotes(selectableQuotes.value, props.valuationTs),
+);
+
+const horizonOptions = computed(() =>
+  horizonOptionsForQuotes(
+    props.expiryQuotes,
+    props.valuationTs,
+    MATURITY_DAYS,
+  ),
 );
 
 watch(
@@ -256,12 +288,6 @@ watch(
   { immediate: true },
 );
 
-const selectedOptionMark = computed(() => {
-  const quote = selectedExpiryQuote.value;
-  if (!quote) return null;
-  return quote.callMark;
-});
-
 const selectedInstrumentName = computed(() => {
   const quote = selectedExpiryQuote.value;
   if (!quote) return "ATM option";
@@ -292,22 +318,25 @@ watch(
     horizonDays.value,
     selectedExpirationTs.value,
     selectedExpiryQuote.value?.callIv,
-    selectedOptionMark.value,
   ],
   () => {
     optionStats.value = null;
     perpStats.value = null;
-    payoffDifference.value = null;
     hoveredBinStats.value = null;
   },
 );
 
 const comparisonParams = computed<GBMParams>(() => {
-  const T = horizonDays.value / DAYS_PER_YEAR;
+  const horizonSeconds = resolveHorizonSeconds(
+    horizonDays.value,
+    selectedExpirationTs.value,
+    props.valuationTs,
+  );
+  const T = horizonSeconds / (DAYS_PER_YEAR * SECONDS_PER_DAY);
   return {
     ...props.params,
     T,
-    dt: 1 / (DAYS_PER_YEAR * 24),
+    dt: STOP_LOSS_STEP_SECONDS / (DAYS_PER_YEAR * SECONDS_PER_DAY),
   };
 });
 
@@ -316,11 +345,34 @@ const perpSide = "buy" as const;
 const optionLabel = "Long ATM call";
 const perpLabel = "Long perpetual";
 
-const optionPremium = computed(() =>
-  Number.isFinite(selectedOptionMark.value)
-    ? Math.max(0, Number(selectedOptionMark.value))
-    : 0,
-);
+// Keep the IV=RV comparison model-fair: the same mark IV and pricing model
+// determine both the entry premium and every simulated option value.
+const optionPremium = computed(() => {
+  const quote = selectedExpiryQuote.value;
+  const spot = Number(props.params.s0);
+  const strike = Number(quote?.strike);
+  const iv = Number(quote?.callIv);
+  const timeToExpiry = quote == null
+    ? 0
+    : Math.max(0, quote.expirationTs - props.valuationTs) /
+      (DAYS_PER_YEAR * SECONDS_PER_DAY);
+  if (
+    !Number.isFinite(spot) ||
+    !Number.isFinite(strike) ||
+    !Number.isFinite(iv) ||
+    timeToExpiry <= 0
+  ) {
+    return 0;
+  }
+  return blackScholesGreeks(
+    spot,
+    strike,
+    timeToExpiry,
+    iv,
+    0,
+    optionType,
+  ).price;
+});
 
 const optionOmega = computed(() => {
   const quote = selectedExpiryQuote.value;
@@ -438,17 +490,15 @@ const formatSignedPercentagePoints = (value: number): string => {
 
 const payoffChartContext = computed(() => {
   const iv = Number(selectedExpiryQuote.value?.callIv);
-  const maturityDays = Math.max(
-    0,
-    Math.round(
-      (selectedExpirationTs.value - props.valuationTs) / SECONDS_PER_DAY,
-    ),
-  );
+  const maturityDays = selectedExpirationTs.value > props.valuationTs
+    ? displayedDaysToExpiry(selectedExpirationTs.value, props.valuationTs)
+    : 0;
   const funding = Number(annualFundingPercent.value.toFixed(1));
   return [
     selectedInstrumentName.value,
     `IV ${Number.isFinite(iv) ? `${(iv * 100).toFixed(1)}%` : "—"}`,
     `RV ${(props.params.vol * 100).toFixed(1)}%`,
+    `Drift ${(props.params.mu * 100).toFixed(1)}%`,
     `Risk ${formatUsd(riskBudget.value)}`,
     `Perp ${leverage.value.toFixed(2)}×`,
     `Funding ${funding}%/yr`,
@@ -461,8 +511,7 @@ const optionMarketReady = computed(
   () =>
     Number.isFinite(selectedExpiryQuote.value?.callIv) &&
     Number(selectedExpiryQuote.value?.callIv) > 0 &&
-    Number.isFinite(selectedOptionMark.value) &&
-    Number(selectedOptionMark.value) > 0,
+    optionPremium.value > 0,
 );
 
 const optionResultStats = computed(() =>
@@ -575,7 +624,7 @@ const hoveredPriceRangeLabel = computed(() => {
           <StyledSelectMenu
             v-model="horizonDays"
             label="Horizon"
-            :options="DAY_OPTIONS"
+            :options="horizonOptions"
             embedded
           />
         </span>
@@ -603,6 +652,7 @@ const hoveredPriceRangeLabel = computed(() => {
             step="0.1"
             :value="Number((params.vol * 100).toFixed(1))"
             aria-label="Annual realized volatility percentage"
+            @focus="selectAssumptionInput"
             @change="
               setRealizedVolPercent(
                 Number(($event.target as HTMLInputElement).value),
@@ -610,6 +660,31 @@ const hoveredPriceRangeLabel = computed(() => {
             "
             @blur="
               setRealizedVolPercent(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
+          />
+          %
+        </span>
+      </label>
+      <label class="control-pill control-pill--drift">
+        <span class="pill-label">Drift</span>
+        <span class="pill-value">
+          <input
+            type="number"
+            :min="DRIFT_MIN_PERCENT"
+            :max="DRIFT_MAX_PERCENT"
+            step="0.1"
+            :value="Number((params.mu * 100).toFixed(1))"
+            aria-label="Annual drift percentage"
+            @focus="selectAssumptionInput"
+            @change="
+              setDriftPercent(
+                Number(($event.target as HTMLInputElement).value),
+              )
+            "
+            @blur="
+              setDriftPercent(
                 Number(($event.target as HTMLInputElement).value),
               )
             "
@@ -629,7 +704,7 @@ const hoveredPriceRangeLabel = computed(() => {
             :aria-pressed="payoffChartMode === 'terminal'"
             @click="setPayoffChartMode('terminal')"
           >
-            Terminal bins
+            Terminal
           </button>
           <button
             type="button"
@@ -691,7 +766,10 @@ const hoveredPriceRangeLabel = computed(() => {
         </div>
       </header>
       <div class="comparison-main comparison-main--cumul">
-        <div class="comparison-chart">
+        <div
+          class="comparison-chart"
+          :class="{ 'is-terminal': payoffChartMode === 'terminal' }"
+        >
           <CloudChart
             v-if="optionMarketReady"
             :seed="seed"
@@ -721,7 +799,6 @@ const hoveredPriceRangeLabel = computed(() => {
             @set-vol="emit('set-vol', $event)"
             @stats-update="optionStats = $event"
             @comparison-stats-update="perpStats = $event"
-            @payoff-difference-update="payoffDifference = $event"
             @histogram-bin-hover="hoveredBinStats = $event"
           />
           <div v-else class="comparison-chart-loading">
@@ -753,7 +830,7 @@ const hoveredPriceRangeLabel = computed(() => {
           </thead>
           <tbody>
             <tr class="pnl-row">
-              <th scope="row">Average PnL</th>
+              <th scope="row">Average PnL (MC)</th>
               <td>
                 {{ formatSignedUsd(optionDisplayStats?.meanPayoff ?? NaN) }}
               </td>
@@ -767,16 +844,31 @@ const hoveredPriceRangeLabel = computed(() => {
                 }}
               </td>
             </tr>
-            <tr class="pnl-row">
-              <th scope="row">Median PnL</th>
-              <td>
-                {{ formatSignedUsd(optionDisplayStats?.medianPayoff ?? NaN) }}
-              </td>
-              <td>{{ formatSignedUsd(perpDisplayStats?.medianPayoff ?? NaN) }}</td>
+            <tr
+              v-for="percentile in payoffPercentileRows"
+              :key="percentile.key"
+              class="pnl-row"
+            >
+              <th scope="row">{{ percentile.label }}</th>
               <td>
                 {{
                   formatSignedUsd(
-                    payoffDifference?.medianAdvantage ?? NaN,
+                    optionDisplayStats?.[percentile.key] ?? NaN,
+                  )
+                }}
+              </td>
+              <td>
+                {{
+                  formatSignedUsd(
+                    perpDisplayStats?.[percentile.key] ?? NaN,
+                  )
+                }}
+              </td>
+              <td>
+                {{
+                  formatSignedUsd(
+                    (optionDisplayStats?.[percentile.key] ?? NaN) -
+                      (perpDisplayStats?.[percentile.key] ?? NaN),
                   )
                 }}
               </td>
@@ -803,20 +895,6 @@ const hoveredPriceRangeLabel = computed(() => {
                   formatSignedPercentagePoints(
                     (optionDisplayStats?.maxLossRate ?? NaN) -
                       (perpDisplayStats?.maxLossRate ?? NaN),
-                  )
-                }}
-              </td>
-            </tr>
-            <tr>
-              <th scope="row">Opportunity cost</th>
-              <td>{{ formatSignedUsd(0) }}</td>
-              <td>
-                {{ formatSignedUsd(perpDisplayStats?.opportunityCost ?? NaN) }}
-              </td>
-              <td>
-                {{
-                  formatSignedUsd(
-                    0 - (perpDisplayStats?.opportunityCost ?? NaN),
                   )
                 }}
               </td>
@@ -933,7 +1011,8 @@ const hoveredPriceRangeLabel = computed(() => {
 
 .control-pill--risk .pill-value,
 .control-pill--funding .pill-value,
-.control-pill--rv .pill-value {
+.control-pill--rv .pill-value,
+.control-pill--drift .pill-value {
   gap: 3px;
 }
 
@@ -945,7 +1024,8 @@ const hoveredPriceRangeLabel = computed(() => {
   width: 25px;
 }
 
-.control-pill--rv .pill-value input {
+.control-pill--rv .pill-value input,
+.control-pill--drift .pill-value input {
   width: 28px;
 }
 
@@ -1474,6 +1554,10 @@ const hoveredPriceRangeLabel = computed(() => {
   aspect-ratio: 1200 / 520;
 }
 
+.comparison-main--cumul .comparison-chart.is-terminal {
+  aspect-ratio: 1200 / 720;
+}
+
 .comparison-chart-loading {
   position: absolute;
   inset: 0;
@@ -1490,6 +1574,8 @@ const hoveredPriceRangeLabel = computed(() => {
   width: 100%;
   overflow-x: auto;
   margin-top: -68px;
+  padding: clamp(10px, 0.75cqw, 16px) 4% clamp(14px, 1cqw, 22px)
+    6.8333%;
   border-top: 1px solid rgba(255, 255, 255, 0.07);
   background: #0b0c0f;
 }
@@ -1661,6 +1747,10 @@ const hoveredPriceRangeLabel = computed(() => {
   .comparison-main--cumul .comparison-chart {
     min-height: 0;
     aspect-ratio: 1200 / 520;
+  }
+
+  .comparison-main--cumul .comparison-chart.is-terminal {
+    aspect-ratio: 1200 / 720;
   }
 
   .comparison-table-wrap {

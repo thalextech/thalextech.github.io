@@ -1,10 +1,11 @@
-import { blackScholesGreeks } from "../lib/blackScholes";
-import type { GBMParams } from "../lib/gbm";
+import { blackScholesGreeks } from "../lib/blackScholes.ts";
+import { adaptiveStopSubsteps } from "../lib/adaptiveStopSampling.ts";
+import type { GBMParams } from "../lib/gbm.ts";
 import {
   stochasticVarianceParameters,
   type PathModelParams,
-} from "../lib/pathModel";
-import type { FutureLeg, OptionLeg, PositionLeg } from "../lib/position";
+} from "../lib/pathModel.ts";
+import type { FutureLeg, OptionLeg, PositionLeg } from "../lib/position.ts";
 import {
   advanceBatesState,
   buildQuadraticVariationBudget,
@@ -45,6 +46,11 @@ type SimBin = {
   count: number;
   sumPayoff: number;
   medianPayoff: number;
+  p10Payoff: number;
+  p25Payoff: number;
+  p50Payoff: number;
+  p75Payoff: number;
+  p90Payoff: number;
   winCount: number;
   maxLossCount: number;
   opportunityCostSum: number;
@@ -74,6 +80,11 @@ type SimWorkerSuccess = {
   maxDrawdown: number;
   winRate: number;
   p05Payoff: number;
+  p10Payoff: number;
+  p25Payoff: number;
+  p50Payoff: number;
+  p75Payoff: number;
+  p90Payoff: number;
   p95Payoff: number;
   maxLossRate: number;
   opportunityCost: number;
@@ -145,14 +156,6 @@ const makeRandn = (rng: Rng): Randn => {
     spare = magnitude * Math.sin(angle);
     return magnitude * Math.cos(angle);
   };
-};
-
-const medianOfArray = (values: number[]): number => {
-  const n = values.length;
-  if (n === 0) return 0;
-  const sorted = values.slice().sort((a, b) => a - b);
-  const mid = Math.floor(n / 2);
-  return n % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) * 0.5 : sorted[mid];
 };
 
 const medianOfTypedArray = (values: Float64Array): number => {
@@ -407,6 +410,29 @@ const updateFutureStops = (
   }
 };
 
+const activeStopPrices = (
+  futureLegs: PreparedFuturePathLeg[],
+  stopHit: Uint8Array | null,
+  samplingStopLoss: SimWorkerRequest["samplingStopLoss"],
+  samplingStopHit: boolean,
+): number[] => {
+  const prices: number[] = [];
+  for (let index = 0; index < futureLegs.length; index += 1) {
+    const stopPrice = futureLegs[index].stopLoss;
+    if (!stopHit?.[index] && stopPrice != null && Number.isFinite(stopPrice)) {
+      prices.push(stopPrice);
+    }
+  }
+  if (
+    !samplingStopHit &&
+    samplingStopLoss != null &&
+    Number.isFinite(samplingStopLoss.price)
+  ) {
+    prices.push(samplingStopLoss.price);
+  }
+  return prices;
+};
+
 const positionPnlAt = ({
   spot,
   elapsedYears,
@@ -460,7 +486,7 @@ const positionPnlAt = ({
   return total;
 };
 
-const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
+export const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   const steps = Math.max(1, Math.floor(request.params.T / request.params.dt));
   const rows = Math.max(1, Math.floor(request.params.rows));
   const baseline = request.params.s0;
@@ -478,10 +504,6 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   const pathMaxLoss = new Uint8Array(rows);
   const pathOpportunityCost = new Float64Array(rows);
 
-  const drift =
-    (request.params.mu - 0.5 * request.params.vol * request.params.vol) *
-    request.params.dt;
-  const volStep = request.params.vol * Math.sqrt(request.params.dt);
   const rng = mulberry32(request.seed);
   const randn = makeRandn(rng);
   const batesProcess = prepareBatesProcess(request);
@@ -527,34 +549,51 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
         : null;
 
     for (let c = 0; c < steps; c += 1) {
-      if (batesProcess && batesState) {
-        s = advanceBatesState(
-          batesState,
-          batesProcess,
-          request.params.dt,
-          randn,
-          rng,
-        ).spot;
-      } else {
-        const z = randn();
-        s *= Math.exp(drift + volStep * z);
-      }
+      const substeps = adaptiveStopSubsteps(
+        s,
+        request.params.vol,
+        request.params.dt,
+        activeStopPrices(
+          futureLegs,
+          stopHit,
+          request.samplingStopLoss,
+          samplingStopHit,
+        ),
+      );
+      const substepDt = request.params.dt / substeps;
+      const substepDrift =
+        (request.params.mu - 0.5 * request.params.vol ** 2) * substepDt;
+      const substepVol = request.params.vol * Math.sqrt(substepDt);
 
-      if (s < pathMin) pathMin = s;
-      if (s > pathMax) pathMax = s;
+      for (let substep = 0; substep < substeps; substep += 1) {
+        if (batesProcess && batesState) {
+          s = advanceBatesState(
+            batesState,
+            batesProcess,
+            substepDt,
+            randn,
+            rng,
+          ).spot;
+        } else {
+          s *= Math.exp(substepDrift + substepVol * randn());
+        }
 
-      if (s > peak) peak = s;
-      if (peak > 0) {
-        const drawdown = (peak - s) / peak;
-        if (drawdown > worstDrawdown) worstDrawdown = drawdown;
-      }
+        if (s < pathMin) pathMin = s;
+        if (s > pathMax) pathMax = s;
 
-      updateFutureStops(s, c, futureLegs, stopHit, stopHitStep);
-      if (!samplingStopHit && request.samplingStopLoss) {
-        samplingStopHit =
-          request.samplingStopLoss.side === "buy"
-            ? s <= request.samplingStopLoss.price
-            : s >= request.samplingStopLoss.price;
+        if (s > peak) peak = s;
+        if (peak > 0) {
+          const drawdown = (peak - s) / peak;
+          if (drawdown > worstDrawdown) worstDrawdown = drawdown;
+        }
+
+        updateFutureStops(s, c, futureLegs, stopHit, stopHitStep);
+        if (!samplingStopHit && request.samplingStopLoss) {
+          samplingStopHit =
+            request.samplingStopLoss.side === "buy"
+              ? s <= request.samplingStopLoss.price
+              : s >= request.samplingStopLoss.price;
+        }
       }
     }
 
@@ -643,6 +682,11 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   const sortedPayoffs = Float64Array.from(payoffs);
   sortedPayoffs.sort();
   const p05Payoff = quantileSorted(sortedPayoffs, 0.05);
+  const p10Payoff = quantileSorted(sortedPayoffs, 0.1);
+  const p25Payoff = quantileSorted(sortedPayoffs, 0.25);
+  const p50Payoff = quantileSorted(sortedPayoffs, 0.5);
+  const p75Payoff = quantileSorted(sortedPayoffs, 0.75);
+  const p90Payoff = quantileSorted(sortedPayoffs, 0.9);
   const p95Payoff = quantileSorted(sortedPayoffs, 0.95);
 
   const maxDelta = Math.max(
@@ -699,12 +743,20 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   for (let i = 0; i < histBins; i += 1) {
     const x0 = binMin + i * binSize;
     const x1 = i === histBins - 1 ? binMax : x0 + binSize;
+    const sortedBinPayoffs = Float64Array.from(payoffLists[i]);
+    sortedBinPayoffs.sort();
+    const p50BinPayoff = quantileSorted(sortedBinPayoffs, 0.5);
     bins[i] = {
       x0,
       x1,
       count: counts[i],
       sumPayoff: sums[i],
-      medianPayoff: medianOfArray(payoffLists[i]),
+      medianPayoff: p50BinPayoff,
+      p10Payoff: quantileSorted(sortedBinPayoffs, 0.1),
+      p25Payoff: quantileSorted(sortedBinPayoffs, 0.25),
+      p50Payoff: p50BinPayoff,
+      p75Payoff: quantileSorted(sortedBinPayoffs, 0.75),
+      p90Payoff: quantileSorted(sortedBinPayoffs, 0.9),
       winCount: winCounts[i],
       maxLossCount: maxLossCounts[i],
       opportunityCostSum: opportunityCostSums[i],
@@ -760,32 +812,63 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
     sampledFinalPrices[i] = finalPrices[pathIndex] ?? baseline;
     sampledPayoffs[i] = payoffs[pathIndex] ?? 0;
   }
-  // Replay once to materialize only selected paths.
-  const replayRng = mulberry32(request.seed);
-  const replayRandn = makeRandn(replayRng);
-  for (let r = 0; r < rows; r += 1) {
-    let s = baseline;
-    const batesState = batesProcess
-      ? createBatesState(baseline, batesProcess)
-      : null;
-    const sampleRow = sampleIndexToRow.get(r);
-    const writeOffset =
-      returnSamplePaths && sampleRow != null ? sampleRow * steps : -1;
-    for (let c = 0; c < steps; c += 1) {
-      if (batesProcess && batesState) {
-        s = advanceBatesState(
-          batesState,
-          batesProcess,
+  if (returnSamplePaths) {
+    // Replay once to materialize only selected paths.
+    const replayRng = mulberry32(request.seed);
+    const replayRandn = makeRandn(replayRng);
+    for (let r = 0; r < rows; r += 1) {
+      let s = baseline;
+      const batesState = batesProcess
+        ? createBatesState(baseline, batesProcess)
+        : null;
+      const sampleRow = sampleIndexToRow.get(r);
+      let samplingStopHit = false;
+      const stopHit =
+        futureLegs.length > 0 ? new Uint8Array(futureLegs.length) : null;
+      const stopHitStep =
+        futureLegs.length > 0
+          ? new Int32Array(futureLegs.length).fill(-1)
+          : null;
+      const writeOffset = sampleRow != null ? sampleRow * steps : -1;
+      for (let c = 0; c < steps; c += 1) {
+        const substeps = adaptiveStopSubsteps(
+          s,
+          request.params.vol,
           request.params.dt,
-          replayRandn,
-          replayRng,
-        ).spot;
-      } else {
-        const z = replayRandn();
-        s *= Math.exp(drift + volStep * z);
-      }
-      if (writeOffset >= 0) {
-        sampledPaths[writeOffset + c] = s;
+          activeStopPrices(
+            futureLegs,
+            stopHit,
+            request.samplingStopLoss,
+            samplingStopHit,
+          ),
+        );
+        const substepDt = request.params.dt / substeps;
+        const substepDrift =
+          (request.params.mu - 0.5 * request.params.vol ** 2) * substepDt;
+        const substepVol = request.params.vol * Math.sqrt(substepDt);
+        for (let substep = 0; substep < substeps; substep += 1) {
+          if (batesProcess && batesState) {
+            s = advanceBatesState(
+              batesState,
+              batesProcess,
+              substepDt,
+              replayRandn,
+              replayRng,
+            ).spot;
+          } else {
+            s *= Math.exp(substepDrift + substepVol * replayRandn());
+          }
+          updateFutureStops(s, c, futureLegs, stopHit, stopHitStep);
+          if (!samplingStopHit && request.samplingStopLoss) {
+            samplingStopHit =
+              request.samplingStopLoss.side === "buy"
+                ? s <= request.samplingStopLoss.price
+                : s >= request.samplingStopLoss.price;
+          }
+        }
+        if (writeOffset >= 0) {
+          sampledPaths[writeOffset + c] = s;
+        }
       }
     }
   }
@@ -814,18 +897,26 @@ const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
     maxDrawdown,
     winRate,
     p05Payoff,
+    p10Payoff,
+    p25Payoff,
+    p50Payoff,
+    p75Payoff,
+    p90Payoff,
     p95Payoff,
     maxLossRate,
     opportunityCost,
   };
 };
 
-const scope = self as DedicatedWorkerGlobalScope;
+const scope =
+  typeof self === "undefined"
+    ? null
+    : (self as DedicatedWorkerGlobalScope);
 let queuedRequest: SimWorkerRequest | null = null;
 let processing = false;
 
 const processQueue = (): void => {
-  if (processing) return;
+  if (processing || scope == null) return;
   processing = true;
   while (queuedRequest != null) {
     const request = queuedRequest;
@@ -850,7 +941,9 @@ const processQueue = (): void => {
   processing = false;
 };
 
-scope.onmessage = (event: MessageEvent<SimWorkerRequest>): void => {
-  queuedRequest = event.data;
-  processQueue();
-};
+if (scope != null) {
+  scope.onmessage = (event: MessageEvent<SimWorkerRequest>): void => {
+    queuedRequest = event.data;
+    processQueue();
+  };
+}

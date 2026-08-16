@@ -9,17 +9,22 @@ export type MaturityOption = {
   value: number;
 };
 
+export const displayedDaysToExpiry = (
+  expirationTs: number,
+  valuationTs: number,
+): number =>
+  Math.max(1, Math.ceil((expirationTs - valuationTs) / SECONDS_PER_DAY));
+
 export const selectableExpiryQuotes = (
   expiryQuotes: AtmOptionExpiryQuote[],
   valuationTs: number,
   horizonDays: number,
   direction: StopLossDirection,
 ): AtmOptionExpiryQuote[] => {
-  const minimumExpiry = valuationTs + horizonDays * SECONDS_PER_DAY;
   return expiryQuotes
     .filter(
       (quote) =>
-        quote.expirationTs >= minimumExpiry &&
+        displayedDaysToExpiry(quote.expirationTs, valuationTs) >= horizonDays &&
         (direction === "up" || quote.putInstrumentName != null),
     )
     .sort((first, second) => first.expirationTs - second.expirationTs);
@@ -30,12 +35,36 @@ export const maturityOptionsForQuotes = (
   valuationTs: number,
 ): MaturityOption[] =>
   quotes.map((quote) => ({
-    label: `${Math.max(
-      1,
-      Math.ceil((quote.expirationTs - valuationTs) / SECONDS_PER_DAY),
-    )}d`,
+    label: `${displayedDaysToExpiry(quote.expirationTs, valuationTs)}d`,
     value: quote.expirationTs,
   }));
+
+export const horizonOptionsForQuotes = (
+  quotes: AtmOptionExpiryQuote[],
+  valuationTs: number,
+  defaultDays: readonly number[],
+): MaturityOption[] =>
+  [...new Set([
+    ...defaultDays,
+    ...quotes.map((quote) =>
+      displayedDaysToExpiry(quote.expirationTs, valuationTs),
+    ),
+  ])]
+    .filter((days) => Number.isFinite(days) && days > 0)
+    .sort((first, second) => first - second)
+    .map((days) => ({ label: `${days}d`, value: days }));
+
+export const resolveHorizonSeconds = (
+  horizonDays: number,
+  selectedExpirationTs: number,
+  valuationTs: number,
+): number => {
+  const requestedSeconds = Math.max(0, horizonDays) * SECONDS_PER_DAY;
+  const selectedSeconds = selectedExpirationTs - valuationTs;
+  return selectedSeconds > 0
+    ? Math.min(requestedSeconds, selectedSeconds)
+    : requestedSeconds;
+};
 
 export const closestExpirationTs = (
   quotes: AtmOptionExpiryQuote[],

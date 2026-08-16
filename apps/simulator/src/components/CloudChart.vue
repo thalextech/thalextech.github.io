@@ -109,6 +109,7 @@ const COLOR_T_MID = 0.5;
 const CHART_WIDTH = 1200;
 const CHART_HEIGHT = 520;
 const CUMUL_CHART_HEIGHT = 520;
+const TERMINAL_CHART_HEIGHT = 720;
 const CHART_MARGIN = { top: 18, right: 112, bottom: 38, left: 46 };
 const HISTOGRAM_WIDTH = 200;
 const HISTOGRAM_GAP = 28;
@@ -194,6 +195,11 @@ type SimBin = {
   count: number;
   sumPayoff: number;
   medianPayoff: number;
+  p10Payoff: number;
+  p25Payoff: number;
+  p50Payoff: number;
+  p75Payoff: number;
+  p90Payoff: number;
   winCount: number;
   maxLossCount: number;
   opportunityCostSum: number;
@@ -214,6 +220,11 @@ const statsFromBin = (
     totalCount,
     meanPayoff: bin.sumPayoff / bin.count,
     medianPayoff: bin.medianPayoff,
+    p10Payoff: bin.p10Payoff,
+    p25Payoff: bin.p25Payoff,
+    p50Payoff: bin.p50Payoff,
+    p75Payoff: bin.p75Payoff,
+    p90Payoff: bin.p90Payoff,
     winRate: winCount / bin.count,
     maxLossRate: maxLossCount / bin.count,
     opportunityCost: opportunityCostSum / bin.count,
@@ -289,6 +300,11 @@ type SimWorkerSuccess = {
   maxDrawdown: number;
   winRate: number;
   p05Payoff: number;
+  p10Payoff: number;
+  p25Payoff: number;
+  p50Payoff: number;
+  p75Payoff: number;
+  p90Payoff: number;
   p95Payoff: number;
   maxLossRate: number;
   opportunityCost: number;
@@ -320,6 +336,11 @@ type SimComputation = {
   maxDrawdown: number;
   winRate: number;
   p05Payoff: number;
+  p10Payoff: number;
+  p25Payoff: number;
+  p50Payoff: number;
+  p75Payoff: number;
+  p90Payoff: number;
   p95Payoff: number;
   maxLossRate: number;
   opportunityCost: number;
@@ -485,6 +506,11 @@ const handleWorkerMessage = (
     maxDrawdown: payload.maxDrawdown,
     winRate: payload.winRate,
     p05Payoff: payload.p05Payoff,
+    p10Payoff: payload.p10Payoff,
+    p25Payoff: payload.p25Payoff,
+    p50Payoff: payload.p50Payoff,
+    p75Payoff: payload.p75Payoff,
+    p90Payoff: payload.p90Payoff,
     p95Payoff: payload.p95Payoff,
     maxLossRate: payload.maxLossRate,
     opportunityCost: payload.opportunityCost,
@@ -803,32 +829,65 @@ const renderCumulativePayoffChart = (
       .text(props.payoffChartContext);
   }
 
-  [
+  const endpointLabels = [
     {
       point: optionPoints[optionPoints.length - 1],
       color: optionColor,
-      label: `Option EV ${formatTooltipPayoff(sim.meanPayoff)}`,
+      label: `Option MC mean ${formatTooltipPayoff(sim.meanPayoff)}`,
     },
     {
       point: perpPoints[perpPoints.length - 1],
       color: perpColor,
-      label: `Perp EV ${formatTooltipPayoff(comparisonSim.meanPayoff)}`,
+      label: `Perp MC mean ${formatTooltipPayoff(comparisonSim.meanPayoff)}`,
     },
-  ].forEach(({ point, color, label }, index) => {
+  ].map(({ point, color, label }) => {
+    const pointY = yScale(point.contribution);
+    return { point, color, label, pointY, labelY: pointY };
+  });
+  const labelsByHeight = [...endpointLabels].sort(
+    (first, second) => first.pointY - second.pointY,
+  );
+  const minimumLabelGap = 22;
+  if (
+    labelsByHeight.length === 2 &&
+    labelsByHeight[1].labelY - labelsByHeight[0].labelY < minimumLabelGap
+  ) {
+    const center =
+      (labelsByHeight[0].pointY + labelsByHeight[1].pointY) * 0.5;
+    let upperY = Math.max(10, center - minimumLabelGap * 0.5);
+    let lowerY = upperY + minimumLabelGap;
+    if (lowerY > plotHeight - 10) {
+      lowerY = plotHeight - 10;
+      upperY = lowerY - minimumLabelGap;
+    }
+    labelsByHeight[0].labelY = upperY;
+    labelsByHeight[1].labelY = lowerY;
+  }
+
+  endpointLabels.forEach(({ point, color, label, pointY, labelY }) => {
     const endpointX = xScale(point.terminalPrice);
-    const endpointY = yScale(point.contribution) + (index === 0 ? -7 : 7);
     chart
       .append("circle")
       .attr("class", "ev-endpoint")
       .attr("cx", endpointX)
-      .attr("cy", yScale(point.contribution))
+      .attr("cy", pointY)
       .attr("r", 3.5)
       .attr("fill", color);
+    if (Math.abs(labelY - pointY) > 2) {
+      chart
+        .append("line")
+        .attr("class", "ev-endpoint-leader")
+        .attr("x1", endpointX + 4)
+        .attr("x2", endpointX + 8)
+        .attr("y1", pointY)
+        .attr("y2", labelY)
+        .attr("stroke", color);
+    }
     chart
       .append("text")
       .attr("class", "ev-endpoint-label")
       .attr("x", endpointX + 9)
-      .attr("y", endpointY)
+      .attr("y", labelY)
       .attr("dominant-baseline", "middle")
       .attr("fill", color)
       .text(label);
@@ -853,8 +912,7 @@ const renderPayoffComparisonChart = (
   const perpColor = "#f2ad67";
   const chartMargin = { top: 76, right: 48, bottom: 60, left: 82 };
   const plotWidth = CHART_WIDTH - chartMargin.left - chartMargin.right;
-  const plotHeight =
-    CUMUL_CHART_HEIGHT - chartMargin.top - chartMargin.bottom;
+  const plotHeight = 300;
   const allPoints = [...optionPoints, ...perpPoints];
   const rawXMin = Math.min(...allPoints.map((point) => point.terminalPrice));
   const rawXMax = Math.max(...allPoints.map((point) => point.terminalPrice));
@@ -1027,6 +1085,116 @@ const renderPayoffComparisonChart = (
       .text(label);
   });
 
+  const differencePoints = optionPoints.flatMap((optionPoint, index) => {
+    const perpPoint = perpPoints[index];
+    if (
+      !perpPoint ||
+      Math.abs(optionPoint.priceMin - perpPoint.priceMin) > 1e-6 ||
+      Math.abs(optionPoint.priceMax - perpPoint.priceMax) > 1e-6
+    ) {
+      return [];
+    }
+    return [
+      {
+        priceMin: optionPoint.priceMin,
+        priceMax: optionPoint.priceMax,
+        difference: optionPoint.value - perpPoint.value,
+      },
+    ];
+  });
+  const panelHeight = 178;
+  const differenceValues = differencePoints.map((point) => point.difference);
+  const differenceMin = Math.min(0, ...differenceValues);
+  const differenceMax = Math.max(0, ...differenceValues);
+  const differenceSpan = Math.max(1, differenceMax - differenceMin);
+  const differenceY = d3
+    .scaleLinear()
+    .domain([
+      differenceMin - differenceSpan * 0.08,
+      differenceMax + differenceSpan * 0.08,
+    ])
+    .range([panelHeight, 0]);
+  const differencePanel = svg
+    .append("g")
+    .attr("class", "ev-contribution-chart ev-difference-panel")
+    .attr("transform", `translate(${chartMargin.left}, 475)`);
+  differencePanel
+    .append("text")
+    .attr("class", "ev-panel-title")
+    .attr("x", 0)
+    .attr("y", -12)
+    .text(
+      displayMode === "frequency"
+        ? "Option − perp · EV contribution difference by terminal bin"
+        : "Option − perp · mean P&L difference by terminal bin",
+    );
+  differencePanel
+    .append("text")
+    .attr("class", "ev-panel-caption")
+    .attr("x", plotWidth)
+    .attr("y", -12)
+    .attr("text-anchor", "end")
+    .text("Blue: option advantage · orange: perp advantage");
+  differencePanel
+    .append("line")
+    .attr("class", "ev-zero-line")
+    .attr("x1", 0)
+    .attr("x2", plotWidth)
+    .attr("y1", differenceY(0))
+    .attr("y2", differenceY(0));
+  differencePanel
+    .append("g")
+    .attr("class", "ev-bin-bars ev-bin-bars--difference")
+    .selectAll("rect")
+    .data(differencePoints)
+    .join("rect")
+    .attr("x", (point) => xScale(point.priceMin) + 0.35)
+    .attr("width", (point) =>
+      Math.max(1, xScale(point.priceMax) - xScale(point.priceMin) - 0.7),
+    )
+    .attr("y", (point) => differenceY(Math.max(0, point.difference)))
+    .attr("height", (point) =>
+      Math.max(
+        0.75,
+        Math.abs(differenceY(point.difference) - differenceY(0)),
+      ),
+    )
+    .attr("fill", (point) =>
+      point.difference >= 0 ? optionColor : perpColor,
+    )
+    .attr("fill-opacity", 0.78)
+    .attr("stroke", (point) =>
+      point.difference >= 0 ? optionColor : perpColor,
+    )
+    .attr("stroke-opacity", 0.5)
+    .attr("stroke-width", 0.45);
+
+  const differenceAxis = differencePanel.append("g").attr("class", "ev-axis");
+  for (const tick of differenceY.ticks(4)) {
+    differenceAxis
+      .append("text")
+      .attr("x", -12)
+      .attr("y", differenceY(tick))
+      .attr("text-anchor", "end")
+      .attr("dominant-baseline", "middle")
+      .text(formatTooltipPayoff(tick));
+  }
+  for (const tick of xTicks) {
+    differenceAxis
+      .append("text")
+      .attr("x", xScale(tick))
+      .attr("y", panelHeight + 19)
+      .attr("text-anchor", "middle")
+      .text(formatTooltipPrice(tick));
+  }
+  differencePanel
+    .append("text")
+    .attr("class", "ev-axis-title")
+    .attr("x", plotWidth * 0.5)
+    .attr("y", panelHeight + 42)
+    .attr("text-anchor", "middle")
+    .text("Terminal BTC price");
+
 };
 
 const updateDynamicScene = (
@@ -1055,7 +1223,11 @@ const updateDynamicScene = (
   const payoffChartMode = props.payoffChartMode ?? "terminal";
   const payoffModeActive = payoffDisplayMode != null;
   const width = CHART_WIDTH;
-  const height = payoffModeActive ? CUMUL_CHART_HEIGHT : CHART_HEIGHT;
+  const height = payoffModeActive
+    ? payoffChartMode === "terminal"
+      ? TERMINAL_CHART_HEIGHT
+      : CUMUL_CHART_HEIGHT
+    : CHART_HEIGHT;
   const margin = CHART_MARGIN;
   const histogramWidth = HISTOGRAM_WIDTH;
   const mainWidth = MAIN_WIDTH;
@@ -2400,6 +2572,7 @@ const draw = async (): Promise<void> => {
       histBins,
       histBinsMultiplier,
       samplePathLimit,
+      returnSamplePaths: props.payoffDisplayMode == null,
       samplingStopLoss,
     });
     if (props.comparisonLegs?.length) {
@@ -2438,6 +2611,11 @@ const draw = async (): Promise<void> => {
     payoffMin: sim.payoffMin,
     payoffMax: sim.payoffMax,
     p05Payoff: sim.p05Payoff,
+    p10Payoff: sim.p10Payoff,
+    p25Payoff: sim.p25Payoff,
+    p50Payoff: sim.p50Payoff,
+    p75Payoff: sim.p75Payoff,
+    p90Payoff: sim.p90Payoff,
     p95Payoff: sim.p95Payoff,
     winRate: sim.winRate,
     maxLossRate: sim.maxLossRate,
@@ -2450,6 +2628,11 @@ const draw = async (): Promise<void> => {
       payoffMin: comparisonSim.payoffMin,
       payoffMax: comparisonSim.payoffMax,
       p05Payoff: comparisonSim.p05Payoff,
+      p10Payoff: comparisonSim.p10Payoff,
+      p25Payoff: comparisonSim.p25Payoff,
+      p50Payoff: comparisonSim.p50Payoff,
+      p75Payoff: comparisonSim.p75Payoff,
+      p90Payoff: comparisonSim.p90Payoff,
       p95Payoff: comparisonSim.p95Payoff,
       winRate: comparisonSim.winRate,
       maxLossRate: comparisonSim.maxLossRate,
@@ -2912,6 +3095,18 @@ onUnmounted(() => {
   fill: #7b848d;
   font-size: 8px;
   font-variant-numeric: tabular-nums;
+}
+
+:deep(.ev-panel-title) {
+  fill: #9aa2aa;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+:deep(.ev-panel-caption) {
+  fill: #68717a;
+  font-size: 8px;
+  font-weight: 500;
 }
 
 :deep(.ev-stop-price-line) {

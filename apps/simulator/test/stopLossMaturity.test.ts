@@ -3,7 +3,9 @@ import test from "node:test";
 import type { AtmOptionExpiryQuote } from "../src/lib/atmOptionChain.ts";
 import {
   closestExpirationTs,
+  horizonOptionsForQuotes,
   maturityOptionsForQuotes,
+  resolveHorizonSeconds,
   selectableExpiryQuotes,
 } from "../src/lib/stopLossMaturity.ts";
 
@@ -52,5 +54,48 @@ test("the initial selection keeps the listed expiry nearest the target", () => {
   assert.equal(
     closestExpirationTs(quotes, valuationTs + 60 * DAY),
     valuationTs + 42 * DAY,
+  );
+});
+
+test("horizon options include listed maturity day counts", () => {
+  const options = horizonOptionsForQuotes(
+    [quote(21), quote(42)],
+    valuationTs,
+    [7, 14, 30],
+  );
+
+  assert.deepEqual(options.map(({ value }) => value), [7, 14, 21, 30, 42]);
+});
+
+test("a rounded maturity match caps the horizon at the exact expiry", () => {
+  const expirationTs = valuationTs + 13.25 * DAY;
+  const nearFourteenDayQuote = {
+    ...quote(14),
+    expirationTs,
+  };
+
+  assert.deepEqual(
+    selectableExpiryQuotes(
+      [nearFourteenDayQuote],
+      valuationTs,
+      14,
+      "up",
+    ),
+    [nearFourteenDayQuote],
+  );
+  assert.equal(
+    resolveHorizonSeconds(14, expirationTs, valuationTs),
+    13.25 * DAY,
+  );
+});
+
+test("the horizon never extends beyond a selected expiry", () => {
+  assert.equal(
+    resolveHorizonSeconds(30, valuationTs + 21 * DAY, valuationTs),
+    21 * DAY,
+  );
+  assert.equal(
+    resolveHorizonSeconds(14, valuationTs + 21 * DAY, valuationTs),
+    14 * DAY,
   );
 });

@@ -4,6 +4,11 @@ export type SimulationStats = {
   payoffMin: number;
   payoffMax: number;
   p05Payoff: number;
+  p10Payoff: number;
+  p25Payoff: number;
+  p50Payoff: number;
+  p75Payoff: number;
+  p90Payoff: number;
   p95Payoff: number;
   winRate: number;
   maxLossRate: number;
@@ -19,6 +24,11 @@ export type HistogramBinStats = {
   totalCount: number;
   meanPayoff: number;
   medianPayoff: number;
+  p10Payoff: number;
+  p25Payoff: number;
+  p50Payoff: number;
+  p75Payoff: number;
+  p90Payoff: number;
   winRate: number;
   maxLossRate: number;
   opportunityCost: number;

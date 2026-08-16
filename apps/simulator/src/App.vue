@@ -23,7 +23,7 @@ const defaultParams: GBMParams = {
   vol: 0.4,
   T: 14 / 365.25,
   dt: 1 / (365.25 * 24),
-  rows: 5000,
+  rows: 10_000,
 };
 const driftBounds = { min: -5, max: 5 };
 const volBounds = { min: 0.1, max: 1.2 };
@@ -143,6 +143,8 @@ const SVG_EXPORT_STYLE = `
   .ev-title { fill: #e2e7ec; font-size: 17px; font-weight: 700; }
   .ev-subtitle { fill: #7d8791; font-size: 12px; font-weight: 500; }
   .ev-context { fill: #939ca5; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .ev-panel-title { fill: #aeb6be; font-size: 12px; font-weight: 650; }
+  .ev-panel-caption { fill: #7f8993; font-size: 11px; font-weight: 500; }
   .ev-stop-price-line { stroke: rgba(226, 232, 240, 0.58); stroke-width: 1.25; stroke-dasharray: 5 5; }
   .ev-stop-price-label { fill: #e4a766; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
   .ev-chart-heading g line { stroke-width: 3; stroke-linecap: round; }
@@ -499,6 +501,20 @@ const setVolFromChart = (vol: number): void => {
   applyParams();
 };
 
+const setMuPercentFromInput = (percent: number): void => {
+  if (!Number.isFinite(percent)) return;
+  setMuFromChart(percent / 100);
+};
+
+const setVolPercentFromInput = (percent: number): void => {
+  if (!Number.isFinite(percent)) return;
+  setVolFromChart(percent / 100);
+};
+
+const selectNumericInput = (event: FocusEvent): void => {
+  (event.currentTarget as HTMLInputElement | null)?.select();
+};
+
 const guideMuPercent = computed(() =>
   ((guideMu.value ?? pendingParams.mu) * 100).toFixed(2),
 );
@@ -539,8 +555,6 @@ const simTimeSteps = ref(
 const graphSettingsDraft = reactive({
   timeSteps: simTimeSteps.value,
   pathLimit: cloudPathLimit.value,
-  colorMin: colorMinPercent.value,
-  colorMax: colorMaxPercent.value,
   binsMultiplier: histBinsMultiplier.value,
 });
 
@@ -567,18 +581,6 @@ const setCloudPathLimit = (value: number): void => {
     DRAWN_PATHS_MIN,
     Math.max(DRAWN_PATHS_MIN, appliedParams.rows),
   );
-};
-
-const setColorMinPercent = (value: number): void => {
-  if (!Number.isFinite(value)) return;
-  const next = clamp(roundTo(value, 1), 0, colorMaxPercent.value - 1);
-  colorMinPercent.value = next;
-};
-
-const setColorMaxPercent = (value: number): void => {
-  if (!Number.isFinite(value)) return;
-  const next = clamp(roundTo(value, 1), colorMinPercent.value + 1, 100);
-  colorMaxPercent.value = next;
 };
 
 const setHistBinsMultiplier = (value: number): void => {
@@ -645,8 +647,6 @@ const syncSettingsDraft = (): void => {
   Object.assign(pathModelDraft, pathModel);
   graphSettingsDraft.timeSteps = simTimeSteps.value;
   graphSettingsDraft.pathLimit = cloudPathLimit.value;
-  graphSettingsDraft.colorMin = colorMinPercent.value;
-  graphSettingsDraft.colorMax = colorMaxPercent.value;
   graphSettingsDraft.binsMultiplier = histBinsMultiplier.value;
 };
 
@@ -676,11 +676,7 @@ const handleSettingsKeydown = (event: KeyboardEvent): void => {
 
 type NumericPathModelKey =
   | "volOfVol"
-  | "correlation"
-  | "jumpIntensity"
-  | "maxJumpVarianceShare"
-  | "jumpMean"
-  | "jumpVol";
+  | "correlation";
 
 const setPathModelNumber = (
   key: NumericPathModelKey,
@@ -691,18 +687,6 @@ const setPathModelNumber = (
 ): void => {
   if (!Number.isFinite(value)) return;
   pathModelDraft[key] = roundTo(clamp(value, min, max), decimals);
-};
-
-const setPathModelPercent = (
-  key:
-    | "maxJumpVarianceShare"
-    | "jumpMean"
-    | "jumpVol",
-  value: number,
-  minPercent: number,
-  maxPercent: number,
-): void => {
-  setPathModelNumber(key, value / 100, minPercent / 100, maxPercent / 100, 5);
 };
 
 const resetPathModel = (): void => {
@@ -729,24 +713,6 @@ const setDraftPathLimit = (value: number): void => {
   );
 };
 
-const setDraftColorMin = (value: number): void => {
-  if (!Number.isFinite(value)) return;
-  graphSettingsDraft.colorMin = clamp(
-    roundTo(value, 1),
-    0,
-    graphSettingsDraft.colorMax - 1,
-  );
-};
-
-const setDraftColorMax = (value: number): void => {
-  if (!Number.isFinite(value)) return;
-  graphSettingsDraft.colorMax = clamp(
-    roundTo(value, 1),
-    graphSettingsDraft.colorMin + 1,
-    100,
-  );
-};
-
 const setDraftBinsMultiplier = (value: number): void => {
   if (!Number.isFinite(value)) return;
   graphSettingsDraft.binsMultiplier = clamp(roundTo(value, 2), 1, 2);
@@ -760,8 +726,6 @@ const confirmSimSettings = (): void => {
   if (graphSettingsDraft.pathLimit !== cloudPathLimit.value) {
     setCloudPathLimit(graphSettingsDraft.pathLimit);
   }
-  colorMinPercent.value = graphSettingsDraft.colorMin;
-  colorMaxPercent.value = graphSettingsDraft.colorMax;
   if (graphSettingsDraft.binsMultiplier !== histBinsMultiplier.value) {
     setHistBinsMultiplier(graphSettingsDraft.binsMultiplier);
   }
@@ -1851,172 +1815,6 @@ watch(
                     @keydown.enter="onSettingsFieldEnter"
                   />
                 </label>
-                <div class="sim-settings-row">
-                  <span>Price jumps</span>
-                  <button
-                    type="button"
-                    class="settings-switch"
-                    role="switch"
-                    aria-label="Price jumps"
-                    :disabled="pathModelDraft.kind !== 'bates'"
-                    :aria-checked="pathModelDraft.jumpsEnabled"
-                    :class="{ 'is-active': pathModelDraft.jumpsEnabled }"
-                    @click="
-                      pathModelDraft.jumpsEnabled =
-                        !pathModelDraft.jumpsEnabled
-                    "
-                  >
-                    <i></i>
-                  </button>
-                </div>
-                <label class="sim-settings-row">
-                  <span>Jump intensity <i>/ yr</i></span>
-                  <input
-                    class="sim-settings-input"
-                    type="text"
-                    inputmode="decimal"
-                    autocomplete="off"
-                    spellcheck="false"
-                    :disabled="
-                      pathModelDraft.kind !== 'bates' ||
-                      !pathModelDraft.jumpsEnabled
-                    "
-                    :value="
-                      settingsFieldValue(
-                        'jumpIntensity',
-                        pathModelDraft.jumpIntensity,
-                      )
-                    "
-                    @focus="beginSettingsFieldEdit('jumpIntensity', $event)"
-                    @input="
-                      updateSettingsFieldDraft(
-                        'jumpIntensity',
-                        ($event.target as HTMLInputElement).value,
-                      )
-                    "
-                    @blur="
-                      commitSettingsField('jumpIntensity', (n) =>
-                        setPathModelNumber('jumpIntensity', n, 0, 500, 1),
-                      )
-                    "
-                    @keydown.enter="onSettingsFieldEnter"
-                  />
-                </label>
-                <label class="sim-settings-row">
-                  <span>Jump variance cap <i>of σ²T</i></span>
-                  <span class="settings-input-unit">
-                    <input
-                      class="sim-settings-input"
-                      type="text"
-                      inputmode="decimal"
-                      autocomplete="off"
-                      spellcheck="false"
-                      :disabled="
-                        pathModelDraft.kind !== 'bates' ||
-                        !pathModelDraft.jumpsEnabled
-                      "
-                      :value="
-                        settingsFieldValue(
-                          'maxJumpVarianceShare',
-                          roundTo(pathModelDraft.maxJumpVarianceShare * 100, 1),
-                        )
-                      "
-                      @focus="
-                        beginSettingsFieldEdit('maxJumpVarianceShare', $event)
-                      "
-                      @input="
-                        updateSettingsFieldDraft(
-                          'maxJumpVarianceShare',
-                          ($event.target as HTMLInputElement).value,
-                        )
-                      "
-                      @blur="
-                        commitSettingsField('maxJumpVarianceShare', (n) =>
-                          setPathModelPercent(
-                            'maxJumpVarianceShare',
-                            n,
-                            0,
-                            90,
-                          ),
-                        )
-                      "
-                      @keydown.enter="onSettingsFieldEnter"
-                    />
-                    <i>%</i>
-                  </span>
-                </label>
-                <label class="sim-settings-row">
-                  <span>Mean jump</span>
-                  <span class="settings-input-unit">
-                    <input
-                      class="sim-settings-input"
-                      type="text"
-                      inputmode="decimal"
-                      autocomplete="off"
-                      spellcheck="false"
-                      :disabled="
-                        pathModelDraft.kind !== 'bates' ||
-                        !pathModelDraft.jumpsEnabled
-                      "
-                      :value="
-                        settingsFieldValue(
-                          'jumpMean',
-                          roundTo(pathModelDraft.jumpMean * 100, 3),
-                        )
-                      "
-                      @focus="beginSettingsFieldEdit('jumpMean', $event)"
-                      @input="
-                        updateSettingsFieldDraft(
-                          'jumpMean',
-                          ($event.target as HTMLInputElement).value,
-                        )
-                      "
-                      @blur="
-                        commitSettingsField('jumpMean', (n) =>
-                          setPathModelPercent('jumpMean', n, -20, 20),
-                        )
-                      "
-                      @keydown.enter="onSettingsFieldEnter"
-                    />
-                    <i>%</i>
-                  </span>
-                </label>
-                <label class="sim-settings-row">
-                  <span>Jump volatility</span>
-                  <span class="settings-input-unit">
-                    <input
-                      class="sim-settings-input"
-                      type="text"
-                      inputmode="decimal"
-                      autocomplete="off"
-                      spellcheck="false"
-                      :disabled="
-                        pathModelDraft.kind !== 'bates' ||
-                        !pathModelDraft.jumpsEnabled
-                      "
-                      :value="
-                        settingsFieldValue(
-                          'jumpVol',
-                          roundTo(pathModelDraft.jumpVol * 100, 3),
-                        )
-                      "
-                      @focus="beginSettingsFieldEdit('jumpVol', $event)"
-                      @input="
-                        updateSettingsFieldDraft(
-                          'jumpVol',
-                          ($event.target as HTMLInputElement).value,
-                        )
-                      "
-                      @blur="
-                        commitSettingsField('jumpVol', (n) =>
-                          setPathModelPercent('jumpVol', n, 0, 20),
-                        )
-                      "
-                      @keydown.enter="onSettingsFieldEnter"
-                    />
-                    <i>%</i>
-                  </span>
-                </label>
               </div>
             </div>
 
@@ -2078,66 +1876,6 @@ watch(
                     "
                     @keydown.enter="onSettingsFieldEnter"
                   />
-                </label>
-                <label class="sim-settings-row">
-                  <span>Color min</span>
-                  <span class="settings-input-unit">
-                    <input
-                      class="sim-settings-input"
-                      type="text"
-                      inputmode="decimal"
-                      autocomplete="off"
-                      spellcheck="false"
-                      :value="
-                        settingsFieldValue(
-                          'colorMin',
-                          graphSettingsDraft.colorMin,
-                        )
-                      "
-                      @focus="beginSettingsFieldEdit('colorMin', $event)"
-                      @input="
-                        updateSettingsFieldDraft(
-                          'colorMin',
-                          ($event.target as HTMLInputElement).value,
-                        )
-                      "
-                      @blur="
-                        commitSettingsField('colorMin', setDraftColorMin)
-                      "
-                      @keydown.enter="onSettingsFieldEnter"
-                    />
-                    <i>%</i>
-                  </span>
-                </label>
-                <label class="sim-settings-row">
-                  <span>Color max</span>
-                  <span class="settings-input-unit">
-                    <input
-                      class="sim-settings-input"
-                      type="text"
-                      inputmode="decimal"
-                      autocomplete="off"
-                      spellcheck="false"
-                      :value="
-                        settingsFieldValue(
-                          'colorMax',
-                          graphSettingsDraft.colorMax,
-                        )
-                      "
-                      @focus="beginSettingsFieldEdit('colorMax', $event)"
-                      @input="
-                        updateSettingsFieldDraft(
-                          'colorMax',
-                          ($event.target as HTMLInputElement).value,
-                        )
-                      "
-                      @blur="
-                        commitSettingsField('colorMax', setDraftColorMax)
-                      "
-                      @keydown.enter="onSettingsFieldEnter"
-                    />
-                    <i>%</i>
-                  </span>
                 </label>
                 <label class="sim-settings-row">
                   <span>Histogram bins</span>
@@ -2221,10 +1959,50 @@ watch(
           <div class="chart-header">
             <div class="chart-header-left">
               <div class="chart-meta">
-                <span class="chart-meta-key">μ</span>
-                <span class="chart-meta-value">{{ guideMuPercent }}%</span>
-                <span class="chart-meta-key">σ</span>
-                <span class="chart-meta-value">{{ guideVolPercent }}%</span>
+                <label class="chart-meta-assumption">
+                  <span class="chart-meta-key">μ</span>
+                  <input
+                    class="chart-meta-input"
+                    type="number"
+                    :min="driftBounds.min * 100"
+                    :max="driftBounds.max * 100"
+                    step="0.1"
+                    :value="guideMuPercent"
+                    aria-label="Annual drift percentage"
+                    @focus="selectNumericInput"
+                    @change="
+                      setMuPercentFromInput(
+                        Number(($event.target as HTMLInputElement).value),
+                      )
+                    "
+                    @keydown.enter="
+                      ($event.currentTarget as HTMLInputElement).blur()
+                    "
+                  />
+                  <span class="chart-meta-unit">%</span>
+                </label>
+                <label class="chart-meta-assumption">
+                  <span class="chart-meta-key">σ</span>
+                  <input
+                    class="chart-meta-input"
+                    type="number"
+                    :min="volBounds.min * 100"
+                    :max="volBounds.max * 100"
+                    step="0.1"
+                    :value="guideVolPercent"
+                    aria-label="Annual volatility percentage"
+                    @focus="selectNumericInput"
+                    @change="
+                      setVolPercentFromInput(
+                        Number(($event.target as HTMLInputElement).value),
+                      )
+                    "
+                    @keydown.enter="
+                      ($event.currentTarget as HTMLInputElement).blur()
+                    "
+                  />
+                  <span class="chart-meta-unit">%</span>
+                </label>
                 <span
                   ref="nLabelRef"
                   class="chart-meta-n"
@@ -2629,6 +2407,46 @@ watch(
   color: rgba(148, 163, 184, 0.95);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
+}
+
+.chart-meta-assumption {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: text;
+}
+
+.chart-meta-input {
+  box-sizing: content-box;
+  width: 46px;
+  padding: 3px 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  outline: 0;
+  background: transparent;
+  color: rgba(148, 163, 184, 0.95);
+  font: inherit;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.chart-meta-assumption:hover .chart-meta-input,
+.chart-meta-input:focus {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #e8eaed;
+}
+
+.chart-meta-input::-webkit-inner-spin-button,
+.chart-meta-input::-webkit-outer-spin-button {
+  appearance: none;
+}
+
+.chart-meta-unit {
+  margin-left: -4px;
+  color: rgba(148, 163, 184, 0.95);
+  font-weight: 500;
 }
 
 .chart-meta-n {
