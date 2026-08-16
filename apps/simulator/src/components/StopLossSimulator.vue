@@ -55,6 +55,7 @@ const riskBudget = ref(10_000);
 const leverage = ref(10);
 const leverageDraft = ref(10);
 const leverageOverridden = ref(false);
+const realizedVolOverridden = ref(false);
 const annualFundingPercent = ref(8);
 const horizonDays = ref(14);
 const selectedExpirationTs = ref(0);
@@ -191,6 +192,7 @@ const setFunding = (value: number): void => {
 
 const setRealizedVolPercent = (value: number): void => {
   if (!Number.isFinite(value)) return;
+  realizedVolOverridden.value = true;
   emit(
     "set-vol",
     clamp(value, RV_MIN_PERCENT, RV_MAX_PERCENT) / 100,
@@ -236,6 +238,24 @@ const selectedExpiryQuote = computed(
     ) ?? null,
 );
 
+watch(
+  () => selectedExpiryQuote.value?.callIv,
+  (iv) => {
+    if (
+      realizedVolOverridden.value ||
+      !Number.isFinite(iv) ||
+      Number(iv) <= 0
+    ) {
+      return;
+    }
+    emit(
+      "set-vol",
+      clamp(Number(iv), RV_MIN_PERCENT / 100, RV_MAX_PERCENT / 100),
+    );
+  },
+  { immediate: true },
+);
+
 const selectedOptionMark = computed(() => {
   const quote = selectedExpiryQuote.value;
   if (!quote) return null;
@@ -253,7 +273,9 @@ const setPayoffDisplayMode = (mode: "payoff" | "frequency"): void => {
   hoveredBinStats.value = null;
 };
 
-const setPayoffChartMode = (mode: "terminal" | "cumulative"): void => {
+const setPayoffChartMode = (
+  mode: "terminal" | "cumulative",
+): void => {
   payoffChartMode.value = mode;
   hoveredBinStats.value = null;
 };
@@ -578,8 +600,8 @@ const hoveredPriceRangeLabel = computed(() => {
             type="number"
             :min="RV_MIN_PERCENT"
             :max="RV_MAX_PERCENT"
-            step="1"
-            :value="Math.round(params.vol * 100)"
+            step="0.1"
+            :value="Number((params.vol * 100).toFixed(1))"
             aria-label="Annual realized volatility percentage"
             @change="
               setRealizedVolPercent(
@@ -596,7 +618,11 @@ const hoveredPriceRangeLabel = computed(() => {
         </span>
       </label>
       <div class="comparison-view-toggles">
-        <div class="path-mode-toggle" role="group" aria-label="Chart organization">
+        <div
+          class="path-mode-toggle chart-mode-toggle"
+          role="group"
+          aria-label="Chart organization"
+        >
           <button
             type="button"
             :class="{ 'is-active': payoffChartMode === 'terminal' }"
@@ -611,7 +637,7 @@ const hoveredPriceRangeLabel = computed(() => {
             :aria-pressed="payoffChartMode === 'cumulative'"
             @click="setPayoffChartMode('cumulative')"
           >
-            Cumulative
+            EV
           </button>
         </div>
         <div
@@ -687,6 +713,7 @@ const hoveredPriceRangeLabel = computed(() => {
             :comparisonOptionPricingByLegId="EMPTY_OPTION_PRICING"
             :primarySeriesLabel="optionLabel"
             :comparisonSeriesLabel="perpLabel"
+            :comparisonReferencePrice="stopPrice"
             :payoffDisplayMode="payoffDisplayMode"
             :payoffChartMode="payoffChartMode"
             :payoffChartContext="payoffChartContext"
@@ -1396,6 +1423,10 @@ const hoveredPriceRangeLabel = computed(() => {
   padding: 3px;
   border-radius: 7px;
   background: #111216;
+}
+
+.chart-mode-toggle {
+  grid-template-columns: repeat(2, 1fr);
 }
 
 .path-mode-toggle button {

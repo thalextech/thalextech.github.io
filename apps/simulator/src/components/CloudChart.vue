@@ -11,6 +11,7 @@ import {
   buildPayoffDifferenceSummary,
   buildSharedTerminalCumulativeSeries,
   computePayoffBinValue,
+  smoothSharedTerminalCumulativeSeries,
 } from "../lib/payoffComparison";
 import type {
   HistogramBinHover,
@@ -586,6 +587,8 @@ const clearDynamicScene = (sceneHandles: SceneHandles): void => {
 };
 
 type PayoffChartPoint = {
+  priceMin: number;
+  priceMax: number;
   terminalPrice: number;
   value: number;
 };
@@ -599,6 +602,8 @@ const payoffPointsFromBins = (
     bin.count > 0
       ? [
           {
+            priceMin: bin.x0,
+            priceMax: bin.x1,
             terminalPrice: (bin.x0 + bin.x1) * 0.5,
             value: computePayoffBinValue(
               bin.sumPayoff,
@@ -616,10 +621,12 @@ const renderCumulativePayoffChart = (
   sim: SimComputation,
   comparisonSim: SimComputation,
 ): void => {
-  const sharedPoints = buildSharedTerminalCumulativeSeries(
-    sim.terminalPrices,
-    sim.terminalPayoffs,
-    comparisonSim.terminalPayoffs,
+  const sharedPoints = smoothSharedTerminalCumulativeSeries(
+    buildSharedTerminalCumulativeSeries(
+      sim.terminalPrices,
+      sim.terminalPayoffs,
+      comparisonSim.terminalPayoffs,
+    ),
   );
   const optionPoints = sharedPoints.map((point) => ({
     terminalPrice: point.terminalPrice,
@@ -714,12 +721,12 @@ const renderCumulativePayoffChart = (
     .x((point) => xScale(point.terminalPrice))
     .y0(yScale(0))
     .y1((point) => yScale(point.contribution))
-    .curve(d3.curveMonotoneX);
+    .curve(d3.curveBasis);
   const line = d3
     .line<(typeof optionPoints)[number]>()
     .x((point) => xScale(point.terminalPrice))
     .y((point) => yScale(point.contribution))
-    .curve(d3.curveMonotoneX);
+    .curve(d3.curveBasis);
   const seriesGroup = chart
     .append("g")
     .attr("clip-path", `url(#${clipId})`);
@@ -786,7 +793,7 @@ const renderCumulativePayoffChart = (
     .attr("class", "ev-subtitle")
     .attr("x", chartMargin.left)
     .attr("y", 41)
-    .text("Shared paths sorted by terminal BTC price · contribution = payoff ÷ paths");
+    .text("Shared paths sorted by terminal BTC price · smoothed display · exact EV endpoints");
   if (props.payoffChartContext) {
     titleGroup
       .append("text")
@@ -844,9 +851,8 @@ const renderPayoffComparisonChart = (
 
   const optionColor = "#9bcdf3";
   const perpColor = "#f2ad67";
-  const chartMargin = { top: 76, bottom: 60, left: 34 };
-  const endpointLabelWidth = 112;
-  const plotWidth = CHART_WIDTH - chartMargin.left - endpointLabelWidth;
+  const chartMargin = { top: 76, right: 48, bottom: 60, left: 82 };
+  const plotWidth = CHART_WIDTH - chartMargin.left - chartMargin.right;
   const plotHeight =
     CUMUL_CHART_HEIGHT - chartMargin.top - chartMargin.bottom;
   const allPoints = [...optionPoints, ...perpPoints];
@@ -864,57 +870,23 @@ const renderPayoffComparisonChart = (
     .scaleLinear()
     .domain([rawYMin - yPadding, rawYMax + yPadding])
     .range([plotHeight, 0]);
-  const xTicks = xScale.ticks(5);
+  const xTicks = xScale.ticks(6);
+  const yTicks = yScale.ticks(5);
 
   const chart = svg
     .append("g")
-    .attr("class", "ev-contribution-chart")
+    .attr("class", "ev-contribution-chart ev-bin-bar-chart")
     .attr("transform", `translate(${chartMargin.left}, ${chartMargin.top})`);
 
   const chartKey = Math.abs(Math.round((sim.meanPayoff + comparisonSim.meanPayoff) * 100));
   const clipId = `ev-contribution-clip-${chartKey}`;
-  const optionGradientId = `ev-option-gradient-${chartKey}`;
-  const perpGradientId = `ev-perp-gradient-${chartKey}`;
-  const defs = svg.append("defs").attr("class", "ev-contribution-chart");
-  defs
+  chart
+    .append("defs")
     .append("clipPath")
     .attr("id", clipId)
     .append("rect")
     .attr("width", plotWidth)
     .attr("height", plotHeight);
-  [
-    { id: optionGradientId, color: optionColor },
-    { id: perpGradientId, color: perpColor },
-  ].forEach(({ id, color }) => {
-    const gradient = defs
-      .append("linearGradient")
-      .attr("id", id)
-      .attr("x1", "0%")
-      .attr("x2", "0%")
-      .attr("y1", "0%")
-      .attr("y2", "100%");
-    gradient
-      .append("stop")
-      .attr("offset", "0%")
-      .attr("stop-color", color)
-      .attr("stop-opacity", id === optionGradientId ? 0.22 : 0.16);
-    gradient
-      .append("stop")
-      .attr("offset", "100%")
-      .attr("stop-color", color)
-      .attr("stop-opacity", 0.02);
-  });
-
-  const grid = chart.append("g").attr("class", "ev-grid");
-  for (const tick of xTicks) {
-    grid
-      .append("line")
-      .attr("x1", xScale(tick))
-      .attr("x2", xScale(tick))
-      .attr("y1", 0)
-      .attr("y2", plotHeight);
-  }
-
   chart
     .append("line")
     .attr("class", "ev-zero-line")
@@ -922,56 +894,43 @@ const renderPayoffComparisonChart = (
     .attr("x2", plotWidth)
     .attr("y1", yScale(0))
     .attr("y2", yScale(0));
-  chart
-    .append("line")
-    .attr("class", "ev-zero-line ev-payoff-zero-line")
-    .attr("x1", xScale(0))
-    .attr("x2", xScale(0))
-    .attr("y1", 0)
-    .attr("y2", plotHeight);
-
-  const area = d3
-    .area<PayoffChartPoint>()
-    .x((point) => xScale(point.terminalPrice))
-    .y0(yScale(0))
-    .y1((point) => yScale(point.value))
-    .curve(d3.curveMonotoneX);
-  const line = d3
-    .line<PayoffChartPoint>()
-    .x((point) => xScale(point.terminalPrice))
-    .y((point) => yScale(point.value))
-    .curve(d3.curveMonotoneX);
-  const contourLine = (factor: number) =>
-    d3
-      .line<PayoffChartPoint>()
-      .x((point) => xScale(point.terminalPrice))
-      .y((point) => yScale(point.value * factor))
-      .curve(d3.curveMonotoneX);
   const seriesGroup = chart
     .append("g")
     .attr("clip-path", `url(#${clipId})`);
 
   [
-    { className: "perp", points: perpPoints, color: perpColor, gradient: perpGradientId },
-    { className: "option", points: optionPoints, color: optionColor, gradient: optionGradientId },
-  ].forEach(({ className, points, color, gradient }) => {
+    {
+      className: "option",
+      points: optionPoints,
+      color: optionColor,
+      opacity: 0.8,
+    },
+    {
+      className: "perp",
+      points: perpPoints,
+      color: perpColor,
+      opacity: 0.68,
+    },
+  ].forEach(({ className, points, color, opacity }) => {
     seriesGroup
-      .append("path")
-      .attr("class", `ev-area ev-area--${className}`)
-      .attr("d", area(points))
-      .attr("fill", `url(#${gradient})`);
-    [0.28, 0.48, 0.68, 0.84].forEach((factor) => {
-      seriesGroup
-        .append("path")
-        .attr("class", `ev-contour ev-contour--${className}`)
-        .attr("d", contourLine(factor)(points))
-        .attr("stroke", color);
-    });
-    seriesGroup
-      .append("path")
-      .attr("class", `ev-line ev-line--${className}`)
-      .attr("d", line(points))
-      .attr("stroke", color);
+      .append("g")
+      .attr("class", `ev-bin-bars ev-bin-bars--${className}`)
+      .selectAll("rect")
+      .data(points)
+      .join("rect")
+      .attr("x", (point) => xScale(point.priceMin) + 0.35)
+      .attr("width", (point) =>
+        Math.max(1, xScale(point.priceMax) - xScale(point.priceMin) - 0.7),
+      )
+      .attr("y", (point) => yScale(Math.max(0, point.value)))
+      .attr("height", (point) =>
+        Math.max(0.75, Math.abs(yScale(point.value) - yScale(0))),
+      )
+      .attr("fill", color)
+      .attr("fill-opacity", opacity)
+      .attr("stroke", color)
+      .attr("stroke-opacity", 0.45)
+      .attr("stroke-width", 0.45);
   });
 
   const axis = chart.append("g").attr("class", "ev-axis");
@@ -983,6 +942,15 @@ const renderPayoffComparisonChart = (
       .attr("text-anchor", "middle")
       .text(formatTooltipPrice(tick));
   }
+  for (const tick of yTicks) {
+    axis
+      .append("text")
+      .attr("x", -12)
+      .attr("y", yScale(tick))
+      .attr("text-anchor", "end")
+      .attr("dominant-baseline", "middle")
+      .text(formatTooltipPayoff(tick));
+  }
   axis
     .append("text")
     .attr("class", "ev-axis-title")
@@ -990,20 +958,12 @@ const renderPayoffComparisonChart = (
     .attr("y", plotHeight + 47)
     .attr("text-anchor", "middle")
     .text("Terminal BTC price");
-
-  [
-    { label: "LOSS TAIL", position: 0.1 },
-    { label: "RECOVERY", position: 0.52 },
-    { label: "CONVEX UPSIDE", position: 0.87 },
-  ].forEach(({ label, position }) => {
-    axis
-      .append("text")
-      .attr("class", "ev-region-label")
-      .attr("x", plotWidth * position)
-      .attr("y", Math.max(26, yScale(0) - 24))
-      .attr("text-anchor", "middle")
-      .text(label);
-  });
+  chart
+    .append("text")
+    .attr("class", "ev-axis-title")
+    .attr("transform", `translate(${-64}, ${plotHeight * 0.5}) rotate(-90)`)
+    .attr("text-anchor", "middle")
+    .text(displayMode === "frequency" ? "EV contribution" : "Mean P&L");
 
   const titleGroup = svg
     .append("g")
@@ -1015,8 +975,8 @@ const renderPayoffComparisonChart = (
     .attr("y", 23)
     .text(
       displayMode === "frequency"
-        ? "Frequency × payoff contribution"
-        : "Payoff comparison",
+        ? "Frequency × payoff by terminal BTC price bin"
+        : "Mean P&L by terminal BTC price bin",
     );
   titleGroup
     .append("text")
@@ -1025,8 +985,8 @@ const renderPayoffComparisonChart = (
     .attr("y", 41)
     .text(
       displayMode === "frequency"
-        ? "Bin probability × average P&L · contributions sum to expected value"
-        : "Average terminal P&L by simulated BTC price",
+        ? "Sum of path P&L in each terminal-price bin ÷ all simulated paths"
+        : "Option and perpetual-with-stop outcomes overlaid · each bar is the bin mean",
     );
   if (props.payoffChartContext) {
     titleGroup
@@ -1037,79 +997,35 @@ const renderPayoffComparisonChart = (
       .text(props.payoffChartContext);
   }
 
-  const optionEnd = optionPoints[optionPoints.length - 1];
-  const perpEnd = perpPoints[perpPoints.length - 1];
-  const endpointGap = Math.abs(
-    yScale(optionEnd.value) - yScale(perpEnd.value),
-  );
-  const optionLabelOffset = endpointGap < 18 ? -9 : 0;
-  const perpLabelOffset = endpointGap < 18 ? 9 : 0;
+  const stopPrice = Number(props.comparisonReferencePrice);
+  const legend = titleGroup
+    .append("g")
+    .attr("transform", `translate(${CHART_WIDTH - 355}, 20)`);
   [
+    { label: "Option P&L", color: optionColor, x: 0 },
     {
-      point: optionEnd,
-      color: optionColor,
-      label: `Option ${formatTooltipPayoff(optionEnd.value)}`,
-      offset: optionLabelOffset,
-    },
-    {
-      point: perpEnd,
+      label: Number.isFinite(stopPrice)
+        ? `Perp + stop @ ${formatTooltipPrice(stopPrice)}`
+        : "Perp + stop",
       color: perpColor,
-      label: `Perp ${formatTooltipPayoff(perpEnd.value)}`,
-      offset: perpLabelOffset,
+      x: 112,
     },
-  ].forEach(({ point, color, label, offset }) => {
-    const endpointX = xScale(point.terminalPrice);
-    const endpointY = yScale(point.value) + offset;
-    chart
-      .append("circle")
-      .attr("class", "ev-endpoint")
-      .attr("cx", endpointX)
-      .attr("cy", yScale(point.value))
-      .attr("r", 3.5)
-      .attr("fill", color);
-    chart
-      .append("line")
-      .attr("class", "ev-endpoint-leader")
-      .attr("x1", endpointX + 5)
-      .attr("x2", endpointX + 12)
-      .attr("y1", yScale(point.value))
-      .attr("y2", endpointY)
-      .attr("stroke", color);
-    chart
-      .append("text")
-      .attr("class", "ev-endpoint-label")
-      .attr("x", endpointX + 15)
-      .attr("y", endpointY)
-      .attr("text-anchor", "start")
-      .attr("dominant-baseline", "middle")
+  ].forEach(({ label, color, x }) => {
+    legend
+      .append("rect")
+      .attr("x", x)
+      .attr("y", -5)
+      .attr("width", 15)
+      .attr("height", 10)
       .attr("fill", color)
+      .attr("fill-opacity", 0.8);
+    legend
+      .append("text")
+      .attr("x", x + 20)
+      .attr("y", 0)
+      .attr("dominant-baseline", "middle")
       .text(label);
   });
-
-  const optionMinimum = optionPoints.reduce((minimum, point) =>
-    point.value < minimum.value ? point : minimum,
-  );
-  const minX = xScale(optionMinimum.terminalPrice);
-  const minY = yScale(optionMinimum.value);
-  chart.append("circle").attr("class", "ev-annotation-dot").attr("cx", minX).attr("cy", minY).attr("r", 3.5);
-  chart.append("line").attr("class", "ev-annotation-line").attr("x1", minX).attr("x2", minX).attr("y1", minY + 5).attr("y2", Math.min(plotHeight - 18, minY + 46));
-  chart.append("text").attr("class", "ev-annotation-label").attr("x", minX + 7).attr("y", Math.min(plotHeight - 5, minY + 51)).text("Maximum option loss");
-
-  const minimumIndex = optionPoints.indexOf(optionMinimum);
-  const pairedPointCount = Math.min(optionPoints.length, perpPoints.length);
-  for (let index = Math.max(1, minimumIndex + 1); index < pairedPointCount; index += 1) {
-    const previousDifference =
-      optionPoints[index - 1].value - perpPoints[index - 1].value;
-    const difference = optionPoints[index].value - perpPoints[index].value;
-    if (previousDifference < 0 && difference >= 0) {
-      const crossoverX = xScale(optionPoints[index].terminalPrice);
-      const crossoverY = yScale(optionPoints[index].value);
-      chart.append("circle").attr("class", "ev-annotation-dot").attr("cx", crossoverX).attr("cy", crossoverY).attr("r", 3.5);
-      chart.append("line").attr("class", "ev-annotation-line").attr("x1", crossoverX).attr("x2", crossoverX).attr("y1", crossoverY + 5).attr("y2", Math.min(plotHeight - 18, crossoverY + 46));
-      chart.append("text").attr("class", "ev-annotation-label").attr("x", crossoverX + 7).attr("y", Math.min(plotHeight - 5, crossoverY + 51)).text("Option overtakes perp");
-      break;
-    }
-  }
 
 };
 
@@ -2996,6 +2912,23 @@ onUnmounted(() => {
   fill: #7b848d;
   font-size: 8px;
   font-variant-numeric: tabular-nums;
+}
+
+:deep(.ev-stop-price-line) {
+  stroke: rgba(226, 232, 240, 0.48);
+  stroke-width: 1;
+  stroke-dasharray: 5 5;
+  vector-effect: non-scaling-stroke;
+}
+
+:deep(.ev-stop-price-label) {
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+:deep(.ev-stop-price-label) {
+  fill: #d89b5d;
 }
 
 :deep(.ev-chart-heading line) {

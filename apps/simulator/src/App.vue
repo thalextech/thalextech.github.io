@@ -143,6 +143,10 @@ const SVG_EXPORT_STYLE = `
   .ev-title { fill: #e2e7ec; font-size: 17px; font-weight: 700; }
   .ev-subtitle { fill: #7d8791; font-size: 12px; font-weight: 500; }
   .ev-context { fill: #939ca5; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .ev-stop-price-line { stroke: rgba(226, 232, 240, 0.58); stroke-width: 1.25; stroke-dasharray: 5 5; }
+  .ev-stop-price-label { fill: #e4a766; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .ev-chart-heading g line { stroke-width: 3; stroke-linecap: round; }
+  .ev-chart-heading g text { fill: #a0a8b0; font-size: 12px; font-weight: 600; }
   .ev-endpoint { stroke: #0a0b0e; stroke-width: 1.25; }
   .ev-endpoint-leader { stroke-width: 1.25; stroke-opacity: 0.8; }
   .ev-endpoint-label { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; paint-order: stroke; stroke: #0a0b0e; stroke-width: 4px; }
@@ -484,7 +488,7 @@ const setMuFromChart = (mu: number): void => {
 const setVolFromChart = (vol: number): void => {
   if (!Number.isFinite(vol)) return;
   const clamped = clamp(vol, volBounds.min, volBounds.max);
-  const next = roundTo(clamped, 2);
+  const next = roundTo(clamped, 4);
   if (
     Math.abs(pendingParams.vol - next) < 1e-9 &&
     Math.abs(appliedParams.vol - next) < 1e-9

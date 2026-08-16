@@ -66,6 +66,49 @@ export const buildSharedTerminalCumulativeSeries = (
   });
 };
 
+export const smoothSharedTerminalCumulativeSeries = (
+  points: SharedTerminalCumulativePoint[],
+  windowRadius = Math.max(2, Math.round(points.length / 90)),
+): SharedTerminalCumulativePoint[] => {
+  if (points.length < 4 || windowRadius <= 0) return points.slice();
+  const radius = Math.min(Math.floor(windowRadius), points.length - 1);
+  const lastIndex = points.length - 1;
+  const smoothValues = (
+    key: "primaryContribution" | "comparisonContribution",
+  ): number[] => {
+    const values = points.map((point, index) => {
+      const start = Math.max(0, index - radius);
+      const end = Math.min(lastIndex, index + radius);
+      let weightedSum = 0;
+      let weightSum = 0;
+      for (let cursor = start; cursor <= end; cursor += 1) {
+        const weight = radius + 1 - Math.abs(cursor - index);
+        weightedSum += points[cursor][key] * weight;
+        weightSum += weight;
+      }
+      return weightSum > 0 ? weightedSum / weightSum : points[index][key];
+    });
+    const startCorrection = points[0][key] - values[0];
+    const endCorrection = points[lastIndex][key] - values[lastIndex];
+    return values.map((value, index) => {
+      const progress = index / lastIndex;
+      return (
+        value +
+        startCorrection * (1 - progress) +
+        endCorrection * progress
+      );
+    });
+  };
+
+  const primary = smoothValues("primaryContribution");
+  const comparison = smoothValues("comparisonContribution");
+  return points.map((point, index) => ({
+    terminalPrice: point.terminalPrice,
+    primaryContribution: primary[index],
+    comparisonContribution: comparison[index],
+  }));
+};
+
 export const computePayoffBinValue = (
   sumPayoff: number,
   binCount: number,

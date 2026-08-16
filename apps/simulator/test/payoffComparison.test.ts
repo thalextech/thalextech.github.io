@@ -4,6 +4,7 @@ import {
   buildPayoffDifferenceSummary,
   buildSharedTerminalCumulativeSeries,
   computePayoffBinValue,
+  smoothSharedTerminalCumulativeSeries,
 } from "../src/lib/payoffComparison.ts";
 
 test("option-perp distribution keeps outcomes paired by simulation path", () => {
@@ -38,4 +39,20 @@ test("cumulative series shares terminal-price order and ends at each EV", () => 
   assert.ok(Math.abs(points[2].primaryContribution - 10 / 3) < 1e-12);
   assert.equal(points[0].comparisonContribution, -4 / 3);
   assert.equal(points[2].comparisonContribution, 2);
+});
+
+test("cumulative smoothing preserves exact EV endpoints", () => {
+  const points = [
+    { terminalPrice: 1, primaryContribution: -1, comparisonContribution: -2 },
+    { terminalPrice: 2, primaryContribution: 4, comparisonContribution: 3 },
+    { terminalPrice: 3, primaryContribution: 0, comparisonContribution: -1 },
+    { terminalPrice: 4, primaryContribution: 6, comparisonContribution: 5 },
+    { terminalPrice: 5, primaryContribution: 3, comparisonContribution: 2 },
+  ];
+  const smoothed = smoothSharedTerminalCumulativeSeries(points, 2);
+
+  assert.deepEqual(smoothed[0], points[0]);
+  assert.deepEqual(smoothed[smoothed.length - 1], points[points.length - 1]);
+  assert.equal(smoothed[2].terminalPrice, points[2].terminalPrice);
+  assert.notEqual(smoothed[2].primaryContribution, points[2].primaryContribution);
 });
