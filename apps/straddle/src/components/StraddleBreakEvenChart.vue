@@ -18,11 +18,18 @@ const props = defineProps({
 const svgRef = ref(null);
 const CHART_FONT_FAMILY =
   '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
+const PRICE_LABEL_BASELINE_OFFSET = 10;
+const PRICE_LABEL_MIN_SPACING = 20;
+const PRICE_LABEL_LEADER_THRESHOLD = 3;
+const COMPACT_BREAK_EVEN_RANGE = 72;
+const COMPACT_HIGH_LABEL_OFFSET = 14;
+const COMPACT_LOW_LABEL_OFFSET = 20;
+const CURRENT_LABEL_BASELINE_OFFSET = 4;
 
 const layout = {
   width: 1800,
   height: 900,
-  margin: { top: 96, right: 84, bottom: 78, left: 80 },
+  margin: { top: 96, right: 160, bottom: 78, left: 80 },
 };
 
 const axisStyle = (axisG) => {
@@ -33,6 +40,28 @@ const axisStyle = (axisG) => {
     .attr("fill", "#70767d")
     .style("font-size", "12px")
     .style("font-family", CHART_FONT_FAMILY);
+};
+
+// Resolve every right-edge price annotation together so nearby values cannot
+// claim the same vertical space. The two passes preserve price order while
+// keeping the resulting text baselines inside the plot.
+const deCollidePriceLabels = (labels, minY, maxY) => {
+  const sorted = [...labels].sort((a, b) => a.targetY - b.targetY);
+
+  let previousY = minY - PRICE_LABEL_MIN_SPACING;
+  for (const label of sorted) {
+    label.y = Math.max(label.targetY, previousY + PRICE_LABEL_MIN_SPACING);
+    previousY = label.y;
+  }
+
+  let nextY = maxY + PRICE_LABEL_MIN_SPACING;
+  for (let index = sorted.length - 1; index >= 0; index -= 1) {
+    sorted[index].y = Math.min(
+      sorted[index].y,
+      nextY - PRICE_LABEL_MIN_SPACING,
+    );
+    nextY = sorted[index].y;
+  }
 };
 
 function exportPng({ filename = "straddle-break-even.png", scale = 4, padding = 24 } = {}) {
@@ -201,37 +230,126 @@ function render() {
       .attr("stroke-width", 2);
   }
 
+  const formatPrice = d3.format(",.0f");
   const rightX = innerWidth - 8;
-  if (Number.isFinite(props.breakEvenLow)) {
-    g.append("text")
-      .attr("x", rightX)
-      .attr("y", y(props.breakEvenLow) - 10)
-      .attr("text-anchor", "end")
-      .attr("fill", "firebrick")
-      .style("font-size", "14px")
-      .style("font-family", CHART_FONT_FAMILY)
-      .text(`BE Low = ${d3.format(",.0f")(props.breakEvenLow)}`);
+  const currentLabelX = innerWidth + 12;
+  const hasCompactBreakEvenRange =
+    Number.isFinite(props.breakEvenLow) &&
+    Number.isFinite(props.breakEvenHigh) &&
+    Math.abs(y(props.breakEvenLow) - y(props.breakEvenHigh)) <
+      COMPACT_BREAK_EVEN_RANGE;
+  const priceLabels = [
+    {
+      id: "break-even-low",
+      value: props.breakEvenLow,
+      color: "firebrick",
+      text: Number.isFinite(props.breakEvenLow)
+        ? `BE Low = ${formatPrice(props.breakEvenLow)}`
+        : "",
+    },
+    {
+      id: "break-even-high",
+      value: props.breakEvenHigh,
+      color: "forestgreen",
+      text: Number.isFinite(props.breakEvenHigh)
+        ? `BE High = ${formatPrice(props.breakEvenHigh)}`
+        : "",
+    },
+    {
+      id: "current-index",
+      value: props.currentIndex,
+      color: "#f5f5f7",
+      text: Number.isFinite(props.currentIndex)
+        ? `Current = ${formatPrice(props.currentIndex)}`
+        : "",
+    },
+  ]
+    .filter((label) => Number.isFinite(label.value))
+    .map((label) => ({
+      ...label,
+      anchorY: y(label.value),
+      targetY: y(label.value) - PRICE_LABEL_BASELINE_OFFSET,
+      x: rightX,
+      textAnchor: "end",
+    }));
+
+  if (hasCompactBreakEvenRange) {
+    for (const label of priceLabels) {
+      if (label.id === "break-even-high") {
+        label.y = Math.max(14, label.anchorY - COMPACT_HIGH_LABEL_OFFSET);
+      } else if (label.id === "break-even-low") {
+        label.y = Math.min(
+          innerHeight - 6,
+          label.anchorY + COMPACT_LOW_LABEL_OFFSET,
+        );
+      } else {
+        label.x = currentLabelX;
+        label.y = Math.max(
+          14,
+          Math.min(
+            innerHeight - 6,
+            label.anchorY + CURRENT_LABEL_BASELINE_OFFSET,
+          ),
+        );
+        label.textAnchor = "start";
+      }
+    }
+  } else {
+    deCollidePriceLabels(priceLabels, 14, innerHeight - 6);
   }
-  if (Number.isFinite(props.breakEvenHigh)) {
-    g.append("text")
-      .attr("x", rightX)
-      .attr("y", y(props.breakEvenHigh) - 10)
-      .attr("text-anchor", "end")
-      .attr("fill", "forestgreen")
-      .style("font-size", "14px")
-      .style("font-family", CHART_FONT_FAMILY)
-      .text(`BE High = ${d3.format(",.0f")(props.breakEvenHigh)}`);
-  }
-  if (Number.isFinite(props.currentIndex)) {
-    g.append("text")
-      .attr("x", rightX)
-      .attr("y", y(props.currentIndex) - 10)
-      .attr("text-anchor", "end")
-      .attr("fill", "#f5f5f7")
-      .style("font-size", "14px")
-      .style("font-family", CHART_FONT_FAMILY)
-      .text(`Current = ${d3.format(",.0f")(props.currentIndex)}`);
-  }
+
+  const leaderLines = hasCompactBreakEvenRange
+    ? priceLabels
+        .filter((label) => label.id === "current-index")
+        .map((label) => ({
+          ...label,
+          x1: innerWidth,
+          x2: label.x - 4,
+          y1: label.anchorY,
+          y2: label.anchorY,
+        }))
+    : priceLabels
+        .filter(
+          (label) =>
+            Math.abs(label.y - label.targetY) >
+            PRICE_LABEL_LEADER_THRESHOLD,
+        )
+        .map((label) => ({
+          ...label,
+          x1: innerWidth,
+          x2: rightX + 2,
+          y1: label.anchorY,
+          y2: label.y + PRICE_LABEL_BASELINE_OFFSET,
+        }));
+
+  g.append("g")
+    .attr("class", "priceLabelLeaders")
+    .selectAll("line")
+    .data(leaderLines, (label) => label.id)
+    .join("line")
+    .attr("x1", (label) => label.x1)
+    .attr("x2", (label) => label.x2)
+    .attr("y1", (label) => label.y1)
+    .attr("y2", (label) => label.y2)
+    .attr("stroke", (label) => label.color)
+    .attr("stroke-width", 0.75)
+    .attr("opacity", 0.65);
+
+  g.append("g")
+    .attr("class", "priceLabels")
+    .selectAll("text")
+    .data(priceLabels, (label) => label.id)
+    .join("text")
+    .attr("x", (label) => label.x)
+    .attr("y", (label) => label.y)
+    .attr("text-anchor", (label) => label.textAnchor)
+    .attr("fill", (label) => label.color)
+    .style("font-size", "14px")
+    .style("font-family", CHART_FONT_FAMILY)
+    .attr("paint-order", "stroke")
+    .attr("stroke", "#0a0b0e")
+    .attr("stroke-width", 3)
+    .text((label) => label.text);
 }
 
 watch(

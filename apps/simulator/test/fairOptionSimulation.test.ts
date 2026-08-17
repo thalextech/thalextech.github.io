@@ -2,53 +2,85 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { blackScholesGreeks } from "../src/lib/blackScholes.ts";
 import { DEFAULT_PATH_MODEL } from "../src/lib/pathModel.ts";
+import type { PositionLeg } from "../src/lib/position.ts";
 import { simulate } from "../src/workers/sim.worker.ts";
 
-test("a model-fair option converges to zero EV over one million paths", () => {
-  const rows = 1_000_000;
-  const spot = 63_000;
-  const strike = 63_000;
-  const vol = 0.289;
-  const T = 30 / 365.25;
-  const valuationTs = 1_700_000_000;
-  const expirationTs = valuationTs + T * 365.25 * 24 * 60 * 60;
-  const premium = blackScholesGreeks(
-    spot,
-    strike,
+const ROWS = 1_000_000;
+const SPOT = 63_000;
+const STRIKE = 63_000;
+const VOL = 0.289;
+const T = 30 / 365.25;
+const VALUATION_TS = 1_700_000_000;
+const EXPIRATION_TS = VALUATION_TS + T * 365.25 * 24 * 60 * 60;
+
+function simulateFairStructure(upperStrike?: number) {
+  const longPremium = blackScholesGreeks(
+    SPOT,
+    STRIKE,
     T,
-    vol,
+    VOL,
     0,
     "call",
   ).price;
+  const shortPremium = upperStrike
+    ? blackScholesGreeks(SPOT, upperStrike, T, VOL, 0, "call").price
+    : 0;
+  const netPremium = longPremium - shortPremium;
+  const quantity = 10_000 / netPremium;
+  const legs: PositionLeg[] = [
+    {
+      id: "long-call",
+      kind: "option",
+      side: "buy",
+      qty: quantity,
+      optionType: "call",
+      strike: STRIKE,
+      premium: longPremium,
+    },
+  ];
+  const optionPricingByLegId = {
+    "long-call": {
+      iv: VOL,
+      mark: longPremium,
+      expirationTs: EXPIRATION_TS,
+    },
+  };
+
+  if (upperStrike) {
+    legs.push({
+      id: "short-call",
+      kind: "option",
+      side: "sell",
+      qty: quantity,
+      optionType: "call",
+      strike: upperStrike,
+      premium: shortPremium,
+    });
+    Object.assign(optionPricingByLegId, {
+      "short-call": {
+        iv: VOL,
+        mark: shortPremium,
+        expirationTs: EXPIRATION_TS,
+      },
+    });
+  }
 
   const result = simulate({
     id: 1,
     seed: 0x5eed1234,
     params: {
-      s0: spot,
+      s0: SPOT,
       mu: 0,
-      vol,
+      vol: VOL,
       T,
       // One exact GBM step is sufficient for the terminal distribution.
       dt: T,
-      rows,
+      rows: ROWS,
     },
     pathModel: { ...DEFAULT_PATH_MODEL, kind: "gbm" },
-    legs: [
-      {
-        id: "fair-call",
-        kind: "option",
-        side: "buy",
-        qty: 10_000 / premium,
-        optionType: "call",
-        strike,
-        premium,
-      },
-    ],
-    optionPricingByLegId: {
-      "fair-call": { iv: vol, mark: premium, expirationTs },
-    },
-    valuationTs,
+    legs,
+    optionPricingByLegId,
+    valuationTs: VALUATION_TS,
     horizonSeconds: T * 365.25 * 24 * 60 * 60,
     histBins: 100,
     histBinsMultiplier: 1,
@@ -62,15 +94,29 @@ test("a model-fair option converges to zero EV over one million paths", () => {
     squaredErrorSum += (payoff - result.meanPayoff) ** 2;
   }
   const standardError = Math.sqrt(
-    squaredErrorSum / (rows - 1) / rows,
+    squaredErrorSum / (ROWS - 1) / ROWS,
   );
 
+  return { mean: result.meanPayoff, standardError };
+}
+
+function assertZeroEv(mean: number, standardError: number) {
   assert.ok(
-    Math.abs(result.meanPayoff) <= 4 * standardError,
-    `mean ${result.meanPayoff} is more than four standard errors (${standardError}) from zero`,
+    Math.abs(mean) <= 4 * standardError,
+    `mean ${mean} is more than four standard errors (${standardError}) from zero`,
   );
   assert.ok(
-    Math.abs(result.meanPayoff) < 50,
-    `mean ${result.meanPayoff} is not economically close to zero`,
+    Math.abs(mean) < 50,
+    `mean ${mean} is not economically close to zero`,
   );
+}
+
+test("a model-fair call converges to zero EV over one million paths", () => {
+  const { mean, standardError } = simulateFairStructure();
+  assertZeroEv(mean, standardError);
+});
+
+test("a model-fair call spread converges to zero EV over one million paths", () => {
+  const { mean, standardError } = simulateFairStructure(69_300);
+  assertZeroEv(mean, standardError);
 });

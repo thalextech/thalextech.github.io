@@ -2151,6 +2151,7 @@ watch(
         :expiryQuotes="stopLossExpiryQuotes"
         @set-mu="setMuFromChart"
         @set-vol="setVolFromChart"
+        @resimulate="regenerate"
       />
     </div>
   </main>

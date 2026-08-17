@@ -39,6 +39,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: "set-mu", value: number): void;
   (event: "set-vol", value: number): void;
+  (event: "resimulate"): void;
 }>();
 
 const SECONDS_PER_DAY = 24 * 60 * 60;
@@ -48,11 +49,20 @@ const RV_MIN_PERCENT = 10;
 const RV_MAX_PERCENT = 120;
 const DRIFT_MIN_PERCENT = -500;
 const DRIFT_MAX_PERCENT = 500;
+const STRIKE_STEP = 500;
 const MATURITY_DAYS = [7, 14, 30, 60, 90, 180] as const;
 const DEFAULT_MATURITY_DAYS = 60;
 const EMPTY_OPTION_PRICING = Object.freeze({});
+const OPTION_STRUCTURE_OPTIONS = [
+  { label: "Call", value: "call" },
+  { label: "Call spread", value: "call-spread" },
+];
+type OptionStructure = "call" | "call-spread";
 const payoffDisplayMode = ref<"payoff" | "frequency">("payoff");
 const payoffChartMode = ref<"terminal" | "cumulative">("terminal");
+const optionStructure = ref<OptionStructure>("call");
+const longStrike = ref(0);
+const shortStrike = ref(0);
 const riskBudget = ref(10_000);
 const leverage = ref(10);
 const leverageDraft = ref(10);
@@ -202,6 +212,22 @@ const setFunding = (value: number): void => {
     : 8;
 };
 
+const setLongStrike = (value: number): void => {
+  if (!Number.isFinite(value) || value <= 0) return;
+  longStrike.value = value;
+  if (shortStrike.value <= value) {
+    shortStrike.value = value + STRIKE_STEP;
+  }
+};
+
+const setShortStrike = (value: number): void => {
+  if (!Number.isFinite(value) || value <= longStrike.value) {
+    shortStrike.value = longStrike.value + STRIKE_STEP;
+    return;
+  }
+  shortStrike.value = value;
+};
+
 const setRealizedVolPercent = (value: number): void => {
   if (!Number.isFinite(value)) return;
   realizedVolOverridden.value = true;
@@ -271,6 +297,23 @@ const selectedExpiryQuote = computed(
 );
 
 watch(
+  () => [
+    selectedExpiryQuote.value?.expirationTs,
+    selectedExpiryQuote.value?.strike,
+  ],
+  ([, atmStrike]) => {
+    const strike = Number(atmStrike);
+    if (!Number.isFinite(strike) || strike <= 0) return;
+    longStrike.value = strike;
+    shortStrike.value = Math.max(
+      strike + STRIKE_STEP,
+      Math.round((strike * 1.1) / STRIKE_STEP) * STRIKE_STEP,
+    );
+  },
+  { immediate: true },
+);
+
+watch(
   () => selectedExpiryQuote.value?.callIv,
   (iv) => {
     if (
@@ -291,7 +334,11 @@ watch(
 const selectedInstrumentName = computed(() => {
   const quote = selectedExpiryQuote.value;
   if (!quote) return "ATM option";
-  return quote.callInstrumentName;
+  const expiry = quote.callInstrumentName.split("-").slice(0, -2).join("-");
+  if (optionStructure.value === "call-spread") {
+    return `${expiry}-${longStrike.value}-C / ${expiry}-${shortStrike.value}-C`;
+  }
+  return `${expiry}-${longStrike.value}-C`;
 });
 
 const setPayoffDisplayMode = (mode: "payoff" | "frequency"): void => {
@@ -318,6 +365,9 @@ watch(
     horizonDays.value,
     selectedExpirationTs.value,
     selectedExpiryQuote.value?.callIv,
+    optionStructure.value,
+    longStrike.value,
+    shortStrike.value,
   ],
   () => {
     optionStats.value = null;
@@ -342,49 +392,29 @@ const comparisonParams = computed<GBMParams>(() => {
 
 const optionType = "call" as const;
 const perpSide = "buy" as const;
-const optionLabel = "Long ATM call";
+const optionLabel = computed(() =>
+  optionStructure.value === "call-spread"
+    ? `${longStrike.value.toLocaleString("en-US")} / ${shortStrike.value.toLocaleString("en-US")} call spread`
+    : `Long ${longStrike.value.toLocaleString("en-US")} call`,
+);
 const perpLabel = "Long perpetual";
 
 // Keep the IV=RV comparison model-fair: the same mark IV and pricing model
 // determine both the entry premium and every simulated option value.
-const optionPremium = computed(() => {
+const optionTimeToExpiry = computed(() => {
   const quote = selectedExpiryQuote.value;
-  const spot = Number(props.params.s0);
-  const strike = Number(quote?.strike);
-  const iv = Number(quote?.callIv);
-  const timeToExpiry = quote == null
+  return quote == null
     ? 0
     : Math.max(0, quote.expirationTs - props.valuationTs) /
       (DAYS_PER_YEAR * SECONDS_PER_DAY);
-  if (
-    !Number.isFinite(spot) ||
-    !Number.isFinite(strike) ||
-    !Number.isFinite(iv) ||
-    timeToExpiry <= 0
-  ) {
-    return 0;
-  }
-  return blackScholesGreeks(
-    spot,
-    strike,
-    timeToExpiry,
-    iv,
-    0,
-    optionType,
-  ).price;
 });
 
-const optionOmega = computed(() => {
+const longOptionGreeks = computed(() => {
   const quote = selectedExpiryQuote.value;
   const spot = Number(props.params.s0);
-  const strike = Number(quote?.strike);
+  const strike = Number(longStrike.value);
   const iv = Number(quote?.callIv);
-  const premium = optionPremium.value;
-  const timeToExpiry =
-    quote == null
-      ? 0
-      : Math.max(0, quote.expirationTs - props.valuationTs) /
-        (DAYS_PER_YEAR * SECONDS_PER_DAY);
+  const timeToExpiry = optionTimeToExpiry.value;
   if (
     !Number.isFinite(spot) ||
     !Number.isFinite(strike) ||
@@ -393,7 +423,7 @@ const optionOmega = computed(() => {
   ) {
     return null;
   }
-  const { delta } = blackScholesGreeks(
+  return blackScholesGreeks(
     spot,
     strike,
     timeToExpiry,
@@ -401,7 +431,51 @@ const optionOmega = computed(() => {
     0,
     optionType,
   );
-  return computeOptionOmega(delta, spot, premium);
+});
+
+const shortOptionGreeks = computed(() => {
+  const quote = selectedExpiryQuote.value;
+  const spot = Number(props.params.s0);
+  const iv = Number(quote?.callIv);
+  const timeToExpiry = optionTimeToExpiry.value;
+  if (
+    !Number.isFinite(spot) ||
+    !Number.isFinite(iv) ||
+    timeToExpiry <= 0
+  ) {
+    return null;
+  }
+  return blackScholesGreeks(
+    spot,
+    shortStrike.value,
+    timeToExpiry,
+    iv,
+    0,
+    optionType,
+  );
+});
+
+const optionPremium = computed(() => {
+  const longPremium = longOptionGreeks.value?.price ?? 0;
+  if (optionStructure.value === "call") return longPremium;
+  return Math.max(0, longPremium - (shortOptionGreeks.value?.price ?? 0));
+});
+
+const optionOmega = computed(() => {
+  const spot = Number(props.params.s0);
+  const premium = optionPremium.value;
+  const longDelta = longOptionGreeks.value?.delta;
+  const shortDelta = shortOptionGreeks.value?.delta;
+  if (
+    !Number.isFinite(spot) ||
+    !Number.isFinite(longDelta) ||
+    (optionStructure.value === "call-spread" && !Number.isFinite(shortDelta))
+  ) {
+    return null;
+  }
+  const netDelta = Number(longDelta) -
+    (optionStructure.value === "call-spread" ? Number(shortDelta) : 0);
+  return computeOptionOmega(netDelta, spot, premium);
 });
 
 watch(
@@ -417,25 +491,51 @@ const optionContracts = computed(() =>
   optionPremium.value > 0 ? riskBudget.value / optionPremium.value : 0,
 );
 
-const optionLegs = computed<PositionLeg[]>(() => [
-  {
+const optionLegs = computed<PositionLeg[]>(() => {
+  const legs: PositionLeg[] = [{
     id: "stop-loss-option",
     kind: "option",
     side: "buy",
     qty: optionContracts.value,
     optionType,
-    strike: selectedExpiryQuote.value?.strike ?? props.params.s0,
-    premium: optionPremium.value,
-  },
-]);
+    strike: longStrike.value,
+    premium: longOptionGreeks.value?.price ?? 0,
+  }];
+  if (optionStructure.value === "call-spread") {
+    legs.push({
+      id: "stop-loss-option-cap",
+      kind: "option",
+      side: "sell",
+      qty: optionContracts.value,
+      optionType,
+      strike: shortStrike.value,
+      premium: shortOptionGreeks.value?.price ?? 0,
+    });
+  }
+  return legs;
+});
 
-const optionPricing = computed(() => ({
-  "stop-loss-option": {
-    iv: selectedExpiryQuote.value?.callIv ?? null,
-    mark: optionPremium.value,
-    expirationTs: selectedExpiryQuote.value?.expirationTs ?? null,
-  },
-}));
+const optionPricing = computed(() => {
+  const pricing: Record<string, {
+    iv: number | null;
+    mark: number;
+    expirationTs: number | null;
+  }> = {
+    "stop-loss-option": {
+      iv: selectedExpiryQuote.value?.callIv ?? null,
+      mark: longOptionGreeks.value?.price ?? 0,
+      expirationTs: selectedExpiryQuote.value?.expirationTs ?? null,
+    },
+  };
+  if (optionStructure.value === "call-spread") {
+    pricing["stop-loss-option-cap"] = {
+      iv: selectedExpiryQuote.value?.callIv ?? null,
+      mark: shortOptionGreeks.value?.price ?? 0,
+      expirationTs: selectedExpiryQuote.value?.expirationTs ?? null,
+    };
+  }
+  return pricing;
+});
 
 const perpContracts = computed(() => {
   const spot = Number(props.params.s0);
@@ -546,6 +646,66 @@ const hoveredPriceRangeLabel = computed(() => {
   <section class="stop-loss-simulator">
     <div class="comparison-shell">
       <div class="comparison-bar">
+        <div class="control-pill select-pill">
+          <span class="pill-label">Option</span>
+          <span class="pill-value">
+            <StyledSelectMenu
+              v-model="optionStructure"
+              label="Option structure"
+              :options="OPTION_STRUCTURE_OPTIONS"
+              embedded
+            />
+          </span>
+        </div>
+        <label class="control-pill control-pill--strike">
+          <span class="pill-label">Long K</span>
+          <span class="pill-value">
+            <input
+              type="number"
+              min="1"
+              :step="STRIKE_STEP"
+              :value="longStrike"
+              aria-label="Long call strike"
+              @focus="selectAssumptionInput"
+              @change="
+                setLongStrike(
+                  Number(($event.target as HTMLInputElement).value),
+                )
+              "
+              @blur="
+                setLongStrike(
+                  Number(($event.target as HTMLInputElement).value),
+                )
+              "
+            />
+          </span>
+        </label>
+        <label
+          v-if="optionStructure === 'call-spread'"
+          class="control-pill control-pill--strike"
+        >
+          <span class="pill-label">Short K</span>
+          <span class="pill-value">
+            <input
+              type="number"
+              :min="longStrike + 1"
+              :step="STRIKE_STEP"
+              :value="shortStrike"
+              aria-label="Short call strike"
+              @focus="selectAssumptionInput"
+              @change="
+                setShortStrike(
+                  Number(($event.target as HTMLInputElement).value),
+                )
+              "
+              @blur="
+                setShortStrike(
+                  Number(($event.target as HTMLInputElement).value),
+                )
+              "
+            />
+          </span>
+        </label>
       <label class="control-pill control-pill--risk">
         <span class="pill-label">Risk</span>
         <span class="pill-value">
@@ -693,6 +853,13 @@ const hoveredPriceRangeLabel = computed(() => {
         </span>
       </label>
       <div class="comparison-view-toggles">
+        <button
+          type="button"
+          class="control-pill resimulate-button"
+          @click="emit('resimulate')"
+        >
+          Resimulate
+        </button>
         <div
           class="path-mode-toggle chart-mode-toggle"
           role="group"
@@ -973,6 +1140,18 @@ const hoveredPriceRangeLabel = computed(() => {
   border-color: rgba(255, 255, 255, 0.22);
 }
 
+.resimulate-button {
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.025);
+  font: inherit;
+  font-size: var(--comparison-font-body);
+  font-weight: 600;
+}
+
+.resimulate-button:active {
+  background: rgba(255, 255, 255, 0.07);
+}
+
 .pill-label {
   color: #70767d;
   font-size: var(--comparison-font-small);
@@ -1012,7 +1191,8 @@ const hoveredPriceRangeLabel = computed(() => {
 .control-pill--risk .pill-value,
 .control-pill--funding .pill-value,
 .control-pill--rv .pill-value,
-.control-pill--drift .pill-value {
+.control-pill--drift .pill-value,
+.control-pill--strike .pill-value {
   gap: 3px;
 }
 
@@ -1027,6 +1207,10 @@ const hoveredPriceRangeLabel = computed(() => {
 .control-pill--rv .pill-value input,
 .control-pill--drift .pill-value input {
   width: 28px;
+}
+
+.control-pill--strike .pill-value input {
+  width: 52px;
 }
 
 .pill-value input::-webkit-inner-spin-button,

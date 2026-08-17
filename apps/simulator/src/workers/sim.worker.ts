@@ -527,10 +527,13 @@ export const simulate = (request: SimWorkerRequest): SimWorkerSuccess => {
   let maxDrawdown = 0;
   let highestStoppedFinalPrice = Number.NEGATIVE_INFINITY;
   let highestStoppedFinalIndex: number | null = null;
-  const optionPremiumAtRisk = optionLegs.reduce(
-    (sum, leg) =>
-      leg.sign > 0 ? sum + leg.qty * Math.max(0, leg.entryPrice) : sum,
+  const optionPremiumAtRisk = Math.max(
     0,
+    optionLegs.reduce(
+      (sum, leg) =>
+        sum + leg.sign * leg.qty * Math.max(0, leg.entryPrice),
+      0,
+    ),
   );
 
   for (let r = 0; r < rows; r += 1) {
