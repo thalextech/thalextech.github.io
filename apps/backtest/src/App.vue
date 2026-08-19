@@ -19,6 +19,7 @@ import {
   runSweepInWorker,
 } from "./lib/backtestWorkerClient.js";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
+import { getUnderlying, UNDERLYING_OPTIONS } from "./lib/underlyings.js";
 import {
   buildIvRvChartRows,
   buildHourlyIvHeatmap,
@@ -54,6 +55,9 @@ const DATA_RANGE_START = new Date(DEFAULT_BACKTEST_CONFIG.start);
 const DATA_RANGE_END = new Date();
 const DATA_RANGE_MIN_MS = 24 * 60 * 60 * 1000;
 const DATA_RANGE_RUN_DEBOUNCE_MS = 300;
+const DATA_RANGE_LABEL_UPDATE_MS = 180;
+const underlying = ref("BTC");
+const currentUnderlying = computed(() => getUnderlying(underlying.value));
 
 const MATURITY_OPTIONS = [
   { value: 1, label: "1D", minDteDays: 0.25, maxDteDays: 1.5 },
@@ -258,6 +262,8 @@ const rollDayOptions = computed(() =>
 const openMenu = ref(null);
 const dataRangeStart = ref(0);
 const dataRangeEnd = ref(100);
+const displayedDataRangeStart = ref(dataRangeStart.value);
+const displayedDataRangeEnd = ref(dataRangeEnd.value);
 const dataRangeAvailableEnd = ref(new Date(DATA_RANGE_END));
 const dataRangeSpanMs = computed(
   () => dataRangeAvailableEnd.value.getTime() - DATA_RANGE_START.getTime(),
@@ -273,6 +279,16 @@ const selectedDataRange = computed(() => ({
   end: new Date(
     DATA_RANGE_START.getTime() +
       (dataRangeSpanMs.value * dataRangeEnd.value) / 100,
+  ),
+}));
+const displayedDataRange = computed(() => ({
+  start: new Date(
+    DATA_RANGE_START.getTime() +
+      (dataRangeSpanMs.value * displayedDataRangeStart.value) / 100,
+  ),
+  end: new Date(
+    DATA_RANGE_START.getTime() +
+      (dataRangeSpanMs.value * displayedDataRangeEnd.value) / 100,
   ),
 }));
 const dataRangeStartModel = computed({
@@ -312,18 +328,39 @@ const dataRangePillFormatter = new Intl.DateTimeFormat("en-GB", {
   timeZone: "UTC",
 });
 const dataRangeLabel = computed(() => {
-  if (isAllDataRange.value) return "All";
-  const range = selectedDataRange.value;
+  if (
+    displayedDataRangeStart.value === 0 &&
+    displayedDataRangeEnd.value === 100
+  )
+    return "All";
+  const range = displayedDataRange.value;
   return `${dataRangePillFormatter.format(range.start)} – ${dataRangePillFormatter.format(range.end)}`;
 });
 const dataRangeDetailLabel = computed(() => {
-  const range = selectedDataRange.value;
+  const range = displayedDataRange.value;
   return `${dataRangeDateFormatter.format(range.start)} – ${dataRangeDateFormatter.format(range.end)}`;
 });
+
+let dataRangeLabelUpdateTimer = null;
+function updateDisplayedDataRange() {
+  displayedDataRangeStart.value = dataRangeStart.value;
+  displayedDataRangeEnd.value = dataRangeEnd.value;
+}
+
+function scheduleDataRangeLabelUpdate() {
+  if (dataRangeLabelUpdateTimer != null) return;
+  dataRangeLabelUpdateTimer = setTimeout(() => {
+    dataRangeLabelUpdateTimer = null;
+    updateDisplayedDataRange();
+  }, DATA_RANGE_LABEL_UPDATE_MS);
+}
 
 function resetDataRange() {
   dataRangeStart.value = 0;
   dataRangeEnd.value = 100;
+  clearTimeout(dataRangeLabelUpdateTimer);
+  dataRangeLabelUpdateTimer = null;
+  updateDisplayedDataRange();
 }
 
 function toggleMenu(name) {
@@ -746,7 +783,7 @@ const requiredMaxDteDays = computed(() =>
   ),
 );
 const requiredDataKey = computed(
-  () => `${requiredHours.value.join(",")}|dte:${requiredMaxDteDays.value}`,
+  () => `${underlying.value}|${requiredHours.value.join(",")}|dte:${requiredMaxDteDays.value}`,
 );
 let loadedDataKey = "";
 
@@ -909,7 +946,7 @@ const strategyLabels = computed(() => {
   }
 
   return {
-    instrument: `BTC · ${side} ${structure.label} · ${maturity.label} ${option} · ${ui.investmentMode === "btc" ? "1 BTC" : "$100k"}`,
+    instrument: `${underlying.value} · ${side} ${structure.label} · ${maturity.label} ${option} · ${ui.investmentMode === "btc" ? `1 ${underlying.value}` : "$100k"}`,
     entry: entryLabel,
     weekday: weekday.label,
     hedge: !ui.hedgeEnabled
@@ -1036,7 +1073,9 @@ const chartSubtitle = computed(() => {
         ? `Exited ${exitWeekday.label} at ${String(ui.exitHourUtc).padStart(2, "0")}:00 UTC; cash until next entry`
         : `Rolled every ${ui.exitHoldDays}D at ${entryTime}; expiry-first gaps allowed`;
   const sizing =
-    ui.investmentMode === "btc" ? "1 BTC per leg" : "$100k notional";
+    ui.investmentMode === "btc"
+      ? `1 ${underlying.value} per leg`
+      : "$100k notional";
   const entryDay =
     weekday.value === ENTRY_WEEKDAY_EVERY_DAY ? "every day" : weekday.label;
   return `Entered ${entryDay} at ${entryTime} · ${exit} · ${sizing}`;
@@ -1095,6 +1134,8 @@ const runSweep = async () => {
   sweepResults.value = [];
   sweepTiming.value = null;
   state.error = "";
+  const requestedUnderlying = underlying.value;
+  const requestedDataRoot = currentUnderlying.value.dataRoot;
   // Let the running state paint before data preparation and synchronous simulations begin.
   await new Promise((resolve) => setTimeout(resolve, 0));
   const cells = sweepConfigs.value;
@@ -1119,7 +1160,7 @@ const runSweep = async () => {
   ].sort((a, b) => a - b);
   const sweepHoursKey = sweepHours.join(",");
   const sweepMaxDteDays = Math.max(...configs.map(requiredQuoteDteDays));
-  const sweepDataKey = `${sweepHoursKey}|dte:${sweepMaxDteDays}`;
+  const sweepDataKey = `${requestedUnderlying}|${sweepHoursKey}|dte:${sweepMaxDteDays}`;
   const startedAt = performance.now();
   try {
     const loadRequest = {
@@ -1127,6 +1168,7 @@ const runSweep = async () => {
       end: DATA_RANGE_END,
       hourlyOffsets: sweepHours,
       maxDteDays: sweepMaxDteDays,
+      dataRoot: requestedDataRoot,
     };
 
     const progressiveResults = new Array(cells.length);
@@ -1167,9 +1209,12 @@ const runSweep = async () => {
       },
       configs,
       onProgress: ({ message }) => {
-        if (message) sweepProgress.value = message;
+        if (requestedUnderlying === underlying.value && message) {
+          sweepProgress.value = message;
+        }
       },
       onResult: ({ index, result: run }) => {
+        if (requestedUnderlying !== underlying.value) return;
         const row = buildSweepResult(run, index);
         if (row.weeklyReturns.some(({ pnl }) => pnl !== 0)) {
           progressiveResults[index] = row;
@@ -1178,19 +1223,24 @@ const runSweep = async () => {
         sweepProgress.value = `Completed ${index + 1}/${cells.length} configurations`;
       },
     });
-    sweepTiming.value = {
-      loadMs: workerResult.timing.loadMs,
-      prepareMs: workerResult.timing.prepareMs,
-      runMs: workerResult.timing.runMs,
-      totalMs: performance.now() - startedAt,
-      reusedPreparedData: workerResult.timing.reusedPreparedData,
-      cells: cells.length,
-    };
-    sweepProgress.value = "";
+    if (requestedUnderlying === underlying.value) {
+      sweepTiming.value = {
+        loadMs: workerResult.timing.loadMs,
+        prepareMs: workerResult.timing.prepareMs,
+        runMs: workerResult.timing.runMs,
+        totalMs: performance.now() - startedAt,
+        reusedPreparedData: workerResult.timing.reusedPreparedData,
+        cells: cells.length,
+      };
+      sweepProgress.value = "";
+    }
   } catch (error) {
-    state.error = error?.message || "Sweep failed";
+    if (requestedUnderlying === underlying.value) {
+      state.error = error?.message || "Sweep failed";
+    }
   } finally {
     sweepRunning.value = false;
+    if (requestedUnderlying !== underlying.value) sweepRerunPending = true;
     if (sweepRerunPending && mode.value === "sweep") {
       sweepRerunPending = false;
       void runSweep();
@@ -1268,12 +1318,18 @@ const loadIvRv = async () => {
   if (ivRvLoading.value) return;
   ivRvLoading.value = true;
   ivRvError.value = "";
+  const requestedUnderlying = underlying.value;
   try {
-    ivRvSourceRows.value = await loadIvRvHistory();
+    const rows = await loadIvRvHistory({
+      dataRoot: currentUnderlying.value.dataRoot,
+    });
+    if (requestedUnderlying === underlying.value) ivRvSourceRows.value = rows;
   } catch (error) {
-    ivRvError.value = error?.message || "Unable to load IV/RV data";
+    if (requestedUnderlying === underlying.value) {
+      ivRvError.value = error?.message || "Unable to load IV/RV data";
+    }
   } finally {
-    ivRvLoading.value = false;
+    if (requestedUnderlying === underlying.value) ivRvLoading.value = false;
   }
 };
 
@@ -1394,6 +1450,7 @@ const handleCycleSelect = async (cycle) => {
       end: config.end,
       hourlyOffsets: Array.from({ length: 24 }, (_, hour) => hour),
       maxDteDays: detailMaxDteDays,
+      dataRoot: currentUnderlying.value.dataRoot,
     });
     const detailData = prepareCycleDetailData({
       plan: cycle,
@@ -1446,6 +1503,7 @@ const loadBacktest = async () => {
         end: DATA_RANGE_END,
         hourlyOffsets: requiredHours.value,
         maxDteDays: requiredMaxDteDays.value,
+        dataRoot: currentUnderlying.value.dataRoot,
       },
       prepareConfig: {
         ...config,
@@ -1556,6 +1614,7 @@ watch(
 );
 
 watch([dataRangeStart, dataRangeEnd], () => {
+  scheduleDataRangeLabelUpdate();
   clearTimeout(dataRangeRunDebounce);
   dataRangeRunDebounce = setTimeout(() => {
     dataRangeRunDebounce = null;
@@ -1581,10 +1640,14 @@ async function handleExportCsv() {
     const csv = buildWeeklyPnlCsv(
       sourceResult.cycleSummary,
       attributionResult === sourceResult ? attributionCycleRows.value : [],
+      { underlying: underlying.value },
     );
     if (!csv) return;
     const date = new Date().toISOString().slice(0, 10);
-    downloadCsv({ csv, filename: `backtest-weekly-pnl-${date}.csv` });
+    downloadCsv({
+      csv,
+      filename: `${underlying.value.toLowerCase()}-backtest-weekly-pnl-${date}.csv`,
+    });
   } finally {
     csvExporting.value = false;
   }
@@ -1702,7 +1765,7 @@ function saveStandardizedVrHeatmap(
   )
     return;
   standardizedVrHeatmapRef.value.exportPng({
-    filename: `btc-variance-standardized-vr24-heatmap-${date}.png`,
+    filename: `${underlying.value.toLowerCase()}-variance-standardized-vr24-heatmap-${date}.png`,
     scale: 4,
     padding: 24,
   });
@@ -1712,10 +1775,25 @@ function saveVarianceRatio(date = new Date().toISOString().slice(0, 10)) {
   if (!varianceRatioRef.value || !varianceRatioAnalysis.value.sampleSize)
     return;
   varianceRatioRef.value.exportPng({
-    filename: `btc-forward-variance-ratio-raw-${serialAnchorWeekdayLabel.value.toLowerCase()}-${String(serialAnchorHour.value).padStart(2, "0")}utc-${date}.png`,
+    filename: `${underlying.value.toLowerCase()}-forward-variance-ratio-raw-${serialAnchorWeekdayLabel.value.toLowerCase()}-${String(serialAnchorHour.value).padStart(2, "0")}utc-${date}.png`,
     scale: 4,
     padding: 24,
   });
+}
+
+function switchUnderlying(nextUnderlying) {
+  if (nextUnderlying === underlying.value) return;
+  underlying.value = nextUnderlying;
+  dataRangeAvailableEnd.value = new Date(DATA_RANGE_END);
+  result.value = null;
+  ivRvSourceRows.value = [];
+  ivRvError.value = "";
+  ivRvLoading.value = false;
+  clearCycleDetail({ clearCache: true });
+  clearAttribution();
+  if (mode.value === "single") void loadBacktest();
+  else if (mode.value === "sweep") void runSweep();
+  else void loadIvRv();
 }
 
 onMounted(loadBacktest);
@@ -1725,7 +1803,18 @@ onMounted(loadBacktest);
   <main class="app">
     <!-- Top bar -->
     <div class="topBar">
-      <div class="wordmark">Backtest</div>
+      <div class="underlyingToggle" role="group" aria-label="Underlying">
+        <button
+          v-for="option in UNDERLYING_OPTIONS"
+          :key="option.value"
+          type="button"
+          :class="{ active: underlying === option.value }"
+          :aria-pressed="underlying === option.value"
+          @click="switchUnderlying(option.value)"
+        >
+          {{ option.label }}
+        </button>
+      </div>
       <div class="divider"></div>
 
       <div class="configPills">
@@ -1823,7 +1912,7 @@ onMounted(loadBacktest);
                   ]"
                   @click="ui.investmentMode = 'btc'"
                 >
-                  1 BTC
+                  1 {{ underlying }}
                 </div>
               </div>
             </div>
@@ -2471,7 +2560,7 @@ onMounted(loadBacktest);
         </div>
         <div v-else-if="mode === 'iv-rv'" class="sweepHeader">
           <div>
-            <div class="chartTitle">BTC ATM IV vs Parkinson RV</div>
+            <div class="chartTitle">{{ underlying }} ATM IV vs Parkinson RV</div>
             <div class="chartSubtitle">
               Hourly source data · RV uses the
               {{ ivRvAlignForward ? "following" : "trailing" }} tenor window
@@ -2615,6 +2704,7 @@ onMounted(loadBacktest);
           ref="chartRef"
           :rows="attributionRows"
           :cycle-rows="attributionCycleRows"
+          :underlying="underlying"
         />
         <FairValueDistributionPanel
           v-else-if="
@@ -2624,6 +2714,7 @@ onMounted(loadBacktest);
           v-model:view-mode="distributionViewMode"
           :rows="cycleRows"
           :hedge-enabled="ui.hedgeEnabled"
+          :underlying="underlying"
         />
         <div
           v-else-if="mode === 'single' && cycleDetailLoading"
@@ -2643,6 +2734,7 @@ onMounted(loadBacktest);
           :rows="cycleDetailRows"
           :break-evens="cycleBreakEvens"
           :zero-mtm-contours="cycleContours"
+          :underlying="underlying"
         />
 
         <div v-else-if="mode === 'sweep'" class="sweepPanel">
@@ -2808,7 +2900,7 @@ onMounted(loadBacktest);
                 :aria-label="`${ivMeasureLabel} by weekday and UTC hour`"
                 gradient-id="iv-hourly-red-gradient"
                 :show-data-labels="showIvHeatmapDataLabels"
-                :chart-title="`BTC ${ivMeasureLabel.toUpperCase()} · WEEKDAY × UTC HOUR`"
+                :chart-title="`${underlying} ${ivMeasureLabel.toUpperCase()} · WEEKDAY × UTC HOUR`"
                 :methodology="ivHeatmapMethodology"
               />
             </section>
@@ -2853,7 +2945,7 @@ onMounted(loadBacktest);
                 ref="ivBoxplotRef"
                 :groups="ivBoxplotGroups"
                 :loading="ivRvLoading"
-                :chart-title="`BTC ${ivMeasureLabel.toUpperCase()} · DISTRIBUTION BY WEEKDAY`"
+                :chart-title="`${underlying} ${ivMeasureLabel.toUpperCase()} · DISTRIBUTION BY WEEKDAY`"
                 methodology="Box = middle 50% · line = median · whiskers = 1.5× IQR · fill = mean IV"
                 :y-axis-label="ivMeasureLabel"
                 loading-message="Loading weekday implied volatility…"
@@ -3105,6 +3197,7 @@ onMounted(loadBacktest);
                   ref="varianceRatioRef"
                   :analysis="varianceRatioAnalysis"
                   :loading="ivRvLoading"
+                  :underlying="underlying"
                 />
               </div>
             </section>
@@ -3166,10 +3259,46 @@ onMounted(loadBacktest);
   flex-shrink: 0;
 }
 
-.wordmark {
-  font-size: 14px;
-  font-weight: 600;
+.underlyingToggle {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: transparent;
+}
+
+.underlyingToggle button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.underlyingToggle button + button {
+  border-left: 1px solid var(--color-border);
+}
+
+.underlyingToggle button:hover:not(.active) {
   color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.underlyingToggle button.active {
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-weight: 600;
 }
 
 .divider {
@@ -3197,6 +3326,14 @@ onMounted(loadBacktest);
 }
 .dataPill {
   order: 4;
+  box-sizing: border-box;
+  width: 158px;
+}
+
+.dataPill .pillValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .pill {
@@ -3349,8 +3486,11 @@ onMounted(loadBacktest);
 .data-dropdown {
   right: 0;
   left: auto;
-  width: min(390px, calc(100vw - 20px));
-  min-width: min(390px, calc(100vw - 20px));
+  box-sizing: border-box;
+  width: 390px;
+  min-width: 0;
+  max-width: calc(100vw - 20px);
+  min-height: 160px;
   padding: 15px 16px 13px;
   border-color: rgba(255, 255, 255, 0.09);
   border-radius: 12px;
@@ -3382,10 +3522,13 @@ onMounted(loadBacktest);
 }
 
 .dataRangeValue {
+  height: 18px;
   margin-top: 13px;
   color: #e8eaed;
   font-size: 13px;
+  line-height: 18px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .dataRangeSlider {
@@ -3413,6 +3556,10 @@ onMounted(loadBacktest);
   color: #626870;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
+}
+
+.dataRangeEndpoints span {
+  white-space: nowrap;
 }
 
 .dataRangeHint {
@@ -4861,6 +5008,10 @@ onMounted(loadBacktest);
 
   .pillLabel {
     font-size: 11px;
+  }
+
+  .dataPill {
+    width: 140px;
   }
 
   .segment {

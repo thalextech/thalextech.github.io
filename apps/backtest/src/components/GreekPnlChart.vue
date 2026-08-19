@@ -8,6 +8,7 @@ import { varianceContribution } from "../lib/statistics.js";
 const props = defineProps({
   rows: { type: Array, default: () => [] },
   cycleRows: { type: Array, default: () => [] },
+  underlying: { type: String, default: "BTC" },
 });
 
 const chartRef = ref(null);
@@ -143,7 +144,7 @@ function draw() {
     .attr("height", height)
     .attr("font-family", FONT)
     .attr("role", "img")
-    .attr("aria-label", `${activeSeries.label} PnL and BTC index overview with brushed Greek contribution summary table`);
+    .attr("aria-label", `${activeSeries.label} PnL and ${props.underlying} index overview with brushed Greek contribution summary table`);
 
   if (!rows.length) {
     svg.append("text")
@@ -197,7 +198,7 @@ function draw() {
   const activeLegendWidth = addLegendItem(overviewLegend, activeSeries, 0);
   addLegendItem(overviewLegend, {
     key: "indexPrice",
-    label: "BTC index",
+    label: `${props.underlying} index`,
     color: INDEX_COLOR,
     width: 1,
     dasharray: "3 4",

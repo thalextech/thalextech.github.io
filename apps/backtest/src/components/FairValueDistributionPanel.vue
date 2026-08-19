@@ -10,6 +10,7 @@ import {
 const props = defineProps({
   rows: { type: Array, default: () => [] },
   hedgeEnabled: { type: Boolean, default: true },
+  underlying: { type: String, default: "BTC" },
 });
 
 const SCENARIO_OPTIONS = [250, 500, 1_000, 2_000, 5_000];
@@ -31,7 +32,14 @@ const completedWeekCount = computed(() =>
   (modeResult.value?.cohorts || []).reduce((total, cohort) => total + cohort.weekCount, 0),
 );
 const displayedGroups = computed(() => {
-  const groups = modeResult.value?.views?.[viewMode.value] || modeResult.value?.cohorts || [];
+  const groups = (
+    modeResult.value?.views?.[viewMode.value] ||
+    modeResult.value?.cohorts ||
+    []
+  ).map((group) => ({
+    ...group,
+    label: String(group.label || "").replaceAll("BTC", props.underlying),
+  }));
   return [
     ...groups,
     {
@@ -40,7 +48,7 @@ const displayedGroups = computed(() => {
         ? "Actual weekly PnL over time"
         : viewMode.value === "iv"
           ? "Actual weekly PnL by entry IV z-score"
-          : "Actual weekly PnL by observed BTC move",
+          : `Actual weekly PnL by observed ${props.underlying} move`,
       weeklyOutcomes: modeResult.value?.weeklyOutcomes || [],
     },
   ];
@@ -258,12 +266,12 @@ const draw = () => {
     .attr("aria-label", `Three ${viewMode.value === "iv"
       ? "entry IV regime"
       : viewMode.value === "priceMove"
-        ? "observed BTC move"
+        ? `observed ${props.underlying} move`
         : "consecutive cohort"} PnL distributions and actual weekly PnL plotted by ${viewMode.value === "time"
       ? "date"
       : viewMode.value === "iv"
         ? "entry IV z-score"
-        : "BTC return"}`);
+        : `${props.underlying} return`}`);
 
   const pnlCohorts = cohorts.filter((cohort) => cohort.kind !== "weekly-outcomes");
   const globalMaxAbsPnl = d3.max(pnlCohorts.flatMap((cohort) => [
@@ -390,7 +398,7 @@ const draw = () => {
       const pointDescription = (point) => {
         return [
           formatTooltipDate(point.entryDate),
-          `BTC move ${formatSignedPercent(point.priceMove)}`,
+          `${props.underlying} move ${formatSignedPercent(point.priceMove)}`,
           `Entry IV ${formatIv(point.entryIv)} · z-score ${formatZScore(point.ivZScore)}`,
           `Strategy PnL ${formatSignedUsd(point.pnlUsd)}`,
           `${formatSignedPercent(point.returnOnNotional)} of notional`,
@@ -400,7 +408,7 @@ const draw = () => {
         scatterTooltip
           .html(`
             <strong>${formatTooltipDate(point.entryDate)}</strong>
-            <span><b>BTC move</b><em>${formatSignedPercent(point.priceMove)}</em></span>
+            <span><b>{{ underlying }} move</b><em>${formatSignedPercent(point.priceMove)}</em></span>
             <span><b>Entry IV</b><em>${formatIv(point.entryIv)} · z ${formatZScore(point.ivZScore)}</em></span>
             <span><b>Strategy PnL</b><em>${formatSignedUsd(point.pnlUsd)}</em></span>
             <span><b>Return on notional</b><em>${formatSignedPercent(point.returnOnNotional)}</em></span>
@@ -600,7 +608,7 @@ defineExpose({ exportPng });
                     means the result is readily explained by the null.
                   </p>
                   <p>
-                    <strong>The null uses a Bates stochastic-volatility jump process calibrated to the hourly BTC history.</strong>
+                    <strong>The null uses a Bates stochastic-volatility jump process calibrated to the hourly {{ underlying }} history.</strong>
                     A rolling robust local-volatility filter detects jumps, jump rates are estimated separately for low,
                     medium, and high volatility regimes, and κ, θ, σᵥ, and ρ are fitted from the jump-filtered 7-day realized
                     variance series. Paths are generated hourly and hedges occur only on the strategy's configured schedule.
@@ -619,11 +627,11 @@ defineExpose({ exportPng });
                       Entry IV is standardized into Low, Medium, and High regimes across the
                       {{ completedWeekCount }} completed weeks.
                     </template><template v-else>
-                      Weeks are ranked by their observed BTC price change from entry to exit, then split into equal-count
+                      Weeks are ranked by their observed {{ underlying }} price change from entry to exit, then split into equal-count
                       lowest, middle, and highest move cohorts across the {{ completedWeekCount }} completed weeks.
                     </template>
                     The fourth panel follows the selected view: actual weekly PnL over calendar time for T, against entry-IV
-                    z-score for σ, or against the week's observed BTC return for Δ.
+                    z-score for σ, or against the week's observed {{ underlying }} return for Δ.
                     Bars show simulated PnL divided by the total option value paid or received when the trades in that
                     panel were opened, which makes differently sized cohorts comparable; it is not return on the strategy's
                     $100k notional. The brighter band contains the middle 90% of null outcomes and the fainter band contains
@@ -639,7 +647,7 @@ defineExpose({ exportPng });
               <div class="groupingToggle" role="group" aria-label="Group distributions by">
                 <button type="button" :aria-pressed="viewMode === 'time'" title="Time cohorts" @click="viewMode = 'time'">T</button>
                 <button type="button" :aria-pressed="viewMode === 'iv'" title="Entry IV" @click="viewMode = 'iv'">σ</button>
-                <button type="button" :aria-pressed="viewMode === 'priceMove'" title="Observed BTC price change cohorts" @click="viewMode = 'priceMove'">Δ</button>
+                <button type="button" :aria-pressed="viewMode === 'priceMove'" :title="`Observed ${underlying} price change cohorts`" @click="viewMode = 'priceMove'">Δ</button>
               </div>
             </div>
             <div class="controlRow">
@@ -663,7 +671,7 @@ defineExpose({ exportPng });
                     </div>
                   </div>
                   <p>
-                    BTC volatility changes materially through time, so one fixed return cutoff would label ordinary
+                    {{ underlying }} volatility changes materially through time, so one fixed return cutoff would label ordinary
                     high-volatility moves as jumps and miss unusual moves during quiet periods. Each hourly log return is
                     therefore centered on the preceding 168-hour median and divided by a local robust volatility estimate
                     based on median absolute deviation. Median statistics keep a candidate jump from materially inflating

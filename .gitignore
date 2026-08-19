@@ -13,3 +13,6 @@ node_modules
 /apps/backtest/public/data/thalex/prepared_1h_h*utc_dte*.json
 /apps/backtest/public/data/thalex/prepared_manifest.json
 /apps/backtest/public/data/thalex/prepared_iv_rv_1h.json
+/apps/backtest/public/data/thalex/eth/prepared_1h_h*utc_dte*.json
+/apps/backtest/public/data/thalex/eth/prepared_manifest.json
+/apps/backtest/public/data/thalex/eth/prepared_iv_rv_1h.json

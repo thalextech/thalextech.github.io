@@ -14,6 +14,7 @@ import { RETURN_ADJUSTMENT } from "../lib/serialCorrelation.js";
 const props = defineProps({
   analysis: { type: Object, default: null },
   loading: { type: Boolean, default: false },
+  underlying: { type: String, default: "BTC" },
 });
 
 const svgRef = ref(null);
@@ -158,9 +159,9 @@ function render() {
   const varianceStandardized = analysis.returnAdjustment
     === RETURN_ADJUSTMENT.VARIANCE_STANDARDIZED;
   const marketVerdict = reversalIsSignificant
-    ? "BTC reversal is statistically distinguishable in this sample."
+    ? `${props.underlying} reversal is statistically distinguishable in this sample.`
     : extensionIsSignificant
-      ? "BTC moves extend rather than reverse in this sample."
+      ? `${props.underlying} moves extend rather than reverse in this sample.`
       : "This sample cannot rule out a pure random walk because 1 is inside the CI.";
   const forward = analysis.anchorMode === "start";
 
@@ -182,7 +183,7 @@ function render() {
     .attr("fill", "#d8dadd")
     .style("font", `400 12.5px ${font}`)
     .text(
-      `${forward ? "The following 24h of BTC returns carry" : "A day of BTC returns carries"} ~${d3.format(".0f")(varianceDifferencePct)}% ${varianceDirection} variance than independent hourly moves imply.`,
+      `${forward ? `The following 24h of ${props.underlying} returns carry` : `A day of ${props.underlying} returns carries`} ~${d3.format(".0f")(varianceDifferencePct)}% ${varianceDirection} variance than independent hourly moves imply.`,
     );
   svg
     .append("text")

@@ -8,6 +8,7 @@ const props = defineProps({
   rows: { type: Array, default: () => [] },
   breakEvens: { type: Object, default: null },
   zeroMtmContours: { type: Object, default: null },
+  underlying: { type: String, default: "BTC" },
 });
 
 const chartRef = ref(null);
@@ -39,6 +40,8 @@ const LEGEND_TOOLTIPS = {
   residual: "Cumulative unexplained remainder after subtracting net delta, gamma–theta, and vega attribution from total hedged P&L. It contains higher-order Greeks, vanna/volga, discrete-sampling error, surface-model mismatch, expiry effects, and any missing quote effects.",
   total: "Cumulative total strategy P&L: option mark-to-market plus hedge P&L. This is the accounting result the Greek tracks reconcile to; unlike the attribution tracks, it is not a local Taylor approximation.",
 };
+const legendTooltip = (key) =>
+  LEGEND_TOOLTIPS[key].replaceAll("BTC", props.underlying);
 
 const styleAxis = (group) => {
   group.selectAll("line").remove();
@@ -289,25 +292,25 @@ const draw = () => {
     .append("title")
     .text((row) => {
       const trade = row.hedgeTrade
-        ? `\n${row.hedgeTrade.side.toUpperCase()} ${row.hedgeTrade.quantity.toFixed(4)} BTC @ ${formatUsd(row.indexPrice)}`
+        ? `\n${row.hedgeTrade.side.toUpperCase()} ${row.hedgeTrade.quantity.toFixed(4)} ${props.underlying} @ ${formatUsd(row.indexPrice)}`
         : "";
       return `${formatTime(new Date(row.dateTime))}\nIndex ${formatUsd(row.indexPrice)}${trade}`;
     });
 
   const legend = price.append("g").attr("transform", "translate(0,-18)");
   // No more "Combined option mark" — replaced by break-even lines per request
-  addLegendItem(legend, 0, "Index", "rgba(255,255,255,0.75)", "line", "index", LEGEND_TOOLTIPS.index);
-  addLegendItem(legend, 80, "Hedge buy", BUY, "square", "hedge_buy", LEGEND_TOOLTIPS.hedge_buy);
-  addLegendItem(legend, 170, "Hedge sell", SELL, "square", "hedge_sell", LEGEND_TOOLTIPS.hedge_sell);
+  addLegendItem(legend, 0, "Index", "rgba(255,255,255,0.75)", "line", "index", legendTooltip("index"));
+  addLegendItem(legend, 80, "Hedge buy", BUY, "square", "hedge_buy", legendTooltip("hedge_buy"));
+  addLegendItem(legend, 170, "Hedge sell", SELL, "square", "hedge_sell", legendTooltip("hedge_sell"));
   if (showContourOverlay) {
-    addLegendItem(legend, 255, "Zero MTM", CONTOUR_COLORS.base, "line", "contour_base", LEGEND_TOOLTIPS.contour_base);
+    addLegendItem(legend, 255, "Zero MTM", CONTOUR_COLORS.base, "line", "contour_base", legendTooltip("contour_base"));
     legend.append("text")
       .attr("x", 345).attr("y", 4)
       .attr("fill", "rgba(255,255,255,0.42)")
       .attr("font-size", 9)
       .text(props.zeroMtmContours.metadata.surface_mode.replace("_", " "));
   } else if (be && (Number.isFinite(be.lower) || Number.isFinite(be.upper))) {
-    addLegendItem(legend, 255, "Break-evens", BREAK_EVEN, "line", "break_even_lines", LEGEND_TOOLTIPS.break_even_lines);
+    addLegendItem(legend, 255, "Break-evens", BREAK_EVEN, "line", "break_even_lines", legendTooltip("break_even_lines"));
   }
 
   const pnlTop = margin.top + priceHeight + gap;
@@ -344,7 +347,7 @@ const draw = () => {
     series.color,
     "line",
     series.id,
-    LEGEND_TOOLTIPS[series.id],
+    legendTooltip(series.id),
   ));
 
   const xAxis = d3.axisBottom(x).ticks(8).tickFormat(d3.utcFormat("%d %b %H:%M")).tickPadding(10);

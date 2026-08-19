@@ -115,3 +115,16 @@ test("CSV serialization escapes labels and keeps missing expiry IV blank", () =>
   assert.match(csv.split("\r\n")[0], /leg_1_exit_iv_decimal/);
   assert.equal(serializeCsv([]), "");
 });
+
+test("ETH exports name underlying-unit columns without BTC leakage", () => {
+  const unitSizedCycle = { ...cycle, sizingMode: "btc" };
+  const [row] = buildWeeklyPnlExportRows([unitSizedCycle], [], {
+    underlying: "ETH",
+  });
+
+  assert.equal(row.configured_eth_quantity, cycle.btcQuantity);
+  assert.equal(row.option_quantity_eth, cycle.optionQuantityBtc);
+  assert.equal(row.leg_1_quantity_eth, cycle.legs[0].quantity);
+  assert.equal(row.sizing_mode, "eth");
+  assert.equal("configured_btc_quantity" in row, false);
+});

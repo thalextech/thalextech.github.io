@@ -13,8 +13,15 @@ import {
 
 const ARTIFACT_VERSION = 3;
 const ARTIFACT_SCHEMA = "thalex-option-backtest";
+const UNDERLYING = String(process.argv[2] || "BTC").toUpperCase();
+if (!["BTC", "ETH"].includes(UNDERLYING)) {
+  throw new Error(`Unsupported underlying: ${UNDERLYING}`);
+}
 const SOURCE_DATA_DIR = path.resolve("data/thalex");
-const RUNTIME_DATA_DIR = path.resolve("public/data/thalex");
+const RUNTIME_DATA_DIR = path.resolve(
+  "public/data/thalex",
+  UNDERLYING === "BTC" ? "" : UNDERLYING.toLowerCase(),
+);
 const MANIFEST_FILENAME = "prepared_manifest.json";
 const IV_RV_FILENAME = "prepared_iv_rv_1h.json";
 const IV_RV_TENORS = [7, 14, 30];
@@ -63,7 +70,7 @@ const parseInstrument = (name) => {
   const year = 2000 + Number(expiryToken.slice(5));
   const strike = Number(strikeRaw);
   if (
-    underlying !== "BTC" ||
+    underlying !== UNDERLYING ||
     !Number.isInteger(day) ||
     month == null ||
     !Number.isInteger(year) ||
@@ -88,10 +95,14 @@ const filenames = (await fs.readdir(SOURCE_DATA_DIR)).filter((name) =>
   name.endsWith(".parquet"),
 );
 const indexFiles = filenames
-  .filter((name) => /^BTCUSD_index_1h_\d{6}\.parquet$/.test(name))
+  .filter((name) =>
+    new RegExp(`^${UNDERLYING}USD_index_1h_\\d{6}\\.parquet$`).test(name),
+  )
   .sort();
 const markFiles = filenames
-  .filter((name) => /^OBTCUSD_marks_1h_\d{6}\.parquet$/.test(name))
+  .filter((name) =>
+    new RegExp(`^O${UNDERLYING}USD_marks_1h_\\d{6}\\.parquet$`).test(name),
+  )
   .sort();
 
 if (!indexFiles.length || !markFiles.length) {
@@ -303,7 +314,7 @@ console.log(`wrote ${ivRvRows.length.toLocaleString()} hourly IV/RV source rows`
 const manifest = {
   schema: ARTIFACT_SCHEMA,
   version: ARTIFACT_VERSION,
-  underlying: "BTC",
+  underlying: UNDERLYING,
   resolutionSeconds: 3_600,
   pricing: {
     model: "black-scholes-zero-rate",

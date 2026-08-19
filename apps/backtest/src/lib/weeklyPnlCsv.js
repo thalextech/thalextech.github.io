@@ -48,15 +48,15 @@ const greekValue = (attribution, cycle, key, nestedKey) => {
   return finiteOrBlank(cycle?.greekPnl?.[nestedKey]);
 };
 
-const legColumns = (leg, legNumber) => ({
+const legColumns = (leg, legNumber, unit = "btc") => ({
   [`leg_${legNumber}_instrument`]: leg?.instrumentName || "",
   [`leg_${legNumber}_option_type`]: leg?.optionType || "",
   [`leg_${legNumber}_strike_usd`]: finiteOrBlank(leg?.strike),
   [`leg_${legNumber}_expiration_utc`]: isoFromSeconds(leg?.expirationTs),
-  [`leg_${legNumber}_quantity_btc`]: finiteOrBlank(leg?.quantity),
-  [`leg_${legNumber}_entry_mark_usd_per_btc`]: finiteOrBlank(leg?.entryPrice),
-  [`leg_${legNumber}_exit_mark_usd_per_btc`]: finiteOrBlank(leg?.exitPrice),
-  [`leg_${legNumber}_mark_change_usd_per_btc`]:
+  [`leg_${legNumber}_quantity_${unit}`]: finiteOrBlank(leg?.quantity),
+  [`leg_${legNumber}_entry_mark_usd_per_${unit}`]: finiteOrBlank(leg?.entryPrice),
+  [`leg_${legNumber}_exit_mark_usd_per_${unit}`]: finiteOrBlank(leg?.exitPrice),
+  [`leg_${legNumber}_mark_change_usd_per_${unit}`]:
     Number.isFinite(Number(leg?.entryPrice)) && Number.isFinite(Number(leg?.exitPrice))
       ? Number(leg.exitPrice) - Number(leg.entryPrice)
       : "",
@@ -71,7 +71,12 @@ const legColumns = (leg, legNumber) => ({
   [`leg_${legNumber}_exit_delta`]: finiteOrBlank(leg?.exitDelta),
 });
 
-export const buildWeeklyPnlExportRows = (cycles = [], attributionCycles = []) => {
+export const buildWeeklyPnlExportRows = (
+  cycles = [],
+  attributionCycles = [],
+  { underlying = "BTC" } = {},
+) => {
+  const unit = String(underlying || "BTC").toLowerCase();
   const closedCycles = cycles.filter((cycle) => cycle?.closed !== false);
   const attributionByCycle = new Map(
     attributionCycles.map((cycle) => [Number(cycle?.cycle), cycle]),
@@ -104,11 +109,12 @@ export const buildWeeklyPnlExportRows = (cycles = [], attributionCycles = []) =>
       hedge_interval_hours: cycle.hedgeEnabled
         ? finiteOrBlank(cycle.hedgeIntervalHours)
         : "",
-      sizing_mode: cycle.sizingMode || "",
+      sizing_mode:
+        cycle.sizingMode === "btc" ? unit : cycle.sizingMode || "",
       requested_notional_usd: finiteOrBlank(cycle.notionalUsd),
-      configured_btc_quantity: finiteOrBlank(cycle.btcQuantity),
+      [`configured_${unit}_quantity`]: finiteOrBlank(cycle.btcQuantity),
       investment_usd: finiteOrBlank(cycle.investmentUsd),
-      option_quantity_btc: finiteOrBlank(cycle.optionQuantityBtc),
+      [`option_quantity_${unit}`]: finiteOrBlank(cycle.optionQuantityBtc),
       entry_index_price_usd: entryIndex,
       exit_index_price_usd: exitIndex,
       index_move_usd: entryIndex !== "" && exitIndex !== "" ? exitIndex - entryIndex : "",
@@ -117,9 +123,9 @@ export const buildWeeklyPnlExportRows = (cycles = [], attributionCycles = []) =>
         const value = percentChange(entryIndex, exitIndex);
         return value === "" ? "" : Math.abs(value);
       })(),
-      entry_structure_mark_usd_per_btc: finiteOrBlank(cycle.entryStraddleMark),
-      exit_structure_mark_usd_per_btc: finiteOrBlank(cycle.exitStructureMark),
-      structure_mark_change_usd_per_btc:
+      [`entry_structure_mark_usd_per_${unit}`]: finiteOrBlank(cycle.entryStraddleMark),
+      [`exit_structure_mark_usd_per_${unit}`]: finiteOrBlank(cycle.exitStructureMark),
+      [`structure_mark_change_usd_per_${unit}`]:
         Number.isFinite(Number(cycle.entryStraddleMark))
           && Number.isFinite(Number(cycle.exitStructureMark))
           ? Number(cycle.exitStructureMark) - Number(cycle.entryStraddleMark)
@@ -159,7 +165,7 @@ export const buildWeeklyPnlExportRows = (cycles = [], attributionCycles = []) =>
       residual_pnl_usd: greekValue(attribution, cycle, "residualPnlUsd", "residual"),
     };
     for (let index = 0; index < maxLegs; index += 1) {
-      Object.assign(row, legColumns(legs[index], index + 1));
+      Object.assign(row, legColumns(legs[index], index + 1, unit));
     }
     return row;
   });
@@ -179,8 +185,11 @@ export const serializeCsv = (rows = []) => {
   ].join("\r\n");
 };
 
-export const buildWeeklyPnlCsv = (cycles = [], attributionCycles = []) =>
-  serializeCsv(buildWeeklyPnlExportRows(cycles, attributionCycles));
+export const buildWeeklyPnlCsv = (
+  cycles = [],
+  attributionCycles = [],
+  options = {},
+) => serializeCsv(buildWeeklyPnlExportRows(cycles, attributionCycles, options));
 
 export const downloadCsv = ({ csv, filename }) => {
   const blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" });
