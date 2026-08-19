@@ -5,6 +5,7 @@ import { exportTitledChart } from "../lib/exportTitledChart.js";
 
 const props = defineProps({
   rows: { type: Array, default: () => [] },
+  granularity: { type: String, default: "cycle" },
 });
 const emit = defineEmits(["select"]);
 
@@ -24,6 +25,7 @@ const draw = () => {
   const rows = [...(props.rows || [])].sort(
     (a, b) => entryDate(a).getTime() - entryDate(b).getTime(),
   );
+  const isDaily = props.granularity === "daily";
 
   const bounds = element.getBoundingClientRect();
   const width = Math.max(900, bounds.width || 1360);
@@ -45,7 +47,12 @@ const draw = () => {
     .attr("height", "100%")
     .attr("font-family", CHART_FONT_FAMILY)
     .attr("role", "img")
-    .attr("aria-label", "Per-cycle delta hedged straddle backtest chart");
+    .attr(
+      "aria-label",
+      isDaily
+        ? "Daily delta hedged strategy PnL and cumulative equity chart"
+        : "Per-cycle delta hedged strategy PnL and cumulative equity chart",
+    );
 
   if (!rows.length) {
     svg.append("text")
@@ -108,7 +115,7 @@ const draw = () => {
 
   const bw = Math.max(2, slot - 1);
 
-  // Proper diverging red/blue color scale for weekly PnL bars
+  // Proper diverging red/blue color scale for period PnL bars.
   const barValues = rows.map(r => r.cyclePnlUsd || 0);
   const [barMin, barMax] = d3.extent(barValues);
   const colorDomain = [Math.min(barMin, 0), 0, Math.max(barMax, 0)];
@@ -123,22 +130,31 @@ const draw = () => {
     const h = Math.max(1, bottom - top);
     const fill = barColor(v);
 
-    svg.append("rect")
+    const bar = svg.append("rect")
       .attr("x", x(i) - bw / 2)
       .attr("y", top)
       .attr("width", bw)
       .attr("height", h)
       .attr("fill", fill)
-      .attr("tabindex", 0)
-      .attr("role", "button")
-      .attr("aria-label", `${formatDate(entryDate(row))}: ${formatUsd(v)}. Open hourly detail`)
-      .style("cursor", "pointer")
-      .on("click", () => emit("select", row))
-      .on("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") emit("select", row);
-      })
+      .attr(
+        "aria-label",
+        `${formatDate(entryDate(row))}: ${formatUsd(v)} ${isDaily ? "daily" : "cycle"} PnL`,
+      );
+    if (!isDaily) {
+      bar
+        .attr("tabindex", 0)
+        .attr("role", "button")
+        .style("cursor", "pointer")
+        .on("click", () => emit("select", row))
+        .on("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") emit("select", row);
+        });
+    }
+    bar
       .append("title")
-      .text(`${formatDate(entryDate(row))} · ${formatUsd(v)} · Click for hourly detail`);
+      .text(
+        `${formatDate(entryDate(row))} · ${formatUsd(v)}${isDaily ? "" : " · Click for hourly detail"}`,
+      );
   });
 
   const cumulativeLine = d3.line()
@@ -161,7 +177,7 @@ const draw = () => {
     { length: tickCount },
     (_, index) => Math.round(index * (rows.length - 1) / Math.max(1, tickCount - 1)),
   ))];
-  const formatAxisDate = d3.utcFormat("%b %y");
+  const formatAxisDate = d3.utcFormat(isDaily ? "%d %b" : "%b %y");
   tickIndexes.forEach((idx) => {
     const lx = x(idx);
     svg.append("text")
@@ -183,7 +199,7 @@ onUnmounted(() => {
   window.removeEventListener("resize", draw);
 });
 
-watch(() => props.rows, draw);
+watch(() => [props.rows, props.granularity], draw);
 
 function exportPng({
   filename = "backtest.png",

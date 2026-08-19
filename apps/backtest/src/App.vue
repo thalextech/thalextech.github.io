@@ -20,6 +20,7 @@ import {
 } from "./lib/backtestWorkerClient.js";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
 import { getUnderlying, UNDERLYING_OPTIONS } from "./lib/underlyings.js";
+import { buildDailyPnlRows } from "./lib/dailyPnl.js";
 import {
   buildIvRvChartRows,
   buildHourlyIvHeatmap,
@@ -56,6 +57,7 @@ const DATA_RANGE_END = new Date();
 const DATA_RANGE_MIN_MS = 24 * 60 * 60 * 1000;
 const DATA_RANGE_RUN_DEBOUNCE_MS = 300;
 const DATA_RANGE_LABEL_UPDATE_MS = 180;
+const DAILY_PNL_CYCLE_THRESHOLD = 24;
 const underlying = ref("BTC");
 const currentUnderlying = computed(() => getUnderlying(underlying.value));
 
@@ -994,6 +996,8 @@ const csvExporting = ref(false);
 let attributionResult = null;
 let attributionLoadPromise = null;
 let attributionLoadResult = null;
+let attributionDataResolution = null;
+let attributionLoadResolution = null;
 let currentAttributionSequence = 0;
 const selectedCycle = ref(null);
 const cycleDetailRows = ref([]);
@@ -1004,6 +1008,24 @@ const cycleDetailError = ref("");
 const cycleDetailCache = new Map();
 let currentCycleDetailSequence = 0;
 const cycleRows = computed(() => result.value?.cycleSummary || []);
+const showDailyPnl = computed(
+  () =>
+    cycleRows.value.length > 0 &&
+    cycleRows.value.length < DAILY_PNL_CYCLE_THRESHOLD,
+);
+const dailyPnlRows = computed(() =>
+  buildDailyPnlRows({
+    rows: attributionRows.value,
+    start: selectedDataRange.value.start,
+    end:
+      result.value?.dataEnd instanceof Date
+        ? result.value.dataEnd
+        : selectedDataRange.value.end,
+  }),
+);
+const pnlChartRows = computed(() =>
+  showDailyPnl.value ? dailyPnlRows.value : cycleRows.value,
+);
 
 const clearAttribution = () => {
   currentAttributionSequence += 1;
@@ -1014,6 +1036,8 @@ const clearAttribution = () => {
   attributionResult = null;
   attributionLoadPromise = null;
   attributionLoadResult = null;
+  attributionDataResolution = null;
+  attributionLoadResolution = null;
 };
 
 const clearCycleDetail = ({ clearCache = false } = {}) => {
@@ -1040,7 +1064,9 @@ const chartTitle = computed(() => {
     );
     return `${entry} cycle · hourly detail`;
   }
-  return strategyLabels.value.chart;
+  return chartMode.value === "weekly" && showDailyPnl.value
+    ? `${strategyLabels.value.chart} · daily PnL`
+    : strategyLabels.value.chart;
 });
 
 const chartSubtitle = computed(() => {
@@ -1078,7 +1104,10 @@ const chartSubtitle = computed(() => {
       : "$100k notional";
   const entryDay =
     weekday.value === ENTRY_WEEKDAY_EVERY_DAY ? "every day" : weekday.label;
-  return `Entered ${entryDay} at ${entryTime} · ${exit} · ${sizing}`;
+  const strategyDetail = `Entered ${entryDay} at ${entryTime} · ${exit} · ${sizing}`;
+  return chartMode.value === "weekly" && showDailyPnl.value
+    ? `Daily UTC mark-to-market · ${strategyDetail}`
+    : strategyDetail;
 });
 
 const chartSourceSubtitle = computed(() => {
@@ -1283,6 +1312,9 @@ const switchMode = (nextMode) => {
   selectedCycle.value = null;
   if (nextMode === "single") {
     if (!result.value) scheduleBacktest();
+    else if (chartMode.value === "weekly" && showDailyPnl.value) {
+      void loadAttribution({ resolution: "hourly" });
+    }
   } else if (nextMode === "sweep" && previousMode !== "sweep") {
     void runSweep();
   } else if (
@@ -1299,6 +1331,9 @@ const selectSingleView = (nextChartMode) => {
   selectedCycle.value = null;
   if (!result.value) scheduleBacktest();
   else if (nextChartMode === "greeks") void loadAttribution();
+  else if (nextChartMode === "weekly" && showDailyPnl.value) {
+    void loadAttribution({ resolution: "hourly" });
+  }
   requestAnimationFrame(() => {
     if (document.activeElement instanceof HTMLElement)
       document.activeElement.blur();
@@ -1357,6 +1392,9 @@ const runCurrent = async () => {
     result.value = response.result;
     state.progress = "";
     if (chartMode.value === "greeks") void loadAttribution();
+    else if (chartMode.value === "weekly" && showDailyPnl.value) {
+      void loadAttribution({ resolution: "hourly" });
+    }
   } catch (error) {
     if (runSequence !== currentRunSequence) return;
     state.error = error?.message || "Backtest failed";
@@ -1364,13 +1402,27 @@ const runCurrent = async () => {
   }
 };
 
-const loadAttribution = () => {
+const loadAttribution = ({ resolution = "strategy" } = {}) => {
   const sourceResult = result.value;
   if (!sourceResult) return Promise.resolve();
-  if (attributionResult === sourceResult && attributionRows.value.length) {
+  const hasRequiredResolution =
+    attributionDataResolution === "hourly" ||
+    attributionDataResolution === resolution;
+  if (
+    attributionResult === sourceResult &&
+    attributionRows.value.length &&
+    hasRequiredResolution
+  ) {
     return Promise.resolve();
   }
-  if (attributionLoadPromise && attributionLoadResult === sourceResult) {
+  const pendingResolutionSatisfies =
+    attributionLoadResolution === "hourly" ||
+    attributionLoadResolution === resolution;
+  if (
+    attributionLoadPromise &&
+    attributionLoadResult === sourceResult &&
+    pendingResolutionSatisfies
+  ) {
     return attributionLoadPromise;
   }
 
@@ -1378,10 +1430,31 @@ const loadAttribution = () => {
   attributionLoading.value = true;
   attributionError.value = "";
   attributionLoadResult = sourceResult;
+  attributionLoadResolution = resolution;
   const request = (async () => {
     try {
+      const range = selectedDataRange.value;
+      const useHourlyData = resolution === "hourly";
+      const hourlyDatasetKey = [
+        underlying.value,
+        "attribution-hourly",
+        Math.floor(range.start.getTime() / 1_000),
+        Math.floor(range.end.getTime() / 1_000),
+        `dte:${requiredMaxDteDays.value}`,
+      ].join("|");
       const response = await runAttributionInWorker({
-        datasetKey: loadedDataKey || requiredDataKey.value,
+        datasetKey: useHourlyData
+          ? hourlyDatasetKey
+          : loadedDataKey || requiredDataKey.value,
+        loadRequest: useHourlyData
+          ? {
+              start: range.start,
+              end: range.end,
+              hourlyOffsets: Array.from({ length: 24 }, (_, hour) => hour),
+              maxDteDays: requiredMaxDteDays.value,
+              dataRoot: currentUnderlying.value.dataRoot,
+            }
+          : undefined,
         config: buildConfig(),
       });
       if (
@@ -1392,6 +1465,7 @@ const loadAttribution = () => {
       attributionRows.value = response.result?.timeline || [];
       attributionCycleRows.value = response.result?.cycles || [];
       attributionResult = sourceResult;
+      attributionDataResolution = resolution;
     } catch (error) {
       if (attributionSequence !== currentAttributionSequence) return;
       attributionError.value =
@@ -1407,6 +1481,7 @@ const loadAttribution = () => {
     if (attributionLoadPromise === request) {
       attributionLoadPromise = null;
       attributionLoadResult = null;
+      attributionLoadResolution = null;
     }
   });
   return request;
@@ -1528,6 +1603,9 @@ const loadBacktest = async () => {
     }
     state.progress = "";
     if (chartMode.value === "greeks") void loadAttribution();
+    else if (chartMode.value === "weekly" && showDailyPnl.value) {
+      void loadAttribution({ resolution: "hourly" });
+    }
   } catch (error) {
     if (runSequence !== currentRunSequence) return;
     state.error = error?.message || "Backtest failed";
@@ -2221,7 +2299,7 @@ onMounted(loadBacktest);
                 :class="{ active: mode === 'single' && chartMode === 'weekly' }"
                 @click="selectSingleView('weekly')"
               >
-                PnL by cycle
+                {{ showDailyPnl ? "Daily PnL" : "PnL by cycle" }}
               </button>
               <button
                 type="button"
@@ -2658,12 +2736,37 @@ onMounted(loadBacktest);
         >
           {{ state.progress }}
         </div>
+        <div
+          v-else-if="
+            mode === 'single' &&
+            !selectedCycle &&
+            chartMode === 'weekly' &&
+            showDailyPnl &&
+            attributionLoading
+          "
+          class="cycleDetailState"
+        >
+          Preparing daily PnL…
+        </div>
+        <div
+          v-else-if="
+            mode === 'single' &&
+            !selectedCycle &&
+            chartMode === 'weekly' &&
+            showDailyPnl &&
+            attributionError
+          "
+          class="cycleDetailState error"
+        >
+          {{ attributionError }}
+        </div>
         <WeeklyBacktestChart
           v-else-if="
             mode === 'single' && !selectedCycle && chartMode === 'weekly'
           "
           ref="chartRef"
-          :rows="cycleRows"
+          :rows="pnlChartRows"
+          :granularity="showDailyPnl ? 'daily' : 'cycle'"
           :design-spec="true"
           @select="handleCycleSelect"
         />
