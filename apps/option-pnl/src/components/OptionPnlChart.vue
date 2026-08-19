@@ -25,7 +25,7 @@ const layout = {
 };
 const MAIN_TOP_INSET = 28;
 const DETAIL_TOP_INSET = 28;
-const LEGEND_TOP_OFFSET = -5;
+const MAIN_TITLE_Y = 30;
 
 const TEXT_STYLES = {
   axisText: { fill: "#d6d7de" },
@@ -100,10 +100,16 @@ const chartState = {
   currentXScale: null,
   currentYScale: null,
   noDataText: null,
+  pointRadius: 4,
+  dimmedPointRadius: 2.75,
 };
 
-const POINT_RADIUS = 4;
-const POINT_RADIUS_DIMMED = 2.8;
+const DEFAULT_POINT_RADIUS = 4;
+const DEFAULT_POINT_COUNT = 360;
+const MIN_POINT_RADIUS = 0.75;
+const MIN_DIMMED_POINT_RADIUS = 0.5;
+const POINT_RADIUS_STEP = 0.25;
+const DIMMED_POINT_RADIUS_FACTOR = 0.7;
 const POINT_RADIUS_HOVER = 10;
 const HOVER_RELEASE_HITBOX_PX = 14;
 const TAP_SELECT_HITBOX_PX = 22;
@@ -121,6 +127,27 @@ let suppressClearClick = false;
 let tooltipDatum = null;
 let lastPointerInMain = null;
 let tooltipFadeTimer = null;
+
+const roundPointRadius = (radius) =>
+  Math.round(radius / POINT_RADIUS_STEP) * POINT_RADIUS_STEP;
+
+const pointRadiusForCount = (pointCount) => {
+  const safePointCount = Math.max(1, Number(pointCount) || 1);
+  const scaledRadius =
+    DEFAULT_POINT_RADIUS *
+    Math.pow(DEFAULT_POINT_COUNT / safePointCount, 0.25);
+  return roundPointRadius(
+    Math.max(MIN_POINT_RADIUS, Math.min(DEFAULT_POINT_RADIUS, scaledRadius)),
+  );
+};
+
+const updatePointRadii = (pointCount) => {
+  chartState.pointRadius = pointRadiusForCount(pointCount);
+  chartState.dimmedPointRadius = Math.max(
+    MIN_DIMMED_POINT_RADIUS,
+    roundPointRadius(chartState.pointRadius * DIMMED_POINT_RADIUS_FACTOR),
+  );
+};
 
 const clearTooltipFadeTimer = () => {
   if (tooltipFadeTimer) {
@@ -320,8 +347,8 @@ const applySelectionStyles = () => {
     .attr("stroke-width", (d) => (selectedDatums.includes(d) ? 2.6 : 0))
     .attr("r", (d) => {
       if (selectedDatums.includes(d)) return POINT_RADIUS_HOVER;
-      if (selectedDatums.length === 2) return POINT_RADIUS_DIMMED;
-      return POINT_RADIUS;
+      if (selectedDatums.length === 2) return chartState.dimmedPointRadius;
+      return chartState.pointRadius;
     })
     .attr("opacity", (d) =>
       selectedDatums.length > 0 && !selectedDatums.includes(d) ? 0.4 : 0.8,
@@ -385,7 +412,7 @@ const resetHoverStyles = () => {
   chartState.pointsGroup
     .selectAll("circle.main-point")
     .attr("opacity", 0.8)
-    .attr("r", POINT_RADIUS);
+    .attr("r", chartState.pointRadius);
   applySelectionStyles();
 };
 
@@ -700,6 +727,7 @@ function render() {
 
   const svg = ensureChartElements();
   if (!svg) return;
+  updatePointRadii(data.length);
 
   const { height, margin } = layout;
   const fullWidth = layout.mainWidth + layout.panelGap + layout.detailWidth;
@@ -747,7 +775,7 @@ function render() {
   chartState.mainTitleText
     .call(withLayoutTransition)
     .attr("x", mainWidth / 2)
-    .attr("y", 30)
+    .attr("y", MAIN_TITLE_Y)
     .text(mainTitle.value);
   chartState.mainSubtitleText
     .call(withLayoutTransition)
@@ -1316,7 +1344,7 @@ function render() {
       const circles = enter
         .append("circle")
         .attr("class", "main-point")
-        .attr("r", POINT_RADIUS)
+        .attr("r", chartState.pointRadius)
         .attr("stroke", "transparent")
         .attr("stroke-width", 0)
         .attr("opacity", 0.8);
@@ -1390,15 +1418,15 @@ function render() {
   const legendWidth = 220;
   const legendHeight = 10;
   const legendX = mainWidth - margin.right - legendWidth;
-  const legendY = margin.top - LEGEND_TOP_OFFSET;
-  withLayoutTransition(chartState.legendGroup).attr(
-    "transform",
-    `translate(${legendX},${legendY})`,
-  );
   const legendPaddingY = 8;
   const legendTitleY = legendPaddingY;
   const legendBarTop = legendTitleY + 14;
   const legendLabelY = legendBarTop + legendHeight + 16;
+  const legendY = MAIN_TITLE_Y - legendTitleY;
+  withLayoutTransition(chartState.legendGroup).attr(
+    "transform",
+    `translate(${legendX},${legendY})`,
+  );
 
   chartState.legendTitle?.attr("x", 0).attr("y", legendTitleY);
   chartState.legendRect

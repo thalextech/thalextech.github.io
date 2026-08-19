@@ -1,6 +1,15 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  reactive,
+  ref,
+  watch,
+} from "vue";
 import OptionPnlChart from "./components/OptionPnlChart.vue";
+import StyledSelectMenu from "./components/StyledSelectMenu.vue";
 import {
   computeGreeksPnlSeries,
   fetchIndexHistory,
@@ -16,7 +25,14 @@ const RESOLUTION_CONFIG = {
   86400: { label: "1d", resolution: "1d", interval_seconds: 24 * 60 * 60 },
 };
 const RESOLUTION_KEYS = Object.keys(RESOLUTION_CONFIG);
-const MAIN_POINT_LIMIT = 360;
+const RESOLUTION_OPTIONS = RESOLUTION_KEYS.map((key) => ({
+  value: key,
+  label: RESOLUTION_CONFIG[key].label,
+}));
+const DEFAULT_LOOKBACK_POINT_LIMIT = 360;
+const MIN_LOOKBACK_POINT_LIMIT = 120;
+const MAX_LOOKBACK_POINT_LIMIT = 10_000;
+const HISTORY_POINT_DEBOUNCE_MS = 350;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 const MIN_DATA_TS = Math.floor(MIN_DATA_DATE.getTime() / 1000);
 
@@ -30,6 +46,7 @@ const ui = reactive({
   optionMaturity: "",
   optionStrike: "",
   optionType: "call",
+  maxPoints: DEFAULT_LOOKBACK_POINT_LIMIT,
   loading: false,
   error: "",
 });
@@ -41,9 +58,13 @@ const data = reactive({
   index: {},
 });
 const chartRef = ref(null);
+const settingsMenuRef = ref(null);
+const settingsButtonRef = ref(null);
+const settingsOpen = ref(false);
 const isInitializing = ref(true);
 let prefetchedIndexForInitialLoad = null;
 let loadRequestId = 0;
+let maxPointsDebounceTimer = null;
 
 const maturityFormatter = new Intl.DateTimeFormat("en-US", {
   month: "short",
@@ -100,6 +121,36 @@ const getOldestOptionInstrument = (instruments) => {
     }
   }
   return oldest;
+};
+
+const requestedMaxPoints = computed(() => {
+  const value = Math.floor(Number(ui.maxPoints));
+  if (!Number.isFinite(value)) return DEFAULT_LOOKBACK_POINT_LIMIT;
+  return Math.max(
+    MIN_LOOKBACK_POINT_LIMIT,
+    Math.min(MAX_LOOKBACK_POINT_LIMIT, value),
+  );
+});
+const maxPointsToFetch = ref(DEFAULT_LOOKBACK_POINT_LIMIT);
+
+const toggleSettings = async () => {
+  settingsOpen.value = !settingsOpen.value;
+  if (settingsOpen.value) {
+    await nextTick();
+    settingsButtonRef.value?.focus?.();
+  }
+};
+
+const closeSettings = () => {
+  settingsOpen.value = false;
+};
+
+const handleDocumentPointerDown = (event) => {
+  if (!settingsOpen.value) return;
+  const target = event?.target;
+  if (!(target instanceof Node)) return;
+  if (settingsMenuRef.value?.contains(target)) return;
+  closeSettings();
 };
 
 const getMiddleStrikeValue = (strikes) => {
@@ -175,10 +226,12 @@ const getTimestampRange = () => {
   const resolution = resolutionConfig?.resolution;
   const seconds =
     resolutionConfig?.interval_seconds ?? Number(ui.resolutionKey) ?? 0;
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 900;
+  const to = now - (now % safeSeconds);
   return {
     resolution,
-    from: now - seconds * MAIN_POINT_LIMIT,
-    to: now,
+    from: to - safeSeconds * (maxPointsToFetch.value - 1),
+    to,
   };
 };
 
@@ -285,7 +338,7 @@ const mainSeries = computed(() => {
       option_mark_price: optionData?.option_mark_price ?? null,
     });
   }
-  return result.slice(-MAIN_POINT_LIMIT);
+  return result.slice(-maxPointsToFetch.value);
 });
 
 const optionPnlSeries = computed(() => {
@@ -304,7 +357,7 @@ const optionPnlSeries = computed(() => {
       filtered.push(point);
     }
   }
-  return filtered.slice(-MAIN_POINT_LIMIT);
+  return filtered.slice(-maxPointsToFetch.value);
 });
 
 async function load(instrument) {
@@ -317,7 +370,8 @@ async function load(instrument) {
   const { resolution, from, to } = getTimestampRange();
   const canUsePrefetchedIndex =
     prefetchedIndexForInitialLoad &&
-    prefetchedIndexForInitialLoad.resolutionKey === ui.resolutionKey;
+    prefetchedIndexForInitialLoad.resolutionKey === ui.resolutionKey &&
+    prefetchedIndexForInitialLoad.maxPoints === maxPointsToFetch.value;
   const prefetchedIndex = canUsePrefetchedIndex
     ? prefetchedIndexForInitialLoad.rows
     : null;
@@ -336,6 +390,7 @@ async function load(instrument) {
           resolution,
           from,
           to,
+          count: maxPointsToFetch.value,
         });
     const [mainIndex, optionMark] = await Promise.all([
       indexPromise,
@@ -345,6 +400,7 @@ async function load(instrument) {
             resolution,
             from,
             to,
+            count: maxPointsToFetch.value,
           })
         : Promise.resolve([]),
     ]);
@@ -409,6 +465,7 @@ const switchUnderlying = async (next) => {
       resolution,
       from,
       to,
+      count: maxPointsToFetch.value,
     });
     const oldest = getOldestOptionInstrument(data.optionInstruments);
     if (oldest && Number.isFinite(oldest.expiration_ts)) {
@@ -417,6 +474,7 @@ const switchUnderlying = async (next) => {
     data.index[ui.resolutionKey] = prefetchedIndex || [];
     prefetchedIndexForInitialLoad = {
       resolutionKey: ui.resolutionKey,
+      maxPoints: maxPointsToFetch.value,
       rows: prefetchedIndex || [],
     };
     const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
@@ -432,6 +490,7 @@ const switchUnderlying = async (next) => {
 };
 
 onMounted(async () => {
+  document.addEventListener("pointerdown", handleDocumentPointerDown);
   try {
     const { resolution, from, to } = getTimestampRange();
     const [fetchedInstruments, prefetchedIndex] = await Promise.all([
@@ -441,6 +500,7 @@ onMounted(async () => {
         resolution,
         from,
         to,
+        count: maxPointsToFetch.value,
       }),
     ]);
     allInstruments.value = fetchedInstruments || [];
@@ -453,6 +513,7 @@ onMounted(async () => {
     data.index[ui.resolutionKey] = prefetchedIndex || [];
     prefetchedIndexForInitialLoad = {
       resolutionKey: ui.resolutionKey,
+      maxPoints: maxPointsToFetch.value,
       rows: prefetchedIndex || [],
     };
     const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
@@ -470,6 +531,22 @@ onMounted(async () => {
   } finally {
     isInitializing.value = false;
   }
+});
+
+onUnmounted(() => {
+  document.removeEventListener("pointerdown", handleDocumentPointerDown);
+  if (maxPointsDebounceTimer) {
+    window.clearTimeout(maxPointsDebounceTimer);
+    maxPointsDebounceTimer = null;
+  }
+});
+
+watch(requestedMaxPoints, (pointLimit) => {
+  if (maxPointsDebounceTimer) window.clearTimeout(maxPointsDebounceTimer);
+  maxPointsDebounceTimer = window.setTimeout(() => {
+    maxPointsToFetch.value = pointLimit;
+    maxPointsDebounceTimer = null;
+  }, HISTORY_POINT_DEBOUNCE_MS);
 });
 
 watch(
@@ -504,17 +581,27 @@ watch(
   { immediate: true },
 );
 
+const reloadSelectedInstrument = async () => {
+  const instrument = selectedOptionInstrument.value;
+  if (!instrument) {
+    loadRequestId += 1;
+    ui.loading = false;
+    clearActiveSeries();
+    return;
+  }
+  await load(instrument);
+};
+
 watch(
-  () => [ui.resolutionKey, ui.optionMaturity, ui.optionStrike, ui.optionType],
+  () => [
+    ui.resolutionKey,
+    ui.optionMaturity,
+    ui.optionStrike,
+    ui.optionType,
+    maxPointsToFetch.value,
+  ],
   async () => {
-    const instrument = selectedOptionInstrument.value;
-    if (!instrument) {
-      loadRequestId += 1;
-      ui.loading = false;
-      clearActiveSeries();
-      return;
-    }
-    await load(instrument);
+    await reloadSelectedInstrument();
   },
   { immediate: false },
 );
@@ -542,60 +629,39 @@ watch(
           </button>
         </div>
         <div class="field">
-          <label for="option-maturity">Maturity</label>
-          <select id="option-maturity" v-model="ui.optionMaturity">
-            <option
-              v-for="maturity in optionMaturities"
-              :key="maturity.value"
-              :value="maturity.value"
-            >
-              {{ maturity.label }}
-            </option>
-            <option v-if="!optionMaturities.length" :value="ui.optionMaturity">
-              {{ ui.optionMaturity }}
-            </option>
-          </select>
+          <span class="fieldLabel">Maturity</span>
+          <StyledSelectMenu
+            v-model="ui.optionMaturity"
+            label="Maturity"
+            :options="optionMaturities"
+          />
         </div>
 
         <div class="field">
-          <label for="option-strike">Strike</label>
-          <select id="option-strike" v-model="ui.optionStrike">
-            <option
-              v-for="strike in optionStrikes"
-              :key="strike.value"
-              :value="strike.value"
-            >
-              {{ strike.label }}
-            </option>
-            <option v-if="!optionStrikes.length" :value="ui.optionStrike">
-              {{ ui.optionStrike }}
-            </option>
-          </select>
+          <span class="fieldLabel">Strike</span>
+          <StyledSelectMenu
+            v-model="ui.optionStrike"
+            label="Strike"
+            :options="optionStrikes"
+          />
         </div>
 
         <div class="field">
-          <label for="option-type">Type</label>
-          <select id="option-type" v-model="ui.optionType">
-            <option
-              v-for="type in optionTypes"
-              :key="type.value"
-              :value="type.value"
-            >
-              {{ type.label }}
-            </option>
-            <option v-if="!optionTypes.length" :value="ui.optionType">
-              {{ ui.optionType }}
-            </option>
-          </select>
+          <span class="fieldLabel">Type</span>
+          <StyledSelectMenu
+            v-model="ui.optionType"
+            label="Option type"
+            :options="optionTypes"
+          />
         </div>
 
         <div class="field">
-          <label for="resolution">Resolution</label>
-          <select id="resolution" v-model="ui.resolutionKey">
-            <option v-for="key in RESOLUTION_KEYS" :key="key" :value="key">
-              {{ RESOLUTION_CONFIG[key].label }}
-            </option>
-          </select>
+          <span class="fieldLabel">Resolution</span>
+          <StyledSelectMenu
+            v-model="ui.resolutionKey"
+            label="Resolution"
+            :options="RESOLUTION_OPTIONS"
+          />
         </div>
 
         <button
@@ -611,12 +677,195 @@ watch(
       <div v-if="ui.error" class="error">{{ ui.error }}</div>
     </header>
 
-    <OptionPnlChart
-      ref="chartRef"
-      :data="mainSeries"
-      :option-pnl-data="optionPnlSeries"
-      :option-instrument-name="optionInstrumentName"
-      :loading="ui.loading"
-    />
+    <div class="chartArea">
+      <div class="chartTopBar">
+        <div class="settingsWrap" ref="settingsMenuRef">
+          <button
+            ref="settingsButtonRef"
+            class="settingsButton settingsButton--icon"
+            type="button"
+            title="Chart settings"
+            aria-label="Chart settings"
+            aria-haspopup="true"
+            :aria-expanded="settingsOpen ? 'true' : 'false'"
+            @click="toggleSettings"
+          ></button>
+          <div v-if="settingsOpen" class="settingsDropdown">
+            <div class="settingsTitle">Chart settings</div>
+            <div class="settingsHint">
+              Historic data points: {{ requestedMaxPoints.toLocaleString() }}
+            </div>
+            <input
+              v-model.number="ui.maxPoints"
+              class="settingsSlider"
+              type="range"
+              aria-label="Historic data points"
+              :min="MIN_LOOKBACK_POINT_LIMIT"
+              :max="MAX_LOOKBACK_POINT_LIMIT"
+              step="10"
+            />
+            <div class="settingsRange">
+              <span>{{ MIN_LOOKBACK_POINT_LIMIT }}</span>
+              <span>{{ MAX_LOOKBACK_POINT_LIMIT.toLocaleString() }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <OptionPnlChart
+        ref="chartRef"
+        :data="mainSeries"
+        :option-pnl-data="optionPnlSeries"
+        :option-instrument-name="optionInstrumentName"
+        :loading="ui.loading"
+      />
+    </div>
   </div>
 </template>
+
+<style scoped>
+.fieldLabel {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chartArea {
+  position: relative;
+}
+
+.chartTopBar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  min-height: 30px;
+  margin-bottom: 10px;
+  padding-right: 6px;
+}
+
+.settingsWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.settingsButton {
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(226, 232, 240, 0.7);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.settingsButton:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.settingsButton:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.7);
+  outline-offset: 2px;
+}
+
+.settingsButton--icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.settingsButton--icon::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e8ebf2;
+}
+
+.settingsDropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 240px;
+  border: 0.5px solid rgba(255, 255, 255, 0.9);
+  background: #080a0f;
+  border-radius: 6px;
+  padding: 10px 12px 12px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.settingsTitle {
+  font-size: 10px;
+  color: #a9abb6;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.settingsHint {
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.settingsSlider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settingsSlider:focus {
+  outline: none;
+}
+
+.settingsSlider::-webkit-slider-runnable-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 8px;
+  height: 8px;
+  margin-top: -3px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
+}
+
+.settingsSlider::-moz-range-track {
+  height: 2px;
+  background: rgba(245, 245, 245, 0.45);
+  border-radius: 999px;
+}
+
+.settingsSlider::-moz-range-thumb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: none;
+  background: #f5f5f7;
+}
+
+.settingsRange {
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  color: #a9abb6;
+  font-size: 10px;
+  font-weight: 600;
+}
+</style>
