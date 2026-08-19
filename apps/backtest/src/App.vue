@@ -1016,11 +1016,9 @@ const showDailyPnl = computed(
 const dailyPnlRows = computed(() =>
   buildDailyPnlRows({
     rows: attributionRows.value,
-    start: selectedDataRange.value.start,
-    end:
-      result.value?.dataEnd instanceof Date
-        ? result.value.dataEnd
-        : selectedDataRange.value.end,
+    // The attribution timeline contains closed cycles only. Let its first and
+    // final observations define the chart bounds instead of padding cash days
+    // at either edge of the requested market-data range.
   }),
 );
 const pnlChartRows = computed(() =>

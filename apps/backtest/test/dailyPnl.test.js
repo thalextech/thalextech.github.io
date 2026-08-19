@@ -36,3 +36,24 @@ test("daily PnL rejects an inverted requested range", () => {
     [],
   );
 });
+
+test("daily PnL uses the attribution extent when no bounds are requested", () => {
+  const rows = buildDailyPnlRows({
+    rows: [
+      { ts: ts("2026-08-13T08:00:00Z"), cumulativeTotalPnlUsd: 100 },
+      { ts: ts("2026-08-14T08:00:00Z"), cumulativeTotalPnlUsd: 40 },
+    ],
+  });
+
+  assert.deepEqual(
+    rows.map((row) => row.entryTime.toISOString()),
+    ["2026-08-13T00:00:00.000Z", "2026-08-14T00:00:00.000Z"],
+  );
+  assert.deepEqual(
+    rows.map((row) => [row.dailyPnlUsd, row.endingEquityUsd]),
+    [
+      [100, 100],
+      [-60, 40],
+    ],
+  );
+});
