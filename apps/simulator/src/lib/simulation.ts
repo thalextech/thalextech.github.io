@@ -14,6 +14,8 @@ export type SimulationStats = {
   maxLossRate: number;
   /** Expected price opportunity cost from stopped paths that later recovered. */
   opportunityCost: number;
+  /** Underlying prices where mean payoff crosses zero. Up to a handful. */
+  breakEvenPrices?: number[];
 };
 
 /** Metrics for paths ending in a single histogram price bin. */

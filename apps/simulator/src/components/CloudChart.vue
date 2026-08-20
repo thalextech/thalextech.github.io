@@ -44,7 +44,7 @@ const props = defineProps<{
   muMax?: number;
   volMin?: number;
   volMax?: number;
-  histMode?: "price" | "payoff" | "prob";
+  histMode?: "payoff" | "prob";
   histogramOpacity?: number;
   colorMin?: number;
   colorMax?: number;
@@ -111,8 +111,13 @@ const CHART_HEIGHT = 520;
 const CUMUL_CHART_HEIGHT = 520;
 const TERMINAL_CHART_HEIGHT = 720;
 const CHART_MARGIN = { top: 18, right: 112, bottom: 38, left: 46 };
-const HISTOGRAM_WIDTH = 200;
-const HISTOGRAM_GAP = 28;
+const HISTOGRAM_WIDTH = 210;
+const HISTOGRAM_INNER_GAP = 28;
+// Two-column histogram gutter: left = price frequency (heatmap), right = payoff.
+const PRICE_HIST_WIDTH = 72;
+const PAYOFF_HIST_WIDTH = HISTOGRAM_WIDTH - PRICE_HIST_WIDTH - HISTOGRAM_INNER_GAP;
+const PAYOFF_HIST_OFFSET = PRICE_HIST_WIDTH + HISTOGRAM_INNER_GAP;
+const HISTOGRAM_GAP = 54;
 const MAIN_WIDTH =
   CHART_WIDTH -
   CHART_MARGIN.left -
@@ -1579,8 +1584,7 @@ const updateDynamicScene = (
     const upper = forward * Math.exp(band);
     const lower = forward * Math.exp(-band);
 
-    // Price mode already has a price axis, so the forward/average label is redundant.
-    if (histogramMode === "price" || !Number.isFinite(forward) || forward <= 0) {
+    if (!Number.isFinite(forward) || forward <= 0) {
       forwardValueLabel.style("display", "none");
     } else {
       const rawY = y(forward);
@@ -1685,28 +1689,35 @@ const updateDynamicScene = (
     Number.isFinite(maxAbsWeightedPayoff) && maxAbsWeightedPayoff > 0
       ? maxAbsWeightedPayoff * 1.1
       : 1;
-  const xHist =
-    histogramMode === "price"
-      ? d3.scaleLinear().domain([0, countMax]).range([0, histogramWidth])
-      : histogramMode === "prob"
-        ? d3
-            .scaleLinear()
-            .domain([-weightedPayoffSpan, weightedPayoffSpan])
-            .range([0, histogramWidth])
-        : d3
-            .scaleLinear()
-            .domain([-payoffSpan, payoffSpan])
-            .range([0, histogramWidth]);
-  const xZero = xHist(0);
+  const xPriceHist = d3
+    .scaleLinear()
+    .domain([0, countMax])
+    .range([0, PRICE_HIST_WIDTH]);
+  const payoffDomainSpan =
+    histogramMode === "prob" ? weightedPayoffSpan : payoffSpan;
+  const xPayoffHist = d3
+    .scaleLinear()
+    .domain([-payoffDomainSpan, payoffDomainSpan])
+    .range([0, PAYOFF_HIST_WIDTH]);
+  const payoffXZero = xPayoffHist(0);
   const getMedianPayoff = (bin: SimBin): number => bin.medianPayoff;
   const getWeightedPayoff = (bin: SimBin, pathCount = totalPathCount): number =>
     pathCount > 0 ? bin.sumPayoff / pathCount : 0;
+  const getPayoffColumnValue = (
+    bin: SimBin,
+    pathCount = totalPathCount,
+  ): number =>
+    histogramMode === "prob"
+      ? getWeightedPayoff(bin, pathCount)
+      : getMedianPayoff(bin);
   const histogramPriceFill = (bin: SimBin): string => {
     const midpoint = (bin.x0 + bin.x1) * 0.5;
     const priceT =
       binMax > binMin ? clamp((midpoint - binMin) / (binMax - binMin), 0, 1) : 0.5;
     return d3.interpolateRdBu(priceT);
   };
+  const histogramPayoffFill = (bin: SimBin, pathCount = totalPathCount): string =>
+    payoffColorRamp(getPayoffColumnValue(bin, pathCount));
   const histogramOpacity = clamp(props.histogramOpacity ?? 0.9, 0, 1);
   const binCount = bins.length;
   const invBinSize =
@@ -1769,43 +1780,35 @@ const updateDynamicScene = (
       );
     }
   };
-  const barX = (
+  // Price column: bars grow rightward from x=0, scaled by bin count.
+  const priceBarX = (): number => 0;
+  const priceBarWidth = (bin: SimBin, progress: number): number =>
+    xPriceHist(bin.count * progress);
+  // Payoff column: bars extend from the payoff-zero baseline in either
+  // direction depending on sign.
+  const payoffBarX = (
     bin: SimBin,
     progress: number,
     pathCount = totalPathCount,
   ): number => {
-    if (histogramMode === "price") return xZero;
-    if (histogramMode === "prob") {
-      const weighted = getWeightedPayoff(bin, pathCount) * progress;
-      const clamped = Math.min(
-        weightedPayoffSpan,
-        Math.max(-weightedPayoffSpan, weighted),
-      );
-      const xValue = xHist(clamped);
-      return Math.min(xZero, xValue);
-    }
-    const median = getMedianPayoff(bin) * progress;
-    const clamped = Math.min(payoffSpan, Math.max(-payoffSpan, median));
-    const xValue = xHist(clamped);
-    return Math.min(xZero, xValue);
+    const value = getPayoffColumnValue(bin, pathCount) * progress;
+    const clamped = Math.min(
+      payoffDomainSpan,
+      Math.max(-payoffDomainSpan, value),
+    );
+    return PAYOFF_HIST_OFFSET + Math.min(payoffXZero, xPayoffHist(clamped));
   };
-  const barWidth = (
+  const payoffBarWidth = (
     bin: SimBin,
     progress: number,
     pathCount = totalPathCount,
   ): number => {
-    if (histogramMode === "price") return xHist(bin.count * progress);
-    if (histogramMode === "prob") {
-      const weighted = getWeightedPayoff(bin, pathCount) * progress;
-      const clamped = Math.min(
-        weightedPayoffSpan,
-        Math.max(-weightedPayoffSpan, weighted),
-      );
-      return Math.abs(xHist(clamped) - xZero);
-    }
-    const median = getMedianPayoff(bin) * progress;
-    const clamped = Math.min(payoffSpan, Math.max(-payoffSpan, median));
-    return Math.abs(xHist(clamped) - xZero);
+    const value = getPayoffColumnValue(bin, pathCount) * progress;
+    const clamped = Math.min(
+      payoffDomainSpan,
+      Math.max(-payoffDomainSpan, value),
+    );
+    return Math.abs(xPayoffHist(clamped) - payoffXZero);
   };
   // Snap histogram bars to the pixel grid to avoid anti-aliased seams.
   const histBarTopY = (bin: SimBin): number =>
@@ -1817,38 +1820,6 @@ const updateDynamicScene = (
   const histBarHeight = (bin: SimBin): number =>
     Math.max(1, Math.abs(histBarBottomY(bin) - histBarTopY(bin)));
 
-  const primaryBars = histogramGroup
-    .selectAll(".hist-bar--primary")
-    .data(displayBins)
-    .join("rect")
-    .attr("class", "hist-bar hist-bar--primary")
-    .attr("x", (d) => barX(d, 0))
-    .attr("y", (d) => histBarY(d))
-    .attr("height", (d) => histBarHeight(d))
-    .attr("width", 0)
-    .attr("fill", (d) => histogramPriceFill(d))
-    .attr("fill-opacity", histogramOpacity)
-    .attr("shape-rendering", "crispEdges");
-
-  const comparisonPathCount = comparisonSim?.rows ?? totalPathCount;
-  const comparisonBars = histogramGroup
-    .selectAll(".hist-bar--comparison")
-    .data(comparisonDisplayBins)
-    .join("rect")
-    .attr("class", "hist-bar hist-bar--comparison")
-    .attr("x", (d) => barX(d, 0, comparisonPathCount))
-    .attr("y", (d) => histBarY(d))
-    .attr("height", (d) => histBarHeight(d))
-    .attr("width", 0)
-    .attr("fill", (d) => histogramPriceFill(d))
-    .attr("fill-opacity", histogramOpacity)
-    .attr("shape-rendering", "crispEdges");
-
-  // Axis: keep axis height aligned to histogram data range in every mode.
-  const axisGroup = histogramGroup
-    .append("g")
-    .attr("class", "axis")
-    .attr("transform", `translate(${histogramWidth + 4}, 0)`);
   const safeFinalMin = Number.isFinite(finalPriceMin)
     ? finalPriceMin
     : baseline;
@@ -1857,29 +1828,79 @@ const updateDynamicScene = (
     : baseline;
   const dataTopY = y(safeFinalMax); // max price -> top of histogram data
   const dataBottomY = y(safeFinalMin); // min price -> bottom of histogram data
+
+  const comparisonPathCount = comparisonSim?.rows ?? totalPathCount;
+
+  const primaryPriceBars = histogramGroup
+    .selectAll(".hist-bar--price-primary")
+    .data(displayBins)
+    .join("rect")
+    .attr("class", "hist-bar hist-bar--price-primary")
+    .attr("x", priceBarX())
+    .attr("y", (d) => histBarY(d))
+    .attr("height", (d) => histBarHeight(d))
+    .attr("width", 0)
+    .attr("fill", (d) => histogramPriceFill(d))
+    .attr("fill-opacity", histogramOpacity)
+    .attr("shape-rendering", "crispEdges");
+
+  const comparisonPriceBars = histogramGroup
+    .selectAll(".hist-bar--price-comparison")
+    .data(comparisonDisplayBins)
+    .join("rect")
+    .attr("class", "hist-bar hist-bar--price-comparison")
+    .attr("x", priceBarX())
+    .attr("y", (d) => histBarY(d))
+    .attr("height", (d) => histBarHeight(d))
+    .attr("width", 0)
+    .attr("fill", (d) => histogramPriceFill(d))
+    .attr("fill-opacity", histogramOpacity * 0.55)
+    .attr("shape-rendering", "crispEdges");
+
+  const primaryPayoffBars = histogramGroup
+    .selectAll(".hist-bar--payoff-primary")
+    .data(displayBins)
+    .join("rect")
+    .attr("class", "hist-bar hist-bar--payoff-primary")
+    .attr("x", (d) => payoffBarX(d, 0))
+    .attr("y", (d) => histBarY(d))
+    .attr("height", (d) => histBarHeight(d))
+    .attr("width", 0)
+    .attr("fill", (d) => histogramPayoffFill(d))
+    .attr("fill-opacity", histogramOpacity)
+    .attr("shape-rendering", "crispEdges");
+
+  const comparisonPayoffBars = histogramGroup
+    .selectAll(".hist-bar--payoff-comparison")
+    .data(comparisonDisplayBins)
+    .join("rect")
+    .attr("class", "hist-bar hist-bar--payoff-comparison")
+    .attr("x", (d) => payoffBarX(d, 0, comparisonPathCount))
+    .attr("y", (d) => histBarY(d))
+    .attr("height", (d) => histBarHeight(d))
+    .attr("width", 0)
+    .attr("fill", (d) => histogramPayoffFill(d, comparisonPathCount))
+    .attr("fill-opacity", histogramOpacity * 0.55)
+    .attr("shape-rendering", "crispEdges");
+
+  // Payoff-zero baseline in the payoff column.
+  histogramGroup
+    .append("line")
+    .attr("class", "hist-payoff-baseline")
+    .attr("x1", PAYOFF_HIST_OFFSET + payoffXZero)
+    .attr("x2", PAYOFF_HIST_OFFSET + payoffXZero)
+    .attr("y1", Math.min(dataTopY, dataBottomY))
+    .attr("y2", Math.max(dataTopY, dataBottomY));
+
+  // Axis: keep axis height aligned to histogram data range in every mode.
+  const axisGroup = histogramGroup
+    .append("g")
+    .attr("class", "axis")
+    .attr("transform", `translate(${histogramWidth + 4}, 0)`);
   const guideStartX = margin.left + mainWidth;
   const guideEndX =
     margin.left + mainWidth + HISTOGRAM_GAP + histogramWidth + 4;
   const guideLabelX = guideEndX + 8;
-  const minPayoff = Number.isFinite(activePayoffMin) ? activePayoffMin : 0;
-  const maxPayoffValue = Number.isFinite(activePayoffMax)
-    ? activePayoffMax
-    : minPayoff;
-  const hasPayoffSpan = maxPayoffValue > minPayoff;
-  const payoffToY = hasPayoffSpan
-    ? d3
-        .scaleLinear()
-        .domain([minPayoff, maxPayoffValue])
-        .range([dataBottomY, dataTopY])
-    : null;
-  const rawAverageY =
-    payoffToY != null
-      ? payoffToY(activeMeanPayoff)
-      : (dataTopY + dataBottomY) * 0.5;
-  const rawMedianY =
-    payoffToY != null
-      ? payoffToY(activeMedianPayoff)
-      : (dataTopY + dataBottomY) * 0.5;
   const visibleBreakEvens = breakEvenPrices
     .slice(0, 2)
     .map((price) => ({ price, y: margin.top + y(price) }))
@@ -1891,31 +1912,19 @@ const updateDynamicScene = (
     );
 
   /*
-   * All right-gutter annotations share one collision layout. Keeping this
-   * central avoids each label type independently claiming the same pixels.
+   * Right-gutter annotations (break-even labels) share one collision layout so
+   * they don't overlap when close together.
    */
   const rightLabelPositions = new Map<string, number>();
   {
     const labelTop = margin.top + 7;
     const labelBottom = margin.top + mainHeight - 7;
-    const labelCandidates = [
-      ...(histogramMode === "payoff"
-        ? [
-            { id: "payoff-max", rawY: margin.top + dataTopY },
-            { id: "payoff-average", rawY: margin.top + rawAverageY },
-            { id: "payoff-min", rawY: margin.top + dataBottomY },
-          ]
-        : histogramMode === "prob"
-          ? [
-              { id: "payoff-average", rawY: margin.top + rawAverageY },
-              { id: "payoff-median", rawY: margin.top + rawMedianY },
-            ]
-          : []),
-      ...visibleBreakEvens.map((breakEven, index) => ({
+    const labelCandidates = visibleBreakEvens
+      .map((breakEven, index) => ({
         id: `break-even-${index}`,
         rawY: breakEven.y,
-      })),
-    ].sort((a, b) => a.rawY - b.rawY);
+      }))
+      .sort((a, b) => a.rawY - b.rawY);
     const preferredGap = 18;
     const availableGap =
       labelCandidates.length > 1
@@ -1964,131 +1973,46 @@ const updateDynamicScene = (
       .attr("height", bandBottom - bandTop);
   }
 
-  visibleBreakEvens.forEach((breakEven, index) => {
-    const labelY =
-      rightLabelPositions.get(`break-even-${index}`) ?? breakEven.y;
-    if (Math.abs(labelY - breakEven.y) > 0.5) {
-      breakEvenRegion
-        .append("line")
-        .attr("class", "annotation-label-leader")
-        .attr("x1", guideEndX)
-        .attr("x2", guideLabelX - 2)
-        .attr("y1", breakEven.y)
-        .attr("y2", labelY);
-    }
-    const label =
-      comparisonSim && index === 1 ? "Stop-loss" : "Break-even";
-    breakEvenRegion
-      .append("text")
-      .attr("x", guideLabelX)
-      .attr("y", labelY)
-      .attr("text-anchor", "start")
-      .attr("dominant-baseline", "middle")
-      .text(`${label} · ${priceFormat(breakEven.price)}`);
-  });
-
-  const appendPayoffSummary = ({
-    id,
-    rawY,
-    guideClass,
-    label,
-  }: {
-    id: string;
-    rawY: number;
-    guideClass: string;
-    label: string;
-  }): void => {
-    const labelY =
-      (rightLabelPositions.get(id) ?? margin.top + rawY) - margin.top;
-    axisGroup
-      .append("line")
-      .attr("class", guideClass)
-      .attr("x1", -(histogramWidth + HISTOGRAM_GAP + 4))
-      .attr("x2", 0)
-      .attr("y1", rawY)
-      .attr("y2", rawY);
-    if (Math.abs(labelY - rawY) > 0.5) {
-      axisGroup
-        .append("line")
-        .attr("class", "annotation-label-leader")
-        .attr("x1", 0)
-        .attr("x2", 6)
-        .attr("y1", rawY)
-        .attr("y2", labelY);
-    }
-    axisGroup
-      .append("text")
-      .attr("class", "payoff-summary-label")
-      .attr("x", 8)
-      .attr("y", labelY)
-      .attr("dominant-baseline", "middle")
-      .text(label);
-  };
-
-  if (histogramMode === "payoff" || histogramMode === "prob") {
-    appendPayoffSummary({
-      id: "payoff-average",
-      rawY: rawAverageY,
-      guideClass: "average-payoff-guide",
-      label: `Average PnL · ${payoffFormat(activeMeanPayoff)}`,
-    });
-
-    if (histogramMode === "prob") {
-      appendPayoffSummary({
-        id: "payoff-median",
-        rawY: rawMedianY,
-        guideClass: "median-payoff-guide",
-        label: `Median PnL · ${payoffFormat(activeMedianPayoff)}`,
-      });
-    } else {
-      // Payoff mode uses a payoff axis mapped onto the histogram's vertical span.
-      const maxLabelY =
-        (rightLabelPositions.get("payoff-max") ?? margin.top + dataTopY) -
-        margin.top;
-      const minLabelY =
-        (rightLabelPositions.get("payoff-min") ?? margin.top + dataBottomY) -
-        margin.top;
-
-      axisGroup
-        .append("text")
-        .attr("x", 8)
-        .attr("y", maxLabelY)
-        .attr("dominant-baseline", "middle")
-        .text(payoffFormat(maxPayoffValue));
-
-      axisGroup
-        .append("text")
-        .attr("x", 8)
-        .attr("y", minLabelY)
-        .attr("dominant-baseline", "middle")
-        .text(payoffFormat(minPayoff));
-
-      [
-        { rawY: dataTopY, labelY: maxLabelY },
-        { rawY: dataBottomY, labelY: minLabelY },
-      ].forEach(({ rawY, labelY }) => {
-        if (Math.abs(labelY - rawY) <= 0.5) return;
-        axisGroup
+  // In stop-loss comparison mode we still label the SVG guides so the second
+  // (stop-loss) line reads clearly. In strategy mode the App renders break-even
+  // prices in the header stats row, so the SVG stays uncluttered.
+  if (comparisonSim) {
+    visibleBreakEvens.forEach((breakEven, index) => {
+      const labelY =
+        rightLabelPositions.get(`break-even-${index}`) ?? breakEven.y;
+      if (Math.abs(labelY - breakEven.y) > 0.5) {
+        breakEvenRegion
           .append("line")
           .attr("class", "annotation-label-leader")
-          .attr("x1", 0)
-          .attr("x2", 6)
-          .attr("y1", rawY)
+          .attr("x1", guideEndX)
+          .attr("x2", guideLabelX - 2)
+          .attr("y1", breakEven.y)
           .attr("y2", labelY);
-      });
-    }
-  } else if (histogramMode === "price") {
-    // Price mode: explicit axis limited to histogram data span.
-    const priceTicks = d3.ticks(safeFinalMin, safeFinalMax, 4);
-    for (const tick of priceTicks) {
-      axisGroup
+      }
+      const label = index === 1 ? "Stop-loss" : "Break-even";
+      breakEvenRegion
         .append("text")
-        .attr("x", 8)
-        .attr("y", y(tick))
+        .attr("x", guideLabelX)
+        .attr("y", labelY)
+        .attr("text-anchor", "start")
         .attr("dominant-baseline", "middle")
-        .text(priceFormat(tick));
-    }
+        .text(`${label} · ${priceFormat(breakEven.price)}`);
+    });
   }
+
+  // Right-hand price axis: labels the vertical extent of both histogram columns.
+  const priceTicks = d3.ticks(safeFinalMin, safeFinalMax, 4);
+  for (const tick of priceTicks) {
+    const tickY = y(tick);
+    if (tickY < dataTopY - 4 || tickY > dataBottomY + 4) continue;
+    axisGroup
+      .append("text")
+      .attr("x", 8)
+      .attr("y", tickY)
+      .attr("dominant-baseline", "middle")
+      .text(priceFormat(tick));
+  }
+
 
   const histogramHoverHighlight = histogramGroup
     .append("rect")
@@ -2453,15 +2377,21 @@ const updateDynamicScene = (
 
   const updateHistogram = (progress: number): void => {
     const clampedProgress = Math.max(0, Math.min(1, progress));
-    primaryBars
-      .attr("x", (d) => barX(d, clampedProgress))
-      .attr("width", (d) => barWidth(d, clampedProgress));
-    comparisonBars
+    primaryPriceBars
+      .attr("x", priceBarX())
+      .attr("width", (d) => priceBarWidth(d, clampedProgress));
+    comparisonPriceBars
+      .attr("x", priceBarX())
+      .attr("width", (d) => priceBarWidth(d, clampedProgress));
+    primaryPayoffBars
+      .attr("x", (d) => payoffBarX(d, clampedProgress))
+      .attr("width", (d) => payoffBarWidth(d, clampedProgress));
+    comparisonPayoffBars
       .attr("x", (d) =>
-        barX(d, clampedProgress, comparisonPathCount),
+        payoffBarX(d, clampedProgress, comparisonPathCount),
       )
       .attr("width", (d) =>
-        barWidth(d, clampedProgress, comparisonPathCount),
+        payoffBarWidth(d, clampedProgress, comparisonPathCount),
       );
   };
 
@@ -2620,6 +2550,7 @@ const draw = async (): Promise<void> => {
     winRate: sim.winRate,
     maxLossRate: sim.maxLossRate,
     opportunityCost: sim.opportunityCost,
+    breakEvenPrices: computeBreakEvenPrices(sim.bins),
   });
   if (comparisonSim) {
     emit("comparison-stats-update", {
@@ -3276,6 +3207,15 @@ onUnmounted(() => {
   paint-order: stroke;
   font-variant-numeric: tabular-nums;
 }
+
+:deep(.hist-payoff-baseline) {
+  stroke: rgba(148, 163, 184, 0.35);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  shape-rendering: crispEdges;
+  pointer-events: none;
+}
+
 
 :deep(.annotation-label-leader) {
   stroke: rgba(148, 163, 184, 0.45);

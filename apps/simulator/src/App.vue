@@ -10,6 +10,7 @@ import {
   type PathModelParams,
 } from "./lib/pathModel";
 import type { PositionLeg, OptionLeg } from "./lib/position";
+import type { SimulationStats } from "./lib/simulation";
 import {
   fetchInstruments,
   fetchLatestIndexPrice,
@@ -54,7 +55,54 @@ const workspaceRef = ref<HTMLElement | null>(null);
 const chartSectionRef = ref<HTMLElement | null>(null);
 const guideMu = ref<number | null>(null);
 const guideVol = ref<number | null>(null);
-const histogramMode = ref<"price" | "payoff" | "prob">("payoff");
+const histogramMode = ref<"payoff" | "prob">("payoff");
+const strategyStats = ref<SimulationStats | null>(null);
+
+const formatSignedPayoff = (value: number | null | undefined): string => {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000)
+    return `${sign}$${(absolute / 1_000_000).toFixed(1)}M`;
+  if (absolute >= 1_000)
+    return `${sign}$${(absolute / 1_000).toFixed(1)}k`;
+  return `${sign}$${absolute.toFixed(absolute < 10 ? 1 : 0)}`;
+};
+
+const formatPriceWithDecimal = (value: number | null | undefined): string => {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const absolute = Math.abs(value);
+  if (absolute >= 1_000_000)
+    return `$${(value / 1_000_000).toFixed(1)}M`;
+  if (absolute >= 1_000) return `$${(value / 1_000).toFixed(1)}k`;
+  return `$${value.toFixed(1)}`;
+};
+
+const payoffSign = (value: number | null | undefined): "pos" | "neg" | "zero" => {
+  if (value == null || !Number.isFinite(value) || value === 0) return "zero";
+  return value > 0 ? "pos" : "neg";
+};
+
+const strategyStatsRow = computed(() => {
+  const stats = strategyStats.value;
+  if (!stats) return null;
+  const breakEvens = (stats.breakEvenPrices ?? [])
+    .slice(0, 3)
+    .map((price) => formatPriceWithDecimal(price));
+  return {
+    average: formatSignedPayoff(stats.meanPayoff),
+    averageSign: payoffSign(stats.meanPayoff),
+    median: formatSignedPayoff(stats.medianPayoff),
+    medianSign: payoffSign(stats.medianPayoff),
+    breakEvens,
+    breakEvenText:
+      breakEvens.length === 0
+        ? null
+        : breakEvens.length === 1
+          ? breakEvens[0]
+          : `${breakEvens[0]} – ${breakEvens[breakEvens.length - 1]}`,
+  };
+});
 const settingsOpen = ref(false);
 const pathModel = reactive<PathModelParams>({ ...DEFAULT_PATH_MODEL });
 const pathModelDraft = reactive<PathModelParams>({ ...DEFAULT_PATH_MODEL });
@@ -2015,23 +2063,40 @@ watch(
                 <span class="chart-horizon-label">{{ horizonDaysLabel }}</span>
               </div>
             </div>
+            <div v-if="strategyStatsRow" class="chart-stats-row">
+              <span class="chart-stats-item">
+                <span class="chart-stats-label">Avg</span>
+                <span
+                  class="chart-stats-value"
+                  :class="`is-${strategyStatsRow.averageSign}`"
+                >{{ strategyStatsRow.average }}</span>
+              </span>
+              <span class="chart-stats-item">
+                <span class="chart-stats-label">Med</span>
+                <span
+                  class="chart-stats-value"
+                  :class="`is-${strategyStatsRow.medianSign}`"
+                >{{ strategyStatsRow.median }}</span>
+              </span>
+              <span
+                v-if="strategyStatsRow.breakEvenText"
+                class="chart-stats-item"
+              >
+                <span class="chart-stats-label">BEs</span>
+                <span class="chart-stats-value">{{
+                  strategyStatsRow.breakEvenText
+                }}</span>
+              </span>
+            </div>
           </div>
           <div class="histogram-toggle" role="group" aria-label="Histogram view">
-            <button
-              type="button"
-              :class="{ 'is-active': histogramMode === 'price' }"
-              :aria-pressed="histogramMode === 'price'"
-              @click="histogramMode = 'price'"
-            >
-              Price
-            </button>
             <button
               type="button"
               :class="{ 'is-active': histogramMode === 'payoff' }"
               :aria-pressed="histogramMode === 'payoff'"
               @click="histogramMode = 'payoff'"
             >
-              Pnl
+              PnL
             </button>
             <button
               type="button"
@@ -2039,7 +2104,7 @@ watch(
               :aria-pressed="histogramMode === 'prob'"
               @click="histogramMode = 'prob'"
             >
-              Prob
+              PnL × Freq
             </button>
           </div>
       <div
@@ -2094,46 +2159,27 @@ watch(
         @set-mu="setMuFromChart"
         @set-vol="setVolFromChart"
         @guide-update="updateGuide"
+        @stats-update="strategyStats = $event"
           />
           <div v-else class="strategy-chart-loading">
             Loading selected option quotes…
           </div>
           <div class="histogram-legend" aria-label="Histogram label legend">
             <span class="histogram-legend-title">Histogram labels</span>
-            <template v-if="histogramMode === 'price'">
-              <span class="histogram-legend-item">
-                <span class="histogram-legend-mark histogram-legend-mark--axis"></span>
-                Terminal price
-              </span>
-            </template>
-            <template v-else-if="histogramMode === 'payoff'">
-              <span class="histogram-legend-item">
-                <span class="histogram-legend-mark histogram-legend-mark--axis"></span>
-                Top / bottom: max / min PnL
-              </span>
-              <span class="histogram-legend-item">
-                <span class="histogram-legend-mark histogram-legend-mark--average"></span>
-                Dotted: average PnL
-              </span>
-              <span class="histogram-legend-item">
-                <span class="histogram-legend-mark histogram-legend-mark--break-even"></span>
-                Shaded: break-even prices
-              </span>
-            </template>
-            <template v-else>
-              <span class="histogram-legend-item">
-                <span class="histogram-legend-mark histogram-legend-mark--average"></span>
-                Dotted: average PnL
-              </span>
-              <span class="histogram-legend-item">
-                <span class="histogram-legend-mark histogram-legend-mark--median"></span>
-                Dashed: median PnL
-              </span>
-              <span class="histogram-legend-item">
-                <span class="histogram-legend-mark histogram-legend-mark--break-even"></span>
-                Shaded: break-even prices
-              </span>
-            </template>
+            <span class="histogram-legend-item">
+              <span class="histogram-legend-mark histogram-legend-mark--axis"></span>
+              Left: terminal-price frequency
+            </span>
+            <span class="histogram-legend-item">
+              <span class="histogram-legend-mark histogram-legend-mark--average"></span>
+              Right:
+              {{ histogramMode === 'prob' ? 'PnL × frequency' : 'median PnL' }}
+              per price bin
+            </span>
+            <span class="histogram-legend-item">
+              <span class="histogram-legend-mark histogram-legend-mark--break-even"></span>
+              Shaded: break-even prices
+            </span>
           </div>
         </section>
       </div>
@@ -2376,11 +2422,14 @@ watch(
 .chart-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   height: var(--chart-header-height);
-  /* Align settings with the first combo control. */
-  padding: 0 8px 0 3.035714%;
+  /* Right padding matches CHART_MARGIN.right / CHART_WIDTH (112/1200) so the
+     stats block right-aligns with the histogram's right edge. */
+  padding: 0 9.333% 0 3.035714%;
   position: relative;
   z-index: 8;
+  gap: 12px;
 }
 
 .chart-header-left {
@@ -2388,6 +2437,34 @@ watch(
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.chart-stats-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.chart-stats-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.chart-stats-label {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.chart-stats-value {
+  color: rgba(148, 163, 184, 0.95);
+  font-weight: 500;
 }
 
 .chart-meta {

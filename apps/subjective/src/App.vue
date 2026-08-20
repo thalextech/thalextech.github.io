@@ -7,6 +7,8 @@ const API_BASE = import.meta.env.DEV
   : "https://thalex.com/api/v2/public";
 const SECONDS_PER_BS_YEAR = 365.25 * 24 * 60 * 60;
 const DEFAULT_FORWARD_MULTIPLIER = 1.05;
+const CHART_MIN_ABS_DELTA = 0.05;
+const CHART_MAX_ABS_DELTA = 0.6;
 const UNDERLYING_OPTIONS = [
   { value: "BTCUSD", label: "BTC" },
   { value: "ETHUSD", label: "ETH" },
@@ -458,6 +460,8 @@ const chartBars = computed(() => {
     const valuationIv = Number.isFinite(iv) ? iv - vrpPct / 100 : null;
     const markPrice = toFiniteNumber(ticker?.mark_price);
     const forward = toFiniteNumber(ticker?.forward);
+    const delta = toFiniteNumber(ticker?.delta);
+    const absDelta = Number.isFinite(delta) ? Math.abs(delta) : null;
 
     const T = Number.isFinite(expirationTs)
       ? (expirationTs - nowTs) / SECONDS_PER_BS_YEAR
@@ -469,11 +473,14 @@ const chartBars = computed(() => {
       !Number.isFinite(valuationIv) ||
       !Number.isFinite(markPrice) ||
       !Number.isFinite(forward) ||
+      !Number.isFinite(absDelta) ||
       !Number.isFinite(T) ||
       strike <= 0 ||
       iv <= 0 ||
       valuationIv <= 0 ||
       forward <= 0 ||
+      absDelta < CHART_MIN_ABS_DELTA ||
+      absDelta > CHART_MAX_ABS_DELTA ||
       T <= 0
     ) {
       continue;
