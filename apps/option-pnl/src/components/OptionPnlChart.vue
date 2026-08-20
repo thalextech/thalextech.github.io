@@ -773,13 +773,15 @@ function render() {
     .attr("height", height);
 
   chartState.mainTitleText
+    .attr("text-anchor", isDetailActive ? "start" : "middle")
     .call(withLayoutTransition)
-    .attr("x", mainWidth / 2)
+    .attr("x", isDetailActive ? margin.left : mainWidth / 2)
     .attr("y", MAIN_TITLE_Y)
     .text(mainTitle.value);
   chartState.mainSubtitleText
+    .attr("text-anchor", isDetailActive ? "start" : "middle")
     .call(withLayoutTransition)
-    .attr("x", mainWidth / 2)
+    .attr("x", isDetailActive ? margin.left : mainWidth / 2)
     .attr("y", 54)
     .text(subtitle.value);
 
