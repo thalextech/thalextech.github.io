@@ -1300,6 +1300,40 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.fieldExpiry,
+.fieldStrike {
+  position: relative;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.fieldExpiry::after,
+.fieldStrike::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid #aeb6c8;
+  border-bottom: 1.5px solid #aeb6c8;
+  pointer-events: none;
+  transform: translateY(-65%) rotate(45deg);
+}
+
+.fieldExpiry:hover,
+.fieldStrike:hover {
+  border-color: rgba(255, 255, 255, 0.26);
+  background: #131923;
+}
+
+.fieldExpiry:focus-within,
+.fieldStrike:focus-within {
+  border-color: rgba(125, 211, 252, 0.72);
+  box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.1);
+}
+
 .field label {
   color: rgba(226, 232, 240, 0.72);
   font: 600 18px var(--ui-font);
@@ -1314,6 +1348,23 @@ onUnmounted(() => {
   color: #f8fafc;
   font: 600 16px var(--ui-font);
   outline: none;
+}
+
+.field select {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 24px 10px 0;
+  cursor: pointer;
+  color-scheme: dark;
+  text-overflow: ellipsis;
+}
+
+.field select option {
+  background: #0f1318;
+  color: #f8fafc;
 }
 
 .fEstField {
