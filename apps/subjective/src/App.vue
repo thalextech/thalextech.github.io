@@ -1037,8 +1037,19 @@ onUnmounted(() => {
                   <div class="strikeHead">
                     <div v-for="bar in chartBars" :key="`head-${bar.optionType}-${bar.strike}`" class="strikeHeadItem">
                       <div class="barDataLabels">
-                        <div class="barDataMain">{{ formatMoney(bar.adjusted, 0) }}</div>
-                        <div class="barDataMuted" :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }">{{ formatPercent(bar.edgePct, 1) }}</div>
+                        <div class="barDataValue barDataMarket" :title="`Current mark price: ${formatMoney(bar.market, 0)}`">
+                          {{ formatMoney(bar.market, 0) }}
+                        </div>
+                        <div class="barDataValue barDataAdjusted" :title="`Adjusted price: ${formatMoney(bar.adjusted, 0)}`">
+                          {{ formatMoney(bar.adjusted, 0) }}
+                        </div>
+                        <div
+                          class="barDataValue barDataUpside"
+                          :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }"
+                          :title="`Upside: ${formatPercent(bar.edgePct, 1)}`"
+                        >
+                          {{ formatPercent(bar.edgePct, 1) }}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1659,18 +1670,28 @@ onUnmounted(() => {
 .barDataLabels {
   display: grid;
   justify-items: center;
-  gap: 2px;
+  gap: 3px;
   white-space: nowrap;
   font-family: var(--ui-font);
 }
 
-.barDataMain {
+.barDataValue {
+  font-variant-numeric: tabular-nums;
+}
+
+.barDataMarket {
+  color: #aeb6c8;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.barDataAdjusted {
   color: #f2f5fc;
   font-size: 16px;
   font-weight: 700;
 }
 
-.barDataMuted {
+.barDataUpside {
   color: #8f97ab;
   font-size: 13px;
   font-weight: 600;
@@ -1907,11 +1928,12 @@ onUnmounted(() => {
     min-height: 220px;
   }
 
-  .barDataMain {
+  .barDataAdjusted {
     font-size: 12px;
   }
 
-  .barDataMuted,
+  .barDataMarket,
+  .barDataUpside,
   .strikeLabel {
     font-size: 10px;
   }
