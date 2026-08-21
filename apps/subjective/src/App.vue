@@ -7,8 +7,8 @@ const API_BASE = import.meta.env.DEV
   : "https://thalex.com/api/v2/public";
 const SECONDS_PER_BS_YEAR = 365.25 * 24 * 60 * 60;
 const DEFAULT_FORWARD_MULTIPLIER = 1.05;
-const CHART_MIN_ABS_DELTA = 0.05;
-const CHART_MAX_ABS_DELTA = 0.6;
+const CHART_MIN_ABS_DELTA = 0.02;
+const CHART_MAX_ABS_DELTA = 0.7;
 const UNDERLYING_OPTIONS = [
   { value: "BTCUSD", label: "BTC" },
   { value: "ETHUSD", label: "ETH" },
@@ -25,7 +25,7 @@ const ui = reactive({
   optionStrike: "",
   adjustedForward: "",
   vrpPct: "0",
-  viewMode: "formula",
+  viewMode: "chart",
   loading: false,
   error: "",
 });
@@ -417,11 +417,6 @@ function formatPercent(value, decimals = 2) {
   return `${sign}${formatNumber(value, decimals)}%`;
 }
 
-function formatMultiplier(value, decimals = 1) {
-  if (!Number.isFinite(value)) return "-";
-  return `${formatNumber(value, decimals)}x`;
-}
-
 function formatProbability(value, decimals = 2) {
   if (!Number.isFinite(value)) return "-";
   return `${formatNumber(value * 100, decimals)}%`;
@@ -521,7 +516,6 @@ const chartBars = computed(() => {
     ...row,
     edge: row.adjusted - row.market,
     edgePct: row.market > 0 ? (row.adjusted / row.market - 1) * 100 : null,
-    ratio: row.market > 0 ? row.adjusted / row.market : null,
     marketPct: (row.market / scale) * 100,
     adjustedPct: (row.adjusted / scale) * 100,
     adjustedTopPct: (Math.max(0, row.adjusted - row.market) / scale) * 100,
@@ -1044,7 +1038,7 @@ onUnmounted(() => {
                     <div v-for="bar in chartBars" :key="`head-${bar.optionType}-${bar.strike}`" class="strikeHeadItem">
                       <div class="barDataLabels">
                         <div class="barDataMain">{{ formatMoney(bar.adjusted, 0) }}</div>
-                        <div class="barDataMuted" :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }">{{ formatMultiplier(bar.ratio, 2) }}</div>
+                        <div class="barDataMuted" :class="{ pos: bar.edge > 0, neg: bar.edge < 0 }">{{ formatPercent(bar.edgePct, 1) }}</div>
                       </div>
                     </div>
                   </div>
