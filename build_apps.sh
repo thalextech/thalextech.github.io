@@ -1,3 +1,5 @@
+#!/bin/sh
+
 set -e
 
 REPO_ROOT="$(pwd)"
@@ -14,15 +16,15 @@ npm run generate
 cp -r .output/public/* ${APPS_DEPLOY_DIR}/
 cd -
 
-cd apps
-for app in $(find . -mindepth 1 -maxdepth 1 -type d); do
-    cd "${app}"
-    echo "Building ${app}"
-    npm ci
-    if [ "${app}" = "./backtest" ]; then
-        npm run build:data
-    fi
-    VITE_BASE_PATH=/$app/ npm run build
-    cp -r dist "${APPS_DEPLOY_DIR}/${app}"
-    cd -
+for app_dir in "${APPS_ROOT}"/*; do
+    [ -f "${app_dir}/package.json" ] || continue
+
+    app_name="$(basename "${app_dir}")"
+    echo "Building ${app_name}"
+    (
+        cd "${app_dir}"
+        npm ci
+        VITE_BASE_PATH="/${app_name}/" npm run build
+    )
+    cp -r "${app_dir}/dist" "${APPS_DEPLOY_DIR}/${app_name}"
 done

@@ -62,7 +62,7 @@ export function decodeIvRvArtifact(payload) {
   }).filter((row) => Number.isFinite(row.ts));
 }
 
-export async function loadIvRvHistory({ dataRoot = "data/thalex" } = {}) {
+export async function loadIvRvHistory({ dataRoot = "runtime-data/thalex" } = {}) {
   const baseUrl = import.meta.env?.BASE_URL || "/";
   const response = await fetch(`${baseUrl}${dataRoot}/${DATA_FILENAME}`);
   if (!response.ok) throw new Error("Missing prepared IV/RV data");

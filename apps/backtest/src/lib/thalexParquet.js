@@ -6,7 +6,7 @@ import {
 export const THALEX_ARTIFACT_VERSION = 3;
 
 const ARTIFACT_SCHEMA = "thalex-option-backtest";
-const DEFAULT_DATA_ROOT = "data/thalex";
+const DEFAULT_DATA_ROOT = "runtime-data/thalex";
 const MANIFEST_FILENAME = "prepared_manifest.json";
 export const DEFAULT_SHARD_LOAD_CONCURRENCY = 4;
 const preparedFilename = (hour, bucketKey) =>

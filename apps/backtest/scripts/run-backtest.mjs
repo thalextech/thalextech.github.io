@@ -29,7 +29,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
-const DATA_DIR = path.join(PROJECT_ROOT, "public/data/thalex");
+const DATA_DIR = path.join(PROJECT_ROOT, "public/runtime-data/thalex");
 
 const manifest = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "prepared_manifest.json"), "utf8"));
 const INSTRUMENTS = decodeInstrumentDictionary(manifest);

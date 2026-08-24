@@ -9,8 +9,8 @@ test("backtest underlyings isolate their runtime data roots", () => {
   assert.deepEqual(
     UNDERLYING_OPTIONS.map(({ value, dataRoot }) => ({ value, dataRoot })),
     [
-      { value: "BTC", dataRoot: "data/thalex" },
-      { value: "ETH", dataRoot: "data/thalex/eth" },
+      { value: "BTC", dataRoot: "runtime-data/thalex" },
+      { value: "ETH", dataRoot: "runtime-data/thalex/eth" },
     ],
   );
   assert.equal(getUnderlying("ETH").label, "ETH");

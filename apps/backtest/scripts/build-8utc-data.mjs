@@ -17,9 +17,9 @@ const UNDERLYING = String(process.argv[2] || "BTC").toUpperCase();
 if (!["BTC", "ETH"].includes(UNDERLYING)) {
   throw new Error(`Unsupported underlying: ${UNDERLYING}`);
 }
-const SOURCE_DATA_DIR = path.resolve("data/thalex");
+const SOURCE_DATA_DIR = path.resolve("source-data/thalex");
 const RUNTIME_DATA_DIR = path.resolve(
-  "public/data/thalex",
+  "public/runtime-data/thalex",
   UNDERLYING === "BTC" ? "" : UNDERLYING.toLowerCase(),
 );
 const MANIFEST_FILENAME = "prepared_manifest.json";
