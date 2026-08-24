@@ -98,6 +98,16 @@ type HistogramTooltipState = {
   accent: string;
 };
 const histogramTooltip = ref<HistogramTooltipState | null>(null);
+type PayoffBinTooltipState = {
+  x: number;
+  y: number;
+  priceRange: string;
+  valueLabel: string;
+  optionValue: string;
+  perpValue: string;
+  difference: string;
+};
+const payoffBinTooltip = ref<PayoffBinTooltipState | null>(null);
 const SECONDS_PER_YEAR = 365.25 * 24 * 60 * 60;
 const RISK_FREE_RATE = 0.0;
 const MAX_CLOUD_RENDER_PATHS = 500;
@@ -115,7 +125,8 @@ const HISTOGRAM_WIDTH = 210;
 const HISTOGRAM_INNER_GAP = 28;
 // Two-column histogram gutter: left = price frequency (heatmap), right = payoff.
 const PRICE_HIST_WIDTH = 72;
-const PAYOFF_HIST_WIDTH = HISTOGRAM_WIDTH - PRICE_HIST_WIDTH - HISTOGRAM_INNER_GAP;
+const PAYOFF_HIST_WIDTH =
+  HISTOGRAM_WIDTH - PRICE_HIST_WIDTH - HISTOGRAM_INNER_GAP;
 const PAYOFF_HIST_OFFSET = PRICE_HIST_WIDTH + HISTOGRAM_INNER_GAP;
 const HISTOGRAM_GAP = 54;
 const MAIN_WIDTH =
@@ -128,6 +139,8 @@ const MAIN_HEIGHT = CHART_HEIGHT - CHART_MARGIN.top - CHART_MARGIN.bottom;
 const HISTOGRAM_TOOLTIP_WIDTH = 172;
 const HISTOGRAM_TOOLTIP_HEIGHT = 148;
 const HISTOGRAM_TOOLTIP_GAP = 24;
+const PAYOFF_BIN_TOOLTIP_WIDTH = 216;
+const PAYOFF_BIN_TOOLTIP_HEIGHT = 126;
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
@@ -164,6 +177,50 @@ const formatTooltipProbability = (value: number): string => {
   if (!Number.isFinite(value) || value <= 0) return "0.00%";
   const percentage = value * 100;
   return `${percentage.toFixed(percentage < 0.1 ? 3 : 2)}%`;
+};
+
+type PayoffComparisonPoint = {
+  index: number;
+  priceMin: number;
+  priceMax: number;
+  optionValue: number;
+  perpValue: number;
+  difference: number;
+};
+
+const showPayoffBinTooltip = (
+  event: PointerEvent,
+  point: PayoffComparisonPoint,
+  displayMode: "payoff" | "frequency",
+): void => {
+  const layer = chartLayerRef.value;
+  if (!layer) return;
+  const layerRect = layer.getBoundingClientRect();
+  const pointerX = event.clientX - layerRect.left;
+  const pointerY = event.clientY - layerRect.top;
+  const preferRight =
+    pointerX + 18 + PAYOFF_BIN_TOOLTIP_WIDTH <= layerRect.width;
+  const rawX = preferRight
+    ? pointerX + 18
+    : pointerX - PAYOFF_BIN_TOOLTIP_WIDTH - 18;
+
+  payoffBinTooltip.value = {
+    x: clamp(
+      rawX,
+      8,
+      Math.max(8, layerRect.width - PAYOFF_BIN_TOOLTIP_WIDTH - 8),
+    ),
+    y: clamp(
+      pointerY - PAYOFF_BIN_TOOLTIP_HEIGHT * 0.5,
+      8,
+      Math.max(8, layerRect.height - PAYOFF_BIN_TOOLTIP_HEIGHT - 8),
+    ),
+    priceRange: `${formatTooltipPrice(point.priceMin)} – ${formatTooltipPrice(point.priceMax)}`,
+    valueLabel: displayMode === "frequency" ? "EV contribution" : "Mean P&L",
+    optionValue: formatTooltipContribution(point.optionValue),
+    perpValue: formatTooltipContribution(point.perpValue),
+    difference: formatTooltipContribution(point.difference),
+  };
 };
 
 type SceneHandles = {
@@ -607,6 +664,7 @@ const ensureScene = (): SceneHandles | null => {
 
 const clearDynamicScene = (sceneHandles: SceneHandles): void => {
   histogramTooltip.value = null;
+  payoffBinTooltip.value = null;
   emit("histogram-bin-hover", null);
   sceneHandles.defs.selectAll("*").remove();
   sceneHandles.plotGroup.selectAll("*").remove();
@@ -935,13 +993,37 @@ const renderPayoffComparisonChart = (
     .range([plotHeight, 0]);
   const xTicks = xScale.ticks(6);
   const yTicks = yScale.ticks(5);
+  const comparisonPoints: PayoffComparisonPoint[] = optionPoints.flatMap(
+    (optionPoint, index) => {
+      const perpPoint = perpPoints[index];
+      if (
+        !perpPoint ||
+        Math.abs(optionPoint.priceMin - perpPoint.priceMin) > 1e-6 ||
+        Math.abs(optionPoint.priceMax - perpPoint.priceMax) > 1e-6
+      ) {
+        return [];
+      }
+      return [
+        {
+          index,
+          priceMin: optionPoint.priceMin,
+          priceMax: optionPoint.priceMax,
+          optionValue: optionPoint.value,
+          perpValue: perpPoint.value,
+          difference: optionPoint.value - perpPoint.value,
+        },
+      ];
+    },
+  );
 
   const chart = svg
     .append("g")
     .attr("class", "ev-contribution-chart ev-bin-bar-chart")
     .attr("transform", `translate(${chartMargin.left}, ${chartMargin.top})`);
 
-  const chartKey = Math.abs(Math.round((sim.meanPayoff + comparisonSim.meanPayoff) * 100));
+  const chartKey = Math.abs(
+    Math.round((sim.meanPayoff + comparisonSim.meanPayoff) * 100),
+  );
   const clipId = `ev-contribution-clip-${chartKey}`;
   chart
     .append("defs")
@@ -961,33 +1043,34 @@ const renderPayoffComparisonChart = (
     .append("g")
     .attr("clip-path", `url(#${clipId})`);
 
-  [
+  const barSeries = [
     {
       className: "option",
-      points: optionPoints,
+      value: (point: PayoffComparisonPoint) => point.optionValue,
       color: optionColor,
       opacity: 0.8,
     },
     {
       className: "perp",
-      points: perpPoints,
+      value: (point: PayoffComparisonPoint) => point.perpValue,
       color: perpColor,
       opacity: 0.68,
     },
-  ].forEach(({ className, points, color, opacity }) => {
+  ];
+  barSeries.forEach(({ className, value, color, opacity }) => {
     seriesGroup
       .append("g")
       .attr("class", `ev-bin-bars ev-bin-bars--${className}`)
       .selectAll("rect")
-      .data(points)
+      .data(comparisonPoints)
       .join("rect")
       .attr("x", (point) => xScale(point.priceMin) + 0.35)
       .attr("width", (point) =>
         Math.max(1, xScale(point.priceMax) - xScale(point.priceMin) - 0.7),
       )
-      .attr("y", (point) => yScale(Math.max(0, point.value)))
+      .attr("y", (point) => yScale(Math.max(0, value(point))))
       .attr("height", (point) =>
-        Math.max(0.75, Math.abs(yScale(point.value) - yScale(0))),
+        Math.max(0.75, Math.abs(yScale(value(point)) - yScale(0))),
       )
       .attr("fill", color)
       .attr("fill-opacity", opacity)
@@ -995,6 +1078,40 @@ const renderPayoffComparisonChart = (
       .attr("stroke-opacity", 0.45)
       .attr("stroke-width", 0.45);
   });
+
+  const setActivePayoffBin = (index: number | null): void => {
+    svg
+      .selectAll<SVGRectElement, PayoffComparisonPoint>(".ev-bin-bars rect")
+      .classed("is-hovered", (point) => index != null && point.index === index)
+      .classed("is-dimmed", (point) => index != null && point.index !== index);
+  };
+
+  chart
+    .append("g")
+    .attr("class", "ev-bin-hover-layer")
+    .selectAll("rect")
+    .data(comparisonPoints)
+    .join("rect")
+    .attr("x", (point) => xScale(point.priceMin))
+    .attr("width", (point) =>
+      Math.max(1, xScale(point.priceMax) - xScale(point.priceMin)),
+    )
+    .attr("y", 0)
+    .attr("height", plotHeight)
+    .attr("fill", "transparent")
+    .style("pointer-events", "all")
+    .style("cursor", "crosshair")
+    .on("pointerenter", (event, point) => {
+      setActivePayoffBin(point.index);
+      showPayoffBinTooltip(event as PointerEvent, point, displayMode);
+    })
+    .on("pointermove", (event, point) =>
+      showPayoffBinTooltip(event as PointerEvent, point, displayMode),
+    )
+    .on("pointerleave", () => {
+      setActivePayoffBin(null);
+      payoffBinTooltip.value = null;
+    });
 
   const axis = chart.append("g").attr("class", "ev-axis");
   for (const tick of xTicks) {
@@ -1090,23 +1207,7 @@ const renderPayoffComparisonChart = (
       .text(label);
   });
 
-  const differencePoints = optionPoints.flatMap((optionPoint, index) => {
-    const perpPoint = perpPoints[index];
-    if (
-      !perpPoint ||
-      Math.abs(optionPoint.priceMin - perpPoint.priceMin) > 1e-6 ||
-      Math.abs(optionPoint.priceMax - perpPoint.priceMax) > 1e-6
-    ) {
-      return [];
-    }
-    return [
-      {
-        priceMin: optionPoint.priceMin,
-        priceMax: optionPoint.priceMax,
-        difference: optionPoint.value - perpPoint.value,
-      },
-    ];
-  });
+  const differencePoints = comparisonPoints;
   const panelHeight = 178;
   const differenceValues = differencePoints.map((point) => point.difference);
   const differenceMin = Math.min(0, ...differenceValues);
@@ -1173,6 +1274,33 @@ const renderPayoffComparisonChart = (
     )
     .attr("stroke-opacity", 0.5)
     .attr("stroke-width", 0.45);
+
+  differencePanel
+    .append("g")
+    .attr("class", "ev-bin-hover-layer")
+    .selectAll("rect")
+    .data(differencePoints)
+    .join("rect")
+    .attr("x", (point) => xScale(point.priceMin))
+    .attr("width", (point) =>
+      Math.max(1, xScale(point.priceMax) - xScale(point.priceMin)),
+    )
+    .attr("y", 0)
+    .attr("height", panelHeight)
+    .attr("fill", "transparent")
+    .style("pointer-events", "all")
+    .style("cursor", "crosshair")
+    .on("pointerenter", (event, point) => {
+      setActivePayoffBin(point.index);
+      showPayoffBinTooltip(event as PointerEvent, point, displayMode);
+    })
+    .on("pointermove", (event, point) =>
+      showPayoffBinTooltip(event as PointerEvent, point, displayMode),
+    )
+    .on("pointerleave", () => {
+      setActivePayoffBin(null);
+      payoffBinTooltip.value = null;
+    });
 
   const differenceAxis = differencePanel.append("g").attr("class", "ev-axis");
   for (const tick of differenceY.ticks(4)) {
@@ -1742,44 +1870,6 @@ const updateDynamicScene = (
     return opacityScale(bins[binIndex]?.count ?? 0);
   };
   const totalCloud = paths.length;
-  const renderCloudForHistogramBin = (focusBin: number | null): void => {
-    if (cloudRevealRaf != null) {
-      cancelAnimationFrame(cloudRevealRaf);
-      cloudRevealRaf = null;
-    }
-    canvasCtx.clearRect(0, 0, width, height);
-
-    const drawPath = (pathIndex: number, opacity: number): void => {
-      drawCloudPath(
-        paths[pathIndex],
-        cloudFillForPath(pathIndex),
-        opacity,
-      );
-    };
-
-    if (focusBin == null) {
-      for (const pathIndex of activeCloudIndices) {
-        drawPath(pathIndex, opacityForPath(pathIndex));
-      }
-      return;
-    }
-
-    const matchingPathIndices: number[] = [];
-    for (const pathIndex of activeCloudIndices) {
-      const pathBin = findBinIndex(sampledFinalPrices[pathIndex]);
-      if (pathBin === focusBin) {
-        matchingPathIndices.push(pathIndex);
-      } else {
-        drawPath(pathIndex, 0.012);
-      }
-    }
-    for (const pathIndex of matchingPathIndices) {
-      drawPath(
-        pathIndex,
-        clamp(opacityForPath(pathIndex) * 1.55, 0.4, 0.82),
-      );
-    }
-  };
   // Price column: bars grow rightward from x=0, scaled by bin count.
   const priceBarX = (): number => 0;
   const priceBarWidth = (bin: SimBin, progress: number): number =>
@@ -2029,7 +2119,6 @@ const updateDynamicScene = (
     emit("histogram-bin-hover", null);
     if (activeHistogramBin != null) {
       activeHistogramBin = null;
-      renderCloudForHistogramBin(null);
     }
   };
 
@@ -2050,7 +2139,6 @@ const updateDynamicScene = (
     }
     if (activeHistogramBin !== binIndex) {
       activeHistogramBin = binIndex;
-      renderCloudForHistogramBin(binIndex);
       emit("histogram-bin-hover", {
         primary: statsFromBin(bin, totalPathCount),
         comparison: statsFromBin(comparisonBin, comparisonPathCount),
@@ -2773,6 +2861,40 @@ onUnmounted(() => {
         </dl>
       </div>
     </Transition>
+    <Transition name="histogram-tooltip">
+      <div
+        v-if="payoffBinTooltip"
+        class="histogram-tooltip payoff-bin-tooltip"
+        role="tooltip"
+        :style="{
+          left: `${payoffBinTooltip.x}px`,
+          top: `${payoffBinTooltip.y}px`,
+        }"
+      >
+        <div class="histogram-tooltip-kicker">Terminal price bin</div>
+        <div class="histogram-tooltip-range">
+          {{ payoffBinTooltip.priceRange }}
+        </div>
+        <div class="histogram-tooltip-divider"></div>
+        <div class="payoff-bin-tooltip-label">
+          {{ payoffBinTooltip.valueLabel }}
+        </div>
+        <dl class="histogram-tooltip-stats">
+          <div>
+            <dt>{{ primarySeriesLabel || "Option" }}</dt>
+            <dd class="is-option">{{ payoffBinTooltip.optionValue }}</dd>
+          </div>
+          <div>
+            <dt>{{ comparisonSeriesLabel || "Perp" }}</dt>
+            <dd class="is-perp">{{ payoffBinTooltip.perpValue }}</dd>
+          </div>
+          <div class="payoff-bin-tooltip-difference">
+            <dt>Option − perp</dt>
+            <dd>{{ payoffBinTooltip.difference }}</dd>
+          </div>
+        </dl>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -2820,6 +2942,33 @@ onUnmounted(() => {
   color: #dfe3e7;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+}
+
+.payoff-bin-tooltip {
+  width: 216px;
+}
+
+.payoff-bin-tooltip-label {
+  margin-bottom: 5px;
+  color: #858d95;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.payoff-bin-tooltip .is-option {
+  color: #9bcdf3;
+}
+
+.payoff-bin-tooltip .is-perp {
+  color: #f2ad67;
+}
+
+.payoff-bin-tooltip-difference {
+  margin-top: 3px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .histogram-tooltip-kicker {
@@ -3038,6 +3187,23 @@ onUnmounted(() => {
   fill: #68717a;
   font-size: 8px;
   font-weight: 500;
+}
+
+:deep(.ev-bin-bars rect) {
+  transition:
+    fill-opacity 90ms ease,
+    stroke-opacity 90ms ease;
+}
+
+:deep(.ev-bin-bars rect.is-dimmed) {
+  fill-opacity: 0.18;
+  stroke-opacity: 0.12;
+}
+
+:deep(.ev-bin-bars rect.is-hovered) {
+  fill-opacity: 1;
+  stroke-opacity: 0.95;
+  stroke-width: 1.15;
 }
 
 :deep(.ev-stop-price-line) {

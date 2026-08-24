@@ -1340,6 +1340,7 @@ const stopLossExpiryQuotes = computed<AtmOptionExpiryQuote[]>(() =>
     return {
       ...expiry,
       callIv: extractTickerIV(callSnapshot?.data),
+      putIv: extractTickerIV(putSnapshot?.data),
       callMark: extractTickerMark(callSnapshot?.data),
       putMark: extractTickerMark(putSnapshot?.data),
       fetchedAt: fetchedAtCandidates.length
@@ -1748,7 +1749,22 @@ watch(
             aria-haspopup="dialog"
             :aria-expanded="settingsOpen"
             @click="toggleSimSettings"
-          ></button>
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="3"></circle>
+              <path
+                d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.73v.51a2 2 0 0 1-1 1.73l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.73v-.51a2 2 0 0 1 1-1.73l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+              ></path>
+            </svg>
+          </button>
           <section
             v-if="settingsOpen"
             class="sim-settings-popover"
@@ -2008,7 +2024,7 @@ watch(
             <div class="chart-header-left">
               <div class="chart-meta">
                 <label class="chart-meta-assumption">
-                  <span class="chart-meta-key">μ</span>
+                  <span class="chart-meta-key">Drift <i>μ</i></span>
                   <input
                     class="chart-meta-input"
                     type="number"
@@ -2030,7 +2046,7 @@ watch(
                   <span class="chart-meta-unit">%</span>
                 </label>
                 <label class="chart-meta-assumption">
-                  <span class="chart-meta-key">σ</span>
+                  <span class="chart-meta-key">Volatility <i>σ</i></span>
                   <input
                     class="chart-meta-input"
                     type="number"
@@ -2057,10 +2073,12 @@ watch(
                   @pointerenter="handleNLabelEnter"
                   @pointerleave="handleNLabelLeave"
                 >
-                  <span class="chart-meta-key">n</span>
+                  <span class="chart-meta-key">Paths <i>n</i></span>
                   <span class="chart-meta-value">{{ guideRows }}</span>
                 </span>
-                <span class="chart-horizon-label">{{ horizonDaysLabel }}</span>
+                <span class="chart-horizon-label">
+                  Horizon <i>{{ horizonDaysLabel }}</i>
+                </span>
               </div>
             </div>
             <div v-if="strategyStatsRow" class="chart-stats-row">
@@ -2481,6 +2499,13 @@ watch(
   letter-spacing: 0.5px;
 }
 
+.chart-meta-key i,
+.chart-horizon-label i {
+  color: rgba(148, 163, 184, 0.95);
+  font-style: normal;
+  font-weight: 600;
+}
+
 .chart-meta-value {
   color: rgba(148, 163, 184, 0.95);
   font-weight: 500;
@@ -2507,6 +2532,7 @@ watch(
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   text-align: right;
+  appearance: textfield;
 }
 
 .chart-meta-assumption:hover .chart-meta-input,
@@ -2518,7 +2544,8 @@ watch(
 
 .chart-meta-input::-webkit-inner-spin-button,
 .chart-meta-input::-webkit-outer-spin-button {
-  appearance: none;
+  margin: 0;
+  -webkit-appearance: none;
 }
 
 .chart-meta-unit {
@@ -2593,12 +2620,10 @@ watch(
   cursor: pointer;
 }
 
-.top-settings-button::before {
-  content: "";
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #e8ebf2;
+.top-settings-button svg {
+  width: 16px;
+  height: 16px;
+  color: #d8dce4;
 }
 
 .top-settings-button:hover,

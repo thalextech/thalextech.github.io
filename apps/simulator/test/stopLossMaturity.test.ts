@@ -21,6 +21,7 @@ const quote = (
   callInstrumentName: `BTC-${days}D-C`,
   putInstrumentName,
   callIv: 0.5,
+  putIv: 0.5,
   callMark: 1_000,
   putMark: 1_000,
   fetchedAt: valuationTs * 1_000,
