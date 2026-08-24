@@ -59,8 +59,24 @@ function render() {
     : null;
   const chart = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
+  const xTickCount = width < 760 ? 4 : 8;
+  const [xStart, xEnd] = x.domain();
+  const xSpanMs = xEnd - xStart;
+  const endpointGapMs = xSpanMs / Math.max(2, xTickCount * 2);
+  const xTicks = x.ticks(xTickCount)
+    .filter((tick) => xEnd - tick >= endpointGapMs);
+  xTicks.push(xEnd);
+  const defaultTickFormat = x.tickFormat(xTickCount);
+  const endpointTickFormat = d3.utcFormat(
+    xSpanMs <= 2 * 86_400_000 ? "%b %-d %H:%M" : "%b %-d",
+  );
+
   chart.append("g").attr("transform", `translate(0,${innerHeight})`)
-    .call(d3.axisBottom(x).ticks(width < 760 ? 4 : 8).tickPadding(14)).call(styleAxis);
+    .call(d3.axisBottom(x)
+      .tickValues(xTicks)
+      .tickFormat((tick) => +tick === +xEnd ? endpointTickFormat(tick) : defaultTickFormat(tick))
+      .tickPadding(14))
+    .call(styleAxis);
   chart.append("g").call(d3.axisLeft(y).ticks(7).tickFormat(d3.format(".0%")).tickPadding(14)).call(styleAxis);
   if (y2) {
     chart.append("g").attr("transform", `translate(${innerWidth},0)`)

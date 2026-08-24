@@ -497,6 +497,12 @@ const ivRvRangeLabel = computed(() => {
     ? `${formatIvRvRangeDate(range.start)} – ${formatIvRvRangeDate(range.end)}`
     : "No range";
 });
+const ivRvSourceLatestLabel = computed(() => {
+  const ts = ivRvSourceRows.value.at(-1)?.ts;
+  return Number.isFinite(ts)
+    ? `${new Date(ts * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC`
+    : "—";
+});
 const ivRvStats = computed(() => summarizeIvRvRows(ivRvRows.value));
 const formatVol = (value) =>
   Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
@@ -2638,7 +2644,7 @@ onMounted(loadBacktest);
           <div>
             <div class="chartTitle">{{ underlying }} ATM IV vs Parkinson RV</div>
             <div class="chartSubtitle">
-              Hourly source data · RV uses the
+              Hourly source data through {{ ivRvSourceLatestLabel }} · RV uses the
               {{ ivRvAlignForward ? "following" : "trailing" }} tenor window
             </div>
           </div>
