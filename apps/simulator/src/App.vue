@@ -2024,7 +2024,7 @@ watch(
             <div class="chart-header-left">
               <div class="chart-meta">
                 <label class="chart-meta-assumption">
-                  <span class="chart-meta-key">Drift <i>μ</i></span>
+                  <span class="chart-meta-key">Drift</span>
                   <input
                     class="chart-meta-input"
                     type="number"
@@ -2046,7 +2046,7 @@ watch(
                   <span class="chart-meta-unit">%</span>
                 </label>
                 <label class="chart-meta-assumption">
-                  <span class="chart-meta-key">Volatility <i>σ</i></span>
+                  <span class="chart-meta-key">Volatility</span>
                   <input
                     class="chart-meta-input"
                     type="number"
@@ -2090,7 +2090,7 @@ watch(
                 >{{ strategyStatsRow.average }}</span>
               </span>
               <span class="chart-stats-item">
-                <span class="chart-stats-label">Med</span>
+                <span class="chart-stats-label">Median</span>
                 <span
                   class="chart-stats-value"
                   :class="`is-${strategyStatsRow.medianSign}`"
@@ -2441,19 +2441,19 @@ watch(
   display: flex;
   align-items: center;
   justify-content: space-between;
+  box-sizing: border-box;
   height: var(--chart-header-height);
-  /* Right padding matches CHART_MARGIN.right / CHART_WIDTH (112/1200) so the
-     stats block right-aligns with the histogram's right edge. */
-  padding: 0 9.333% 0 3.035714%;
+  width: 67.333%;
+  margin-left: 3.833%;
+  padding: 0;
   position: relative;
   z-index: 8;
-  gap: 12px;
+  gap: 18px;
 }
 
 .chart-header-left {
   display: flex;
   align-items: center;
-  gap: 8px;
   min-width: 0;
 }
 
@@ -2463,8 +2463,9 @@ watch(
   gap: 12px;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
-  line-height: 1;
+  line-height: 1.1;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .chart-stats-item {
@@ -3133,7 +3134,7 @@ watch(
 .histogram-toggle {
   position: absolute;
   top: 8px;
-  left: 50%;
+  left: 88.583%;
   transform: translateX(-50%);
   z-index: 9;
   display: inline-flex;
@@ -3160,6 +3161,19 @@ watch(
 .histogram-toggle button.is-active {
   color: var(--text-primary);
   background: rgba(255, 255, 255, 0.12);
+}
+
+@media (max-width: 1280px) {
+  .chart-section {
+    --chart-header-height: 58px;
+  }
+
+  .chart-header {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+  }
 }
 
 @media (max-width: 900px) {
@@ -3231,7 +3245,7 @@ watch(
     aspect-ratio: 1.9 / 1;
     flex: none;
     width: 100%;
-    --chart-header-height: 36px;
+    --chart-header-height: 58px;
   }
 }
 </style>
