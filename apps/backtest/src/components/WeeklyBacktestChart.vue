@@ -36,7 +36,8 @@ const draw = () => {
   const plotTop = 20;
   const plotBottom = height - 30;   // slightly less vertical space for the plot
 
-  const X0 = 55;
+  // Leave enough room for signed currency ticks (for example, "-$20,000").
+  const X0 = 72;
   const X1 = width - 40;
 
   const svg = d3
