@@ -2,6 +2,7 @@
 const APP_ORDER = [
   "Backtest",
   "Simulator",
+  "Profit Boost",
   "Combo PnL",
   "Straddle",
   "Combo Greeks",
