@@ -36,7 +36,10 @@ const draw = () => {
   const plotTop = 20;
   const plotBottom = height - 30;   // slightly less vertical space for the plot
 
-  const X0 = 55;
+  // Leave enough room for full currency tick labels (for example "$70,000").
+  // SVG clips text that extends past its viewBox, so the previous 55px gutter
+  // could hide the leading "$" on five-digit values.
+  const X0 = 64;
   const X1 = width - 40;
 
   const svg = d3

@@ -4824,7 +4824,7 @@ onMounted(loadBacktest);
   display: flex;
   flex-direction: column;
   gap: 28px;
-  width: 170px;
+  width: 160px;
   flex: none;
   padding-top: 44px;
 }
