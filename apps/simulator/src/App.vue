@@ -41,11 +41,11 @@ const DRAWN_PATHS_STEP = 100;
 const TIME_STEPS_MIN = 24;
 const TIME_STEPS_MAX = 4000;
 const TIME_STEPS_STEP = 24;
-const EXPORT_WIDTH = 1600;
-const EXPORT_HEIGHT = 900;
-const EXPORT_PADDING_X = 48;
-const EXPORT_PADDING_Y = 42;
-const EXPORT_HTML_FONT_SCALE = 1.18;
+const EXPORT_WIDTH = 3200;
+const EXPORT_HEIGHT = 1800;
+const EXPORT_PADDING_X = 96;
+const EXPORT_PADDING_Y = 84;
+const EXPORT_HTML_FONT_SCALE = 1.05;
 
 const generateSeed = (): number => Math.floor(Math.random() * 1_000_000_000);
 const seed = ref(generateSeed());
@@ -212,10 +212,17 @@ const parseCssPixels = (value: string): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-const scaleCanvasFont = (font: string, scale: number): string =>
-  font.replace(/(\d+(?:\.\d+)?)px/, (_match, size: string) =>
-    `${Number(size) * scale}px`,
-  );
+const canvasFontFromStyle = (
+  style: CSSStyleDeclaration,
+  scale: number,
+): string => {
+  const size = (parseCssPixels(style.fontSize) || 12) * scale;
+  const fontStyle = style.fontStyle || "normal";
+  const fontWeight = style.fontWeight || "400";
+  const fontFamily =
+    style.fontFamily || '"Helvetica Neue", Helvetica, sans-serif';
+  return `${fontStyle} ${fontWeight} ${size}px ${fontFamily}`;
+};
 
 const isRenderableColor = (value: string): boolean =>
   !!value &&
@@ -320,7 +327,7 @@ const drawText = (
   const trimmed = text.replace(/\s+/g, " ").trim();
   if (!trimmed || rect.width <= 0 || rect.height <= 0) return;
   ctx.fillStyle = style.color || "#fff";
-  ctx.font = scaleCanvasFont(style.font, fontScale);
+  ctx.font = canvasFontFromStyle(style, fontScale);
   ctx.textAlign =
     style.textAlign === "right"
       ? "right"
@@ -371,8 +378,9 @@ const drawFormValue = (
         : 8);
   const y = rect.top - rootRect.top + rect.height / 2 + fontSize * 0.35;
   ctx.fillStyle = style.color || "#fff";
-  ctx.font = scaleCanvasFont(style.font, fontScale);
+  ctx.font = canvasFontFromStyle(style, fontScale);
   ctx.textAlign = textAlign;
+  ctx.textBaseline = "alphabetic";
   ctx.fillText(value, x, y);
   ctx.textAlign = "left";
 };
@@ -389,12 +397,20 @@ const renderElementToCanvas = async (
 
   if (element instanceof HTMLCanvasElement) {
     const rect = element.getBoundingClientRect();
+    const sourceWidth = Math.max(1, element.width);
+    const sourceHeight = Math.max(1, element.height);
+    const containScale = Math.min(
+      rect.width / sourceWidth,
+      rect.height / sourceHeight,
+    );
+    const drawWidth = sourceWidth * containScale;
+    const drawHeight = sourceHeight * containScale;
     ctx.drawImage(
       element,
-      rect.left - rootRect.left,
+      rect.left - rootRect.left + (rect.width - drawWidth) / 2,
       rect.top - rootRect.top,
-      rect.width,
-      rect.height,
+      drawWidth,
+      drawHeight,
     );
     return;
   }
@@ -460,12 +476,12 @@ const exportElementScreenshot = async (
   element: HTMLElement,
   filename: string,
 ): Promise<void> => {
+  await document.fonts?.ready;
+
   const rect = element.getBoundingClientRect();
   const width = Math.ceil(rect.width);
   const height = Math.ceil(rect.height);
   if (width <= 0 || height <= 0) return;
-
-  await document.fonts?.ready;
 
   const availableWidth = EXPORT_WIDTH - EXPORT_PADDING_X * 2;
   const availableHeight = EXPORT_HEIGHT - EXPORT_PADDING_Y * 2;
@@ -477,9 +493,9 @@ const exportElementScreenshot = async (
   const renderedHeight = height * fitScale;
   const offsetX = (EXPORT_WIDTH - renderedWidth) / 2;
   const offsetY = (EXPORT_HEIGHT - renderedHeight) / 2;
-  // Compensate for fitting a wide workspace into the export frame so labels
-  // remain intentionally larger than their live-UI equivalents.
-  const fontScale = EXPORT_HTML_FONT_SCALE / fitScale;
+  // HTML text is painted separately from the DOM snapshot, so let it scale
+  // with the composition at the export resolution.
+  const fontScale = EXPORT_HTML_FONT_SCALE;
   const output = document.createElement("canvas");
   output.width = EXPORT_WIDTH;
   output.height = EXPORT_HEIGHT;
@@ -495,27 +511,35 @@ const exportElementScreenshot = async (
   downloadCanvas(output, filename);
 };
 
-const handleSavePng = (): void => {
+const waitForLayoutPaint = (): Promise<void> =>
+  new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+
+const handleSavePng = async (): Promise<void> => {
   const exportRoot = workspaceRef.value ?? appMainRef.value;
   if (!exportRoot || exportInProgress.value) return;
   const appRoot = appMainRef.value;
-  if (activeSimulatorTab.value === "stop-loss") {
-    appRoot?.classList.add("is-exporting-stop-loss");
-  }
-  exportInProgress.value = true;
-  void exportElementScreenshot(
-    exportRoot,
+  const exportClass =
     activeSimulatorTab.value === "stop-loss"
-      ? "simulator-stop-loss-comparison.png"
-      : `simulator-${histogramMode.value}.png`,
-  )
-    .catch((error) => {
-      console.error("Failed to export simulator PNG", error);
-    })
-    .finally(() => {
-      appRoot?.classList.remove("is-exporting-stop-loss");
-      exportInProgress.value = false;
-    });
+      ? "is-exporting-stop-loss"
+      : "is-exporting-strategy";
+  appRoot?.classList.add(exportClass);
+  exportInProgress.value = true;
+  try {
+    await waitForLayoutPaint();
+    await exportElementScreenshot(
+      exportRoot,
+      activeSimulatorTab.value === "stop-loss"
+        ? "simulator-stop-loss-comparison.png"
+        : `simulator-${histogramMode.value}.png`,
+    );
+  } catch (error) {
+    console.error("Failed to export simulator PNG", error);
+  } finally {
+    appRoot?.classList.remove(exportClass);
+    exportInProgress.value = false;
+  }
 };
 
 const setMuFromChart = (mu: number): void => {
@@ -2361,6 +2385,90 @@ watch(
 .app-main.is-exporting-stop-loss :deep(.comparison-row > header),
 .app-main.is-exporting-stop-loss :deep(.histogram-tooltip) {
   display: none !important;
+}
+
+.app-main.is-exporting-strategy .workspace-container {
+  box-sizing: border-box;
+  width: 1504px;
+  max-width: 1504px;
+  padding-right: 24px;
+  padding-left: 24px;
+}
+
+.app-main.is-exporting-strategy .simulation-main {
+  grid-template-columns: 190px minmax(0, 1fr);
+}
+
+.app-main.is-exporting-strategy .metrics-column,
+.app-main.is-exporting-strategy .outcome-summary,
+.app-main.is-exporting-strategy .chart-stats-row {
+  gap: 22px;
+}
+
+.app-main.is-exporting-strategy .outcome-value,
+.app-main.is-exporting-strategy .outcome-range,
+.app-main.is-exporting-strategy .chart-stats-value {
+  font-size: 24px;
+}
+
+.app-main.is-exporting-strategy .chart-meta {
+  gap: 16px;
+  font-size: 13px;
+}
+
+.app-main.is-exporting-strategy .chart-meta-heading,
+.app-main.is-exporting-strategy .chart-meta-key,
+.app-main.is-exporting-strategy .chart-horizon-label {
+  font-size: 12px;
+}
+
+.app-main.is-exporting-strategy .chart-meta-input {
+  width: 52px;
+}
+
+.app-main.is-exporting-strategy .builder-section :deep(.index-summary) {
+  font-size: 14px;
+}
+
+.app-main.is-exporting-strategy .builder-section :deep(.index-label),
+.app-main.is-exporting-strategy .builder-section :deep(.field-header) {
+  font-size: 12px;
+}
+
+.app-main.is-exporting-strategy .builder-section :deep(.index-time),
+.app-main.is-exporting-strategy .builder-section :deep(.tte-cell) {
+  font-size: 12px;
+}
+
+.app-main.is-exporting-strategy .builder-section :deep(.side-pill),
+.app-main.is-exporting-strategy .builder-section :deep(.qty-input),
+.app-main.is-exporting-strategy .builder-section :deep(.type-pill),
+.app-main.is-exporting-strategy
+  .builder-section
+  :deep(.styled-select-trigger) {
+  font-size: 14px;
+}
+
+.app-main.is-exporting-strategy .histogram-toggle {
+  gap: 4px;
+  padding: 3px;
+}
+
+.app-main.is-exporting-strategy .histogram-toggle button:first-child {
+  min-width: 52px;
+}
+
+.app-main.is-exporting-strategy .histogram-toggle button:last-child {
+  min-width: 132px;
+}
+
+.app-main.is-exporting-strategy .histogram-legend {
+  gap: 18px;
+  font-size: 10px;
+}
+
+.app-main.is-exporting-strategy .histogram-legend-title {
+  font-size: 9px;
 }
 
 :deep(input),
