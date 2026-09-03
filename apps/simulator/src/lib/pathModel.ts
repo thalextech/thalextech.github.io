@@ -20,6 +20,34 @@ export const DEFAULT_PATH_MODEL: PathModelParams = {
   jumpVol: 0.01878,
 };
 
+export const horizonVolMovePointsFromVolOfVol = (
+  volOfVol: number,
+  horizonYears: number,
+): number => {
+  if (
+    !Number.isFinite(volOfVol) ||
+    !Number.isFinite(horizonYears) ||
+    horizonYears <= 0
+  ) {
+    return 0;
+  }
+  return 50 * Math.max(0, volOfVol) * Math.sqrt(horizonYears);
+};
+
+export const volOfVolFromHorizonMovePoints = (
+  movePoints: number,
+  horizonYears: number,
+): number => {
+  if (
+    !Number.isFinite(movePoints) ||
+    !Number.isFinite(horizonYears) ||
+    horizonYears <= 0
+  ) {
+    return 0;
+  }
+  return Math.max(0, movePoints) / (50 * Math.sqrt(horizonYears));
+};
+
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value));
 

@@ -7,7 +7,9 @@ import type { AtmOptionExpiryQuote } from "./lib/atmOptionChain";
 import type { GBMParams } from "./lib/gbm";
 import {
   DEFAULT_PATH_MODEL,
+  horizonVolMovePointsFromVolOfVol,
   type PathModelParams,
+  volOfVolFromHorizonMovePoints,
 } from "./lib/pathModel";
 import type { PositionLeg, OptionLeg } from "./lib/position";
 import type { SimulationStats } from "./lib/simulation";
@@ -41,6 +43,28 @@ const DRAWN_PATHS_STEP = 100;
 const TIME_STEPS_MIN = 24;
 const TIME_STEPS_MAX = 4000;
 const TIME_STEPS_STEP = 24;
+const SETTINGS_TOOLTIPS = {
+  constantVol:
+    "Keeps volatility fixed at the RV value for every simulated path and time step.",
+  stochasticVol:
+    "Lets variance evolve randomly from RV². This enables the vol-of-vol and spot/vol correlation inputs.",
+  volOfVol:
+    "Approximate one-standard-deviation move in annualized volatility over the selected horizon. The simulator converts this to the model's vol-of-vol coefficient.",
+  correlation:
+    "Correlation between spot-price and volatility shocks. Negative values make volatility tend to rise when spot falls.",
+  timeSteps:
+    "Number of simulation intervals in each path. More steps improve time resolution but take longer to calculate.",
+  pathLimit:
+    "Maximum sampled paths rendered in the cloud. This changes visual density, not the number of outcomes used for statistics.",
+  binsMultiplier:
+    "Multiplier for histogram resolution. Higher values create more, narrower bins without changing the simulation.",
+} as const;
+const MODEL_METRIC_TOOLTIPS = {
+  volOfVol:
+    "Approximate 1σ move in annualized volatility over this horizon. Change it in Simulation settings; it only applies to Stochastic vol.",
+  correlation:
+    "Correlation between spot-price and volatility shocks. Change it in Simulation settings; it only applies to Stochastic vol.",
+} as const;
 const EXPORT_WIDTH = 3200;
 const EXPORT_HEIGHT = 1800;
 const EXPORT_PADDING_X = 96;
@@ -749,6 +773,36 @@ const setPathModelNumber = (
 ): void => {
   if (!Number.isFinite(value)) return;
   pathModelDraft[key] = roundTo(clamp(value, min, max), decimals);
+};
+
+const horizonVolMovePoints = (): number =>
+  roundTo(
+    horizonVolMovePointsFromVolOfVol(
+      pathModelDraft.volOfVol,
+      appliedParams.T,
+    ),
+    1,
+  );
+
+const modelVolMovePoints = computed(() =>
+  horizonVolMovePointsFromVolOfVol(
+    pathModel.volOfVol,
+    appliedParams.T,
+  ).toFixed(1),
+);
+
+const modelSpotVolCorrelation = computed(() =>
+  pathModel.correlation.toFixed(2),
+);
+
+const setHorizonVolMovePoints = (movePoints: number): void => {
+  setPathModelNumber(
+    "volOfVol",
+    volOfVolFromHorizonMovePoints(movePoints, appliedParams.T),
+    0,
+    3,
+    3,
+  );
 };
 
 const resetPathModel = (): void => {
@@ -1866,6 +1920,9 @@ watch(
               <div class="path-model-toggle" role="group" aria-label="Path model">
                 <button
                   type="button"
+                  class="has-settings-tooltip"
+                  :data-tooltip="SETTINGS_TOOLTIPS.constantVol"
+                  :aria-description="SETTINGS_TOOLTIPS.constantVol"
                   :class="{ 'is-active': pathModelDraft.kind === 'gbm' }"
                   :aria-pressed="pathModelDraft.kind === 'gbm'"
                   @click="pathModelDraft.kind = 'gbm'"
@@ -1874,6 +1931,9 @@ watch(
                 </button>
                 <button
                   type="button"
+                  class="has-settings-tooltip"
+                  :data-tooltip="SETTINGS_TOOLTIPS.stochasticVol"
+                  :aria-description="SETTINGS_TOOLTIPS.stochasticVol"
                   :class="{ 'is-active': pathModelDraft.kind === 'bates' }"
                   :aria-pressed="pathModelDraft.kind === 'bates'"
                   @click="pathModelDraft.kind = 'bates'"
@@ -1882,45 +1942,54 @@ watch(
                 </button>
               </div>
               <p class="settings-model-note">
-                Variance starts at RV² and evolves through vol-of-vol shocks.
-                Spot/vol correlation controls the skew; there is no mean-reversion
-                or separate long-run volatility target.
+                Variance starts at RV². The 1σ move is converted to vol-of-vol
+                for the selected horizon. Spot/vol correlation controls the skew;
+                there is no mean-reversion or separate long-run volatility target.
               </p>
 
               <div
                 class="settings-fields"
                 :class="{ 'is-disabled': pathModelDraft.kind !== 'bates' }"
               >
-                <label class="sim-settings-row">
-                  <span>
-                    Vol of vol <i>ξ</i>
+                <label
+                  class="sim-settings-row has-settings-tooltip"
+                  :data-tooltip="SETTINGS_TOOLTIPS.volOfVol"
+                >
+                  <span>1σ vol move</span>
+                  <span class="settings-input-unit">
+                    <input
+                      class="sim-settings-input"
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      spellcheck="false"
+                      :disabled="pathModelDraft.kind !== 'bates'"
+                      :aria-description="SETTINGS_TOOLTIPS.volOfVol"
+                      :value="
+                        settingsFieldValue('volOfVol', horizonVolMovePoints())
+                      "
+                      @focus="beginSettingsFieldEdit('volOfVol', $event)"
+                      @input="
+                        updateSettingsFieldDraft(
+                          'volOfVol',
+                          ($event.target as HTMLInputElement).value,
+                        )
+                      "
+                      @blur="
+                        commitSettingsField(
+                          'volOfVol',
+                          setHorizonVolMovePoints,
+                        )
+                      "
+                      @keydown.enter="onSettingsFieldEnter"
+                    />
+                    <i>pts</i>
                   </span>
-                  <input
-                    class="sim-settings-input"
-                    type="text"
-                    inputmode="decimal"
-                    autocomplete="off"
-                    spellcheck="false"
-                    :disabled="pathModelDraft.kind !== 'bates'"
-                    :value="
-                      settingsFieldValue('volOfVol', pathModelDraft.volOfVol)
-                    "
-                    @focus="beginSettingsFieldEdit('volOfVol', $event)"
-                    @input="
-                      updateSettingsFieldDraft(
-                        'volOfVol',
-                        ($event.target as HTMLInputElement).value,
-                      )
-                    "
-                    @blur="
-                      commitSettingsField('volOfVol', (n) =>
-                        setPathModelNumber('volOfVol', n, 0, 3, 3),
-                      )
-                    "
-                    @keydown.enter="onSettingsFieldEnter"
-                  />
                 </label>
-                <label class="sim-settings-row">
+                <label
+                  class="sim-settings-row has-settings-tooltip"
+                  :data-tooltip="SETTINGS_TOOLTIPS.correlation"
+                >
                   <span>
                     Spot / vol corr. <i>ρ</i>
                   </span>
@@ -1931,6 +2000,7 @@ watch(
                     autocomplete="off"
                     spellcheck="false"
                     :disabled="pathModelDraft.kind !== 'bates'"
+                    :aria-description="SETTINGS_TOOLTIPS.correlation"
                     :value="
                       settingsFieldValue(
                         'correlation',
@@ -1960,7 +2030,10 @@ watch(
                 <span>Graph</span>
               </div>
               <div class="settings-fields">
-                <label class="sim-settings-row">
+                <label
+                  class="sim-settings-row has-settings-tooltip"
+                  :data-tooltip="SETTINGS_TOOLTIPS.timeSteps"
+                >
                   <span>Time steps</span>
                   <input
                     class="sim-settings-input"
@@ -1968,6 +2041,7 @@ watch(
                     inputmode="numeric"
                     autocomplete="off"
                     spellcheck="false"
+                    :aria-description="SETTINGS_TOOLTIPS.timeSteps"
                     :value="
                       settingsFieldValue(
                         'timeSteps',
@@ -1987,7 +2061,10 @@ watch(
                     @keydown.enter="onSettingsFieldEnter"
                   />
                 </label>
-                <label class="sim-settings-row">
+                <label
+                  class="sim-settings-row has-settings-tooltip"
+                  :data-tooltip="SETTINGS_TOOLTIPS.pathLimit"
+                >
                   <span>Paths drawn</span>
                   <input
                     class="sim-settings-input"
@@ -1995,6 +2072,7 @@ watch(
                     inputmode="numeric"
                     autocomplete="off"
                     spellcheck="false"
+                    :aria-description="SETTINGS_TOOLTIPS.pathLimit"
                     :value="
                       settingsFieldValue(
                         'pathLimit',
@@ -2014,7 +2092,10 @@ watch(
                     @keydown.enter="onSettingsFieldEnter"
                   />
                 </label>
-                <label class="sim-settings-row">
+                <label
+                  class="sim-settings-row has-settings-tooltip"
+                  :data-tooltip="SETTINGS_TOOLTIPS.binsMultiplier"
+                >
                   <span>Histogram bins</span>
                   <span class="settings-input-unit">
                     <i>×</i>
@@ -2024,6 +2105,7 @@ watch(
                       inputmode="decimal"
                       autocomplete="off"
                       spellcheck="false"
+                      :aria-description="SETTINGS_TOOLTIPS.binsMultiplier"
                       :value="
                         settingsFieldValue(
                           'binsMultiplier',
@@ -2204,6 +2286,30 @@ watch(
                 >
                   <span class="chart-meta-key">Paths <i>n</i></span>
                   <span class="chart-meta-value">{{ guideRows }}</span>
+                </span>
+                <span
+                  class="chart-meta-setting has-settings-tooltip"
+                  :class="{ 'is-inactive': pathModel.kind !== 'bates' }"
+                  :data-tooltip="MODEL_METRIC_TOOLTIPS.volOfVol"
+                  :aria-description="MODEL_METRIC_TOOLTIPS.volOfVol"
+                  tabindex="0"
+                >
+                  <span class="chart-meta-key">Vol-of-vol</span>
+                  <span class="chart-meta-value">
+                    1σ {{ modelVolMovePoints }} pts
+                  </span>
+                </span>
+                <span
+                  class="chart-meta-setting has-settings-tooltip"
+                  :class="{ 'is-inactive': pathModel.kind !== 'bates' }"
+                  :data-tooltip="MODEL_METRIC_TOOLTIPS.correlation"
+                  :aria-description="MODEL_METRIC_TOOLTIPS.correlation"
+                  tabindex="0"
+                >
+                  <span class="chart-meta-key">Spot/vol <i>ρ</i></span>
+                  <span class="chart-meta-value">
+                    {{ modelSpotVolCorrelation }}
+                  </span>
                 </span>
                 <span class="chart-horizon-label">
                   Horizon <i>{{ horizonDaysLabel }}</i>
@@ -2857,6 +2963,19 @@ watch(
   background: rgba(255, 255, 255, 0.06);
 }
 
+.chart-meta-setting {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: help;
+  outline: none;
+}
+
+.chart-meta-setting.is-inactive > .chart-meta-key,
+.chart-meta-setting.is-inactive > .chart-meta-value {
+  opacity: 0.42;
+}
+
 .chart-horizon-label {
   color: #70767d;
   font-size: 10px;
@@ -3038,6 +3157,61 @@ watch(
 .path-model-toggle button.is-active {
   background: rgba(255, 255, 255, 0.105);
   color: #e8eaed;
+}
+
+.has-settings-tooltip {
+  position: relative;
+}
+
+.has-settings-tooltip::after {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 90;
+  width: 224px;
+  padding: 8px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: #15181e;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
+  color: #c9cfd8;
+  content: attr(data-tooltip);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  white-space: normal;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(3px);
+  transition:
+    opacity 100ms ease,
+    transform 100ms ease,
+    visibility 100ms ease;
+}
+
+.path-model-toggle .has-settings-tooltip::after {
+  top: calc(100% + 6px);
+  bottom: auto;
+  transform: translateY(-3px);
+}
+
+.path-model-toggle .has-settings-tooltip:last-child::after {
+  right: 0;
+  left: auto;
+}
+
+.has-settings-tooltip:hover::after,
+.has-settings-tooltip:focus-visible::after,
+.has-settings-tooltip:focus-within::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 160ms;
 }
 
 .settings-model-note {
