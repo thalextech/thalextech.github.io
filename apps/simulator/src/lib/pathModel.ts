@@ -12,7 +12,7 @@ export type PathModelParams = {
 export const DEFAULT_PATH_MODEL: PathModelParams = {
   kind: "bates",
   volOfVol: 0.1,
-  correlation: -0.3,
+  correlation: 0.1,
   jumpsEnabled: false,
   jumpIntensity: 220.6,
   maxJumpVarianceShare: 0.35,
