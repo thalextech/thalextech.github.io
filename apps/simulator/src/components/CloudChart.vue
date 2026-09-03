@@ -3064,7 +3064,7 @@ onUnmounted(() => {
 }
 
 :deep(.chart-meta-value) {
-  fill: rgba(148, 163, 184, 0.95);
+  fill: #e8eaed;
   font-size: 10px;
   font-family: inherit;
   font-variant-numeric: tabular-nums;
@@ -3141,28 +3141,28 @@ onUnmounted(() => {
 }
 
 :deep(.ev-axis text) {
-  fill: #68717a;
+  fill: rgba(255, 255, 255, 0.44);
   font-size: 8.5px;
   font-variant-numeric: tabular-nums;
 }
 
 :deep(.ev-region-label) {
-  fill: #737c85;
+  fill: #70767d;
   font-size: 9px;
-  font-weight: 550;
+  font-weight: 500;
   letter-spacing: 0.02em;
 }
 
 :deep(.ev-axis-title) {
-  fill: #7d858e;
+  fill: #70767d;
   font-size: 9px;
-  font-weight: 550;
+  font-weight: 500;
 }
 
 :deep(.ev-title) {
-  fill: #dbe1e7;
+  fill: #e8eaed;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 :deep(.ev-subtitle) {
@@ -3229,9 +3229,9 @@ onUnmounted(() => {
 }
 
 :deep(.ev-chart-heading g text) {
-  fill: #8e969e;
+  fill: #8b9198;
   font-size: 8.5px;
-  font-weight: 550;
+  font-weight: 500;
 }
 
 :deep(.ev-endpoint) {
@@ -3247,7 +3247,7 @@ onUnmounted(() => {
 
 :deep(.ev-endpoint-label) {
   font-size: 10.5px;
-  font-weight: 650;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   paint-order: stroke;
   stroke: rgba(10, 11, 14, 0.82);
@@ -3321,7 +3321,7 @@ onUnmounted(() => {
 }
 
 :deep(.axis text) {
-  fill: var(--text-muted);
+  fill: rgba(255, 255, 255, 0.44);
   font-size: 11px;
   font-family: inherit;
 }
@@ -3336,7 +3336,7 @@ onUnmounted(() => {
 }
 
 :deep(.break-even-region text) {
-  fill: rgba(148, 163, 184, 0.92);
+  fill: #8b9198;
   stroke: #0a0b0e;
   stroke-width: 4;
   paint-order: stroke;
@@ -3367,7 +3367,7 @@ onUnmounted(() => {
 }
 
 :deep(.axis .payoff-summary-label) {
-  fill: rgba(148, 163, 184, 0.92);
+  fill: #8b9198;
   stroke: #0a0b0e;
   stroke-width: 4;
   paint-order: stroke;
@@ -3390,7 +3390,7 @@ onUnmounted(() => {
 }
 
 :deep(.forward-value-label) {
-  fill: rgba(148, 163, 184, 0.88);
+  fill: #8b9198;
   font-size: 11px;
   font-family: inherit;
   font-variant-numeric: tabular-nums;

@@ -1316,7 +1316,7 @@ const hoveredPriceRangeLabel = computed(() => {
 }
 
 .leverage-popover-head strong {
-  color: #f1f5f9;
+  color: #e8eaed;
   font-size: 11px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -1363,7 +1363,7 @@ const hoveredPriceRangeLabel = computed(() => {
 
 .leverage-scale {
   margin-top: 2px;
-  color: rgba(148, 163, 184, 0.9);
+  color: #8b9198;
   font-size: 9px;
   font-variant-numeric: tabular-nums;
 }
@@ -1751,7 +1751,7 @@ const hoveredPriceRangeLabel = computed(() => {
   color: #7b828a;
   font-family: inherit;
   font-size: var(--comparison-font-small);
-  font-weight: 550;
+  font-weight: 500;
   white-space: nowrap;
 }
 

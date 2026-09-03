@@ -905,7 +905,7 @@ const totalMarkPrice = computed<number | null>(() => {
   line-height: 1;
   letter-spacing: 0.5px;
   text-transform: uppercase;
-  color: rgba(148, 163, 184, 0.6);
+  color: #70767d;
 }
 
 .maturity-header {
@@ -917,7 +917,7 @@ const totalMarkPrice = computed<number | null>(() => {
   text-align: center;
   font-size: 11px;
   line-height: 1;
-  color: #f8fafc;
+  color: #e8eaed;
   font-variant-numeric: tabular-nums;
 }
 
@@ -957,11 +957,11 @@ const totalMarkPrice = computed<number | null>(() => {
 }
 
 .side-pill--buy {
-  color: #10d47a;
+  color: #66d38f;
 }
 
 .side-pill--sell {
-  color: #ff2b6a;
+  color: #e46578;
 }
 
 .qty-spinner {
@@ -1005,7 +1005,7 @@ const totalMarkPrice = computed<number | null>(() => {
   padding: 0 6px;
   border: none;
   background: transparent;
-  color: rgba(226, 232, 240, 0.7);
+  color: #8b9198;
   font-size: 8px;
   line-height: 12px;
   cursor: pointer;
@@ -1013,7 +1013,7 @@ const totalMarkPrice = computed<number | null>(() => {
 }
 
 .qty-arrow:hover {
-  color: #f8fafc;
+  color: #e8eaed;
   background: rgba(255, 255, 255, 0.08);
 }
 
@@ -1085,7 +1085,7 @@ const totalMarkPrice = computed<number | null>(() => {
   justify-items: stretch;
   column-gap: var(--layout-gap);
   font-size: 11px;
-  color: rgba(148, 163, 184, 0.9);
+  color: #8b9198;
   margin-left: var(--greeks-shift-x);
 }
 
@@ -1109,7 +1109,7 @@ const totalMarkPrice = computed<number | null>(() => {
   line-height: 1;
   letter-spacing: 0.5px;
   text-transform: none;
-  color: rgba(148, 163, 184, 0.6);
+  color: #70767d;
 }
 
 .leg-greek-header--text {
@@ -1138,7 +1138,7 @@ const totalMarkPrice = computed<number | null>(() => {
   border-radius: 50%;
   border: none;
   background: rgba(255, 255, 255, 0.08);
-  color: rgba(226, 232, 240, 0.7);
+  color: #8b9198;
   font-size: 14px;
   line-height: 1;
   cursor: pointer;
@@ -1151,7 +1151,7 @@ const totalMarkPrice = computed<number | null>(() => {
 
 .remove-btn:hover {
   background: rgba(255, 255, 255, 0.15);
-  color: #fff;
+  color: #e8eaed;
 }
 
 .add-leg-btn {
@@ -1160,14 +1160,14 @@ const totalMarkPrice = computed<number | null>(() => {
   border-radius: 999px;
   border: none;
   background: transparent;
-  color: rgba(226, 232, 240, 0.7);
+  color: #8b9198;
   font-size: 11px;
   cursor: pointer;
   box-shadow: none;
 }
 
 .add-leg-btn:hover {
-  color: #fff;
+  color: #e8eaed;
   border-color: transparent;
 }
 
@@ -1219,7 +1219,7 @@ const totalMarkPrice = computed<number | null>(() => {
   gap: var(--strike-greeks-gap);
   padding: var(--row-pad-y) 0;
   font-size: 10px;
-  color: rgba(148, 163, 184, 0.9);
+  color: #8b9198;
   grid-column: 5;
 }
 

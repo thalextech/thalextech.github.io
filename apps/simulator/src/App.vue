@@ -83,26 +83,16 @@ const payoffSign = (value: number | null | undefined): "pos" | "neg" | "zero" =>
   return value > 0 ? "pos" : "neg";
 };
 
-const strategyStatsRow = computed(() => {
-  const stats = strategyStats.value;
-  if (!stats) return null;
-  const breakEvens = (stats.breakEvenPrices ?? [])
-    .slice(0, 3)
-    .map((price) => formatPriceWithDecimal(price));
-  return {
-    average: formatSignedPayoff(stats.meanPayoff),
-    averageSign: payoffSign(stats.meanPayoff),
-    median: formatSignedPayoff(stats.medianPayoff),
-    medianSign: payoffSign(stats.medianPayoff),
-    breakEvens,
-    breakEvenText:
-      breakEvens.length === 0
-        ? null
-        : breakEvens.length === 1
-          ? breakEvens[0]
-          : `${breakEvens[0]} – ${breakEvens[breakEvens.length - 1]}`,
-  };
-});
+const formatSignedPercent = (value: number | null | undefined): string => {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  return `${sign}${Math.abs(value * 100).toFixed(1)}%`;
+};
+
+const formatProbability = (value: number | null | undefined): string => {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `${(value * 100).toFixed(1)}%`;
+};
 const settingsOpen = ref(false);
 const pathModel = reactive<PathModelParams>({ ...DEFAULT_PATH_MODEL });
 const pathModelDraft = reactive<PathModelParams>({ ...DEFAULT_PATH_MODEL });
@@ -168,15 +158,15 @@ const SVG_EXPORT_STYLE = `
   .mu-guide line { stroke: #fff; }
   .mu-cone-fill { opacity: 1; }
   .mu-cone-edge { fill: none; stroke: rgba(255, 255, 255, 0.55); stroke-width: 1.5; }
-  .axis text { fill: rgba(148, 163, 184, 0.86); font-size: 11px; }
+  .axis text { fill: rgba(255, 255, 255, 0.44); font-size: 11px; }
   .axis path, .axis line, .hist-baseline { stroke: rgba(255, 255, 255, 0.18); }
   .break-even-band { fill: rgba(100, 116, 139, 0.12); }
-  .break-even-region text { fill: rgba(148, 163, 184, 0.92); stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-size: 11px; }
+  .break-even-region text { fill: #8b9198; stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-size: 11px; }
   .axis .average-payoff-guide { stroke: rgba(226, 232, 240, 0.55); stroke-width: 1; stroke-dasharray: 3 5; }
   .axis .median-payoff-guide { stroke: rgba(148, 163, 184, 0.55); stroke-width: 1; stroke-dasharray: 7 4; }
-  .axis .payoff-summary-label { fill: rgba(148, 163, 184, 0.92); stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-variant-numeric: tabular-nums; }
+  .axis .payoff-summary-label { fill: #8b9198; stroke: #0a0b0e; stroke-width: 4; paint-order: stroke; font-variant-numeric: tabular-nums; }
   .annotation-label-leader { stroke: rgba(148, 163, 184, 0.45); stroke-width: 1; }
-  .forward-value-label { fill: rgba(148, 163, 184, 0.88); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .forward-value-label { fill: #8b9198; font-size: 11px; font-variant-numeric: tabular-nums; }
   .ev-grid line { stroke: rgba(255, 255, 255, 0.07); stroke-width: 1; }
   .ev-zero-line { stroke: rgba(226, 232, 240, 0.38); stroke-width: 1.25; }
   .ev-area { stroke: none; fill-opacity: 1; }
@@ -191,10 +181,10 @@ const SVG_EXPORT_STYLE = `
   .ev-title { fill: #e2e7ec; font-size: 17px; font-weight: 700; }
   .ev-subtitle { fill: #7d8791; font-size: 12px; font-weight: 500; }
   .ev-context { fill: #939ca5; font-size: 11px; font-variant-numeric: tabular-nums; }
-  .ev-panel-title { fill: #aeb6be; font-size: 12px; font-weight: 650; }
+  .ev-panel-title { fill: #aeb6be; font-size: 12px; font-weight: 600; }
   .ev-panel-caption { fill: #7f8993; font-size: 11px; font-weight: 500; }
   .ev-stop-price-line { stroke: rgba(226, 232, 240, 0.58); stroke-width: 1.25; stroke-dasharray: 5 5; }
-  .ev-stop-price-label { fill: #e4a766; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .ev-stop-price-label { fill: #e4a766; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .ev-chart-heading g line { stroke-width: 3; stroke-linecap: round; }
   .ev-chart-heading g text { fill: #a0a8b0; font-size: 12px; font-weight: 600; }
   .ev-endpoint { stroke: #0a0b0e; stroke-width: 1.25; }
@@ -202,7 +192,7 @@ const SVG_EXPORT_STYLE = `
   .ev-endpoint-label { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; paint-order: stroke; stroke: #0a0b0e; stroke-width: 4px; }
   .ev-annotation-dot { fill: #b3bdc6; stroke: #0b0c0f; stroke-width: 1.25; }
   .ev-annotation-line { stroke: rgba(226, 232, 240, 0.7); stroke-width: 1.25; }
-  .ev-annotation-label { fill: #e1e6eb; font-size: 12px; font-weight: 550; paint-order: stroke; stroke: #0a0b0e; stroke-width: 4px; }
+  .ev-annotation-label { fill: #e1e6eb; font-size: 12px; font-weight: 500; paint-order: stroke; stroke: #0a0b0e; stroke-width: 4px; }
 `;
 
 const isVisibleForExport = (element: Element): boolean => {
@@ -1478,6 +1468,65 @@ const optionPricingByLegId = computed<Record<string, OptionPricingInput>>(
   },
 );
 
+/**
+ * ROP is meaningful for a premium-funded option position. Futures and net-credit
+ * positions need a margin or max-risk denominator instead, so they intentionally
+ * do not report ROP here.
+ */
+const strategyNetDebit = computed<number | null>(() => {
+  if (
+    optionLegs.value.length === 0 ||
+    positionLegs.value.some((leg) => leg.kind === "future")
+  ) {
+    return null;
+  }
+
+  let netDebit = 0;
+  for (const leg of optionLegs.value) {
+    const quotedMark = optionPricingByLegId.value[leg.id]?.mark;
+    const entryPrice =
+      quotedMark != null && Number.isFinite(quotedMark)
+        ? Number(quotedMark)
+        : Number(leg.premium);
+    const qty = Number(leg.qty);
+    if (!Number.isFinite(entryPrice) || !Number.isFinite(qty) || qty <= 0) {
+      return null;
+    }
+    netDebit += (leg.side === "buy" ? 1 : -1) * qty * entryPrice;
+  }
+
+  return netDebit > 0 ? netDebit : null;
+});
+
+const strategyStatsRow = computed(() => {
+  const stats = strategyStats.value;
+  if (!stats) return null;
+  const breakEvens = (stats.breakEvenPrices ?? [])
+    .slice(0, 3)
+    .map((price) => formatPriceWithDecimal(price));
+  const netDebit = strategyNetDebit.value;
+  const expectedRop =
+    netDebit != null && netDebit > 0 ? stats.meanPayoff / netDebit : null;
+  return {
+    expectedPnl: formatSignedPayoff(stats.meanPayoff),
+    expectedPnlSign: payoffSign(stats.meanPayoff),
+    expectedRop: formatSignedPercent(expectedRop),
+    expectedRopSign: payoffSign(expectedRop),
+    netDebit: netDebit == null ? null : formatPriceWithDecimal(netDebit),
+    profitChance: formatProbability(stats.winRate),
+    median: formatSignedPayoff(stats.medianPayoff),
+    medianSign: payoffSign(stats.medianPayoff),
+    p10: formatSignedPayoff(stats.p10Payoff),
+    p90: formatSignedPayoff(stats.p90Payoff),
+    breakEvenText:
+      breakEvens.length === 0
+        ? null
+        : breakEvens.length === 1
+          ? breakEvens[0]
+          : `${breakEvens[0]} – ${breakEvens[breakEvens.length - 1]}`,
+  };
+});
+
 const strategySimulationReady = computed(() => {
   if (!defaultTradeInitialized.value) return false;
   if (optionLegs.value.length > 0 && instruments.value.length === 0) {
@@ -2004,25 +2053,81 @@ watch(
         'workspace-container--stop-loss': activeSimulatorTab === 'stop-loss',
       }"
     >
-      <section v-if="activeSimulatorTab === 'strategy'" class="builder-section">
-        <PositionBuilder
-          v-model:legs="positionLegs"
-          :spot="appliedParams.s0"
-          :vol="appliedParams.vol"
-          :T="appliedParams.T"
-          :instruments="instruments"
-          :tickerByInstrument="tickerByInstrument"
-          :indexName="activeIndexName"
-          :indexPrice="indexDisplay?.price ?? null"
-          :indexFetchedAt="activeIndexSnapshot?.fetchedAt ?? null"
-        />
-      </section>
-
       <div v-if="activeSimulatorTab === 'strategy'" class="simulation-main">
-        <section ref="chartSectionRef" class="chart-section">
+        <aside class="metrics-column" aria-label="Strategy outcome summary">
+            <div v-if="strategyStatsRow" class="outcome-summary">
+              <div class="outcome-metric outcome-metric--primary">
+                <span class="outcome-label">Expected P&amp;L</span>
+                <span
+                  class="outcome-value"
+                  :class="`is-${strategyStatsRow.expectedPnlSign}`"
+                >{{ strategyStatsRow.expectedPnl }}</span>
+              </div>
+              <div
+                v-if="strategyStatsRow.netDebit"
+                class="outcome-metric"
+                title="Expected P&amp;L divided by the net option premium paid"
+              >
+                <span class="outcome-label">Expected ROP</span>
+                <span
+                  class="outcome-value"
+                  :class="`is-${strategyStatsRow.expectedRopSign}`"
+                >{{ strategyStatsRow.expectedRop }}</span>
+              </div>
+              <div class="outcome-metric">
+                <span class="outcome-label">Chance of profit</span>
+                <span class="outcome-value">{{
+                  strategyStatsRow.profitChance
+                }}</span>
+              </div>
+              <div class="outcome-metric outcome-metric--range">
+                <span class="outcome-label">P10–P90 outcome</span>
+                <span class="outcome-range">
+                  {{ strategyStatsRow.p10 }} | {{ strategyStatsRow.p90 }}
+                </span>
+              </div>
+            </div>
+            <div v-if="strategyStatsRow" class="chart-stats-row">
+              <span class="chart-stats-item">
+                <span class="chart-stats-label">Median</span>
+                <span
+                  class="chart-stats-value"
+                  :class="`is-${strategyStatsRow.medianSign}`"
+                >{{ strategyStatsRow.median }}</span>
+              </span>
+              <span
+                v-if="strategyStatsRow.breakEvenText"
+                class="chart-stats-item"
+              >
+                <span class="chart-stats-label">Break-even</span>
+                <span class="chart-stats-value">{{
+                  strategyStatsRow.breakEvenText
+                }}</span>
+              </span>
+            </div>
+        </aside>
+
+        <div class="simulator-column">
+          <section class="builder-section">
+            <PositionBuilder
+              v-model:legs="positionLegs"
+              :spot="appliedParams.s0"
+              :vol="appliedParams.vol"
+              :T="appliedParams.T"
+              :instruments="instruments"
+              :tickerByInstrument="tickerByInstrument"
+              :indexName="activeIndexName"
+              :indexPrice="indexDisplay?.price ?? null"
+              :indexFetchedAt="activeIndexSnapshot?.fetchedAt ?? null"
+            />
+          </section>
+
+          <section ref="chartSectionRef" class="chart-section">
+
           <div class="chart-header">
-            <div class="chart-header-left">
+            <div class="chart-detail-row">
               <div class="chart-meta">
+                <span class="chart-meta-heading">Model</span>
                 <label class="chart-meta-assumption">
                   <span class="chart-meta-key">Drift</span>
                   <input
@@ -2081,31 +2186,6 @@ watch(
                 </span>
               </div>
             </div>
-            <div v-if="strategyStatsRow" class="chart-stats-row">
-              <span class="chart-stats-item">
-                <span class="chart-stats-label">Avg</span>
-                <span
-                  class="chart-stats-value"
-                  :class="`is-${strategyStatsRow.averageSign}`"
-                >{{ strategyStatsRow.average }}</span>
-              </span>
-              <span class="chart-stats-item">
-                <span class="chart-stats-label">Median</span>
-                <span
-                  class="chart-stats-value"
-                  :class="`is-${strategyStatsRow.medianSign}`"
-                >{{ strategyStatsRow.median }}</span>
-              </span>
-              <span
-                v-if="strategyStatsRow.breakEvenText"
-                class="chart-stats-item"
-              >
-                <span class="chart-stats-label">BEs</span>
-                <span class="chart-stats-value">{{
-                  strategyStatsRow.breakEvenText
-                }}</span>
-              </span>
-            </div>
           </div>
           <div class="histogram-toggle" role="group" aria-label="Histogram view">
             <button
@@ -2120,9 +2200,10 @@ watch(
               type="button"
               :class="{ 'is-active': histogramMode === 'prob' }"
               :aria-pressed="histogramMode === 'prob'"
+              title="P&amp;L weighted by the frequency of each terminal-price bin"
               @click="histogramMode = 'prob'"
             >
-              PnL × Freq
+              EV contribution
             </button>
           </div>
       <div
@@ -2191,7 +2272,11 @@ watch(
             <span class="histogram-legend-item">
               <span class="histogram-legend-mark histogram-legend-mark--average"></span>
               Right:
-              {{ histogramMode === 'prob' ? 'PnL × frequency' : 'median PnL' }}
+              {{
+                histogramMode === 'prob'
+                  ? 'expected-value contribution'
+                  : 'median PnL'
+              }}
               per price bin
             </span>
             <span class="histogram-legend-item">
@@ -2199,7 +2284,8 @@ watch(
               Shaded: break-even prices
             </span>
           </div>
-        </section>
+          </section>
+        </div>
       </div>
       <StopLossSimulator
         v-else
@@ -2225,17 +2311,24 @@ watch(
 :global(:root) {
   --color-bg: #0a0b0e;
   --color-surface: #131316;
+  --color-surface-raised: #1a1a1f;
   --color-text: #e8eaed;
   --color-text-muted: #70767d;
-  --color-border: transparent;
-  --color-border-strong: transparent;
+  --color-accent: #7dd3fc;
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border: rgba(255, 255, 255, 0.09);
+  --color-border-strong: rgba(255, 255, 255, 0.2);
 }
 
 :global(body) {
   min-width: 320px;
   background: var(--color-bg);
   color: var(--color-text);
-  font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
+  font-family:
+    "Helvetica Neue",
+    Helvetica,
+    -apple-system,
+    sans-serif;
   color-scheme: dark;
 }
 
@@ -2253,11 +2346,11 @@ watch(
   width: 100%;
   min-height: 100vh;
   background: var(--color-bg);
-  font-family: "Helvetica Neue", Helvetica, -apple-system, sans-serif;
-}
-
-.app-main :deep(*) {
-  border-color: transparent !important;
+  font-family:
+    "Helvetica Neue",
+    Helvetica,
+    -apple-system,
+    sans-serif;
 }
 
 .app-main :deep(:focus-visible) {
@@ -2290,6 +2383,7 @@ watch(
 }
 
 .builder-section {
+  grid-area: selector;
   width: 100%;
   min-width: 0;
   /* Place the first fixed-width combo control on the shared workspace grid. */
@@ -2318,9 +2412,9 @@ watch(
 
 .workspace-container {
   width: 100%;
-  max-width: var(--workspace-max-width);
+  max-width: none;
   margin: 0 auto;
-  padding: 0 28px 28px;
+  padding: 0 36px 28px 28px;
 }
 
 .workspace-container--stop-loss {
@@ -2434,67 +2528,153 @@ watch(
 }
 
 .simulation-main {
-  display: block;
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  grid-template-areas:
+    ". selector"
+    "metrics chart";
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.simulator-column {
+  display: contents;
 }
 
 .chart-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  box-sizing: border-box;
-  height: var(--chart-header-height);
-  width: 67.333%;
-  margin-left: 3.833%;
-  padding: 0;
-  position: relative;
+  position: absolute;
+  inset: 0;
   z-index: 8;
-  gap: 18px;
+  pointer-events: none;
 }
 
-.chart-header-left {
+.metrics-column {
+  grid-area: metrics;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 26px;
+  width: 100%;
+  padding-top: 44px;
+}
+
+.outcome-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 27px;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.outcome-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
   min-width: 0;
+}
+
+.outcome-label {
+  order: 2;
+  color: #70767d;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 1.2px;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.outcome-value {
+  order: 1;
+  color: #e8eaed;
+  font-size: 20px;
+  font-weight: 300;
+  letter-spacing: -0.3px;
+  line-height: 1.1;
+}
+
+.outcome-range {
+  order: 1;
+  color: #e8eaed;
+  font-size: 20px;
+  font-weight: 300;
+  letter-spacing: -0.3px;
+  line-height: 1.1;
+}
+
+.outcome-summary .is-pos,
+.outcome-summary .is-neg,
+.outcome-summary .is-zero,
+.chart-stats-row .is-pos,
+.chart-stats-row .is-neg,
+.chart-stats-row .is-zero {
+  color: #e8eaed;
 }
 
 .chart-stats-row {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
-  font-size: 10px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 27px;
+  width: 100%;
   font-variant-numeric: tabular-nums;
-  line-height: 1.1;
   white-space: nowrap;
-  flex-shrink: 0;
 }
 
 .chart-stats-item {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
 }
 
 .chart-stats-label {
+  order: 2;
   color: var(--text-muted);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
 }
 
 .chart-stats-value {
-  color: rgba(148, 163, 184, 0.95);
-  font-weight: 500;
+  order: 1;
+  color: #e8eaed;
+  font-size: 20px;
+  font-weight: 300;
+}
+
+.chart-detail-row {
+  position: static;
 }
 
 .chart-meta {
+  position: absolute;
+  top: 5px;
+  right: 18%;
+  left: 0;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
+  height: calc(var(--chart-header-height) - 5px);
   font-size: 11px;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+.chart-meta-heading {
+  color: #70767d;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
 }
 
 .chart-meta-key {
-  color: var(--text-muted);
+  color: #70767d;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.5px;
@@ -2502,13 +2682,13 @@ watch(
 
 .chart-meta-key i,
 .chart-horizon-label i {
-  color: rgba(148, 163, 184, 0.95);
+  color: #e8eaed;
   font-style: normal;
   font-weight: 600;
 }
 
 .chart-meta-value {
-  color: rgba(148, 163, 184, 0.95);
+  color: #e8eaed;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
@@ -2528,7 +2708,7 @@ watch(
   border-radius: 4px;
   outline: 0;
   background: transparent;
-  color: rgba(148, 163, 184, 0.95);
+  color: #e8eaed;
   font: inherit;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -2551,7 +2731,7 @@ watch(
 
 .chart-meta-unit {
   margin-left: -4px;
-  color: rgba(148, 163, 184, 0.95);
+  color: #e8eaed;
   font-weight: 500;
 }
 
@@ -2570,7 +2750,7 @@ watch(
 }
 
 .chart-horizon-label {
-  color: var(--text-muted);
+  color: #70767d;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.5px;
@@ -2668,9 +2848,9 @@ watch(
 }
 
 .settings-popover-header strong {
-  color: #f1f5f9;
+  color: #e8eaed;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .settings-popover-header small {
@@ -2690,7 +2870,7 @@ watch(
 }
 
 .settings-reset:hover {
-  color: #f1f5f9;
+  color: #e8eaed;
 }
 
 .settings-section {
@@ -2749,7 +2929,7 @@ watch(
 
 .path-model-toggle button.is-active {
   background: rgba(255, 255, 255, 0.105);
-  color: #f1f5f9;
+  color: #e8eaed;
 }
 
 .settings-model-note {
@@ -2778,7 +2958,7 @@ watch(
   min-height: 28px;
   color: #969da7;
   font-size: 10px;
-  font-weight: 550;
+  font-weight: 500;
   letter-spacing: 0;
 }
 
@@ -2883,7 +3063,7 @@ watch(
   padding: 0 11px;
   border-radius: 6px;
   font-size: 9px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .settings-action--cancel {
@@ -2908,10 +3088,11 @@ watch(
 }
 
 .chart-section {
+  grid-area: chart;
   position: relative;
   container-type: inline-size;
   width: 100%;
-  max-width: var(--workspace-max-width);
+  max-width: none;
   min-width: 0;
   margin: 0;
   --chart-header-height: 40px;
@@ -3065,7 +3246,7 @@ watch(
 
 .rows-popover-value {
   font-size: 10px;
-  color: #f1f5f9;
+  color: #e8eaed;
   font-variant-numeric: tabular-nums;
 }
 
@@ -3127,52 +3308,62 @@ watch(
   display: flex;
   justify-content: space-between;
   font-size: 9px;
-  color: rgba(148, 163, 184, 0.9);
+  color: #8b9198;
   font-variant-numeric: tabular-nums;
 }
 
 .histogram-toggle {
   position: absolute;
   top: 8px;
-  left: 88.583%;
-  transform: translateX(-50%);
+  right: 1.5%;
+  left: auto;
   z-index: 9;
   display: inline-flex;
-  gap: 4px;
-  padding: 3px;
-  border-radius: 999px;
-  border: none;
-  background: #000000;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .histogram-toggle button {
   border: none;
   background: transparent;
-  color: var(--text-muted);
-  font-size: 11px;
+  color: #70767d;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0;
   text-transform: none;
-  padding: 3px 8px;
-  border-radius: 999px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 6px;
   cursor: pointer;
 }
 
 .histogram-toggle button.is-active {
-  color: var(--text-primary);
-  background: rgba(255, 255, 255, 0.12);
+  color: #e8eaed;
+  background: rgba(255, 255, 255, 0.1);
 }
 
 @media (max-width: 1280px) {
-  .chart-section {
-    --chart-header-height: 58px;
+  .outcome-summary {
+    gap: 23px;
   }
 
-  .chart-header {
-    align-items: flex-start;
-    flex-direction: column;
-    justify-content: center;
-    gap: 5px;
+  .outcome-value {
+    font-size: 20px;
+  }
+
+  .outcome-range {
+    font-size: 20px;
+  }
+
+  .chart-stats-value {
+    font-size: 20px;
+  }
+
+  .chart-meta {
+    right: 21%;
   }
 }
 
@@ -3236,7 +3427,11 @@ watch(
   }
 
   .simulation-main {
-    display: block;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "selector"
+      "metrics"
+      "chart";
   }
 
   .chart-section {
@@ -3245,7 +3440,67 @@ watch(
     aspect-ratio: 1.9 / 1;
     flex: none;
     width: 100%;
-    --chart-header-height: 58px;
+    --chart-header-height: 48px;
+  }
+
+  .metrics-column {
+    display: flex;
+    width: 100%;
+    padding-top: 22px;
+    gap: 18px;
+  }
+
+  .outcome-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 17px 24px;
+  }
+
+  .outcome-value {
+    font-size: 17px;
+  }
+
+  .outcome-range {
+    font-size: 17px;
+  }
+
+  .outcome-label {
+    font-size: 10px;
+    letter-spacing: 0.8px;
+  }
+
+  .chart-stats-value {
+    font-size: 17px;
+  }
+
+  .chart-stats-label {
+    font-size: 10px;
+    letter-spacing: 0.8px;
+  }
+
+  .chart-stats-row {
+    flex-direction: row;
+    gap: 24px;
+  }
+
+  .chart-meta {
+    right: 0;
+    justify-content: flex-start;
+    gap: 4px;
+    overflow: hidden;
+  }
+
+  .chart-meta-heading,
+  .chart-horizon-label {
+    display: none;
+  }
+
+  .histogram-toggle {
+    display: none;
+  }
+
+  .histogram-legend {
+    display: none;
   }
 }
 </style>
