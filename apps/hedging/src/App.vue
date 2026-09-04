@@ -30,6 +30,7 @@ const ui = reactive({
   targetMaturity: "",
   targetStrike: "",
   targetType: "put",
+  targetSide: "long",
   targetAmount: 1,
   horizonHours: 7 * 24,
   period: 10 * 60,
@@ -190,17 +191,25 @@ const targetOptionsForMaturity = computed(() =>
   ),
 );
 
+const targetOptionTypes = computed(() =>
+  ui.targetType === "straddle" ? ["call", "put"] : [ui.targetType],
+);
+
 const targetStrikes = computed(() => {
-  const strikes = Array.from(
-    new Set(
-      targetOptionsForMaturity.value
-        .filter(
-          (instrument) => instrument.option_type_normalized === ui.targetType,
-        )
-        .map((instrument) => instrument.strike)
-        .filter((strike) => Number.isFinite(strike)),
-    ),
-  ).sort((a, b) => a - b);
+  const strikeSets = targetOptionTypes.value.map(
+    (optionType) =>
+      new Set(
+        targetOptionsForMaturity.value
+          .filter(
+            (instrument) => instrument.option_type_normalized === optionType,
+          )
+          .map((instrument) => instrument.strike)
+          .filter((strike) => Number.isFinite(strike)),
+      ),
+  );
+  const strikes = Array.from(strikeSets[0] || [])
+    .filter((strike) => strikeSets.every((strikeSet) => strikeSet.has(strike)))
+    .sort((a, b) => a - b);
 
   return strikes.map((strike) => ({
     value: String(strike),
@@ -208,23 +217,43 @@ const targetStrikes = computed(() => {
   }));
 });
 
-const targetInstrument = computed(() => {
+const targetInstruments = computed(() => {
   const strike = Number(ui.targetStrike);
-  return (
+  const instruments = targetOptionTypes.value.map((optionType) =>
     data.options.find(
       (instrument) =>
         instrument.expiration_ts === selectedMaturityTs.value &&
         instrument.strike === strike &&
-        instrument.option_type_normalized === ui.targetType,
-    ) || null
+        instrument.option_type_normalized === optionType,
+    ),
   );
+  return instruments.every(Boolean) ? instruments : [];
 });
 
 const hedgeInstrument = computed(
   () => data.hedges[0] || null,
 );
 
-const targetTitle = computed(() => targetInstrument.value?.instrument_name || "");
+const targetTitle = computed(() => {
+  if (ui.targetType === "straddle") {
+    const [call, put] = targetInstruments.value;
+    if (!call || !put) return "";
+    return `${call.instrument_name} + ${put.instrument_name}`;
+  }
+  return targetInstruments.value[0]?.instrument_name || "";
+});
+const targetAmountMagnitude = computed(() => {
+  const amount = Number(ui.targetAmount);
+  return Number.isFinite(amount) ? Math.abs(amount) : 0;
+});
+const signedTargetAmount = computed(() =>
+  ui.targetSide === "short"
+    ? -targetAmountMagnitude.value
+    : targetAmountMagnitude.value,
+);
+const targetSideLabel = computed(() =>
+  ui.targetSide === "short" ? "Short" : "Long",
+);
 const thresholdValue = computed(() => {
   const value = Number(ui.threshold);
   return Number.isFinite(value) ? Math.max(0, value) : 0;
@@ -249,7 +278,7 @@ const horizonLabel = computed(() => {
 
 const chartSubtitle = computed(() => {
   if (!targetTitle.value) return "";
-  return `${targetTitle.value} x ${amountFormatter.format(Number(ui.targetAmount))}, horizon ${horizonLabel.value}, resolution ${effectiveResolutionSummary.value}, threshold ${deltaFormatter.format(thresholdValue.value)}, tolerance ${deltaFormatter.format(toleranceValue.value)}, period ${periodHours.value}`;
+  return `${targetSideLabel.value} ${targetTitle.value} x ${amountFormatter.format(targetAmountMagnitude.value)}, horizon ${horizonLabel.value}, resolution ${effectiveResolutionSummary.value}, threshold ${deltaFormatter.format(thresholdValue.value)}, tolerance ${deltaFormatter.format(toleranceValue.value)}, period ${periodHours.value}`;
 });
 
 const slugValue = (value) =>
@@ -303,32 +332,39 @@ const markClose = (row, fallback = null) => {
 
 function buildHedgingSimulation({
   indexRows,
-  targetRows,
+  targets,
   hedgeRows,
-  target,
   hedge,
   settings,
 }) {
-  if (!target || !hedge) return { rows: [], trades: [] };
+  if (!targets?.length || !hedge) return { rows: [], trades: [] };
 
   const indexByTs = new Map(
     (indexRows || [])
       .filter((row) => Number.isFinite(row?.ts))
       .map((row) => [row.ts, row]),
   );
-  const targetByTs = new Map(
-    (targetRows || [])
-      .filter((row) => Number.isFinite(row?.ts))
-      .map((row) => [row.ts, row]),
-  );
+  const targetLegs = targets.map(({ instrument, rows: targetRows }) => ({
+    instrument,
+    rowsByTs: new Map(
+      (targetRows || [])
+        .filter((row) => Number.isFinite(row?.ts))
+        .map((row) => [row.ts, row]),
+    ),
+  }));
   const hedgeByTs = new Map(
     (hedgeRows || [])
       .filter((row) => Number.isFinite(row?.ts))
       .map((row) => [row.ts, row]),
   );
 
-  const timestamps = Array.from(targetByTs.keys())
-    .filter((ts) => indexByTs.has(ts) && hedgeByTs.has(ts))
+  const timestamps = Array.from(targetLegs[0].rowsByTs.keys())
+    .filter(
+      (ts) =>
+        indexByTs.has(ts) &&
+        hedgeByTs.has(ts) &&
+        targetLegs.every((leg) => leg.rowsByTs.has(ts)),
+    )
     .sort((a, b) => a - b);
 
   let position = 0;
@@ -342,15 +378,22 @@ function buildHedgingSimulation({
 
   for (const ts of timestamps) {
     const indexPoint = indexByTs.get(ts);
-    const targetPoint = targetByTs.get(ts);
     const hedgePoint = hedgeByTs.get(ts);
     const hedgePrice = markClose(hedgePoint, indexPoint.index_price_close);
-    const targetPrice = markClose(targetPoint);
-    const targetUnitDelta = unitDelta({
-      instrument: target,
-      markPoint: targetPoint,
-      indexPoint,
-    });
+    const targetPoints = targetLegs.map((leg) => ({
+      instrument: leg.instrument,
+      markPoint: leg.rowsByTs.get(ts),
+    }));
+    const targetPrices = targetPoints.map(({ markPoint }) => markClose(markPoint));
+    const targetDeltas = targetPoints.map(({ instrument, markPoint }) =>
+      unitDelta({ instrument, markPoint, indexPoint }),
+    );
+    const targetPrice = targetPrices.every(Number.isFinite)
+      ? targetPrices.reduce((total, price) => total + price, 0)
+      : null;
+    const targetUnitDelta = targetDeltas.every(Number.isFinite)
+      ? targetDeltas.reduce((total, delta) => total + delta, 0)
+      : null;
     const hedgeUnitDelta = unitDelta({
       instrument: hedge,
       markPoint: hedgePoint,
@@ -419,13 +462,17 @@ function buildHedgingSimulation({
       ? safeTargetAmount * (targetPrice - initialTargetPrice)
       : 0;
     const cumulativePnl = optionPnl + botPnl;
-    const vegaPnlStep = optionVegaPnl({
-      instrument: target,
-      markPoint: targetPoint,
-      indexPoint,
-      amount: safeTargetAmount,
-    });
-    if (Number.isFinite(vegaPnlStep)) cumulativeVegaPnl += vegaPnlStep;
+    const vegaPnlSteps = targetPoints.map(({ instrument, markPoint }) =>
+      optionVegaPnl({
+        instrument,
+        markPoint,
+        indexPoint,
+        amount: safeTargetAmount,
+      }),
+    );
+    if (vegaPnlSteps.every(Number.isFinite)) {
+      cumulativeVegaPnl += vegaPnlSteps.reduce((total, pnl) => total + pnl, 0);
+    }
 
     rows.push({
       ts,
@@ -455,11 +502,19 @@ function buildHedgingSimulation({
 const simulation = computed(() =>
   buildHedgingSimulation({
     indexRows: data.index[activeDataKey.value] || [],
-    targetRows: data.targetMark[activeDataKey.value] || [],
+    targets: targetInstruments.value.map((instrument) => ({
+      instrument,
+      rows:
+        data.targetMark[activeDataKey.value]?.[instrument.instrument_name] || [],
+    })),
     hedgeRows: data.hedgeMark[activeDataKey.value] || [],
-    target: targetInstrument.value,
     hedge: hedgeInstrument.value,
-    settings: ui,
+    settings: {
+      targetAmount: signedTargetAmount.value,
+      threshold: ui.threshold,
+      tolerance: ui.tolerance,
+      period: ui.period,
+    },
   }),
 );
 
@@ -470,9 +525,13 @@ const canSavePng = computed(() => simulationRows.value.length > 0);
 
 function handleSavePng() {
   if (!chartRef.value) return;
-  const base = targetInstrument.value?.instrument_name || "hedging";
+  const base =
+    ui.targetType === "straddle"
+      ? `${underlying.value}-straddle-${ui.targetMaturity}-${ui.targetStrike}`
+      : targetInstruments.value[0]?.instrument_name || "hedging";
   const parts = [
     base,
+    ui.targetSide,
     "hedging",
     `horizon_${horizonLabel.value}`,
     `period_${periodHours.value}`,
@@ -566,11 +625,14 @@ const rebuildInstruments = () => {
 };
 
 async function loadSimulation() {
-  const target = targetInstrument.value;
-  const hedge = hedgeInstrument.value;
-  if (!target || !hedge) return;
-
   const requestId = ++loadRequestId;
+  const targets = targetInstruments.value;
+  const hedge = hedgeInstrument.value;
+  if (targets.length !== targetOptionTypes.value.length || !hedge) {
+    ui.loading = false;
+    return;
+  }
+
   ui.loading = true;
   ui.error = "";
 
@@ -578,19 +640,23 @@ async function loadSimulation() {
   try {
     const [indexRows, targetMarkRows, hedgeMarkRows] = await Promise.all([
       fetchIndexHistory({
-        index_name: target.underlying || underlying.value,
+        index_name: targets[0].underlying || underlying.value,
         resolution,
         from,
         to,
         count: maxPoints,
       }),
-      fetchMarkHistory({
-        instrument_name: target.instrument_name,
-        resolution,
-        from,
-        to,
-        count: maxPoints,
-      }),
+      Promise.all(
+        targets.map((target) =>
+          fetchMarkHistory({
+            instrument_name: target.instrument_name,
+            resolution,
+            from,
+            to,
+            count: maxPoints,
+          }),
+        ),
+      ),
       fetchMarkHistory({
         instrument_name: hedge.instrument_name,
         resolution,
@@ -602,13 +668,18 @@ async function loadSimulation() {
 
     if (requestId !== loadRequestId) return;
     data.index[resolutionKey] = indexRows || [];
-    data.targetMark[resolutionKey] = targetMarkRows || [];
+    data.targetMark[resolutionKey] = Object.fromEntries(
+      targets.map((target, index) => [
+        target.instrument_name,
+        targetMarkRows[index] || [],
+      ]),
+    );
     data.hedgeMark[resolutionKey] = hedgeMarkRows || [];
   } catch (error) {
     if (requestId !== loadRequestId) return;
     ui.error = error instanceof Error ? error.message : String(error);
     data.index[resolutionKey] = [];
-    data.targetMark[resolutionKey] = [];
+    data.targetMark[resolutionKey] = {};
     data.hedgeMark[resolutionKey] = [];
   } finally {
     if (requestId === loadRequestId) ui.loading = false;
@@ -717,8 +788,12 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <div class="optionSelectorGroup" aria-label="Option instrument">
-          <div class="optionTypeToggle" role="group" aria-label="Option type">
+        <div class="optionSelectorGroup" aria-label="Option position">
+          <div
+            class="optionTypeToggle"
+            role="group"
+            aria-label="Option position type"
+          >
             <button
               type="button"
               class="toolbarButton"
@@ -734,6 +809,37 @@ onBeforeUnmount(() => {
               @click="ui.targetType = 'put'"
             >
               Put
+            </button>
+            <button
+              type="button"
+              class="toolbarButton"
+              :class="{ toolbarButtonActive: ui.targetType === 'straddle' }"
+              @click="ui.targetType = 'straddle'"
+            >
+              Straddle
+            </button>
+          </div>
+
+          <div
+            class="positionSideToggle"
+            role="group"
+            aria-label="Position side"
+          >
+            <button
+              type="button"
+              class="toolbarButton"
+              :class="{ toolbarButtonActive: ui.targetSide === 'long' }"
+              @click="ui.targetSide = 'long'"
+            >
+              Long
+            </button>
+            <button
+              type="button"
+              class="toolbarButton"
+              :class="{ toolbarButtonActive: ui.targetSide === 'short' }"
+              @click="ui.targetSide = 'short'"
+            >
+              Short
             </button>
           </div>
 
@@ -758,18 +864,20 @@ onBeforeUnmount(() => {
                 :key="strike.value"
                 :value="strike.value"
               >
-              {{ strike.label }}
-            </option>
-          </select>
-        </label>
+                {{ strike.label }}
+              </option>
+            </select>
+          </label>
 
           <label class="toolbarField toolbarFieldAmount">
             <span>Amount</span>
             <input
               v-model.number="ui.targetAmount"
-              aria-label="Option amount, negative for short"
+              aria-label="Position amount"
               type="number"
+              min="0"
               step="0.01"
+              @change="ui.targetAmount = targetAmountMagnitude"
             />
           </label>
         </div>
@@ -814,10 +922,10 @@ onBeforeUnmount(() => {
 
       <aside class="configPanel" aria-label="Hedging configuration">
         <p class="botDescription">
-          Hedges the selected option delta with the perpetual. The bot allows
-          delta to drift within the threshold for the selected period, then
-          trades the perpetual back toward the option delta. If deviation
-          exceeds tolerance, it hedges immediately.
+          Hedges the selected option position's delta with the perpetual. The
+          bot allows delta to drift within the threshold for the selected
+          period, then trades the perpetual back toward the option delta. If
+          deviation exceeds tolerance, it hedges immediately.
         </p>
 
         <label class="panelField">
@@ -919,13 +1027,14 @@ onBeforeUnmount(() => {
   grid-column: 1;
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
+  justify-content: space-between;
+  gap: clamp(10px, 0.9vw, 16px);
   min-width: 0;
 }
 
 .chartToolbar .underlyingToggle,
 .optionTypeToggle,
+.positionSideToggle,
 .resolutionToggle {
   flex: 0 0 auto;
   display: inline-flex;
@@ -950,6 +1059,7 @@ onBeforeUnmount(() => {
 
 .chartToolbar .underlyingButton + .underlyingButton,
 .optionTypeToggle .toolbarButton + .toolbarButton,
+.positionSideToggle .toolbarButton + .toolbarButton,
 .resolutionToggle .toolbarButton + .toolbarButton {
   border-left: 1px solid #2e2e32;
 }
@@ -968,7 +1078,8 @@ onBeforeUnmount(() => {
 .optionSelectorGroup {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: clamp(10px, 0.9vw, 16px);
   min-width: 0;
   flex: 0 1 auto;
 }
@@ -1085,7 +1196,6 @@ onBeforeUnmount(() => {
 
 .chartToolbar .saveButton {
   flex: 0 0 auto;
-  margin-left: auto;
   height: 31px;
   padding: 0 16px;
   border: 1px solid #3d3d42;
