@@ -365,11 +365,12 @@ function render() {
   const levelEndX = level => Number.isFinite(level?.expiryTs)
     ? x(new Date(level.expiryTs * 1000))
     : innerWidth;
+  const levelOpacity = level => Number.isFinite(level?.opacity) ? level.opacity : 0.7;
   levelLines.append("line")
     .attr("x1", 0).attr("x2", levelEndX)
     .attr("y1", level => y(level.value)).attr("y2", level => y(level.value))
     .attr("stroke", level => level.color).attr("stroke-width", props.breakEvenStrokeWidth)
-    .attr("opacity", 0.7);
+    .attr("opacity", levelOpacity);
   levelLines.append("line")
     .attr("x1", 0).attr("x2", levelEndX)
     .attr("y1", level => y(level.value)).attr("y2", level => y(level.value))
@@ -414,6 +415,7 @@ function render() {
       tooltip: level.tooltip,
       selectable: true,
       expiryTs: level.expiryTs,
+      opacity: level.opacity,
     })),
     {
       id: "break-even-low",
@@ -492,7 +494,17 @@ function render() {
     const positions = priceLabelPositions(labels.map(label => label.targetY), 14, innerHeight - 6);
     labels.forEach((label, index) => { label.y = positions[index]; });
   } else {
-    deCollidePriceLabels(priceLabels.filter(label => label.id !== "win-probability"), 14, innerHeight - 6);
+    const collidable = priceLabels.filter(label => label.id !== "win-probability");
+    const currentLabel = collidable.find(label => label.id === "current-index");
+    if (currentLabel && levels.length > 0) {
+      currentLabel.y = Math.max(14, Math.min(innerHeight - 6, currentLabel.targetY));
+      const upper = collidable.filter(label => label !== currentLabel && label.targetY < currentLabel.y);
+      const lower = collidable.filter(label => label !== currentLabel && label.targetY >= currentLabel.y);
+      deCollidePriceLabels(upper, 14, Math.max(14, currentLabel.y - PRICE_LABEL_MIN_SPACING));
+      deCollidePriceLabels(lower, Math.min(innerHeight - 6, currentLabel.y + PRICE_LABEL_MIN_SPACING), innerHeight - 6);
+    } else {
+      deCollidePriceLabels(collidable, 14, innerHeight - 6);
+    }
   }
 
   if (probabilityLabel && breakEvenLabel) {
@@ -534,7 +546,7 @@ function render() {
     .attr("y2", (label) => label.y2)
     .attr("stroke", (label) => label.color)
     .attr("stroke-width", 0.75)
-    .attr("opacity", 0.65);
+    .attr("opacity", label => Number.isFinite(label?.opacity) ? label.opacity * 0.9 : 0.65);
 
   g.append("g")
     .attr("class", "priceLabels")
@@ -552,6 +564,7 @@ function render() {
     .attr("paint-order", "stroke")
     .attr("stroke", props.backgroundColor)
     .attr("stroke-width", 3)
+    .attr("opacity", label => Number.isFinite(label?.opacity) ? label.opacity : null)
     .text((label) => label.text)
     .attr("role", label => label.selectable ? "button" : null)
     .attr("tabindex", label => label.selectable || label.tooltip ? 0 : null)

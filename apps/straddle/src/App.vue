@@ -35,18 +35,10 @@ const MAX_CIRCLE_SIZE = 12;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 const ALL_MATURITIES_VALUE = "all";
 const ALL_MATURITIES_MARK_POINTS = 30;
-const MATURITY_PALETTE = [
-  "#60a5fa",
-  "#f59e0b",
-  "#34d399",
-  "#f472b6",
-  "#a78bfa",
-  "#fb923c",
-  "#22d3ee",
-  "#facc15",
-  "#f87171",
-  "#4ade80",
-];
+const PUT_BREAK_EVEN_COLOR = "#ef4444";
+const CALL_BREAK_EVEN_COLOR = "#22c55e";
+const BREAK_EVEN_MAX_OPACITY = 0.9;
+const BREAK_EVEN_MIN_OPACITY = 0.3;
 
 const UNDERLYING_OPTIONS = [
   { value: "BTCUSD", label: "BTC" },
@@ -378,30 +370,51 @@ const allMaturityBreakEvenLevels = computed(() => {
   if (!isAllMaturities.value) return [];
   const marks = allMaturityMarks.value;
   const straddles = allMaturityStraddles.value;
-  const levels = [];
-  for (let i = 0; i < straddles.length; i += 1) {
-    const s = straddles[i];
+  const spot = getLatestIndexClose(data.index[ui.resolutionKey] || []);
+
+  const entries = [];
+  for (const s of straddles) {
     const call = marks[s.callInstrumentName];
     const put = marks[s.putInstrumentName];
     if (!Number.isFinite(call) || !Number.isFinite(put)) continue;
     const straddleMark = call + put;
-    const low = s.strike - straddleMark;
-    const high = s.strike + straddleMark;
-    const color = MATURITY_PALETTE[i % MATURITY_PALETTE.length];
-    const date = maturityFormatter.format(new Date(s.expiryTs * 1000));
-    levels.push({
-      id: `be-low-${s.expiryTs}`,
-      value: low,
-      color,
-      label: `${date} ↓ ${strikeFormatter.format(low)}`,
+    entries.push({
       expiryTs: s.expiryTs,
+      low: s.strike - straddleMark,
+      high: s.strike + straddleMark,
+      date: maturityFormatter.format(new Date(s.expiryTs * 1000)),
+    });
+  }
+  if (!entries.length) return [];
+
+  const distances = Number.isFinite(spot)
+    ? entries.flatMap((e) => [Math.abs(e.low - spot), Math.abs(e.high - spot)])
+    : [];
+  const minDist = distances.length ? Math.min(...distances) : 0;
+  const maxDist = distances.length ? Math.max(...distances) : 0;
+  const opacityFor = (value) => {
+    if (!Number.isFinite(spot) || maxDist <= minDist) return BREAK_EVEN_MAX_OPACITY;
+    const t = (Math.abs(value - spot) - minDist) / (maxDist - minDist);
+    return BREAK_EVEN_MAX_OPACITY - (BREAK_EVEN_MAX_OPACITY - BREAK_EVEN_MIN_OPACITY) * t;
+  };
+
+  const levels = [];
+  for (const e of entries) {
+    levels.push({
+      id: `be-low-${e.expiryTs}`,
+      value: e.low,
+      color: PUT_BREAK_EVEN_COLOR,
+      opacity: opacityFor(e.low),
+      label: `${e.date} ↓ ${strikeFormatter.format(e.low)}`,
+      expiryTs: e.expiryTs,
     });
     levels.push({
-      id: `be-high-${s.expiryTs}`,
-      value: high,
-      color,
-      label: `${date} ↑ ${strikeFormatter.format(high)}`,
-      expiryTs: s.expiryTs,
+      id: `be-high-${e.expiryTs}`,
+      value: e.high,
+      color: CALL_BREAK_EVEN_COLOR,
+      opacity: opacityFor(e.high),
+      label: `${e.date} ↑ ${strikeFormatter.format(e.high)}`,
+      expiryTs: e.expiryTs,
     });
   }
   return levels;
@@ -790,6 +803,17 @@ async function load({ callInstrument, putInstrument }) {
   }
 }
 
+function handleSelectBreakEven(id) {
+  if (!isAllMaturities.value) return;
+  const match = /^be-(?:low|high)-(\d+)$/.exec(String(id));
+  if (!match) return;
+  const expiryTs = match[1];
+  const straddle = allMaturityStraddles.value.find((s) => String(s.expiryTs) === expiryTs);
+  if (!straddle) return;
+  ui.optionMaturity = expiryTs;
+  ui.optionStrike = String(straddle.strike);
+}
+
 function handleSavePng() {
   const base = optionInstrumentName.value || "straddle";
   const filenameBase = ui.resolutionKey ? `${base}-${ui.resolutionKey}` : base;
@@ -1011,6 +1035,15 @@ watch(
 );
 
 watch(
+  () => ui.optionMaturity,
+  (newMaturity, oldMaturity) => {
+    if (newMaturity === ALL_MATURITIES_VALUE && oldMaturity !== ALL_MATURITIES_VALUE) {
+      ui.resolutionKey = "86400";
+    }
+  },
+);
+
+watch(
   () => ui.mode,
   (mode) => {
     if (mode === "straddle" && ui.optionMaturity === ALL_MATURITIES_VALUE) {
@@ -1185,6 +1218,7 @@ watch(
         :title="breakEvenTitle"
         :subtitle="breakEvenSubtitle"
         :loading="ui.loading"
+        @select-break-even="handleSelectBreakEven"
       />
     </div>
   </main>
