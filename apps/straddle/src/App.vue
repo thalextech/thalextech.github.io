@@ -843,6 +843,7 @@ const rebuildOptionInstruments = () => {
 const switchUnderlying = async (next) => {
   if (next === underlying.value) return;
   if (!UNDERLYING_OPTIONS.some((opt) => opt.value === next)) return;
+  const previousMaturity = ui.optionMaturity;
   loadRequestId += 1;
   ui.loading = true;
   ui.error = "";
@@ -871,21 +872,33 @@ const switchUnderlying = async (next) => {
       rows: prefetchedIndex || [],
     };
 
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const oneWeekAhead = nowSeconds + 7 * 24 * 60 * 60;
     const expiries = optionMaturities.value
       .map((option) => Number(option.value))
       .filter((ts) => Number.isFinite(ts));
-    const upcomingExpiries = expiries.filter((ts) => ts > nowSeconds);
-    const candidateExpiries = upcomingExpiries.length ? upcomingExpiries : expiries;
-    const closestExpiry = candidateExpiries.reduce((best, ts) => {
-      if (!Number.isFinite(best)) return ts;
-      const bestDistance = Math.abs(best - oneWeekAhead);
-      const currentDistance = Math.abs(ts - oneWeekAhead);
-      return currentDistance < bestDistance ? ts : best;
-    }, NaN);
-    if (Number.isFinite(closestExpiry)) {
-      ui.optionMaturity = String(closestExpiry);
+
+    let preservedMaturity = "";
+    if (previousMaturity === ALL_MATURITIES_VALUE) {
+      preservedMaturity = ALL_MATURITIES_VALUE;
+    } else if (previousMaturity && expiries.includes(Number(previousMaturity))) {
+      preservedMaturity = previousMaturity;
+    }
+
+    if (preservedMaturity) {
+      ui.optionMaturity = preservedMaturity;
+    } else {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const oneWeekAhead = nowSeconds + 7 * 24 * 60 * 60;
+      const upcomingExpiries = expiries.filter((ts) => ts > nowSeconds);
+      const candidateExpiries = upcomingExpiries.length ? upcomingExpiries : expiries;
+      const closestExpiry = candidateExpiries.reduce((best, ts) => {
+        if (!Number.isFinite(best)) return ts;
+        const bestDistance = Math.abs(best - oneWeekAhead);
+        const currentDistance = Math.abs(ts - oneWeekAhead);
+        return currentDistance < bestDistance ? ts : best;
+      }, NaN);
+      if (Number.isFinite(closestExpiry)) {
+        ui.optionMaturity = String(closestExpiry);
+      }
     }
     const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
     ui.optionStrike = getDefaultStrikeValue({
@@ -1046,6 +1059,9 @@ watch(
 watch(
   () => ui.mode,
   (mode) => {
+    if (mode === "straddle") {
+      ui.resolutionKey = "3600";
+    }
     if (mode === "straddle" && ui.optionMaturity === ALL_MATURITIES_VALUE) {
       const nowSeconds = Math.floor(Date.now() / 1000);
       const oneWeekAhead = nowSeconds + 7 * 24 * 60 * 60;
