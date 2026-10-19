@@ -240,7 +240,7 @@ const axisStyle = (axisG) => {
 
 function exportPng({ filename = "break-even.png", scale = 4, padding = 24 } = {}) {
   if (!selectedInstrument.value) {
-    overviewPriceChartRef.value?.exportPng({ filename, scale, padding });
+    overviewPriceChartRef.value?.exportPng({ filename, scale, padding, priceLabelFontSize: 13 });
     return;
   }
   if (selectedTrack.value && detailView.value === "break-even") {

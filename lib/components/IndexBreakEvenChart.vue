@@ -132,12 +132,17 @@ const deCollidePriceLabels = (labels, minY, maxY) => {
   }
 };
 
-function exportPng({ filename = "straddle-break-even.png", scale = 4, padding = 24 } = {}) {
+function exportPng({ filename = "straddle-break-even.png", scale = 4, padding = 24, priceLabelFontSize } = {}) {
   exportChartToPng({
     element: svgRef.value,
     filename,
     scale,
     padding,
+    prepareSvgClone: clone => {
+      if (Number.isFinite(priceLabelFontSize) && priceLabelFontSize > 0) {
+        d3.select(clone).selectAll(".priceLabels text").style("font-size", `${priceLabelFontSize}px`);
+      }
+    },
   });
 }
 
@@ -228,10 +233,13 @@ function render() {
   const expiryDate = Number.isFinite(props.expiryTs)
     ? new Date(props.expiryTs * 1000)
     : null;
-  const maxDate =
-    expiryDate instanceof Date && expiryDate > lastActualDate
-      ? expiryDate
-      : lastActualDate;
+  let maxDate = lastActualDate;
+  if (expiryDate instanceof Date && expiryDate > maxDate) maxDate = expiryDate;
+  for (const level of levels) {
+    if (!Number.isFinite(level?.expiryTs)) continue;
+    const levelDate = new Date(level.expiryTs * 1000);
+    if (levelDate > maxDate) maxDate = levelDate;
+  }
 
   const yValues = [];
   for (const point of actual) {
@@ -354,13 +362,16 @@ function render() {
         selectLevel(event, level);
       }
     });
+  const levelEndX = level => Number.isFinite(level?.expiryTs)
+    ? x(new Date(level.expiryTs * 1000))
+    : innerWidth;
   levelLines.append("line")
-    .attr("x1", 0).attr("x2", innerWidth)
+    .attr("x1", 0).attr("x2", levelEndX)
     .attr("y1", level => y(level.value)).attr("y2", level => y(level.value))
     .attr("stroke", level => level.color).attr("stroke-width", props.breakEvenStrokeWidth)
     .attr("opacity", 0.7);
   levelLines.append("line")
-    .attr("x1", 0).attr("x2", innerWidth)
+    .attr("x1", 0).attr("x2", levelEndX)
     .attr("y1", level => y(level.value)).attr("y2", level => y(level.value))
     .attr("stroke", "transparent").attr("stroke-width", 12);
 
@@ -402,6 +413,7 @@ function render() {
       text: level.label,
       tooltip: level.tooltip,
       selectable: true,
+      expiryTs: level.expiryTs,
     })),
     {
       id: "break-even-low",
@@ -505,7 +517,7 @@ function render() {
         )
         .map((label) => ({
           ...label,
-          x1: innerWidth,
+          x1: Number.isFinite(label.expiryTs) ? x(new Date(label.expiryTs * 1000)) : innerWidth,
           x2: label.outside ? currentLabelX - 4 : rightX + 2,
           y1: label.anchorY,
           y2: label.y + (levels.length ? 0 : PRICE_LABEL_BASELINE_OFFSET),

@@ -394,12 +394,14 @@ const allMaturityBreakEvenLevels = computed(() => {
       value: low,
       color,
       label: `${date} ↓ ${strikeFormatter.format(low)}`,
+      expiryTs: s.expiryTs,
     });
     levels.push({
       id: `be-high-${s.expiryTs}`,
       value: high,
       color,
       label: `${date} ↑ ${strikeFormatter.format(high)}`,
+      expiryTs: s.expiryTs,
     });
   }
   return levels;
@@ -446,14 +448,21 @@ const breakEvenActualData = computed(() =>
 
 const breakEvenProjectedData = computed(() => {
   const actual = breakEvenActualData.value;
-  const expiryTs = selectedMaturityTs.value;
-  if (!actual.length || !Number.isFinite(expiryTs)) return [];
+  if (!actual.length) return [];
+  let targetTs = selectedMaturityTs.value;
+  if (isAllMaturities.value) {
+    const expiries = allMaturityStraddles.value
+      .map((s) => s.expiryTs)
+      .filter((ts) => Number.isFinite(ts));
+    targetTs = expiries.length ? Math.max(...expiries) : null;
+  }
+  if (!Number.isFinite(targetTs)) return [];
   const lastActual = actual[actual.length - 1];
-  const expiryDate = new Date(expiryTs * 1000);
-  if (!(expiryDate > lastActual.date)) return [];
+  const targetDate = new Date(targetTs * 1000);
+  if (!(targetDate > lastActual.date)) return [];
   return [
     { date: lastActual.date, value: lastActual.value },
-    { date: expiryDate, value: lastActual.value },
+    { date: targetDate, value: lastActual.value },
   ];
 });
 
@@ -1167,7 +1176,7 @@ watch(
         v-else
         ref="breakEvenChartRef"
         :actual-data="breakEvenActualData"
-        :projected-data="isAllMaturities ? [] : breakEvenProjectedData"
+        :projected-data="breakEvenProjectedData"
         :break-even-low="isAllMaturities ? null : breakEvenMetrics?.breakEvenLow"
         :break-even-high="isAllMaturities ? null : breakEvenMetrics?.breakEvenHigh"
         :break-even-levels="allMaturityBreakEvenLevels"
