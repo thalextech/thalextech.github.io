@@ -29,6 +29,8 @@ const normalCdf = (x) => {
   return x < 0 ? 0.5 * tau : 1 - 0.5 * tau;
 };
 
+// `spot` is the zero-drift lognormal mean. Supply the expiry forward when
+// calculating probabilities from futures-based option IVs.
 export const calcOptionNd2 = ({ optionType, spot, strike, iv, tauSeconds }) => {
   if (!Number.isFinite(spot) || spot <= 0) return null;
   if (!Number.isFinite(strike) || strike <= 0) return null;

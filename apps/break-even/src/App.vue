@@ -20,6 +20,7 @@ import {
 import { createHistoryRequester } from "./lib/historyRequests.js";
 import { fetchIndexHistoryInChunks } from "./lib/indexHistory.js";
 import { findSameStrikeInstrument } from "./lib/trackSelection.js";
+import { findForwardProxy, buildParityForwardHistory } from "./lib/forwardParity.js";
 
 const requestHistory = createHistoryRequester();
 const fetchIndexHistory = (params) => {
@@ -393,6 +394,17 @@ const currentIndexRows = computed(() => data.index[ui.resolutionKey] || []);
 const latestIndexPoint = computed(() => getLatestIndexPoint(currentIndexRows.value));
 const latestSpot = computed(() => latestIndexPoint.value?.index_price_close ?? null);
 const latestSpotTs = computed(() => latestIndexPoint.value?.ts ?? null);
+const forwardProxy = computed(() => findForwardProxy(latestSpot.value, optionInstrumentsForMaturity.value));
+const parityForwardHistory = computed(() => {
+  const proxy = forwardProxy.value;
+  if (!proxy) return [];
+  return buildParityForwardHistory(
+    proxy,
+    data.markByInstrument[proxy.callInstrumentName],
+    data.markByInstrument[proxy.putInstrumentName],
+  ).filter(point => point.ts <= selectedMaturityTs.value);
+});
+const forwardSnapshot = computed(() => parityForwardHistory.value.at(-1) ?? null);
 const chartIndexData = computed(() =>
   (currentIndexRows.value || [])
     .filter(
@@ -685,9 +697,18 @@ async function load() {
     data.index[ui.resolutionKey] = normalizedIndexRows;
     if (!instrumentName) data.markByInstrument = {};
 
+    // Detail views still need both proxy legs, even when the selected option
+    // has a different strike. Their histories also supply historical forwards.
+    const proxy = forwardProxy.value;
+    const historyInstruments = instrumentName
+      ? optionInstrumentsForMaturity.value.filter(instrument =>
+        instrument.instrument_name === instrumentName ||
+        instrument.instrument_name === proxy?.callInstrumentName ||
+        instrument.instrument_name === proxy?.putInstrumentName)
+      : maturityInstruments;
     const { rowsByInstrument } =
       await fetchMarkHistoriesByInstrument({
-        instruments: maturityInstruments,
+        instruments: historyInstruments,
         resolution: markConfig.resolution,
         intervalSeconds: markConfig.interval_seconds,
         from: markFrom,
@@ -903,12 +924,23 @@ watch(
           <button type="button" :aria-pressed="overviewMetric === 'break-even'" @click="overviewMetric = 'break-even'">Break-even prices</button>
           <button type="button" :aria-pressed="overviewMetric === 'awp'" @click="overviewMetric = 'awp'">Average win prices</button>
         </div>
+        <div v-else class="overviewToggle" role="group" aria-label="Instrument chart view">
+          <button type="button" :aria-pressed="detailView === 'break-even'" @click="detailView = 'break-even'">Break-even price</button>
+          <button type="button" :aria-pressed="detailView === 'probability'" @click="detailView = 'probability'">Probability</button>
+        </div>
 
         <span v-if="overviewPriceActive" class="overviewHint">
           Click a line or label to explore.
         </span>
 
         <div class="controlsSpacer" />
+
+        <button
+          v-if="selectedInstrument"
+          class="backButton"
+          type="button"
+          @click="selectedInstrument = null"
+        >← Back to price context</button>
 
         <button
           class="saveButton"
@@ -959,7 +991,7 @@ watch(
       <BreakEvenChart
         ref="chartRef"
         v-model:selected-instrument="selectedInstrument"
-        v-model:detail-view="detailView"
+        :detail-view="detailView"
         :selected-option="selectedOption"
         :overview-metric="overviewMetric"
         :tracks="breakEvenTracks"
@@ -968,8 +1000,9 @@ watch(
         :index-projected-data="chartIndexProjectedData"
         :spot-price="latestSpot"
         :spot-ts="latestSpotTs"
+        :forward-snapshot="forwardSnapshot"
+        :forward-history="parityForwardHistory"
         :expiry-ts="selectedMaturityTs"
-        :current-ts="nowTs"
         :title="breakEvenTitle"
         :subtitle="breakEvenSubtitle"
         :loading="ui.loading"
@@ -1012,6 +1045,21 @@ watch(
 }
 
 .controlsSpacer { flex: 1; }
+
+.backButton {
+  align-self: center;
+  padding: 6px 12px;
+  border: 1px solid #414751;
+  border-radius: 5px;
+  background: transparent;
+  color: #c2c7cf;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.backButton:hover { background: #20252c; color: white; }
+.backButton:focus-visible { outline: 2px solid #aab8cc; outline-offset: 3px; }
 
 .overviewToggle {
   display: flex;

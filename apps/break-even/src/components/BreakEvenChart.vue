@@ -15,7 +15,8 @@ const props = defineProps({
   spotPrice: { type: Number, default: null },
   spotTs: { type: Number, default: null },
   expiryTs: { type: Number, default: null },
-  currentTs: { type: Number, default: null },
+  forwardSnapshot: { type: Object, default: null },
+  forwardHistory: { type: Array, default: () => [] },
   title: { type: String, default: "BTC Latest Break-Evens and Price History" },
   subtitle: { type: String, default: "" },
   loading: { type: Boolean, default: false },
@@ -28,17 +29,14 @@ const props = defineProps({
 const shortLegStrike = ref(null);
 watch(() => props.selectedInstrument, () => { shortLegStrike.value = null; });
 
-const emit = defineEmits(["update:selectedInstrument", "update:detailView"]);
+const emit = defineEmits(["update:selectedInstrument"]);
 const svgRef = ref(null);
 let resizeObserver = null;
 const selectedInstrument = computed({
   get: () => props.selectedInstrument,
   set: value => emit("update:selectedInstrument", value),
 });
-const detailView = computed({
-  get: () => props.detailView,
-  set: value => emit("update:detailView", value),
-});
+const detailView = computed(() => props.detailView);
 const priceChartRef = ref(null);
 const overviewPriceChartRef = ref(null);
 const selectedTrack = computed(() => props.tracks.find(track => track.instrumentName === selectedInstrument.value));
@@ -64,7 +62,7 @@ const CHART_FONT_FAMILY = '"Helvetica Neue", Helvetica, -apple-system, sans-seri
 const formatPrice = d3.format(",.0f");
 const formatProb = d3.format(".1%");
 const timeToExpiry = computed(() => {
-  const valuationTs = Number.isFinite(props.currentTs) ? props.currentTs : props.spotTs;
+  const valuationTs = props.forwardSnapshot?.ts;
   return Number.isFinite(props.expiryTs) && Number.isFinite(valuationTs)
     ? props.expiryTs - valuationTs : null;
 });
@@ -72,7 +70,7 @@ const getWinProbability = track => {
   if (!track) return null;
   return calcOptionNd2({
     optionType: track.optionType,
-    spot: props.spotPrice,
+    spot: props.forwardSnapshot?.value ?? null,
     strike: track.currentBreakEven,
     iv: track.referenceIv,
     tauSeconds: timeToExpiry.value,
@@ -83,7 +81,7 @@ const selectedWinProbability = computed(() => {
   if (!track) return null;
   return calcOptionNd2({
     optionType: track.optionType,
-    spot: props.spotPrice,
+    spot: props.forwardSnapshot?.value ?? null,
     strike: effectiveBreakEven.value ?? track.currentBreakEven,
     iv: track.referenceIv,
     tauSeconds: timeToExpiry.value,
@@ -97,7 +95,11 @@ const getBreakEvenTooltip = track => {
 const getWinProbabilityTooltip = track => {
   if (!track) return "";
   const isPut = track.optionType === "put";
-  return `P(win) — model probability of finishing ${isPut ? "below" : "above"} BE at expiry. Lognormal, zero rates/carry.`;
+  const forward = props.forwardSnapshot;
+  const input = forward
+    ? `Forward ${formatPrice(forward.value)}, inferred as K + call − put at strike ${formatPrice(forward.strike)} (first strike above spot).`
+    : "Forward unavailable: matching call and put marks are required at the first strike above spot.";
+  return `P(win) — model probability of finishing ${isPut ? "below" : "above"} BE at expiry. Lognormal, zero rates, option IV held constant. ${input}`;
 };
 const selectedBreakEvenTooltip = computed(() => getBreakEvenTooltipForSelection(selectedTrack.value));
 const selectedWinProbabilityTooltip = computed(() => getWinProbabilityTooltip(selectedTrack.value));
@@ -128,7 +130,7 @@ const spreadMetrics = computed(() => {
   const breakEven = isPut ? track.strike - netPremium : track.strike + netPremium;
   const awp = calcConditionalSpreadWinningPrice({
     optionType: track.optionType,
-    spot: props.spotPrice,
+    spot: props.forwardSnapshot?.value ?? null,
     longStrike: track.strike,
     shortStrike: shortLeg.strike,
     iv: track.referenceIv,
@@ -144,7 +146,7 @@ const getWinningPrice = track => {
   if (spread && spread.shortLeg && Number.isFinite(spread.awp)) return spread.awp;
   return calcConditionalWinningPrice({
     optionType: track.optionType,
-    spot: props.spotPrice,
+    spot: props.forwardSnapshot?.value ?? null,
     strike: track.strike,
     iv: track.referenceIv,
     tauSeconds: timeToExpiry.value,
@@ -186,7 +188,7 @@ const selectedWinningPriceLevels = computed(() => {
     levels.push({
       id: "short-leg-strike",
       value: spread.shortLeg.strike,
-      label: `Short ${isPut ? "P" : "C"} ${formatPrice(spread.shortLeg.strike)} · max profit ${formatPrice(spread.maxProfit)}`,
+      label: `Short ${isPut ? "P" : "C"} ${formatPrice(spread.shortLeg.strike)}`,
       color: track.optionType === "put" ? "#fbbf24" : "#fbbf24",
       tooltip: `Short strike — payoff caps here. ${isPut ? "Below" : "Above"} it, the spread pays its max of ${formatPrice(spread.maxProfit)}.`,
     });
@@ -212,7 +214,7 @@ const selectedSubtitle = computed(() => {
   if (!track) return props.subtitle;
   const probabilityAboveStrike = calcOptionNd2({
     optionType: "call",
-    spot: props.spotPrice,
+    spot: props.forwardSnapshot?.value ?? null,
     strike: track.strike,
     iv: track.referenceIv,
     tauSeconds: timeToExpiry.value,
@@ -309,11 +311,11 @@ function render() {
   );
   const probabilityLabel = selected?.optionType === "put" ? "N(-d2)" : "N(d2)";
   const probabilityColor = "#f5f5f7";
-  const probabilityHistory = buildTrackProbabilityHistory(selected, indexActual, props.expiryTs);
+  const probabilityHistory = buildTrackProbabilityHistory(selected, indexActual, props.expiryTs, props.forwardHistory);
   if (!probabilityHistory.length) {
     svg.append("text").attr("x", width / 2).attr("y", height / 2)
       .attr("text-anchor", "middle").attr("fill", "#aaa")
-      .text("No matching historical IV and index marks available for this selection.");
+      .text("No matching historical IV, index, and parity marks available for this selection.");
     return;
   }
 
@@ -454,7 +456,8 @@ watch(
     props.spotPrice,
     props.spotTs,
     props.expiryTs,
-    props.currentTs,
+    props.forwardSnapshot,
+    props.forwardHistory,
     props.title,
     props.subtitle,
     props.loading,
@@ -475,14 +478,6 @@ onUnmounted(() => resizeObserver?.disconnect());
 
 <template>
   <div class="chartWrap" @keydown.esc="clearSelection">
-    <div v-if="selectedInstrument" class="selectionToolbar selectionToolbar--instrument">
-      <button class="backButton" type="button" @click="clearSelection">← Back to price context</button>
-      <div class="detailToggle" role="group" aria-label="Instrument chart view">
-        <button type="button" :aria-pressed="detailView === 'break-even'" @click="detailView = 'break-even'">Break-even price</button>
-        <button type="button" :aria-pressed="detailView === 'probability'" @click="detailView = 'probability'">Probability</button>
-      </div>
-      <span class="selectionLabel">{{ selectedLabel }} selected</span>
-    </div>
     <div v-if="selectedTrack && detailView === 'break-even' && shortLegCandidates.length" class="spreadControl">
       <label class="spreadLabel" :for="`short-leg-${selectedInstrument}`">
         Short leg:
@@ -561,18 +556,6 @@ onUnmounted(() => resizeObserver?.disconnect());
 </template>
 
 <style scoped>
-.selectionToolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; min-height: 36px; padding: 8px 16px; color: #aaa; font-size: 12px; }
-.selectionToolbar--instrument { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
-.selectionToolbar--instrument .detailToggle { justify-self: center; }
-.selectionToolbar--instrument .selectionLabel { justify-self: end; text-align: right; }
-.selectionToolbar button { padding: 6px 12px; font: inherit; cursor: pointer; }
-.selectionToolbar button:focus-visible { outline: 2px solid #aab8cc; outline-offset: 3px; }
-.detailToggle { display: flex; gap: 3px; padding: 3px; border: 1px solid #414751; border-radius: 8px; background: #15181d; }
-.detailToggle button { border: 0; border-radius: 5px; background: transparent; color: #a9b0ba; }
-.detailToggle button:hover { color: white; }
-.detailToggle button[aria-pressed="true"] { background: #edf0f4; color: #15181d; font-weight: 600; }
-.selectionToolbar .backButton { justify-self: start; border: 1px solid #414751; border-radius: 5px; background: transparent; color: #c2c7cf; }
-.selectionToolbar .backButton:hover { background: #20252c; color: white; }
 .selectionEmpty { min-height: 320px; display: grid; place-items: center; color: #aaa; font-size: 14px; }
 .spreadControl { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 4px 16px 10px; color: #a9b0ba; font-size: 12px; }
 .spreadLabel { color: #70767d; }
@@ -594,13 +577,6 @@ onUnmounted(() => resizeObserver?.disconnect());
   height: auto;
 }
 
-@media (max-width: 640px) {
-  .selectionToolbar--instrument { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .selectionToolbar--instrument .backButton { grid-column: 1; grid-row: 1; }
-  .selectionToolbar--instrument .selectionLabel { grid-column: 2; grid-row: 1; }
-  .selectionToolbar--instrument .detailToggle { grid-column: 1 / -1; grid-row: 2; }
-}
-
 @media (min-width: 960px) {
   .chartWrap {
     display: flex;
@@ -609,7 +585,7 @@ onUnmounted(() => resizeObserver?.disconnect());
     min-height: 0;
   }
 
-  .selectionToolbar, .spreadControl { flex-shrink: 0; }
+  .spreadControl { flex-shrink: 0; }
   .priceChart { flex: 1; min-height: 0; }
   .chartSvg { flex: 1; height: 0; min-height: 0; }
 }

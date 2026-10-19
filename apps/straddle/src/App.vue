@@ -33,6 +33,20 @@ const DEFAULT_CIRCLE_SIZE = 4;
 const MIN_CIRCLE_SIZE = 2;
 const MAX_CIRCLE_SIZE = 12;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
+const ALL_MATURITIES_VALUE = "all";
+const ALL_MATURITIES_MARK_POINTS = 30;
+const MATURITY_PALETTE = [
+  "#60a5fa",
+  "#f59e0b",
+  "#34d399",
+  "#f472b6",
+  "#a78bfa",
+  "#fb923c",
+  "#22d3ee",
+  "#facc15",
+  "#f87171",
+  "#4ade80",
+];
 
 const UNDERLYING_OPTIONS = [
   { value: "BTCUSD", label: "BTC" },
@@ -57,6 +71,8 @@ const data = reactive({
   putMark: {},
   index: {},
 });
+const allMaturityStraddles = ref([]);
+const allMaturityMarks = ref({});
 const chartRef = ref(null);
 const breakEvenChartRef = ref(null);
 const settingsMenuRef = ref(null);
@@ -261,8 +277,17 @@ const optionMaturities = computed(() => {
   }));
 });
 
+const isAllMaturities = computed(() => ui.optionMaturity === ALL_MATURITIES_VALUE);
 const selectedMaturityTs = computed(() => Number(ui.optionMaturity));
 const selectedStrike = computed(() => Number(ui.optionStrike));
+
+const maturityDropdownOptions = computed(() => {
+  const base = optionMaturities.value;
+  if (ui.mode === "breakeven" && base.length > 1) {
+    return [{ value: ALL_MATURITIES_VALUE, label: "All maturities" }, ...base];
+  }
+  return base;
+});
 
 const optionInstrumentsForMaturity = computed(() => {
   const maturityTs = selectedMaturityTs.value;
@@ -337,10 +362,47 @@ const breakEvenTitle = computed(
   () => `${underlyingLabel.value} Straddle Break-Evens`,
 );
 const breakEvenSubtitle = computed(() => {
+  if (isAllMaturities.value) {
+    const count = allMaturityStraddles.value.length;
+    return count
+      ? `ATM straddles across ${count} maturities`
+      : "ATM straddles across all maturities";
+  }
   const expiryTs = selectedMaturityTs.value;
   const strike = selectedStrike.value;
   if (!Number.isFinite(expiryTs) || !Number.isFinite(strike)) return "";
   return `Expiry: ${maturityFormatter.format(new Date(expiryTs * 1000))} UTC Strike: ${strikeFormatter.format(strike)}`;
+});
+
+const allMaturityBreakEvenLevels = computed(() => {
+  if (!isAllMaturities.value) return [];
+  const marks = allMaturityMarks.value;
+  const straddles = allMaturityStraddles.value;
+  const levels = [];
+  for (let i = 0; i < straddles.length; i += 1) {
+    const s = straddles[i];
+    const call = marks[s.callInstrumentName];
+    const put = marks[s.putInstrumentName];
+    if (!Number.isFinite(call) || !Number.isFinite(put)) continue;
+    const straddleMark = call + put;
+    const low = s.strike - straddleMark;
+    const high = s.strike + straddleMark;
+    const color = MATURITY_PALETTE[i % MATURITY_PALETTE.length];
+    const date = maturityFormatter.format(new Date(s.expiryTs * 1000));
+    levels.push({
+      id: `be-low-${s.expiryTs}`,
+      value: low,
+      color,
+      label: `${date} ↓ ${strikeFormatter.format(low)}`,
+    });
+    levels.push({
+      id: `be-high-${s.expiryTs}`,
+      value: high,
+      color,
+      label: `${date} ↑ ${strikeFormatter.format(high)}`,
+    });
+  }
+  return levels;
 });
 
 const latestMarkValue = (rows, fields) => {
@@ -405,6 +467,48 @@ const canSavePng = computed(() =>
     ? mainSeries.value.length > 0
     : breakEvenActualData.value.length > 0,
 );
+
+const buildAtmStraddlesByMaturity = (spot) => {
+  const maturityStrikes = new Map();
+  for (const instrument of data.optionInstruments) {
+    const maturityTs = instrument?.expiration_ts;
+    const strike = instrument?.strike;
+    const type = instrument?.option_type_normalized;
+    if (!Number.isFinite(maturityTs) || !Number.isFinite(strike)) continue;
+    if (type !== "call" && type !== "put") continue;
+    const strikeMap = maturityStrikes.get(maturityTs) || new Map();
+    const bucket = strikeMap.get(strike) || {};
+    bucket[type] = instrument;
+    strikeMap.set(strike, bucket);
+    maturityStrikes.set(maturityTs, strikeMap);
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const sortedMaturities = Array.from(maturityStrikes.keys())
+    .filter((ts) => ts > nowSeconds)
+    .sort((a, b) => a - b);
+  const straddles = [];
+  for (const maturityTs of sortedMaturities) {
+    const strikeMap = maturityStrikes.get(maturityTs);
+    let best = null;
+    let bestDist = Infinity;
+    for (const [strike, bucket] of strikeMap.entries()) {
+      if (!bucket.call || !bucket.put) continue;
+      const dist = Number.isFinite(spot) ? Math.abs(strike - spot) : 0;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = { strike, call: bucket.call, put: bucket.put };
+      }
+    }
+    if (!best) continue;
+    straddles.push({
+      expiryTs: maturityTs,
+      strike: best.strike,
+      callInstrumentName: best.call.instrument_name,
+      putInstrumentName: best.put.instrument_name,
+    });
+  }
+  return straddles;
+};
 
 const mainSeries = computed(() => {
   const index = data.index[ui.resolutionKey] || [];
@@ -540,6 +644,67 @@ const straddlePnlSeries = computed(() => {
     .sort((a, b) => a.ts - b.ts)
     .slice(-maxPointsToFetch.value);
 });
+
+async function loadAllMaturities() {
+  const requestId = ++loadRequestId;
+  ui.loading = true;
+  ui.error = "";
+
+  const { resolution, from, to } = getTimestampRange();
+  const resolutionConfig = RESOLUTION_CONFIG[ui.resolutionKey];
+  const intervalSeconds = resolutionConfig?.interval_seconds || 3600;
+  const markFrom = Math.max(from, to - intervalSeconds * (ALL_MATURITIES_MARK_POINTS - 1));
+
+  try {
+    const index = await fetchIndexHistory({
+      index_name: underlying.value,
+      resolution,
+      from,
+      to,
+      count: maxPointsToFetch.value,
+    });
+    if (requestId !== loadRequestId) return;
+    data.index[ui.resolutionKey] = index || [];
+
+    const spot = getLatestIndexClose(index);
+    const straddles = buildAtmStraddlesByMaturity(spot);
+    allMaturityStraddles.value = straddles;
+
+    if (!straddles.length) {
+      allMaturityMarks.value = {};
+      return;
+    }
+
+    const names = [];
+    for (const s of straddles) names.push(s.callInstrumentName, s.putInstrumentName);
+    const results = await Promise.all(
+      names.map((name) =>
+        fetchMarkHistory({
+          instrument_name: name,
+          resolution,
+          from: markFrom,
+          to,
+          count: ALL_MATURITIES_MARK_POINTS,
+        }).catch(() => []),
+      ),
+    );
+    if (requestId !== loadRequestId) return;
+
+    const marks = {};
+    results.forEach((rows, i) => {
+      const close = latestMarkClose(rows);
+      if (Number.isFinite(close)) marks[names[i]] = close;
+    });
+    allMaturityMarks.value = marks;
+  } catch (e) {
+    if (requestId !== loadRequestId) return;
+    ui.error = e instanceof Error ? e.message : String(e);
+  } finally {
+    if (requestId === loadRequestId) {
+      ui.loading = false;
+    }
+  }
+}
 
 async function load({ callInstrument, putInstrument }) {
   if (!callInstrument && !putInstrument) return;
@@ -824,12 +989,36 @@ watch(
     maxPointsToFetch.value,
   ],
   async () => {
+    if (isAllMaturities.value) {
+      await loadAllMaturities();
+      return;
+    }
     const callInstrument = selectedCallInstrument.value;
     const putInstrument = selectedPutInstrument.value;
     if (!callInstrument && !putInstrument) return;
     await load({ callInstrument, putInstrument });
   },
   { immediate: false },
+);
+
+watch(
+  () => ui.mode,
+  (mode) => {
+    if (mode === "straddle" && ui.optionMaturity === ALL_MATURITIES_VALUE) {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const oneWeekAhead = nowSeconds + 7 * 24 * 60 * 60;
+      const expiries = optionMaturities.value
+        .map((option) => Number(option.value))
+        .filter((ts) => Number.isFinite(ts));
+      const upcoming = expiries.filter((ts) => ts > nowSeconds);
+      const candidates = upcoming.length ? upcoming : expiries;
+      const closest = candidates.reduce((best, ts) => {
+        if (!Number.isFinite(best)) return ts;
+        return Math.abs(ts - oneWeekAhead) < Math.abs(best - oneWeekAhead) ? ts : best;
+      }, NaN);
+      if (Number.isFinite(closest)) ui.optionMaturity = String(closest);
+    }
+  },
 );
 </script>
 
@@ -858,11 +1047,11 @@ watch(
             id="option-maturity"
             v-model="ui.optionMaturity"
             label="Maturity"
-            :options="optionMaturities"
+            :options="maturityDropdownOptions"
           />
         </div>
 
-        <div class="field">
+        <div v-if="!isAllMaturities" class="field">
           <label for="option-strike">Strike</label>
           <StyledSelectMenu
             id="option-strike"
@@ -978,11 +1167,12 @@ watch(
         v-else
         ref="breakEvenChartRef"
         :actual-data="breakEvenActualData"
-        :projected-data="breakEvenProjectedData"
-        :break-even-low="breakEvenMetrics?.breakEvenLow"
-        :break-even-high="breakEvenMetrics?.breakEvenHigh"
+        :projected-data="isAllMaturities ? [] : breakEvenProjectedData"
+        :break-even-low="isAllMaturities ? null : breakEvenMetrics?.breakEvenLow"
+        :break-even-high="isAllMaturities ? null : breakEvenMetrics?.breakEvenHigh"
+        :break-even-levels="allMaturityBreakEvenLevels"
         :current-index="breakEvenCurrentIndex"
-        :expiry-ts="selectedMaturityTs"
+        :expiry-ts="isAllMaturities ? null : selectedMaturityTs"
         :title="breakEvenTitle"
         :subtitle="breakEvenSubtitle"
         :loading="ui.loading"
