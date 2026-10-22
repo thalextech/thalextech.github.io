@@ -46,3 +46,38 @@ sizing remains underlying notional, not spread premium or maximum loss.
 The delta sweep varies the near target while holding the wing target fixed.
 
 CLI example: `--structure call_spread --target-delta 0.25 --wing-delta 0.1`.
+
+## Butterfly and condor
+
+Select **Iron butterfly** or **Iron condor** under Instrument → Structure. Both use iron
+structures with four same-expiry option legs. Short sells the inner options and
+buys the outer wings in equal quantities; Long reverses all four legs.
+
+- **Butterfly:** the inner call and put share the closest available ATM strike
+  that has both wings. Wing strike delta selects the higher-strike call and
+  lower-strike put (default 10D). An equally close ATM strike uses the lower strike.
+- **Condor:** the inner put is below spot and the inner call is above spot.
+  Near strike delta and Wing strike delta select each vertical spread jointly
+  (default 25D / 10D), using the same deterministic matching as call/put spreads.
+
+Entries without a complete structure are skipped. Wings need not have equal dollar
+widths; deltas determine the strikes. Sizing uses underlying notional, not premium
+or maximum loss. The delta sweep varies wing delta for butterflies and near delta
+for condors, holding the condor wing target fixed.
+
+CLI examples: `--structure butterfly --wing-delta 0.1` and
+`--structure condor --target-delta 0.25 --wing-delta 0.1`.
+
+## Collar
+
+Select **Collar** to own 1 BTC (or 1 ETH), sell a call, and buy a put. The selected
+absolute delta applies to both options, which share an expiry and roll together.
+The collar uses the covered call's continuous underlying holding, initial-value
+return basis, and gap accounting. Side, investment sizing, and delta hedging do
+not apply; option premiums remain cash.
+
+Total P&L includes both option legs and final spot minus initial spot. The
+distribution view includes the underlying during option-active periods only and
+excludes uncovered holding gaps, as it does for covered calls.
+
+CLI example: `--structure collar --target-delta 0.25`.

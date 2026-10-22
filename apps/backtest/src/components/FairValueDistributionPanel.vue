@@ -1,6 +1,7 @@
 <script setup>
 import * as d3 from "d3";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { isUnderlyingHoldingStructure } from "../lib/underlyingHolding.js";
 import { exportTitledChart } from "../lib/exportTitledChart.js";
 import {
   cancelFairValueRun,
@@ -55,7 +56,7 @@ const displayedGroups = computed(() => {
 });
 const toleranceMode = computed(() => props.rows.some(row => row.hedgeEnabled && row.hedgeMode === "tolerance"));
 const hedgeModeLabel = computed(() => {
-  if (props.rows.some(row => row.structure === "covered_call")) return "Covered call during call periods only; excludes uncovered holding gaps";
+  if (props.rows.some(row => isUnderlyingHoldingStructure(row.structure))) return "Options and underlying during option periods only; excludes uncovered holding gaps";
   const mode = modeResult.value?.hedgeMode
     || modeResult.value?.defaultHedgeMode
     || (props.hedgeEnabled ? "dynamic" : "unhedged");

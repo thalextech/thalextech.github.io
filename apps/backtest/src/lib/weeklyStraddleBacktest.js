@@ -5,7 +5,7 @@ import {
   PRECOMPUTED_DELTA_SCALE,
 } from "./optionRisk.js";
 import { createHedgeReplay, buildDecisionTimes } from "./hedgeLifecycle.js";
-import { assignCoveredCallHolding, extendCoveredCallDetail } from "./coveredCallHolding.js";
+import { assignUnderlyingHolding, extendUnderlyingHoldingDetail, isUnderlyingHoldingStructure } from "./underlyingHolding.js";
 import { mean, sampleStdDev } from "./statistics.js";
 
 /** Enter at the configured hour on every weekday (daily roll). */
@@ -100,7 +100,7 @@ export const normalizeBacktestConfig = (input = {}) => {
     ? exitHour
     : DEFAULT_BACKTEST_CONFIG.exitHourUtc;
   config.longOption = Boolean(config.longOption);
-  if (config.structure === "covered_call") {
+  if (isUnderlyingHoldingStructure(config.structure)) {
     config.longOption = false;
     config.hedgeEnabled = false;
   }
@@ -109,7 +109,7 @@ export const normalizeBacktestConfig = (input = {}) => {
     0,
     Number(config.btcQuantity) || DEFAULT_BACKTEST_CONFIG.btcQuantity,
   );
-  if (config.structure === "covered_call") {
+  if (isUnderlyingHoldingStructure(config.structure)) {
     config.sizingMode = "btc";
     config.btcQuantity = 1;
   }
@@ -117,9 +117,12 @@ export const normalizeBacktestConfig = (input = {}) => {
     Number(config.targetDelta) || DEFAULT_BACKTEST_CONFIG.targetDelta,
   );
   config.wingDelta = Math.abs(Number(config.wingDelta));
-  if (["call_spread", "put_spread"].includes(config.structure)
+  if (["call_spread", "put_spread", "condor"].includes(config.structure)
     && !(config.wingDelta > 0 && config.wingDelta < config.targetDelta && config.targetDelta <= 0.5)) {
     throw new RangeError("Spread deltas must satisfy 0 < wing delta < near delta <= 0.5");
+  }
+  if (config.structure === "butterfly" && !(config.wingDelta > 0 && config.wingDelta < 0.5)) {
+    throw new RangeError("Butterfly wing delta must satisfy 0 < wing delta < 0.5");
   }
   config.includeGreekAttribution = config.includeGreekAttribution === true;
   return config;
@@ -292,11 +295,12 @@ const quantityForSpot = (config, spot) =>
 
 // Select the pair together so a sparse chain cannot collapse both targets onto
 // one strike. Tie-break by strikes to keep selection independent of quote order.
-const selectVerticalLegs = ({ group, entryIndexPrice, config }) => {
-  const isCall = config.structure === "call_spread";
+const selectVerticalLegs = ({ group, entryIndexPrice, config, optionType }) => {
+  const isCall = (optionType || (config.structure === "put_spread" ? "P" : "C")) === "C";
   const rows = (isCall ? group.calls : [...group.putsByStrike.values()])
     .filter(row => Number.isFinite(row.delta)
-      && (isCall ? row.strike >= entryIndexPrice : row.strike <= entryIndexPrice))
+      && (isCall ? row.strike >= entryIndexPrice : row.strike <= entryIndexPrice)
+      && (config.structure !== "condor" || row.strike !== entryIndexPrice))
     .sort((a, b) => a.strike - b.strike);
   let selected = null;
   for (const near of rows) {
@@ -317,7 +321,53 @@ const selectVerticalLegs = ({ group, entryIndexPrice, config }) => {
   return selected;
 };
 
+const selectButterflyLegs = ({ group, entryIndexPrice, config }) => {
+  let selected = null;
+  for (const call of [...group.calls].sort((a, b) => a.strike - b.strike)) {
+    const put = group.putsByStrike.get(call.strike);
+    if (!put) continue;
+    const callWing = closestByDelta({
+      rows: group.calls.filter(row => row.strike > call.strike),
+      targetDelta: config.wingDelta,
+      indexPrice: entryIndexPrice,
+    });
+    const putWing = closestByDelta({
+      rows: [...group.putsByStrike.values()].filter(row => row.strike < call.strike),
+      targetDelta: -config.wingDelta,
+      indexPrice: entryIndexPrice,
+    });
+    if (!callWing || !putWing) continue;
+    const strikeDistance = Math.abs(call.strike - entryIndexPrice);
+    if (selected && strikeDistance >= selected.selectionMetric) continue;
+    const quantity = quantityForSpot(config, entryIndexPrice);
+    selected = {
+      legs: [
+        { quote: call, quantity: -quantity },
+        { quote: put, quantity: -quantity },
+        { quote: callWing, quantity },
+        { quote: putWing, quantity },
+      ],
+      sizingStrike: call.strike,
+      selectionMetric: strikeDistance,
+    };
+  }
+  return selected;
+};
+
 const selectLegs = ({ group, entryIndexPrice, config }) => {
+  if (config.structure === "butterfly") {
+    return selectButterflyLegs({ group, entryIndexPrice, config });
+  }
+  if (config.structure === "condor") {
+    const callSpread = selectVerticalLegs({ group, entryIndexPrice, config, optionType: "C" });
+    const putSpread = selectVerticalLegs({ group, entryIndexPrice, config, optionType: "P" });
+    if (!callSpread || !putSpread) return null;
+    return {
+      legs: [...callSpread.legs, ...putSpread.legs],
+      sizingStrike: entryIndexPrice,
+      selectionMetric: callSpread.selectionMetric + putSpread.selectionMetric,
+    };
+  }
   if (["call_spread", "put_spread"].includes(config.structure)) {
     return selectVerticalLegs({ group, entryIndexPrice, config });
   }
@@ -395,7 +445,7 @@ const selectLegs = ({ group, entryIndexPrice, config }) => {
   return {
     legs: [
       { quote: call, quantity: callQty },
-      { quote: put, quantity: config.structure === "risk_reversal" ? putAbsQty : -putAbsQty },
+      { quote: put, quantity: ["risk_reversal", "collar"].includes(config.structure) ? putAbsQty : -putAbsQty },
     ],
     sizingStrike: entryIndexPrice,
     selectionMetric:
@@ -614,7 +664,7 @@ const buildEntryPlan = ({
         exitWeekday: config.exitWeekday,
         exitHourUtc: config.exitHourUtc,
         structure: config.structure,
-        underlyingQuantity: config.structure === "covered_call" ? -legs[0].quantity : 0,
+        underlyingQuantity: isUnderlyingHoldingStructure(config.structure) ? -legs[0].quantity : 0,
         longOption: config.longOption,
         targetDelta: config.targetDelta,
         wingDelta: config.wingDelta,
@@ -653,8 +703,8 @@ const buildEntryPlan = ({
 
 export const buildCycleDetail = (args) => {
   const rows = buildOptionCycleDetail(args);
-  return args.plan?.structure === "covered_call"
-    ? extendCoveredCallDetail(rows, args.plan, args.preparedData?.indexRows || [])
+  return isUnderlyingHoldingStructure(args.plan?.structure)
+    ? extendUnderlyingHoldingDetail(rows, args.plan, args.preparedData?.indexRows || [])
     : rows;
 };
 
@@ -1335,8 +1385,8 @@ export const runWeeklyStraddleBacktest = ({
     quoteGroups: indexes.quoteGroups,
     instrumentNamesById,
   });
-  if (c.structure === "covered_call") {
-    entryPlan = assignCoveredCallHolding(entryPlan, pi, c.start, dataEnd);
+  if (isUnderlyingHoldingStructure(c.structure)) {
+    entryPlan = assignUnderlyingHolding(entryPlan, pi, c.start, dataEnd);
   }
   const { hedgePnlByCycle, realizedMetricsByCycle } = buildPathMetricsByCycle({
     entryPlan,

@@ -175,7 +175,7 @@ export const buildFairValueCycleState = (cycle) => {
     return total + leg.quantity * delta;
   }, 0);
 
-  // This benchmark is conditional on each call entry. Uncovered holding gaps
+  // This benchmark is conditional on each option entry. Uncovered holding gaps
   // belong to portfolio accounting, not this option-period simulation.
   const actualDynamicPnl = Number.isFinite(cycle.holdingStartTs)
     ? Number(cycle.shortOptionPnlUsd) + cycle.underlyingQuantity * (exitSpot - entrySpot)

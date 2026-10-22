@@ -19,6 +19,7 @@ import {
   runSweepInWorker,
 } from "./lib/backtestWorkerClient.js";
 import { loadThalexHistory } from "./lib/thalexParquet.js";
+import { isUnderlyingHoldingStructure } from "./lib/underlyingHolding.js";
 import { getUnderlying, UNDERLYING_OPTIONS } from "./lib/underlyings.js";
 import { buildDailyPnlRows } from "./lib/dailyPnl.js";
 import {
@@ -153,6 +154,9 @@ const STRUCTURE_OPTIONS = [
   { value: "risk_reversal", label: "Risk reversal" },
   { value: "call", label: "Call" },
   { value: "covered_call", label: "Covered call" },
+  { value: "collar", label: "Collar" },
+  { value: "butterfly", label: "Iron butterfly" },
+  { value: "condor", label: "Iron condor" },
   { value: "put", label: "Put" },
   { value: "call_spread", label: "Call spread" },
   { value: "put_spread", label: "Put spread" },
@@ -268,12 +272,16 @@ const currentMaturity = computed(
     ) ||
     maturityOptions.value[0],
 );
+const holdsUnderlying = computed(() => isUnderlyingHoldingStructure(ui.structure));
 const isVerticalSpread = computed(() => ["call_spread", "put_spread"].includes(ui.structure));
-const nearDeltaOptions = computed(() => DELTA_OPTIONS.filter(d => !isVerticalSpread.value || d.value > 0.05));
-const wingDeltaOptions = computed(() => DELTA_OPTIONS.filter(d => d.value < Number(ui.targetDelta)));
+const hasNearWingDeltas = computed(() => isVerticalSpread.value || ui.structure === "condor");
+const hasWings = computed(() => hasNearWingDeltas.value || ui.structure === "butterfly");
+const nearDeltaOptions = computed(() => DELTA_OPTIONS.filter(d => !hasNearWingDeltas.value || d.value > 0.05));
+const wingDeltaOptions = computed(() => DELTA_OPTIONS.filter(d => ui.structure === "butterfly" || d.value < Number(ui.targetDelta)));
 const showDelta = computed(
-  () => !["straddle", "calendar_spread"].includes(ui.structure),
+  () => !["straddle", "calendar_spread", "butterfly"].includes(ui.structure),
 );
+const hasDeltaSweep = computed(() => showDelta.value || ui.structure === "butterfly");
 const rollDayOptions = computed(() =>
   [1, 2, 3, 4, 5, 6, 7, 14, 30, 60, 90, 180].filter(
     (days) => days <= maxExitHoldDays.value,
@@ -751,9 +759,9 @@ const SWEEP_DIMENSIONS = [
 
 const availableSweepDimensions = computed(() =>
   SWEEP_DIMENSIONS.filter(
-    (dimension) => (dimension.value !== "delta_band" || showDelta.value)
+    (dimension) => (dimension.value !== "delta_band" || hasDeltaSweep.value)
       && (dimension.value !== "entry_weekday" || Number(ui.maturityDays) !== 1)
-      && (!["hedge_frequency", "hedge_tolerance"].includes(dimension.value) || ui.structure !== "covered_call"),
+      && (!["hedge_frequency", "hedge_tolerance"].includes(dimension.value) || !holdsUnderlying.value),
   ),
 );
 const sweepDimensionLabel = computed(
@@ -798,7 +806,7 @@ const hoursFor = (
   return [...hs].sort((a, b) => a - b);
 };
 const requiredHours = computed(() =>
-  ui.structure === "covered_call" ? Array.from({ length: 24 }, (_, hour) => hour) : hoursFor(
+  holdsUnderlying.value ? Array.from({ length: 24 }, (_, hour) => hour) : hoursFor(
     ui.entryHourUtc,
     ui.hedgeEnabled,
     ui.hedgeMode === "tolerance" ? 1 : ui.hedgeIntervalHours,
@@ -865,11 +873,11 @@ const sweepConfigs = computed(() => {
       overrides: { hedgeEnabled: true, hedgeMode: "tolerance", hedgeDeltaTolerance: tolerance },
     }));
   }
-  if (!showDelta.value) return [];
-  return DELTA_OPTIONS.filter(delta => !isVerticalSpread.value || delta.value > Number(ui.wingDelta)).map((delta) => ({
+  if (!hasDeltaSweep.value) return [];
+  return DELTA_OPTIONS.filter(delta => !hasNearWingDeltas.value || delta.value > Number(ui.wingDelta)).map((delta) => ({
     key: `delta-${delta.value}`,
     label: delta.label,
-    overrides: { targetDelta: delta.value },
+    overrides: ui.structure === "butterfly" ? { wingDelta: delta.value } : { targetDelta: delta.value },
   }));
 });
 
@@ -959,23 +967,25 @@ const strategyLabels = computed(() => {
     DELTA_OPTIONS.find((option) => option.value === Number(ui.targetDelta)) ||
     DEFAULT_DELTA_OPTION;
   const weekday = entryWeekdayOption.value;
-  const side = ui.structure === "covered_call" ? "" : ui.longOption ? "Long" : "Short";
+  const side = holdsUnderlying.value ? "" : ui.longOption ? "Long" : "Short";
   const hour = String(ui.entryHourUtc).padStart(2, "0");
   const exitWeekday =
     WEEKDAY_OPTIONS.find((option) => option.value === Number(ui.exitWeekday)) ||
     WEEKDAY_OPTIONS[0];
   const exitHour = String(ui.exitHourUtc).padStart(2, "0");
-  const option = isVerticalSpread.value ? `${delta.label}/${Number(ui.wingDelta) * 100}D` : showDelta.value ? `${delta.label} ${structure.label}` : "ATM";
+  const option = ui.structure === "butterfly" ? `ATM / ${Number(ui.wingDelta) * 100}D wings` : hasNearWingDeltas.value ? `${delta.label}/${Number(ui.wingDelta) * 100}D` : showDelta.value ? `${delta.label} ${structure.label}` : "ATM";
   const entryLabel =
     weekday.value === ENTRY_WEEKDAY_EVERY_DAY
       ? `Daily ${hour}:00`
       : `${weekday.label.slice(0, 3)} ${hour}:00`;
 
   let chartStrategy = `${side} straddle ${maturity.label}`;
-  if (isVerticalSpread.value) {
-    chartStrategy = `${side} ${structure.label.toLowerCase()} ${maturity.label} (${delta.label}/${Number(ui.wingDelta) * 100}D)`;
-  } else if (ui.structure === "covered_call") {
-    chartStrategy = `Covered call ${maturity.label} (${delta.label}), long underlying`;
+  if (hasNearWingDeltas.value) {
+    chartStrategy = `${side} ${ui.structure === "condor" ? "iron condor" : structure.label.toLowerCase()} ${maturity.label} (${delta.label}/${Number(ui.wingDelta) * 100}D)`;
+  } else if (ui.structure === "butterfly") {
+    chartStrategy = `${side} iron butterfly ${maturity.label} (ATM / ${Number(ui.wingDelta) * 100}D wings)`;
+  } else if (holdsUnderlying.value) {
+    chartStrategy = `${structure.label} ${maturity.label} (${delta.label}), long underlying`;
   } else if (ui.structure === "strangle") {
     chartStrategy = `${side} strangle ${maturity.label} (${delta.label})`;
   } else if (ui.structure === "risk_reversal") {
@@ -990,7 +1000,7 @@ const strategyLabels = computed(() => {
     instrument: `${underlying.value} · ${side} ${structure.label} · ${maturity.label} ${option} · ${ui.investmentMode === "btc" ? `1 ${underlying.value}` : "$100k"}`,
     entry: entryLabel,
     weekday: weekday.label,
-    hedge: ui.structure === "covered_call" ? "Fixed underlying" : !ui.hedgeEnabled
+    hedge: holdsUnderlying.value ? "Fixed underlying" : !ui.hedgeEnabled
       ? "Off"
       : ui.hedgeMode === "tolerance"
         ? `Delta ±${ui.hedgeDeltaTolerance}`
@@ -1003,7 +1013,7 @@ const strategyLabels = computed(() => {
         : ui.exitMode === "weekly_schedule"
           ? `Pick close · ${exitWeekday.label.slice(0, 3)} ${exitHour}:00`
           : `Roll every ${ui.exitHoldDays}D`,
-    chart: ui.structure === "covered_call"
+    chart: holdsUnderlying.value
       ? chartStrategy
       : `${chartStrategy}, ${ui.hedgeEnabled ? (ui.hedgeMode === "tolerance" ? `delta tolerance ±${ui.hedgeDeltaTolerance}` : `hedged every ${ui.hedgeIntervalHours}h`) : "unhedged"}`,
   };
@@ -1157,9 +1167,9 @@ const chartSubtitle = computed(() => {
     ui.exitMode === "expiry"
       ? "Held to expiry"
       : ui.exitMode === "weekly_schedule"
-        ? `Exited ${exitWeekday.label} at ${String(ui.exitHourUtc).padStart(2, "0")}:00 UTC; ${ui.structure === "covered_call" ? "underlying held between calls" : "cash until next entry"}`
+        ? `Exited ${exitWeekday.label} at ${String(ui.exitHourUtc).padStart(2, "0")}:00 UTC; ${holdsUnderlying.value ? "underlying held between option positions" : "cash until next entry"}`
         : `Rolled every ${ui.exitHoldDays}D at ${entryTime}; expiry-first gaps allowed`;
-  const sizing = ui.structure === "covered_call"
+  const sizing = holdsUnderlying.value
     ? `Hold 1 ${underlying.value} throughout; return on initial spot value`
     : ui.investmentMode === "btc"
       ? `1 ${underlying.value} per leg`
@@ -1242,7 +1252,7 @@ const runSweep = async () => {
   const sweepHours = [
     ...new Set(
       configs.flatMap((config) =>
-        config.structure === "covered_call" ? Array.from({ length: 24 }, (_, hour) => hour) : hoursFor(
+        isUnderlyingHoldingStructure(config.structure) ? Array.from({ length: 24 }, (_, hour) => hour) : hoursFor(
           config.entryHourUtc,
           config.hedgeEnabled,
           config.hedgeMode === "tolerance" ? 1 : config.hedgeIntervalHours,
@@ -1374,7 +1384,8 @@ const applySweepResult = (cell) => {
     ui.hedgeMode = "tolerance";
     ui.hedgeDeltaTolerance = cell.config.hedgeDeltaTolerance;
   } else if (sweepDimension.value === "delta_band") {
-    ui.targetDelta = cell.config.targetDelta;
+    if (ui.structure === "butterfly") ui.wingDelta = cell.config.wingDelta;
+    else ui.targetDelta = cell.config.targetDelta;
   }
   mode.value = "single";
 };
@@ -1730,13 +1741,13 @@ watch(
     ui.investmentMode,
   ],
   () => {
-    if (ui.structure === "covered_call") {
+    if (holdsUnderlying.value) {
       ui.longOption = false;
       ui.hedgeEnabled = false;
       ui.investmentMode = "btc";
       if (["hedge_frequency", "hedge_tolerance"].includes(sweepDimension.value)) sweepDimension.value = "entry_hour";
     }
-    if (isVerticalSpread.value) {
+    if (hasNearWingDeltas.value) {
       if (Number(ui.targetDelta) <= 0.05) ui.targetDelta = 0.1;
       if (Number(ui.wingDelta) >= Number(ui.targetDelta)) ui.wingDelta = wingDeltaOptions.value.at(-1).value;
     }
@@ -1751,7 +1762,7 @@ watch(
     if (ui.exitHoldDays > maxExitHoldDays.value) {
       ui.exitHoldDays = maxExitHoldDays.value;
     }
-    if (!showDelta.value && sweepDimension.value === "delta_band") {
+    if (!hasDeltaSweep.value && sweepDimension.value === "delta_band") {
       sweepDimension.value = "entry_hour";
     }
     if (Number(ui.maturityDays) === 1 && sweepDimension.value === "entry_weekday") {
@@ -2010,7 +2021,7 @@ onMounted(loadBacktest);
             class="dropdown instrument-dropdown"
             @click.stop
           >
-            <div v-if="ui.structure !== 'covered_call'" class="inst-field">
+            <div v-if="!holdsUnderlying" class="inst-field">
               <label class="inst-label">Side</label>
               <div class="inst-choices side-choices">
                 <div
@@ -2057,7 +2068,7 @@ onMounted(loadBacktest);
               </div>
             </div>
             <div v-if="showDelta" class="inst-field">
-              <label class="inst-label">{{ isVerticalSpread ? "Near strike delta" : "Delta" }}</label>
+              <label class="inst-label">{{ hasNearWingDeltas ? "Near strike delta" : "Delta" }}</label>
               <div class="inst-choices delta-choices">
                 <div
                   v-for="d in nearDeltaOptions"
@@ -2072,16 +2083,19 @@ onMounted(loadBacktest);
                 </div>
               </div>
             </div>
-            <div v-if="isVerticalSpread" class="inst-field">
+            <div v-if="hasWings" class="inst-field">
               <label class="inst-label">Wing strike delta</label>
               <div class="inst-choices delta-choices">
                 <div v-for="d in wingDeltaOptions" :key="d.value"
                   :class="['inst-choice', { active: Number(ui.wingDelta) === d.value }]"
                   @click="ui.wingDelta = d.value">{{ d.label }}</div>
               </div>
-              <p>Same expiry, two distinct out-of-the-money strikes. Short sells the near strike and buys the wing; Long reverses both legs. Closest combined delta match; skips entries without a valid pair.</p>
+              <p v-if="isVerticalSpread">Same expiry, two distinct out-of-the-money strikes. Short sells the near strike and buys the wing; Long reverses both legs. Closest combined delta match; skips entries without a valid pair.</p>
             </div>
-            <div v-if="ui.structure !== 'covered_call'" class="inst-field">
+            <p v-if="ui.structure === 'butterfly'">Iron butterfly: Short sells an ATM call and put and buys a call above and a put below. Long reverses all four legs. Wing delta selects the protective strikes; skips entries without all four legs.</p>
+            <p v-if="ui.structure === 'condor'">Iron condor: Short sells an out-of-the-money call and put and buys farther wings. Long reverses all four legs. Closest combined delta match on each side; skips entries without four ordered strikes.</p>
+            <p v-if="ui.structure === 'collar'">Own 1 {{ underlying }}, sell a call, and buy a put at the selected absolute delta. The underlying stays invested through rolls and gaps.</p>
+            <div v-if="!holdsUnderlying" class="inst-field">
               <label class="inst-label">Investment amount</label>
               <div class="inst-choices side-choices">
                 <div
@@ -2175,19 +2189,19 @@ onMounted(loadBacktest);
           <span class="pillLabel">Hedge</span>
           <span class="pillValue">{{ strategyLabels.hedge }}</span>
           <div v-if="openMenu === 'hedge'" class="dropdown" @click.stop>
-            <p v-if="ui.structure === 'covered_call'">Holds 1 {{ underlying }} continuously across the selected date range, including gaps between calls. Returns use its initial value; premiums are not reinvested.</p>
+            <p v-if="holdsUnderlying">Holds 1 {{ underlying }} continuously across the selected date range, including gaps between option positions. Returns use its initial value; premiums are not reinvested.</p>
             <div class="freq-toggle-row">
               <span class="freq-row__label">Hedge</span>
               <label class="toggle-switch">
-                <input type="checkbox" v-model="ui.hedgeEnabled" :disabled="ui.structure === 'covered_call'" />
+                <input type="checkbox" v-model="ui.hedgeEnabled" :disabled="holdsUnderlying" />
                 <span class="toggle-slider"></span>
               </label>
             </div>
-            <div v-if="ui.structure !== 'covered_call'" class="hedge-mode-choices">
+            <div v-if="!holdsUnderlying" class="hedge-mode-choices">
               <button type="button" :class="{ active: ui.hedgeMode === 'time' }" :disabled="!ui.hedgeEnabled" @click="ui.hedgeMode = 'time'">Time-based</button>
               <button type="button" :class="{ active: ui.hedgeMode === 'tolerance' }" :disabled="!ui.hedgeEnabled" @click="ui.hedgeMode = 'tolerance'">Delta tolerance</button>
             </div>
-            <template v-if="ui.hedgeMode === 'time' || ui.structure === 'covered_call'">
+            <template v-if="ui.hedgeMode === 'time' || holdsUnderlying">
               <label class="freq-row__label" for="freq">Frequency</label>
               <input
                 id="freq"

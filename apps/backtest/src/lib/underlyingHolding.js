@@ -1,6 +1,8 @@
-// Allocate a single buy-and-hold position across reporting cycles. Calls keep
+export const isUnderlyingHoldingStructure = structure => ["covered_call", "collar"].includes(structure);
+
+// Allocate a single buy-and-hold position across reporting cycles. Options keep
 // their own entry/exit dates; holding windows also include the uncovered gaps.
-export const assignCoveredCallHolding = (plans, indexRows, start, end) => {
+export const assignUnderlyingHolding = (plans, indexRows, start, end) => {
   if (!plans.length) return plans;
   const rows = indexRows.filter(row => row.ts >= start.getTime() / 1000
     && row.ts <= end.getTime() / 1000 && Number.isFinite(row.indexPrice))
@@ -25,7 +27,7 @@ export const assignCoveredCallHolding = (plans, indexRows, start, end) => {
   });
 };
 
-export const extendCoveredCallDetail = (activeRows, plan, indexRows) => {
+export const extendUnderlyingHoldingDetail = (activeRows, plan, indexRows) => {
   if (!activeRows.length || !Number.isFinite(plan.holdingStartTs)) return activeRows;
   const activeByTs = new Map(activeRows.map(row => [row.ts, row]));
   const first = activeRows[0];

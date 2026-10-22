@@ -10,6 +10,7 @@
  */
 
 import fs from "node:fs";
+import { isUnderlyingHoldingStructure } from "../src/lib/underlyingHolding.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -50,7 +51,7 @@ function loadShard(hour, bucketKey) {
  * Compute the set of hourly offsets needed for a given config (entry + hedge steps).
  */
 export function hoursForConfig(config) {
-  if (config.structure === "covered_call" || (config.hedgeEnabled !== false && config.hedgeMode === "tolerance")) return Array.from({ length: 24 }, (_, hour) => hour);
+  if (isUnderlyingHoldingStructure(config.structure) || (config.hedgeEnabled !== false && config.hedgeMode === "tolerance")) return Array.from({ length: 24 }, (_, hour) => hour);
   const entry = Number(config.entryHourUtc ?? config.hourlyOffset ?? 8);
   const enabled = config.hedgeEnabled !== false;
   const interval = Math.max(1, Math.min(24, Math.round(Number(config.hedgeIntervalHours) || 24)));
@@ -222,10 +223,10 @@ Options (examples):
   --end 2026-01-01
   --entry-hour 8
   --weekday 5                 (0=Sun ... 6=Sat)
-  --structure straddle        (straddle|strangle|risk_reversal|call|put|covered_call|call_spread|put_spread|calendar_spread)
+  --structure straddle        (straddle|strangle|risk_reversal|call|put|covered_call|collar|butterfly|condor|call_spread|put_spread|calendar_spread)
   --maturity 7                or use targetDteDays
   --target-delta 0.25
-  --wing-delta 0.10           (call/put spread outer strike)
+  --wing-delta 0.10           (spread, butterfly, or condor outer strike)
   --hedge 24                  (hours, or 0/false to disable)
   --hedge-mode tolerance      (time or tolerance; default time)
   --hedge-delta-tolerance 0.05 (delta per unit of option position)

@@ -918,47 +918,55 @@ test("batch runs match independent runs across entry hours", () => {
   assert.ok(Math.abs(timelineResidual - attributedCycle.greekPnl.residual) < 1e-9);
 });
 
-for (const priceStep of [-2_000, 2_000]) {
-  for (const exitMode of ['expiry', 'after_days']) {
-    test(`covered call includes fixed underlying at ${exitMode}, spot step ${priceStep}`, () => {
-      const fixture = buildParityFixture();
-      const entryTs = fixture.indexRows[0].ts;
-      fixture.indexRows = fixture.indexRows.map(row => ({
-        ...row,
-        indexPrice: 100_000 + priceStep * (row.ts - entryTs) / DAY_SECONDS,
-      }));
-      const config = {
-        ...fixture.config,
-        structure: 'covered_call',
-        longOption: true,
-        hedgeEnabled: true,
-        sizingMode: 'btc',
-        btcQuantity: 2,
-        exitMode,
-        exitHoldDays: 2,
-      };
-      const result = runWeeklyStraddleBacktest({ ...fixture, config });
-      const cycle = result.cycleSummary[0];
-      assert.ok(cycle.closed);
-      assert.equal(cycle.legs.length, 1);
-      assert.equal(cycle.legs[0].optionType, 'C');
-      assert.equal(cycle.legs[0].quantity, -1);
-      assert.equal(cycle.underlyingQuantity, 1);
-      assert.equal(cycle.hedgeEnabled, false);
-      const underlyingPnl = cycle.holdingEndPrice - cycle.holdingStartPrice;
-      assert.equal(cycle.hedgePnlUsd, underlyingPnl);
-      assert.equal(cycle.cyclePnlUsd, cycle.shortOptionPnlUsd + underlyingPnl);
-      if (exitMode === 'expiry') {
-        const payoff = (cycle.legs[0].entryPrice
-          + Math.min(cycle.exitIndexPrice, cycle.legs[0].strike) - cycle.entryIndexPrice);
-        assert.ok(Math.abs(cycle.cyclePnlUsd - payoff) < 1e-8);
-      }
-      const preparedData = prepareCycleDetailData({ ...fixture, config, plan: cycle });
-      const detail = buildCycleDetail({ plan: cycle, preparedData, config });
-      assert.ok(detail.every(row => row.hedgeQuantity === 1));
-      assert.equal(detail.at(-1).hedgeQuantity, 1);
-      assert.ok(Math.abs(detail.at(-1).totalPnlUsd - cycle.cyclePnlUsd) < 1e-8);
-    });
+for (const structure of ['covered_call', 'collar']) {
+  for (const priceStep of [-2_000, 2_000]) {
+    for (const exitMode of ['expiry', 'after_days']) {
+      test(`${structure} includes fixed underlying at ${exitMode}, spot step ${priceStep}`, () => {
+        const fixture = buildParityFixture();
+        const entryTs = fixture.indexRows[0].ts;
+        fixture.indexRows = fixture.indexRows.map(row => ({
+          ...row,
+          indexPrice: 100_000 + priceStep * (row.ts - entryTs) / DAY_SECONDS,
+        }));
+        const config = {
+          ...fixture.config,
+          structure,
+          longOption: true,
+          hedgeEnabled: true,
+          sizingMode: 'btc',
+          btcQuantity: 2,
+          exitMode,
+          exitHoldDays: 2,
+        };
+        const result = runWeeklyStraddleBacktest({ ...fixture, config });
+        const cycle = result.cycleSummary[0];
+        assert.ok(cycle.closed);
+        assert.equal(cycle.legs.length, structure === 'collar' ? 2 : 1);
+        if (structure === 'collar') {
+          assert.equal(cycle.legs[1].optionType, 'P');
+          assert.equal(cycle.legs[1].quantity, 1);
+        }
+        assert.equal(cycle.legs[0].optionType, 'C');
+        assert.equal(cycle.legs[0].quantity, -1);
+        assert.equal(cycle.underlyingQuantity, 1);
+        assert.equal(cycle.hedgeEnabled, false);
+        const underlyingPnl = cycle.holdingEndPrice - cycle.holdingStartPrice;
+        assert.equal(cycle.hedgePnlUsd, underlyingPnl);
+        assert.equal(cycle.cyclePnlUsd, cycle.shortOptionPnlUsd + underlyingPnl);
+        if (exitMode === 'expiry') {
+          const put = structure === 'collar' ? cycle.legs[1] : null;
+          const payoff = (cycle.legs[0].entryPrice
+            + Math.min(cycle.exitIndexPrice, cycle.legs[0].strike) - cycle.entryIndexPrice)
+            + (put ? Math.max(put.strike - cycle.exitIndexPrice, 0) - put.entryPrice : 0);
+          assert.ok(Math.abs(cycle.cyclePnlUsd - payoff) < 1e-8);
+        }
+        const preparedData = prepareCycleDetailData({ ...fixture, config, plan: cycle });
+        const detail = buildCycleDetail({ plan: cycle, preparedData, config });
+        assert.ok(detail.every(row => row.hedgeQuantity === 1));
+        assert.equal(detail.at(-1).hedgeQuantity, 1);
+        assert.ok(Math.abs(detail.at(-1).totalPnlUsd - cycle.cyclePnlUsd) < 1e-8);
+      });
+    }
   }
 }
 
@@ -1045,42 +1053,44 @@ test('spread selection remains distinct and deterministic when both targets pref
   assert.deepEqual(select(fixture), strikes);
 });
 
-test('covered call carries one unit across entry gaps and the final uncovered period', () => {
-  const fixture = buildMultiExpiryEntryHourFixture();
-  const first = fixture.indexRows[0];
-  // Add an observed price before the first call, then leave five-day gaps at rolls.
-  fixture.indexRows.unshift({ ts: first.ts - 3_600, indexPrice: 80_000 });
-  const config = { ...fixture.config, structure: 'covered_call', sizingMode: 'notional',
-    notionalUsd: 500_000, btcQuantity: 3, exitHoldDays: 2, includeGreekAttribution: true };
-  const result = runWeeklyStraddleBacktest({ ...fixture, config });
-  const cycles = result.cycleSummary;
-  assert.ok(cycles.length > 1);
-  assert.ok(cycles.every(cycle => cycle.underlyingQuantity === 1 && cycle.legs[0].quantity === -1));
-  const initialSpot = fixture.indexRows[0].indexPrice;
-  const finalSpot = fixture.indexRows.at(-1).indexPrice;
-  assert.equal(result.summary.initialInvestmentUsd, initialSpot);
-  assert.equal(result.summary.cumulativeHedgePnlUsd, finalSpot - initialSpot);
-  assert.equal(result.summary.finalEquityUsd,
-    result.summary.cumulativeOptionPnlUsd + finalSpot - initialSpot);
-  assert.equal(result.summary.cumulativeReturnOnNotional, result.summary.finalEquityUsd / initialSpot);
-  assert.ok(cycles.every(cycle => cycle.investmentUsd === initialSpot));
-  assert.equal(cycles.at(-1).holdingEndTs, fixture.indexRows.at(-1).ts);
-  const timeline = buildPortfolioAttributionTimeline(cycles);
-  assert.ok(Math.abs(timeline.at(-1).cumulativeTotalPnlUsd - result.summary.finalEquityUsd) < 1e-7);
-  const gapPoint = timeline.find(point => point.ts > cycles[0].exitTs && point.ts < cycles[1].entryTs);
-  assert.ok(gapPoint);
-  for (const cycle of cycles) {
-    const preparedData = prepareCycleDetailData({ ...fixture, config, plan: cycle });
-    const detail = buildCycleDetail({ plan: cycle, preparedData, config });
-    assert.ok(detail.every(row => row.hedgeQuantity === 1 && row.hedgeTrade?.side !== 'sell'));
-    assert.ok(detail.every(row => row.dateTime.getTime() === row.ts * 1000));
-    assert.equal(detail.filter(row => row.hedgeTrade).length, cycle.cycle === 1 ? 1 : 0);
-    assert.ok(Math.abs(detail.at(-1).totalPnlUsd - cycle.cyclePnlUsd) < 1e-7);
-  }
-  const preparedData = prepareBacktestData({ ...fixture, config });
-  const batch = runWeeklyStraddleBacktestBatch({ preparedData, runs: [{ config }] });
-  assert.equal(batch[0].summary.finalEquityUsd, result.summary.finalEquityUsd);
-});
+for (const structure of ['covered_call', 'collar']) {
+  test(`${structure} carries one unit across entry gaps and the final uncovered period`, () => {
+    const fixture = buildMultiExpiryEntryHourFixture();
+    const first = fixture.indexRows[0];
+    // Add an observed price before the first option entry, then leave five-day gaps at rolls.
+    fixture.indexRows.unshift({ ts: first.ts - 3_600, indexPrice: 80_000 });
+    const config = { ...fixture.config, structure, sizingMode: 'notional',
+      notionalUsd: 500_000, btcQuantity: 3, exitHoldDays: 2, includeGreekAttribution: true };
+    const result = runWeeklyStraddleBacktest({ ...fixture, config });
+    const cycles = result.cycleSummary;
+    assert.ok(cycles.length > 1);
+    assert.ok(cycles.every(cycle => cycle.underlyingQuantity === 1 && cycle.legs[0].quantity === -1));
+    const initialSpot = fixture.indexRows[0].indexPrice;
+    const finalSpot = fixture.indexRows.at(-1).indexPrice;
+    assert.equal(result.summary.initialInvestmentUsd, initialSpot);
+    assert.equal(result.summary.cumulativeHedgePnlUsd, finalSpot - initialSpot);
+    assert.equal(result.summary.finalEquityUsd,
+      result.summary.cumulativeOptionPnlUsd + finalSpot - initialSpot);
+    assert.equal(result.summary.cumulativeReturnOnNotional, result.summary.finalEquityUsd / initialSpot);
+    assert.ok(cycles.every(cycle => cycle.investmentUsd === initialSpot));
+    assert.equal(cycles.at(-1).holdingEndTs, fixture.indexRows.at(-1).ts);
+    const timeline = buildPortfolioAttributionTimeline(cycles);
+    assert.ok(Math.abs(timeline.at(-1).cumulativeTotalPnlUsd - result.summary.finalEquityUsd) < 1e-7);
+    const gapPoint = timeline.find(point => point.ts > cycles[0].exitTs && point.ts < cycles[1].entryTs);
+    assert.ok(gapPoint);
+    for (const cycle of cycles) {
+      const preparedData = prepareCycleDetailData({ ...fixture, config, plan: cycle });
+      const detail = buildCycleDetail({ plan: cycle, preparedData, config });
+      assert.ok(detail.every(row => row.hedgeQuantity === 1 && row.hedgeTrade?.side !== 'sell'));
+      assert.ok(detail.every(row => row.dateTime.getTime() === row.ts * 1000));
+      assert.equal(detail.filter(row => row.hedgeTrade).length, cycle.cycle === 1 ? 1 : 0);
+      assert.ok(Math.abs(detail.at(-1).totalPnlUsd - cycle.cyclePnlUsd) < 1e-7);
+    }
+    const preparedData = prepareBacktestData({ ...fixture, config });
+    const batch = runWeeklyStraddleBacktestBatch({ preparedData, runs: [{ config }] });
+    assert.equal(batch[0].summary.finalEquityUsd, result.summary.finalEquityUsd);
+  });
+}
 
 test('fixed-unit aggregate return uses the initial cycle investment', () => {
   const fixture = buildMultiExpiryEntryHourFixture();
