@@ -1,371 +1,217 @@
 #!/usr/bin/env node
-/**
- * Node.js runner for the Thalex backtest engine.
- * Allows programmatic / CLI usage of the backtest tool outside the browser UI.
- *
- * Usage examples:
- *   node scripts/run-backtest.mjs --help
- *   node scripts/run-backtest.mjs --start 2025-06-01 --end 2025-12-31 --entry-hour 8 --weekday 5 --hedge 24
- *   node scripts/run-backtest.mjs --sweep entry_hour
- */
-
 import fs from "node:fs";
-import { isUnderlyingHoldingStructure } from "../src/lib/underlyingHolding.js";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  prepareBacktestData,
-  runWeeklyStraddleBacktest,
-  runWeeklyStraddleBacktestBatch,
-  normalizeBacktestConfig,
-  requiredQuoteDteDays,
-  DEFAULT_BACKTEST_CONFIG,
-  computeMaxDrawdown,
-} from "../src/lib/weeklyStraddleBacktest.js";
-import {
-  decodeInstrumentDictionary,
-  decodePreparedShard,
-  selectDteBuckets,
-} from "../src/lib/thalexParquet.js";
+import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
+import { prepareBacktestData, runWeeklyStraddleBacktest, requiredQuoteDteDays } from "../src/lib/weeklyStraddleBacktest.js";
+import { BACKTEST_CONFIG_SCHEMA, BacktestInputError, parseBacktestConfig, hoursForConfig, buildBacktestReport } from "../src/lib/backtestContract.js";
+import { loadDataForHours } from "./backtestData.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = path.resolve(__dirname, "..");
-const DATA_DIR = path.join(PROJECT_ROOT, "public/runtime-data/thalex");
+export { hoursForConfig, loadDataForHours, buildBacktestReport };
 
-const manifest = JSON.parse(fs.readFileSync(path.join(DATA_DIR, "prepared_manifest.json"), "utf8"));
-const INSTRUMENTS = decodeInstrumentDictionary(manifest);
-const DTE_BUCKETS = (manifest.dteBuckets || []).map((bucket) => ({
-  ...bucket,
-  maxInclusive:
-    bucket.maxInclusive == null ? Number.POSITIVE_INFINITY : Number(bucket.maxInclusive),
-}));
-
-function loadShard(hour, bucketKey) {
-  const filename =
-    `prepared_1h_h${String(hour).padStart(2, "0")}utc_dte${bucketKey}.json`;
-  const payload = JSON.parse(fs.readFileSync(path.join(DATA_DIR, filename), "utf8"));
-  return decodePreparedShard({ payload });
-}
-
-/**
- * Compute the set of hourly offsets needed for a given config (entry + hedge steps).
- */
-export function hoursForConfig(config) {
-  if (isUnderlyingHoldingStructure(config.structure) || (config.hedgeEnabled !== false && config.hedgeMode === "tolerance")) return Array.from({ length: 24 }, (_, hour) => hour);
-  const entry = Number(config.entryHourUtc ?? config.hourlyOffset ?? 8);
-  const enabled = config.hedgeEnabled !== false;
-  const interval = Math.max(1, Math.min(24, Math.round(Number(config.hedgeIntervalHours) || 24)));
-
-  const hs = new Set([entry, 8]);
-  if (config.exitMode === "weekly_schedule") hs.add(Number(config.exitHourUtc));
-  if (enabled) {
-    const addHedgeCycle = (startHour) => {
-      let h = startHour;
-      do {
-        hs.add(h);
-        h = (h + interval) % 24;
-      } while (h !== startHour);
-    };
-    addHedgeCycle(entry);
-    if (config.exitMode === "after_days") addHedgeCycle(8);
-  }
-  return [...hs].sort((a, b) => a - b);
-}
-
-/**
- * Load prepared data for the required hours.
- * Returns { indexRows, quoteSnapshots, instruments, preparedData }
- */
-export async function loadDataForHours(
-  hours,
-  start = null,
-  end = null,
-  maxDteDays = Number.POSITIVE_INFINITY,
-) {
-  let indexRows = [];
-  let quoteSnapshots = [];
-
-  const startTs = start ? Math.floor(start.getTime() / 1000) : Number.NEGATIVE_INFINITY;
-  const endTs = end ? Math.floor(end.getTime() / 1000) : Number.POSITIVE_INFINITY;
-
-  const buckets = selectDteBuckets(DTE_BUCKETS, maxDteDays);
-  for (const hour of hours) {
-    for (const bucket of buckets) {
-      const decoded = loadShard(hour, bucket.key);
-      const filteredIndex = start || end
-        ? decoded.indexRows.filter(r => r.ts >= startTs && r.ts <= endTs)
-        : decoded.indexRows;
-      const filteredQuotes = start || end
-        ? decoded.quoteSnapshots.filter(([ts]) => ts >= startTs && ts <= endTs)
-        : decoded.quoteSnapshots;
-
-      indexRows.push(...filteredIndex);
-      quoteSnapshots.push(...filteredQuotes);
-    }
-  }
-
-  // Sort just in case
-  indexRows.sort((a, b) => a.ts - b.ts);
-  quoteSnapshots.sort((a, b) => a[0] - b[0]);
-
-  return { indexRows, quoteSnapshots, instruments: INSTRUMENTS };
-}
-
-/**
- * Main entry: run a single backtest configuration.
- * Accepts partial config overrides (same shape as UI + lib).
- */
+/** Existing JS envelope is preserved; data provenance and batch counts are additive. */
 export async function runBacktest(overrides = {}) {
-  const config = normalizeBacktestConfig(overrides);
-  const hours = hoursForConfig(config);
-
-  const { indexRows, quoteSnapshots, instruments } = await loadDataForHours(
-    hours,
-    config.start,
-    config.end,
-    requiredQuoteDteDays(config),
-  );
-
-  const preparedData = prepareBacktestData({
-    indexRows,
-    quoteSnapshots,
-    instruments,
-    config,
-  });
-
-  const result = runWeeklyStraddleBacktest({ preparedData, config });
-
-  return {
-    config,
-    result,
-    summary: result.summary,
-    cycles: result.cycleSummary,
-    counts: result.counts,
-  };
+  return (await runBacktestBatch([overrides]))[0];
 }
 
-/**
- * Run a batch of configs efficiently (shares prepared data where possible).
- */
 export async function runBacktestBatch(configList = []) {
-  if (!configList.length) return [];
-
-  // Determine union of required hours
-  const allHours = new Set();
-  const normalized = configList.map(c => {
-    const nc = normalizeBacktestConfig(c);
-    hoursForConfig(nc).forEach(h => allHours.add(h));
-    return nc;
+  if (!Array.isArray(configList)) throw new BacktestInputError("Batch configs must be an array");
+  const now = new Date();
+  const configs = configList.map(config => parseBacktestConfig(config, now));
+  const groups = new Map();
+  configs.forEach((config, index) => {
+    // Sharing an exact loading window avoids first-config truncation and keeps
+    // sampled paths identical to standalone execution, including holding gaps.
+    const key = JSON.stringify([config.underlying, config.start, config.end, hoursForConfig(config), requiredQuoteDteDays(config)]);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ config, index });
   });
-  const hours = [...allHours].sort((a, b) => a - b);
-
-  // Use the first config's date range for loading (they should be similar for sweeps)
-  const refConfig = normalized[0];
-  const maxDteDays = Math.max(...normalized.map(requiredQuoteDteDays));
-  const { indexRows, quoteSnapshots, instruments } = await loadDataForHours(
-    hours,
-    refConfig.start,
-    refConfig.end,
-    maxDteDays,
-  );
-
-  const preparedData = prepareBacktestData({
-    indexRows,
-    quoteSnapshots,
-    instruments,
-    config: refConfig,
-  });
-
-  const runs = normalized.map(config => ({ config }));
-  const outputs = runWeeklyStraddleBacktestBatch({ preparedData, runs });
-
-  return outputs.map((out, i) => ({
-    config: normalized[i],
-    result: out,
-    summary: out.summary,
-    cycles: out.cycleSummary,
-  }));
-}
-
-// ---------- CLI ----------
-
-function parseArgs(argv) {
-  const args = {};
-  for (let i = 2; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--help" || a === "-h") {
-      args.help = true;
-    } else if (a === "--sweep") {
-      args.sweep = argv[++i];
-    } else if (a.startsWith("--")) {
-      const key = a.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-      let val = argv[++i];
-      if (val === undefined) val = true;
-      // Try to coerce numbers / booleans
-      if (val === "true") val = true;
-      if (val === "false") val = false;
-      if (!isNaN(val) && val !== "" && val !== true && val !== false) val = Number(val);
-      args[key] = val;
+  const outputs = new Array(configs.length);
+  for (const group of groups.values()) {
+    const reference = group[0].config;
+    const loaded = await loadDataForHours(hoursForConfig(reference), reference.start, reference.end, requiredQuoteDteDays(reference), reference.underlying);
+    const preparedData = prepareBacktestData({ ...loaded, config: reference });
+    for (const { config, index } of group) {
+      const result = runWeeklyStraddleBacktest({ preparedData, config });
+      outputs[index] = { config, result, summary: result.summary, cycles: result.cycleSummary, counts: result.counts, data: loaded.data };
     }
   }
-  return args;
+  return outputs;
+}
+
+const dashed = key => key.replace(/[A-Z]/g, char => `-${char.toLowerCase()}`);
+const CONFIG_FLAGS = Object.fromEntries(Object.keys(BACKTEST_CONFIG_SCHEMA.properties).map(key => [dashed(key), key]));
+const ALIASES = { "entry-hour": "entryHourUtc", "exit-hour": "exitHourUtc", weekday: "entryWeekday", long: "longOption", targetDteDays: "targetDteDays" };
+const CLI_OPTIONS = {
+  ...Object.fromEntries([...Object.keys(CONFIG_FLAGS), ...Object.keys(ALIASES), "hedge", "maturity", "config", "output", "sweep"].map(key => [key, { type: "string" }])),
+  json: { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+};
+const SWEEPS = ["entry_hour", "entry_weekday", "hedge_frequency", "hedge_tolerance"];
+const invalid = message => { throw new BacktestInputError(message); };
+
+export function parseCliArgs(argv) {
+  let values;
+  try { ({ values } = parseArgs({ args: argv, options: CLI_OPTIONS, strict: true, allowPositionals: false })); }
+  catch (error) { invalid(error.message); }
+  const overrides = {};
+  const assign = (key, value) => {
+    if (Object.hasOwn(overrides, key) && overrides[key] !== value) invalid(`Conflicting options for ${key}`);
+    overrides[key] = value;
+  };
+  for (const [flag, raw] of Object.entries(values)) {
+    const key = CONFIG_FLAGS[flag] ?? ALIASES[flag];
+    if (!key) continue;
+    const rule = BACKTEST_CONFIG_SCHEMA.properties[key];
+    let value = raw;
+    if (rule.type === "boolean") {
+      if (!["true", "false"].includes(raw)) invalid(`--${flag} requires true or false`);
+      value = raw === "true";
+    } else if (["number", "integer"].includes(rule.type)) {
+      if (!raw.trim()) invalid(`--${flag} requires a number`);
+      value = Number(raw);
+    }
+    assign(key, value);
+  }
+  if (values.hedge != null) {
+    if (!["false", "0"].includes(values.hedge) && !/^(?:[1-9]|1[0-9]|2[0-4])$/.test(values.hedge)) invalid("--hedge requires false, 0, or an integer from 1 to 24");
+    const interval = Number(values.hedge);
+    assign("hedgeEnabled", interval > 0);
+    if (interval > 0) assign("hedgeIntervalHours", interval);
+  }
+  if (values.maturity != null) {
+    const match = /^(\d+)(?:-(\d+))?$/.exec(values.maturity);
+    if (!match) invalid("--maturity requires days (30) or a calendar pair (7-30)");
+    assign("targetDteDays", Number(match[1]));
+    if (match[2]) assign("farTargetDteDays", Number(match[2]));
+  }
+  if (values.sweep && !SWEEPS.includes(values.sweep)) invalid(`Unsupported sweep: ${values.sweep}; choose ${SWEEPS.join(", ")}`);
+  if (values.config === "" || values.output === "") invalid("File paths must not be empty");
+  return { ...values, overrides };
+}
+
+function sweepConfigs(dimension, base) {
+  switch (dimension) {
+    case "entry_hour": return Array.from({ length: 24 }, (_, hour) => ({ ...base, entryHourUtc: hour, hourlyOffset: hour }));
+    case "entry_weekday": return Array.from({ length: 7 }, (_, entryWeekday) => ({ ...base, entryWeekday }));
+    case "hedge_frequency": return [1, 2, 3, 4, 6, 8, 12, 24].map(hedgeIntervalHours => ({ ...base, hedgeEnabled: true, hedgeMode: "time", hedgeIntervalHours }));
+    case "hedge_tolerance": return [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2].map(hedgeDeltaTolerance => ({ ...base, hedgeEnabled: true, hedgeMode: "tolerance", hedgeDeltaTolerance }));
+  }
 }
 
 function printHelp() {
-  console.log(`
-Thalex Backtest Runner (Node)
+  console.log(`Thalex Backtest Runner
 
-Usage:
+From apps/backtest:
   node scripts/run-backtest.mjs [options]
+  node scripts/run-backtest.mjs --config config.json --json --output result.json
 
-Options (examples):
-  --start 2025-06-01
-  --end 2026-01-01
-  --entry-hour 8
-  --weekday 5                 (0=Sun ... 6=Sat)
-  --structure straddle        (straddle|strangle|risk_reversal|call|put|covered_call|collar|butterfly|condor|call_spread|put_spread|calendar_spread)
-  --maturity 7                or use targetDteDays
-  --target-delta 0.25
-  --wing-delta 0.10           (spread, butterfly, or condor outer strike)
-  --hedge 24                  (hours, or 0/false to disable)
-  --hedge-mode tolerance      (time or tolerance; default time)
-  --hedge-delta-tolerance 0.05 (delta per unit of option position)
-  --hold-to-expiry true
-  --exit-hold-days 7
-  --exit-mode weekly_schedule (after_days|weekly_schedule|expiry)
-  --exit-weekday 0            (0=Sun ... 6=Sat)
-  --exit-hour 20
-  --long false                (short by default)
-  --sizing-mode notional      (notional | btc)
-  --notional-usd 100000
-  --btc-quantity 1
+Machine output:
+  --json                     JSON only on stdout; errors on stderr
+  --config config.json       One config object; explicit flags override its fields
+  --output result.json       Write the full versioned JSON report (also works without --json)
 
-Sweep mode:
-  --sweep entry_hour          (or entry_weekday, maturity, hedge_frequency, hedge_tolerance, delta_band)
+Strategy (all canonical config fields also have kebab-case flags):
+  --underlying BTC           BTC | ETH
+  --start 2025-06-01          UTC date or ISO UTC timestamp
+  --end 2025-07-01            Inclusive; date-only means midnight, not end of day
+  --entry-hour 8 --weekday 5  UTC; weekday -1 means every day, 0=Sun ... 6=Sat
+  --structure straddle       See schema/backtest-config.schema.json for structures
+  --maturity 7               UI presets: 1, 2, 7, 14, 30, 60, 90, 180
+  --maturity 7-30            With --structure calendar_spread
+  --target-delta 0.25 --wing-delta 0.1
+  --hedge 24                 Hours, or 0/false to disable
+  --hedge-mode time          time | tolerance; --hedge-delta-tolerance 0.05
+  --exit-mode after_days     after_days | weekly_schedule | expiry
+  --exit-hold-days 7         Or --exit-weekday 0 --exit-hour-utc 20
+  --hold-to-expiry true      Alias for exit mode expiry
+  --long false               Short options by default
+  --sizing-mode notional     notional | btc (fixed underlying units, including ETH)
+  --notional-usd 100000 --btc-quantity 1
 
-Other:
-  node scripts/run-backtest.mjs --sweep entry_hour --start 2025-07-01 --end 2025-10-01
-`);
+Sweeps:
+  --sweep ${SWEEPS.join(" | ")}
+
+Booleans other than --json and --help require true/false values.
+Defaults match the initial BTC UI strategy; end defaults to the current time.
+Run npm run build:data first. See README.md and schema/ for the contract.`);
 }
 
-async function main() {
-  const args = parseArgs(process.argv);
-
-  if (args.help) {
-    printHelp();
-    process.exit(0);
+const format = value => Number.isFinite(value) ? value.toFixed(3) : "n/a";
+const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function printText(report) {
+  const config = report.config;
+  console.log(`${config.underlying} ${config.longOption ? "long" : "short"} ${config.structure} ${config.targetDteDays}D | ${config.start} → ${config.end}`);
+  console.log(`Entry: ${weekdays[config.entryWeekday] ?? "daily"} ${String(config.entryHourUtc).padStart(2, "0")}:00 UTC | Hedge: ${config.hedgeEnabled ? config.hedgeMode === "tolerance" ? `delta ±${config.hedgeDeltaTolerance}` : `${config.hedgeIntervalHours}h` : "off"} | Exit: ${config.exitMode}`);
+  console.log(`Closed cycles: ${report.counts.closedCycles}`);
+  for (const [label, key] of [["Final PnL (USD)", "finalEquityUsd"], ["Sharpe ratio", "sharpeRatio"], ["Max drawdown (USD)", "maxDrawdownUsd"], ["Option PnL (USD)", "cumulativeOptionPnlUsd"], ["Hedge PnL (USD)", "cumulativeHedgePnlUsd"], ["Mean entry IV (decimal)", "meanEntryImpliedVol"], ["Mean sampled RV (decimal)", "meanSampledRealizedVol"]]) {
+    console.log(`${label}: ${format(report.summary[key])}`);
   }
+  for (const warning of report.warnings) console.error(`Warning [${warning.code}]: ${warning.message}`);
+}
 
-  const overrides = {
-    start: args.start ? new Date(args.start) : undefined,
-    end: args.end ? new Date(args.end) : undefined,
-    entryHourUtc: args.entryHour,
-    hourlyOffset: args.entryHour,
-    entryWeekday: args.weekday,
-    structure: args.structure,
-    targetDteDays: args.targetDteDays ?? args.maturity,
-    targetDelta: args.targetDelta,
-    wingDelta: args.wingDelta,
-    hedgeEnabled: args.hedge != null ? Number(args.hedge) > 0 : undefined,
-    hedgeIntervalHours: args.hedge != null && Number(args.hedge) > 0 ? Number(args.hedge) : undefined,
-    hedgeMode: args.hedgeMode,
-    hedgeDeltaTolerance: args.hedgeDeltaTolerance,
-    holdToExpiry: args.holdToExpiry,
-    exitMode: args.exitMode,
-    exitHoldDays: args.exitHoldDays,
-    exitWeekday: args.exitWeekday,
-    exitHourUtc: args.exitHour,
-    longOption: args.long,
-    sizingMode: args.sizingMode,
-    notionalUsd: args.notionalUsd,
-    btcQuantity: args.btcQuantity,
-  };
+function printSweep({ sweep, runs }) {
+  const label = config => sweep === "entry_hour" ? `${String(config.entryHourUtc).padStart(2, "0")}:00`
+    : sweep === "entry_weekday" ? weekdays[config.entryWeekday]
+      : sweep === "hedge_tolerance" ? `±${config.hedgeDeltaTolerance}` : `hedge ${config.hedgeIntervalHours}h`;
+  console.log(`Sweep: ${sweep}`);
+  console.log("Label | PnL USD | Sharpe | Max DD USD | Closed cycles");
+  for (const run of runs) console.log(`${label(run.config)} | ${format(run.summary.finalEquityUsd)} | ${format(run.summary.sharpeRatio)} | ${format(run.summary.maxDrawdownUsd)} | ${run.counts.closedCycles}`);
+  for (const [title, key] of [["Best Sharpe", "sharpeRatio"], ["Best PnL", "finalEquityUsd"]]) {
+    const best = runs.filter(run => Number.isFinite(run.summary[key])).reduce((best, run) => !best || run.summary[key] > best.summary[key] ? run : best, null);
+    console.log(`${title}: ${best ? `${label(best.config)} (${format(best.summary[key])})` : "n/a"}`);
+  }
+  for (const run of runs) for (const warning of run.warnings) console.error(`Warning [${label(run.config)} / ${warning.code}]: ${warning.message}`);
+}
 
-  // Clean undefined
-  Object.keys(overrides).forEach(k => overrides[k] === undefined && delete overrides[k]);
-
+function writeReport(filename, json) {
+  const destination = path.resolve(filename);
+  const temporary = `${destination}.${process.pid}.tmp`;
+  let created = false;
   try {
-    if (args.sweep) {
-      console.log(`Running sweep over dimension: ${args.sweep}`);
-      // For simplicity, basic support for a couple dimensions
-      let configs = [];
-      if (args.sweep === "entry_hour") {
-        configs = Array.from({ length: 24 }, (_, h) => ({ ...overrides, entryHourUtc: h, hourlyOffset: h }));
-      } else if (args.sweep === "entry_weekday") {
-        configs = Array.from({ length: 7 }, (_, w) => ({ ...overrides, entryWeekday: w }));
-      } else if (args.sweep === "hedge_frequency") {
-        const freqs = [1,2,3,4,6,8,12,24];
-        configs = freqs.map(f => ({ ...overrides, hedgeEnabled: true, hedgeMode: "time", hedgeIntervalHours: f }));
-      } else if (args.sweep === "hedge_tolerance") {
-        configs = [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2].map(tolerance => ({
-          ...overrides, hedgeEnabled: true, hedgeMode: "tolerance", hedgeDeltaTolerance: tolerance,
-        }));
-      } else {
-        console.error("Sweep dimension not yet supported in CLI helper:", args.sweep);
-        process.exit(1);
-      }
-
-      const results = await runBacktestBatch(configs);
-      console.log("\nSweep results:");
-      const header = "Label      |     PnL | Sharpe |   MaxDD | Cycles |   OptPnL |  HedgePnL";
-      console.log(header);
-      console.log("-".repeat(header.length));
-      let bestSharpe = { label: "", sharpe: -Infinity, pnl: 0 };
-      let bestPnl = { label: "", sharpe: 0, pnl: -Infinity };
-      for (const r of results) {
-        const c = r.config;
-        const s = r.summary;
-        const cycleRows = r.cycles || r.result?.cycleSummary || [];
-        const maxDD = computeMaxDrawdown(cycleRows);
-        const label = args.sweep === "entry_hour" ? `${String(c.entryHourUtc).padStart(2,"0")}:00` :
-                      args.sweep === "entry_weekday" ? ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][c.entryWeekday] :
-                      c.hedgeMode === "tolerance" ? `±${c.hedgeDeltaTolerance}` : `hedge ${c.hedgeIntervalHours}h`;
-        const line = `${label.padEnd(10)} | ${s.finalEquityUsd.toFixed(0).padStart(7)} | ${(s.sharpeRatio||0).toFixed(2).padStart(6)} | ${maxDD.toFixed(0).padStart(7)} | ${String(r.result.counts.closedCycles).padStart(6)} | ${s.cumulativeOptionPnlUsd.toFixed(0).padStart(8)} | ${s.cumulativeHedgePnlUsd.toFixed(0).padStart(9)}`;
-        console.log(line);
-        const sharpe = s.sharpeRatio || 0;
-        const pnl = s.finalEquityUsd;
-        if (sharpe > bestSharpe.sharpe) bestSharpe = { label, sharpe, pnl };
-        if (pnl > bestPnl.pnl) bestPnl = { label, sharpe, pnl };
-      }
-      console.log("-".repeat(header.length));
-      console.log(`Best Sharpe: ${bestSharpe.label} (Sharpe ${bestSharpe.sharpe.toFixed(2)}, PnL ${bestSharpe.pnl.toFixed(0)})`);
-      console.log(`Best PnL:    ${bestPnl.label} (PnL ${bestPnl.pnl.toFixed(0)}, Sharpe ${bestPnl.sharpe.toFixed(2)})`);
-      return;
-    }
-
-    const { result, config } = await runBacktest(overrides);
-
-    console.log("\n=== Backtest Result ===");
-    console.log("Config:", {
-      entry: `${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][config.entryWeekday]} ${String(config.entryHourUtc).padStart(2,"0")}:00`,
-      structure: config.structure,
-      dte: config.targetDteDays,
-      delta: config.targetDelta,
-      hedge: config.hedgeEnabled ? (config.hedgeMode === "tolerance" ? `delta ±${config.hedgeDeltaTolerance}` : `${config.hedgeIntervalHours}h`) : "off",
-      exit: config.exitMode === "expiry"
-        ? "to expiry"
-        : config.exitMode === "weekly_schedule"
-          ? `${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][config.exitWeekday]} ${String(config.exitHourUtc).padStart(2,"0")}:00 weekly`
-          : `roll every ${config.exitHoldDays}D`,
-      side: config.longOption ? "long" : "short",
-    });
-    console.log("Period:", config.start.toISOString().slice(0,10), "→", (config.end || new Date()).toISOString().slice(0,10));
-    console.log("");
-    console.log("Closed cycles:     ", result.counts.closedCycles);
-    console.log("Final PnL (USD):   ", result.summary.finalEquityUsd.toFixed(2));
-    console.log("Sharpe ratio:      ", (result.summary.sharpeRatio || 0).toFixed(3));
-    console.log("Max drawdown:      ", computeMaxDrawdown(result.cycleSummary).toFixed(2));
-    console.log("Option PnL:        ", result.summary.cumulativeOptionPnlUsd.toFixed(2));
-    console.log("Hedge PnL:         ", result.summary.cumulativeHedgePnlUsd.toFixed(2));
-    console.log("Mean entry IV:     ", (result.summary.meanEntryImpliedVol * 100).toFixed(1) + "%");
-    console.log("Mean sampled RV:   ", (result.summary.meanSampledRealizedVol * 100).toFixed(1) + "%");
-  } catch (err) {
-    console.error("Backtest failed:", err.message);
-    console.error(err.stack);
-    process.exit(1);
+    fs.writeFileSync(temporary, json, { flag: "wx" });
+    created = true;
+    fs.renameSync(temporary, destination);
+  } finally {
+    if (created && fs.existsSync(temporary)) fs.unlinkSync(temporary);
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+async function main(argv) {
+  const machineErrors = argv.includes("--json") || argv.some(arg => arg === "--output" || arg.startsWith("--output="));
+  try {
+    const args = parseCliArgs(argv);
+    if (args.help) { printHelp(); return; }
+    if (args.config && args.output && path.resolve(args.config) === path.resolve(args.output)) invalid("Config and output paths must differ");
+    let fromFile = {};
+    if (args.config) {
+      try { fromFile = JSON.parse(fs.readFileSync(args.config, "utf8")); }
+      catch (error) { invalid(`Unable to read config: ${error.message}`); }
+      // Validate file keys/types before merging; arrays and typos must not disappear.
+      parseBacktestConfig(fromFile);
+    }
+    const overrides = { ...fromFile, ...args.overrides };
+    // Sync legacy aliases when a canonical flag overrides a full effective config.
+    if (Object.hasOwn(args.overrides, "entryHourUtc") && !Object.hasOwn(args.overrides, "hourlyOffset")) overrides.hourlyOffset = args.overrides.entryHourUtc;
+    if (Object.hasOwn(args.overrides, "hourlyOffset") && !Object.hasOwn(args.overrides, "entryHourUtc")) overrides.entryHourUtc = args.overrides.hourlyOffset;
+    if (Object.hasOwn(args.overrides, "exitMode") && !Object.hasOwn(args.overrides, "holdToExpiry")) overrides.holdToExpiry = args.overrides.exitMode === "expiry";
+    if (Object.hasOwn(args.overrides, "holdToExpiry") && !Object.hasOwn(args.overrides, "exitMode")) overrides.exitMode = args.overrides.holdToExpiry ? "expiry" : "after_days";
+    const outputs = args.sweep ? await runBacktestBatch(sweepConfigs(args.sweep, overrides)) : [await runBacktest(overrides)];
+    const reports = outputs.map(buildBacktestReport);
+    const report = args.sweep ? { schemaVersion: 1, sweep: args.sweep, runs: reports } : reports[0];
+    const json = `${JSON.stringify(report, null, 2)}\n`;
+    if (args.output) writeReport(args.output, json);
+    if (args.json) process.stdout.write(json);
+    else if (args.sweep) printSweep(report);
+    else printText(report);
+  } catch (error) {
+    const code = error.code === "INVALID_INPUT" || error instanceof RangeError ? "INVALID_INPUT" : error.code === "DATA_UNAVAILABLE" ? error.code : "BACKTEST_FAILED";
+    if (machineErrors) console.error(JSON.stringify({ schemaVersion: 1, error: { code, message: error.message } }));
+    else console.error(`Backtest failed [${code}]: ${error.message}`);
+    process.exitCode = 1;
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
+  await main(process.argv.slice(2));
 }

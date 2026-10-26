@@ -1,0 +1,1486 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Backtest CLI output (v1)",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/report"
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "sweep",
+        "runs"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "sweep": {
+          "enum": [
+            "entry_hour",
+            "entry_weekday",
+            "hedge_frequency",
+            "hedge_tolerance"
+          ]
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/report"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "error"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "enum": [
+                "INVALID_INPUT",
+                "DATA_UNAVAILABLE",
+                "BACKTEST_FAILED"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "config": {
+      "title": "Effective backtest config",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "underlying": {
+          "enum": [
+            "BTC",
+            "ETH"
+          ]
+        },
+        "start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "end": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "entryHourUtc": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23
+        },
+        "hourlyOffset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23
+        },
+        "entryWeekday": {
+          "type": "integer",
+          "minimum": -1,
+          "maximum": 6
+        },
+        "hedgeEnabled": {
+          "type": "boolean"
+        },
+        "hedgeIntervalHours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24
+        },
+        "hedgeMode": {
+          "enum": [
+            "time",
+            "tolerance"
+          ]
+        },
+        "hedgeDeltaTolerance": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "exitMode": {
+          "enum": [
+            "after_days",
+            "weekly_schedule",
+            "expiry"
+          ]
+        },
+        "holdToExpiry": {
+          "type": "boolean"
+        },
+        "exitHoldDays": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "exitWeekday": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "exitHourUtc": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23
+        },
+        "longOption": {
+          "type": "boolean"
+        },
+        "targetDteDays": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "farTargetDteDays": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "minWeeklyDteDays": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "maxWeeklyDteDays": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "notionalUsd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "sizingMode": {
+          "enum": [
+            "notional",
+            "btc"
+          ]
+        },
+        "btcQuantity": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "structure": {
+          "enum": [
+            "straddle",
+            "strangle",
+            "risk_reversal",
+            "call",
+            "put",
+            "covered_call",
+            "collar",
+            "butterfly",
+            "condor",
+            "call_spread",
+            "put_spread",
+            "calendar_spread"
+          ]
+        },
+        "targetDelta": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 0.5
+        },
+        "wingDelta": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 0.5
+        },
+        "includeGreekAttribution": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "underlying",
+        "start",
+        "end",
+        "entryHourUtc",
+        "hourlyOffset",
+        "entryWeekday",
+        "hedgeEnabled",
+        "hedgeIntervalHours",
+        "hedgeMode",
+        "hedgeDeltaTolerance",
+        "exitMode",
+        "holdToExpiry",
+        "exitHoldDays",
+        "exitWeekday",
+        "exitHourUtc",
+        "longOption",
+        "targetDteDays",
+        "farTargetDteDays",
+        "minWeeklyDteDays",
+        "maxWeeklyDteDays",
+        "notionalUsd",
+        "sizingMode",
+        "btcQuantity",
+        "structure",
+        "targetDelta",
+        "wingDelta",
+        "includeGreekAttribution"
+      ]
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "config",
+        "data",
+        "summary",
+        "cycles",
+        "counts",
+        "warnings"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "config": {
+          "$ref": "#/$defs/config"
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "underlying",
+            "artifactSchema",
+            "artifactVersion",
+            "resolutionSeconds",
+            "pricing",
+            "sha256",
+            "availableStart",
+            "availableEnd",
+            "loadedStart",
+            "loadedEnd",
+            "hoursUtc",
+            "dteBuckets"
+          ],
+          "properties": {
+            "underlying": {
+              "enum": [
+                "BTC",
+                "ETH"
+              ]
+            },
+            "artifactSchema": {
+              "const": "thalex-option-backtest"
+            },
+            "artifactVersion": {
+              "type": "integer"
+            },
+            "resolutionSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "pricing": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "model",
+                "daysPerYear",
+                "deltaScale"
+              ],
+              "properties": {
+                "model": {
+                  "type": "string"
+                },
+                "daysPerYear": {
+                  "type": "number"
+                },
+                "deltaScale": {
+                  "type": "number"
+                }
+              }
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "availableStart": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "availableEnd": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "loadedStart": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "loadedEnd": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "hoursUtc": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 23
+              },
+              "uniqueItems": true
+            },
+            "dteBuckets": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "finalEquityUsd",
+            "initialInvestmentUsd",
+            "cumulativeReturnOnNotional",
+            "annualizedMeanReturn",
+            "annualizedReturnVolatility",
+            "sharpeRatio",
+            "annualizedCyclesPerYear",
+            "meanEntryDteDays",
+            "meanHoldingPeriodDays",
+            "meanSampledRealizedVol",
+            "cumulativeOptionPnlUsd",
+            "cumulativeHedgePnlUsd",
+            "meanEntryImpliedVol",
+            "notionalUsdPerCycle",
+            "btcQuantity",
+            "maxDrawdownUsd",
+            "sizingMode",
+            "hedgePathScenarios"
+          ],
+          "properties": {
+            "finalEquityUsd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "initialInvestmentUsd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "cumulativeReturnOnNotional": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "annualizedMeanReturn": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "annualizedReturnVolatility": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "sharpeRatio": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "annualizedCyclesPerYear": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "meanEntryDteDays": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "meanHoldingPeriodDays": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "meanSampledRealizedVol": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "cumulativeOptionPnlUsd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "cumulativeHedgePnlUsd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "meanEntryImpliedVol": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "notionalUsdPerCycle": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "btcQuantity": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "maxDrawdownUsd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+            },
+            "sizingMode": {
+              "enum": [
+                "notional",
+                "btc"
+              ]
+            },
+            "hedgePathScenarios": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "high_first",
+                    "low_first"
+                  ],
+                  "properties": {
+                    "high_first": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "pnlUsd",
+                        "ambiguousBars",
+                        "missingRangeBars",
+                        "missingRiskBars"
+                      ],
+                      "properties": {
+                        "pnlUsd": {
+                          "type": [
+                            "number",
+                            "null"
+                          ],
+                          "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                        },
+                        "ambiguousBars": {
+                          "type": [
+                            "number",
+                            "null"
+                          ],
+                          "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                        },
+                        "missingRangeBars": {
+                          "type": [
+                            "number",
+                            "null"
+                          ],
+                          "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                        },
+                        "missingRiskBars": {
+                          "type": [
+                            "number",
+                            "null"
+                          ],
+                          "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                        }
+                      }
+                    },
+                    "low_first": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "pnlUsd",
+                        "ambiguousBars",
+                        "missingRangeBars",
+                        "missingRiskBars"
+                      ],
+                      "properties": {
+                        "pnlUsd": {
+                          "type": [
+                            "number",
+                            "null"
+                          ],
+                          "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                        },
+                        "ambiguousBars": {
+                          "type": [
+                            "number",
+                            "null"
+                          ],
+                          "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                        },
+                        "missingRangeBars": {
+                          "type": [
+                            "number",
+                            "null"
+                          ],
+                          "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                        },
+                        "missingRiskBars": {
+                          "type": [
+                            "number",
+                            "null"
+                          ],
+                          "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "cycles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "hourlyOffset",
+              "entryHourUtc",
+              "entryWeekday",
+              "hedgeEnabled",
+              "hedgeIntervalHours",
+              "hedgeMode",
+              "hedgeDeltaTolerance",
+              "exitMode",
+              "holdToExpiry",
+              "exitHoldDays",
+              "exitWeekday",
+              "exitHourUtc",
+              "structure",
+              "longOption",
+              "targetDelta",
+              "wingDelta",
+              "notionalUsd",
+              "sizingMode",
+              "btcQuantity",
+              "underlyingQuantity",
+              "entryTs",
+              "expirationTs",
+              "exitTs",
+              "dteDays",
+              "strike",
+              "entryIndexPrice",
+              "investmentUsd",
+              "optionQuantityBtc",
+              "entryOptionCashflowUsd",
+              "selectionMetric",
+              "cycle",
+              "entryStraddleMark",
+              "premiumReceivedUsd",
+              "exitIndexPrice",
+              "exitStructureMark",
+              "entryOptionMarketValueUsd",
+              "exitOptionMarketValueUsd",
+              "holdingPeriodDays",
+              "shortOptionPnlUsd",
+              "hedgePnlUsd",
+              "sampledRealizedVariance",
+              "sampledRealizedVol",
+              "sampledReturnCount",
+              "sampledPathIntervalHours",
+              "hedgeTradeCount",
+              "ambiguousHedgeBars",
+              "missingHedgeRangeBars",
+              "missingHedgeRiskBars",
+              "hedgeDataGapCount",
+              "cyclePnlUsd",
+              "cycleReturnOnNotional",
+              "endingEquityUsd",
+              "hedgeAmbiguousBarPolicy",
+              "hedgeModel",
+              "entryTime",
+              "expiration",
+              "exitTime",
+              "exitAtExpiry",
+              "closed",
+              "legs",
+              "hedgePathScenarios"
+            ],
+            "properties": {
+              "hourlyOffset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 23
+              },
+              "entryHourUtc": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 23
+              },
+              "entryWeekday": {
+                "type": "integer",
+                "minimum": -1,
+                "maximum": 6
+              },
+              "hedgeEnabled": {
+                "type": "boolean"
+              },
+              "hedgeIntervalHours": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 24
+              },
+              "hedgeMode": {
+                "enum": [
+                  "time",
+                  "tolerance"
+                ]
+              },
+              "hedgeDeltaTolerance": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "exitMode": {
+                "enum": [
+                  "after_days",
+                  "weekly_schedule",
+                  "expiry"
+                ]
+              },
+              "holdToExpiry": {
+                "type": "boolean"
+              },
+              "exitHoldDays": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "exitWeekday": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 6
+              },
+              "exitHourUtc": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 23
+              },
+              "structure": {
+                "enum": [
+                  "straddle",
+                  "strangle",
+                  "risk_reversal",
+                  "call",
+                  "put",
+                  "covered_call",
+                  "collar",
+                  "butterfly",
+                  "condor",
+                  "call_spread",
+                  "put_spread",
+                  "calendar_spread"
+                ]
+              },
+              "longOption": {
+                "type": "boolean"
+              },
+              "targetDelta": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 0.5
+              },
+              "wingDelta": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "exclusiveMaximum": 0.5
+              },
+              "notionalUsd": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "sizingMode": {
+                "enum": [
+                  "notional",
+                  "btc"
+                ]
+              },
+              "btcQuantity": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "underlyingQuantity": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "entryTs": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "expirationTs": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "exitTs": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "dteDays": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "strike": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "entryIndexPrice": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "investmentUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "optionQuantityBtc": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "entryOptionCashflowUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "selectionMetric": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "cycle": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "entryStraddleMark": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "premiumReceivedUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "exitIndexPrice": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "exitStructureMark": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "entryOptionMarketValueUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "exitOptionMarketValueUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "holdingPeriodDays": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "shortOptionPnlUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "hedgePnlUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "sampledRealizedVariance": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "sampledRealizedVol": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "sampledReturnCount": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "sampledPathIntervalHours": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "hedgeTradeCount": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "ambiguousHedgeBars": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "missingHedgeRangeBars": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "missingHedgeRiskBars": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "hedgeDataGapCount": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "cyclePnlUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "cycleReturnOnNotional": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "endingEquityUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "hedgeAmbiguousBarPolicy": {
+                "const": "nearest_first"
+              },
+              "hedgeModel": {
+                "enum": [
+                  "scheduled",
+                  "nearest_trigger_two_trade"
+                ]
+              },
+              "entryTime": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "expiration": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "exitTime": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "exitAtExpiry": {
+                "type": "boolean"
+              },
+              "closed": {
+                "type": "boolean"
+              },
+              "legs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "instrumentId",
+                    "strike",
+                    "expirationTs",
+                    "entryPrice",
+                    "entryDelta",
+                    "entryImpliedVol",
+                    "quantity",
+                    "exitPrice",
+                    "exitImpliedVol",
+                    "exitDelta",
+                    "instrumentName",
+                    "optionType",
+                    "expiration"
+                  ],
+                  "properties": {
+                    "instrumentId": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "strike": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "expirationTs": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "entryPrice": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "entryDelta": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "entryImpliedVol": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "quantity": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "exitPrice": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "exitImpliedVol": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "exitDelta": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "instrumentName": {
+                      "type": "string"
+                    },
+                    "optionType": {
+                      "enum": [
+                        "C",
+                        "P"
+                      ]
+                    },
+                    "expiration": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  }
+                }
+              },
+              "hedgePathScenarios": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "high_first",
+                      "low_first"
+                    ],
+                    "properties": {
+                      "high_first": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "hedgePnlUsd",
+                          "ambiguousBars",
+                          "missingRangeBars",
+                          "missingRiskBars"
+                        ],
+                        "properties": {
+                          "hedgePnlUsd": {
+                            "type": [
+                              "number",
+                              "null"
+                            ],
+                            "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                          },
+                          "ambiguousBars": {
+                            "type": [
+                              "number",
+                              "null"
+                            ],
+                            "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                          },
+                          "missingRangeBars": {
+                            "type": [
+                              "number",
+                              "null"
+                            ],
+                            "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                          },
+                          "missingRiskBars": {
+                            "type": [
+                              "number",
+                              "null"
+                            ],
+                            "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                          }
+                        }
+                      },
+                      "low_first": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "hedgePnlUsd",
+                          "ambiguousBars",
+                          "missingRangeBars",
+                          "missingRiskBars"
+                        ],
+                        "properties": {
+                          "hedgePnlUsd": {
+                            "type": [
+                              "number",
+                              "null"
+                            ],
+                            "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                          },
+                          "ambiguousBars": {
+                            "type": [
+                              "number",
+                              "null"
+                            ],
+                            "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                          },
+                          "missingRangeBars": {
+                            "type": [
+                              "number",
+                              "null"
+                            ],
+                            "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                          },
+                          "missingRiskBars": {
+                            "type": [
+                              "number",
+                              "null"
+                            ],
+                            "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "holdingStartTs": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "holdingEndTs": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "holdingStartPrice": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "holdingEndPrice": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "initialInvestmentUsd": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "attributionSteps": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "meanAttributionIntervalHours": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+              },
+              "underlyingFirstEntry": {
+                "type": "boolean"
+              },
+              "greekPnl": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "netDelta",
+                  "theta",
+                  "gamma",
+                  "vega",
+                  "vanna",
+                  "volga",
+                  "residual"
+                ],
+                "properties": {
+                  "netDelta": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                  },
+                  "theta": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                  },
+                  "gamma": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                  },
+                  "vega": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                  },
+                  "vanna": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                  },
+                  "volga": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                  },
+                  "residual": {
+                    "type": [
+                      "number",
+                      "null"
+                    ],
+                    "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                  }
+                }
+              },
+              "greekPnlTimeline": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "ts",
+                    "indexPrice",
+                    "intervalPnlUsd",
+                    "netDeltaPnlUsd",
+                    "gammaThetaPnlUsd",
+                    "vegaPnlUsd",
+                    "vannaPnlUsd",
+                    "volgaPnlUsd",
+                    "residualPnlUsd"
+                  ],
+                  "properties": {
+                    "ts": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "indexPrice": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "intervalPnlUsd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "netDeltaPnlUsd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "gammaThetaPnlUsd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "vegaPnlUsd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "vannaPnlUsd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "volgaPnlUsd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    },
+                    "residualPnlUsd": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Arithmetic mean cycle return times observed cycles/year; not CAGR."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "closedCycles",
+            "totalCycles",
+            "unclosedCycles"
+          ],
+          "properties": {
+            "closedCycles": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "totalCycles": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unclosedCycles": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "enum": [
+                  "NO_CLOSED_CYCLES",
+                  "UNCLOSED_CYCLES",
+                  "DATA_END_BEFORE_REQUESTED_END",
+                  "HEDGE_DATA_GAPS"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

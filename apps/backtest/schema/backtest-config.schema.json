@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Backtest config overrides (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "underlying": {
+      "enum": [
+        "BTC",
+        "ETH"
+      ]
+    },
+    "start": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,3})?Z)?$"
+    },
+    "end": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,3})?Z)?$"
+    },
+    "entryHourUtc": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 23
+    },
+    "hourlyOffset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 23
+    },
+    "entryWeekday": {
+      "type": "integer",
+      "minimum": -1,
+      "maximum": 6
+    },
+    "hedgeEnabled": {
+      "type": "boolean"
+    },
+    "hedgeIntervalHours": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 24
+    },
+    "hedgeMode": {
+      "enum": [
+        "time",
+        "tolerance"
+      ]
+    },
+    "hedgeDeltaTolerance": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "exitMode": {
+      "enum": [
+        "after_days",
+        "weekly_schedule",
+        "expiry"
+      ]
+    },
+    "holdToExpiry": {
+      "type": "boolean"
+    },
+    "exitHoldDays": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "exitWeekday": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 6
+    },
+    "exitHourUtc": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 23
+    },
+    "longOption": {
+      "type": "boolean"
+    },
+    "targetDteDays": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "farTargetDteDays": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "minWeeklyDteDays": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "maxWeeklyDteDays": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "notionalUsd": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "sizingMode": {
+      "enum": [
+        "notional",
+        "btc"
+      ]
+    },
+    "btcQuantity": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "structure": {
+      "enum": [
+        "straddle",
+        "strangle",
+        "risk_reversal",
+        "call",
+        "put",
+        "covered_call",
+        "collar",
+        "butterfly",
+        "condor",
+        "call_spread",
+        "put_spread",
+        "calendar_spread"
+      ]
+    },
+    "targetDelta": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 0.5
+    },
+    "wingDelta": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 0.5
+    },
+    "includeGreekAttribution": {
+      "type": "boolean"
+    }
+  }
+}

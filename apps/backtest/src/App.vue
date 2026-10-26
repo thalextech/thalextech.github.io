@@ -52,6 +52,9 @@ import {
   requiredQuoteDteDays,
 } from "./lib/weeklyStraddleBacktest.js";
 
+import { hoursForConfig } from "./lib/backtestContract.js";
+import { MATURITY_OPTIONS, CALENDAR_MATURITY_OPTIONS, maturityConfigOverrides } from "./lib/backtestMaturities.js";
+
 const DEFAULT_MATURITY_DAYS = 7;
 const DATA_RANGE_START = new Date(DEFAULT_BACKTEST_CONFIG.start);
 const DATA_RANGE_END = new Date();
@@ -61,92 +64,6 @@ const DATA_RANGE_LABEL_UPDATE_MS = 180;
 const DAILY_PNL_CYCLE_THRESHOLD = 24;
 const underlying = ref("BTC");
 const currentUnderlying = computed(() => getUnderlying(underlying.value));
-
-const MATURITY_OPTIONS = [
-  { value: 1, label: "1D", minDteDays: 0.25, maxDteDays: 1.5 },
-  { value: 2, label: "2D", minDteDays: 1.5, maxDteDays: 2.5 },
-  { value: 7, label: "7D", minDteDays: 4, maxDteDays: 10 },
-  { value: 14, label: "14D", minDteDays: 7, maxDteDays: 28 },
-  { value: 30, label: "30D", minDteDays: 14, maxDteDays: 60 },
-  { value: 60, label: "60D", minDteDays: 45, maxDteDays: 75 },
-  { value: 90, label: "90D", minDteDays: 75, maxDteDays: 135 },
-  { value: 180, label: "180D", minDteDays: 135, maxDteDays: 240 },
-];
-
-const CALENDAR_MATURITY_OPTIONS = [
-  {
-    value: "7-14",
-    label: "7–14D",
-    nearDays: 7,
-    farDays: 14,
-    minDteDays: 5,
-    maxDteDays: 10,
-  },
-  {
-    value: "7-30",
-    label: "7–30D",
-    nearDays: 7,
-    farDays: 30,
-    minDteDays: 5,
-    maxDteDays: 10,
-  },
-  {
-    value: "14-30",
-    label: "14–30D",
-    nearDays: 14,
-    farDays: 30,
-    minDteDays: 7,
-    maxDteDays: 28,
-  },
-  {
-    value: "30-60",
-    label: "30–60D",
-    nearDays: 30,
-    farDays: 60,
-    minDteDays: 14,
-    maxDteDays: 60,
-  },
-  {
-    value: "30-90",
-    label: "30–90D",
-    nearDays: 30,
-    farDays: 90,
-    minDteDays: 14,
-    maxDteDays: 60,
-  },
-  {
-    value: "30-180",
-    label: "30–180D",
-    nearDays: 30,
-    farDays: 180,
-    minDteDays: 14,
-    maxDteDays: 60,
-  },
-  {
-    value: "60-90",
-    label: "60–90D",
-    nearDays: 60,
-    farDays: 90,
-    minDteDays: 45,
-    maxDteDays: 75,
-  },
-  {
-    value: "60-180",
-    label: "60–180D",
-    nearDays: 60,
-    farDays: 180,
-    minDteDays: 45,
-    maxDteDays: 75,
-  },
-  {
-    value: "90-180",
-    label: "90–180D",
-    nearDays: 90,
-    farDays: 180,
-    minDteDays: 75,
-    maxDteDays: 135,
-  },
-];
 
 const STRUCTURE_OPTIONS = [
   { value: "straddle", label: "Straddle" },
@@ -781,39 +698,7 @@ const formatNumber = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
-const hoursFor = (
-  hour,
-  enabled,
-  interval,
-  scheduledExitHour = null,
-  includeExpiryRoll = false,
-) => {
-  const hs = new Set([Number(hour), 8]);
-  if (Number.isInteger(Number(scheduledExitHour)))
-    hs.add(Number(scheduledExitHour));
-  if (enabled) {
-    const step = Math.max(1, Math.min(24, Number(interval)));
-    const addHedgeCycle = (startHour) => {
-      let h = Number(startHour);
-      do {
-        hs.add(h);
-        h = (h + step) % 24;
-      } while (h !== Number(startHour));
-    };
-    addHedgeCycle(hour);
-    if (includeExpiryRoll) addHedgeCycle(8);
-  }
-  return [...hs].sort((a, b) => a - b);
-};
-const requiredHours = computed(() =>
-  holdsUnderlying.value ? Array.from({ length: 24 }, (_, hour) => hour) : hoursFor(
-    ui.entryHourUtc,
-    ui.hedgeEnabled,
-    ui.hedgeMode === "tolerance" ? 1 : ui.hedgeIntervalHours,
-    ui.exitMode === "weekly_schedule" ? ui.exitHourUtc : null,
-    ui.exitMode === "after_days",
-  ),
-);
+const requiredHours = computed(() => hoursForConfig(ui));
 const requiredMaxDteDays = computed(() =>
   Math.max(
     Number(currentMaturity.value.maxDteDays) || 0,
@@ -827,13 +712,6 @@ let loadedDataKey = "";
 
 const maxDrawdown = computed(() => {
   return computeMaxDrawdown(result.value?.cycleSummary);
-});
-
-const maturityConfigOverrides = (maturity) => ({
-  targetDteDays: maturity.nearDays ?? maturity.value,
-  farTargetDteDays: maturity.farDays,
-  minWeeklyDteDays: maturity.minDteDays,
-  maxWeeklyDteDays: maturity.maxDteDays,
 });
 
 const sweepConfigs = computed(() => {
@@ -1251,15 +1129,7 @@ const runSweep = async () => {
   );
   const sweepHours = [
     ...new Set(
-      configs.flatMap((config) =>
-        isUnderlyingHoldingStructure(config.structure) ? Array.from({ length: 24 }, (_, hour) => hour) : hoursFor(
-          config.entryHourUtc,
-          config.hedgeEnabled,
-          config.hedgeMode === "tolerance" ? 1 : config.hedgeIntervalHours,
-          config.exitMode === "weekly_schedule" ? config.exitHourUtc : null,
-          config.exitMode === "after_days",
-        ),
-      ),
+      configs.flatMap(hoursForConfig),
     ),
   ].sort((a, b) => a - b);
   const sweepHoursKey = sweepHours.join(",");
