@@ -8,6 +8,9 @@ import {
   ref,
   watch,
 } from "vue";
+import { buildInitiallyHedgedThetaCone, buildThetaCone } from "./theta-cone.js";
+import { getAvailableStraddles } from "./straddle-selection.js";
+import { coneExpiryMarkerLabel, coneMarkerLabel, coneMarkerOffsets } from "./cone-markers.js";
 import StyledSelectMenu from "./components/StyledSelectMenu.vue";
 import OptionPnlChart from "./components/OptionPnlChart.vue";
 import StraddleBreakEvenChart from "./components/StraddleBreakEvenChart.vue";
@@ -35,10 +38,14 @@ const MAX_CIRCLE_SIZE = 12;
 const MIN_DATA_DATE = new Date("2025-09-30T00:00:00Z");
 const ALL_MATURITIES_VALUE = "all";
 const ALL_MATURITIES_MARK_POINTS = 30;
+const ALL_MATURITIES_MARK_INTERVAL_SECONDS = 60;
 const PUT_BREAK_EVEN_COLOR = "#ef4444";
 const CALL_BREAK_EVEN_COLOR = "#22c55e";
 const BREAK_EVEN_MAX_OPACITY = 0.9;
 const BREAK_EVEN_MIN_OPACITY = 0.3;
+const CONE_MODE_TOOLTIP = "Curves show the prices needed to break even when closing at each date; at expiry they reach strike ± premium. Assumes constant implied volatility, zero rates and no fees, from the latest loaded index close. The cone can be asymmetric when the straddle has directional exposure.";
+
+const INITIAL_HEDGE_TOOLTIP = "Offsets each straddle’s initial delta with a fixed underlying hedge. Both cone edges start at the current price. Break-evens include the hedge’s profit or loss, so expiry levels differ from strike ± premium. The hedge is not rebalanced. Assumes constant implied volatility, zero rates and no fees.";
 
 const UNDERLYING_OPTIONS = [
   { value: "BTCUSD", label: "BTC" },
@@ -50,11 +57,17 @@ const ui = reactive({
   optionMaturity: "",
   optionStrike: "",
   mode: "breakeven",
+  coneMode: false,
+  hedgeInitialDelta: false,
+  showDayMarkers: true,
   maxPoints: DEFAULT_HISTORY_POINT_LIMIT,
   circleSize: DEFAULT_CIRCLE_SIZE,
   loading: false,
   error: "",
 });
+const isConeMode = computed(() => ui.mode === "breakeven" && ui.coneMode);
+const isInitiallyHedgedCone = computed(() => isConeMode.value && ui.hedgeInitialDelta);
+const coneModeTooltip = computed(() => isInitiallyHedgedCone.value ? INITIAL_HEDGE_TOOLTIP : CONE_MODE_TOOLTIP);
 const underlying = ref("BTCUSD");
 const allInstruments = ref([]);
 const data = reactive({
@@ -63,7 +76,6 @@ const data = reactive({
   putMark: {},
   index: {},
 });
-const allMaturityStraddles = ref([]);
 const allMaturityMarks = ref({});
 const chartRef = ref(null);
 const breakEvenChartRef = ref(null);
@@ -84,6 +96,15 @@ const maturityFormatter = new Intl.DateTimeFormat("en-US", {
 const strikeFormatter = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 0,
 });
+const compactPriceFormatter = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+const formatChartPrice = value => Math.abs(value) >= 1000
+  ? compactPriceFormatter.format(value).toLowerCase()
+  : strikeFormatter.format(value);
+
 
 const requestedMaxPoints = computed(() => {
   const value = Math.floor(Number(ui.maxPoints));
@@ -93,7 +114,8 @@ const requestedMaxPoints = computed(() => {
     Math.min(MAX_HISTORY_POINT_LIMIT, value),
   );
 });
-const maxPointsToFetch = ref(DEFAULT_HISTORY_POINT_LIMIT);
+const manualMaxPointsToFetch = ref(DEFAULT_HISTORY_POINT_LIMIT);
+const maxPointsToFetch = computed(() => coneTimeWindow.value?.pointCount ?? manualMaxPointsToFetch.value);
 
 const chartCircleSize = computed(() => {
   const value = Number(ui.circleSize);
@@ -272,6 +294,42 @@ const optionMaturities = computed(() => {
 const isAllMaturities = computed(() => ui.optionMaturity === ALL_MATURITIES_VALUE);
 const selectedMaturityTs = computed(() => Number(ui.optionMaturity));
 const selectedStrike = computed(() => Number(ui.optionStrike));
+const availableStraddles = computed(() =>
+  getAvailableStraddles(data.optionInstruments, Math.floor(Date.now() / 1000)),
+);
+const allMaturityStraddles = computed(() =>
+  availableStraddles.value.filter(straddle => straddle.strike === selectedStrike.value),
+);
+const breakEvenHorizonTs = computed(() => isAllMaturities.value
+  ? Math.max(...availableStraddles.value.map(straddle => straddle.expiryTs))
+  : selectedMaturityTs.value,
+);
+
+
+
+// Keep the all-maturities comparison on the same horizon when the strike changes.
+// The longest available maturity sets the lookahead, including skipped expiries.
+// History occupies twice that duration.
+const coneTimeWindow = computed(() => {
+  if (!isConeMode.value) return null;
+  const interval = RESOLUTION_CONFIG[ui.resolutionKey]?.interval_seconds || 3600;
+  const rows = data.index[ui.resolutionKey] || [];
+  const entryTs = rows.reduce((latest, row) =>
+    Number.isFinite(row?.ts) && Number.isFinite(row?.index_price_close)
+      ? Math.max(latest, row.ts) : latest, 0) || Math.floor(Date.now() / 1000 / interval) * interval;
+  const expiryTs = breakEvenHorizonTs.value;
+  const lookahead = expiryTs - entryTs;
+  if (!Number.isFinite(lookahead) || lookahead <= 0) return null;
+  return {
+    from: entryTs - 2 * lookahead,
+    to: expiryTs,
+    pointCount: Math.min(MAX_HISTORY_POINT_LIMIT, Math.ceil(2 * lookahead / interval) + 1),
+  };
+});
+const coneTimeDomain = computed(() => coneTimeWindow.value
+  ? [new Date(coneTimeWindow.value.from * 1000), new Date(coneTimeWindow.value.to * 1000)]
+  : null);
+
 
 const maturityDropdownOptions = computed(() => {
   const base = optionMaturities.value;
@@ -289,24 +347,11 @@ const optionInstrumentsForMaturity = computed(() => {
 });
 
 const optionStrikes = computed(() => {
-  const strikeTypes = new Map();
-  for (const instrument of optionInstrumentsForMaturity.value) {
-    const strike = instrument?.strike;
-    const type = instrument?.option_type_normalized;
-    if (!Number.isFinite(strike)) continue;
-    if (type !== "call" && type !== "put") continue;
-    const bucket = strikeTypes.get(strike) || { call: false, put: false };
-    bucket[type] = true;
-    strikeTypes.set(strike, bucket);
-  }
-  const strikes = Array.from(strikeTypes.entries())
-    .filter(([, bucket]) => bucket.call && bucket.put)
-    .map(([strike]) => strike)
-    .sort((a, b) => a - b);
-  return strikes.map((strike) => ({
-    value: String(strike),
-    label: strikeFormatter.format(strike),
-  }));
+  const pairs = isAllMaturities.value ? availableStraddles.value
+    : availableStraddles.value.filter(straddle => straddle.expiryTs === selectedMaturityTs.value);
+  return [...new Set(pairs.map(straddle => straddle.strike))]
+    .sort((a, b) => a - b)
+    .map(strike => ({ value: String(strike), label: strikeFormatter.format(strike) }));
 });
 
 const selectedCallInstrument = computed(() => {
@@ -351,14 +396,14 @@ const underlyingLabel = computed(
       ?.label || underlying.value,
 );
 const breakEvenTitle = computed(
-  () => `${underlyingLabel.value} Straddle Break-Evens`,
+  () => `${underlyingLabel.value} Straddle ${isConeMode.value
+    ? isInitiallyHedgedCone.value ? "Initially Hedged Theta Cone" : "Unhedged Theta Cone"
+    : "Break-Evens"}`,
 );
 const breakEvenSubtitle = computed(() => {
   if (isAllMaturities.value) {
     const count = allMaturityStraddles.value.length;
-    return count
-      ? `ATM straddles across ${count} maturities`
-      : "ATM straddles across all maturities";
+    return `Strike: ${formatChartPrice(selectedStrike.value)} · ${count} of ${optionMaturities.value.length} maturities`;
   }
   const expiryTs = selectedMaturityTs.value;
   const strike = selectedStrike.value;
@@ -405,7 +450,7 @@ const allMaturityBreakEvenLevels = computed(() => {
       value: e.low,
       color: PUT_BREAK_EVEN_COLOR,
       opacity: opacityFor(e.low),
-      label: `${e.date} ↓ ${strikeFormatter.format(e.low)}`,
+      label: `${e.date} ↓ ${formatChartPrice(e.low)}`,
       expiryTs: e.expiryTs,
     });
     levels.push({
@@ -413,7 +458,7 @@ const allMaturityBreakEvenLevels = computed(() => {
       value: e.high,
       color: CALL_BREAK_EVEN_COLOR,
       opacity: opacityFor(e.high),
-      label: `${e.date} ↑ ${strikeFormatter.format(e.high)}`,
+      label: `${e.date} ↑ ${formatChartPrice(e.high)}`,
       expiryTs: e.expiryTs,
     });
   }
@@ -451,6 +496,7 @@ const breakEvenActualData = computed(() =>
     .filter((row) => Number.isFinite(row?.ts) && Number.isFinite(row?.index_price_close))
     .sort((a, b) => a.ts - b.ts)
     .slice(-maxPointsToFetch.value)
+    .filter(row => !coneTimeWindow.value || row.ts >= coneTimeWindow.value.from)
     .map((row) => ({
       date: new Date(row.ts * 1000),
       value: row.index_price_close,
@@ -462,13 +508,7 @@ const breakEvenActualData = computed(() =>
 const breakEvenProjectedData = computed(() => {
   const actual = breakEvenActualData.value;
   if (!actual.length) return [];
-  let targetTs = selectedMaturityTs.value;
-  if (isAllMaturities.value) {
-    const expiries = allMaturityStraddles.value
-      .map((s) => s.expiryTs)
-      .filter((ts) => Number.isFinite(ts));
-    targetTs = expiries.length ? Math.max(...expiries) : null;
-  }
+  const targetTs = breakEvenHorizonTs.value;
   if (!Number.isFinite(targetTs)) return [];
   const lastActual = actual[actual.length - 1];
   const targetDate = new Date(targetTs * 1000);
@@ -484,53 +524,82 @@ const breakEvenCurrentIndex = computed(() => {
   return actual.length ? actual[actual.length - 1].value : null;
 });
 
+const thetaCones = computed(() => {
+  if (!isConeMode.value) return [];
+  const actual = breakEvenActualData.value;
+  const latest = actual[actual.length - 1];
+  if (!latest) return [];
+  const entries = isAllMaturities.value
+    ? allMaturityStraddles.value.map(straddle => ({
+        ...straddle,
+        premium: Number.isFinite(allMaturityMarks.value[straddle.callInstrumentName]) &&
+          Number.isFinite(allMaturityMarks.value[straddle.putInstrumentName])
+          ? allMaturityMarks.value[straddle.callInstrumentName] + allMaturityMarks.value[straddle.putInstrumentName]
+          : NaN,
+      }))
+    : [{ expiryTs: selectedMaturityTs.value, strike: selectedStrike.value,
+        premium: breakEvenMetrics.value?.straddleMark }];
+  return entries.flatMap(entry => {
+    const buildCone = isInitiallyHedgedCone.value ? buildInitiallyHedgedThetaCone : buildThetaCone;
+    const cone = buildCone({
+      spot: latest.value, strike: entry.strike, premium: entry.premium,
+      entryTs: latest.date.getTime() / 1000, expiryTs: entry.expiryTs,
+      holdingPeriods: ui.showDayMarkers
+        ? coneMarkerOffsets(entry.expiryTs - latest.date.getTime() / 1000) : [],
+    });
+    return cone ? [{ ...cone, id: String(entry.expiryTs), expiryTs: entry.expiryTs }] : [];
+  });
+});
+
+const coneDayMarkers = computed(() => {
+  if (!ui.showDayMarkers || !thetaCones.value.length) return [];
+  const cone = thetaCones.value.reduce((longest, candidate) =>
+    candidate.expiryTs > longest.expiryTs ? candidate : longest);
+  const entry = cone.points[0];
+  const duration = cone.expiryTs - entry.date.getTime() / 1000;
+  const markers = coneMarkerOffsets(duration).flatMap(seconds => {
+    const point = cone.points.find(candidate =>
+      candidate.date.getTime() === entry.date.getTime() + seconds * 1000);
+    return point ? [{
+      id: `hold-${seconds}`, date: point.date, low: point.low, high: point.high,
+      referenceValue: breakEvenCurrentIndex.value, label: coneMarkerLabel(seconds),
+    }] : [];
+  });
+  const terminal = cone.points[cone.points.length - 1];
+  return [...markers, {
+    id: "hold-expiry", date: terminal.date, low: terminal.low, high: terminal.high,
+    referenceValue: breakEvenCurrentIndex.value, label: coneExpiryMarkerLabel(duration),
+  }];
+});
+
+const chartBreakEvenLevels = computed(() => {
+  if (!isConeMode.value) return allMaturityBreakEvenLevels.value;
+  return thetaCones.value.flatMap(cone => {
+    const terminal = cone.points[cone.points.length - 1];
+    return ["low", "high"].map(side => ({
+      id: `be-${side}-${cone.expiryTs}`,
+      expiryTs: cone.expiryTs,
+      value: terminal[side],
+      color: side === "low" ? PUT_BREAK_EVEN_COLOR : CALL_BREAK_EVEN_COLOR,
+      opacity: 0.8,
+      label: `${maturityFormatter.format(terminal.date)} ${side === "low" ? "↓" : "↑"} ${formatChartPrice(terminal[side])}`,
+      tooltip: isInitiallyHedgedCone.value
+        ? "Expiry break-even including a fixed hedge of the initial delta. The curve includes both straddle and hedge P&L, at constant implied volatility and before fees."
+        : "Expiry break-even. The curve shows earlier holding-period break-evens at constant implied volatility, before fees.",
+      points: cone.points.map(point => ({ date: point.date, value: point[side] })),
+    }));
+  });
+});
+const coneUnavailableCount = computed(() => isConeMode.value
+  ? (isAllMaturities.value ? allMaturityStraddles.value.length : 1) - thetaCones.value.length
+  : 0);
+
 const canSavePng = computed(() =>
   ui.mode === "straddle"
     ? mainSeries.value.length > 0
     : breakEvenActualData.value.length > 0,
 );
 
-const buildAtmStraddlesByMaturity = (spot) => {
-  const maturityStrikes = new Map();
-  for (const instrument of data.optionInstruments) {
-    const maturityTs = instrument?.expiration_ts;
-    const strike = instrument?.strike;
-    const type = instrument?.option_type_normalized;
-    if (!Number.isFinite(maturityTs) || !Number.isFinite(strike)) continue;
-    if (type !== "call" && type !== "put") continue;
-    const strikeMap = maturityStrikes.get(maturityTs) || new Map();
-    const bucket = strikeMap.get(strike) || {};
-    bucket[type] = instrument;
-    strikeMap.set(strike, bucket);
-    maturityStrikes.set(maturityTs, strikeMap);
-  }
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  const sortedMaturities = Array.from(maturityStrikes.keys())
-    .filter((ts) => ts > nowSeconds)
-    .sort((a, b) => a - b);
-  const straddles = [];
-  for (const maturityTs of sortedMaturities) {
-    const strikeMap = maturityStrikes.get(maturityTs);
-    let best = null;
-    let bestDist = Infinity;
-    for (const [strike, bucket] of strikeMap.entries()) {
-      if (!bucket.call || !bucket.put) continue;
-      const dist = Number.isFinite(spot) ? Math.abs(strike - spot) : 0;
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = { strike, call: bucket.call, put: bucket.put };
-      }
-    }
-    if (!best) continue;
-    straddles.push({
-      expiryTs: maturityTs,
-      strike: best.strike,
-      callInstrumentName: best.call.instrument_name,
-      putInstrumentName: best.put.instrument_name,
-    });
-  }
-  return straddles;
-};
 
 const mainSeries = computed(() => {
   const index = data.index[ui.resolutionKey] || [];
@@ -673,26 +742,27 @@ async function loadAllMaturities() {
   ui.error = "";
 
   const { resolution, from, to } = getTimestampRange();
-  const resolutionConfig = RESOLUTION_CONFIG[ui.resolutionKey];
-  const intervalSeconds = resolutionConfig?.interval_seconds || 3600;
-  const markFrom = Math.max(from, to - intervalSeconds * (ALL_MATURITIES_MARK_POINTS - 1));
+  // Chart resolution controls the lookback, not the age of the entry prices.
+  // A newly listed maturity may have minute marks before its first daily candle.
+  const markTo = Math.floor(Date.now() / 1000 / ALL_MATURITIES_MARK_INTERVAL_SECONDS) * ALL_MATURITIES_MARK_INTERVAL_SECONDS;
+  const markFrom = markTo - ALL_MATURITIES_MARK_INTERVAL_SECONDS * (ALL_MATURITIES_MARK_POINTS - 1);
+  const snapshotRange = { resolution: "1m", from: markFrom, to: markTo, count: ALL_MATURITIES_MARK_POINTS };
 
   try {
-    const index = await fetchIndexHistory({
-      index_name: underlying.value,
-      resolution,
-      from,
-      to,
-      count: maxPointsToFetch.value,
-    });
+    const [history, recentIndex] = await Promise.all([
+      fetchIndexHistory({ index_name: underlying.value, resolution, from, to, count: maxPointsToFetch.value }),
+      fetchIndexHistory({ index_name: underlying.value, ...snapshotRange }),
+    ]);
     if (requestId !== loadRequestId) return;
-    data.index[ui.resolutionKey] = index || [];
+    const snapshot = recentIndex.filter(row => Number.isFinite(row?.ts) && Number.isFinite(row?.index_price_close))
+      .sort((a, b) => a.ts - b.ts).at(-1);
+    if (!snapshot) throw new Error("No recent index price available for the all-maturities snapshot.");
+    const index = [...history.filter(row => row.ts < snapshot.ts), snapshot];
 
-    const spot = getLatestIndexClose(index);
-    const straddles = buildAtmStraddlesByMaturity(spot);
-    allMaturityStraddles.value = straddles;
+    const straddles = allMaturityStraddles.value;
 
     if (!straddles.length) {
+      data.index[ui.resolutionKey] = index;
       allMaturityMarks.value = {};
       return;
     }
@@ -703,10 +773,7 @@ async function loadAllMaturities() {
       names.map((name) =>
         fetchMarkHistory({
           instrument_name: name,
-          resolution,
-          from: markFrom,
-          to,
-          count: ALL_MATURITIES_MARK_POINTS,
+          ...snapshotRange,
         }).catch(() => []),
       ),
     );
@@ -714,9 +781,12 @@ async function loadAllMaturities() {
 
     const marks = {};
     results.forEach((rows, i) => {
-      const close = latestMarkClose(rows);
+      // Mixing spot and option closes from different times can put the premium
+      // below intrinsic value and make an otherwise valid cone impossible to fit.
+      const close = rows.find(row => row.ts === snapshot.ts)?.mark_price_close;
       if (Number.isFinite(close)) marks[names[i]] = close;
     });
+    data.index[ui.resolutionKey] = index;
     allMaturityMarks.value = marks;
   } catch (e) {
     if (requestId !== loadRequestId) return;
@@ -815,7 +885,9 @@ function handleSelectBreakEven(id) {
 }
 
 function handleSavePng() {
-  const base = optionInstrumentName.value || "straddle";
+  const base = isAllMaturities.value
+    ? `straddle-${selectedStrike.value}-all-maturities`
+    : optionInstrumentName.value || "straddle";
   const filenameBase = ui.resolutionKey ? `${base}-${ui.resolutionKey}` : base;
   if (ui.mode === "straddle") {
     if (!chartRef.value) return;
@@ -825,7 +897,7 @@ function handleSavePng() {
 
   if (!breakEvenChartRef.value) return;
   breakEvenChartRef.value.exportPng({
-    filename: `${filenameBase}-break-even.png`,
+    filename: `${filenameBase}-${isInitiallyHedgedCone.value ? "theta-cone-initial-hedge" : isConeMode.value ? "theta-cone" : "break-even"}.png`,
   });
 }
 
@@ -901,11 +973,13 @@ const switchUnderlying = async (next) => {
       }
     }
     const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
-    ui.optionStrike = getDefaultStrikeValue({
-      maturityInstruments: optionInstrumentsForMaturity.value,
-      indexPrice: latestIndexClose,
-      fallbackStrikes: optionStrikes.value,
-    });
+    ui.optionStrike = isAllMaturities.value
+      ? getClosestStrikeValue(optionStrikes.value, latestIndexClose)
+      : getDefaultStrikeValue({
+          maturityInstruments: optionInstrumentsForMaturity.value,
+          indexPrice: latestIndexClose,
+          fallbackStrikes: optionStrikes.value,
+        });
   } finally {
     isInitializing.value = false;
     ui.loading = false;
@@ -956,11 +1030,13 @@ onMounted(async () => {
     };
 
     const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey]);
-    ui.optionStrike = getDefaultStrikeValue({
-      maturityInstruments: optionInstrumentsForMaturity.value,
-      indexPrice: latestIndexClose,
-      fallbackStrikes: optionStrikes.value,
-    });
+    ui.optionStrike = isAllMaturities.value
+      ? getClosestStrikeValue(optionStrikes.value, latestIndexClose)
+      : getDefaultStrikeValue({
+          maturityInstruments: optionInstrumentsForMaturity.value,
+          indexPrice: latestIndexClose,
+          fallbackStrikes: optionStrikes.value,
+        });
   } finally {
     isInitializing.value = false;
     ui.loading = false;
@@ -975,7 +1051,7 @@ onUnmounted(() => {
 watch(requestedMaxPoints, (pointLimit) => {
   if (maxPointsDebounceTimer) clearTimeout(maxPointsDebounceTimer);
   maxPointsDebounceTimer = setTimeout(() => {
-    maxPointsToFetch.value = pointLimit;
+    manualMaxPointsToFetch.value = pointLimit;
     maxPointsDebounceTimer = null;
   }, HISTORY_POINT_DEBOUNCE_MS);
 });
@@ -988,7 +1064,8 @@ watch(
       return;
     }
     const maturityValues = maturities.map((maturity) => maturity.value);
-    if (maturityValues.includes(ui.optionMaturity)) return;
+    if (maturityValues.includes(ui.optionMaturity) ||
+        (ui.optionMaturity === ALL_MATURITIES_VALUE && ui.mode === "breakeven" && maturities.length > 1)) return;
     const oldest = getOldestOptionInstrument(data.optionInstruments);
     ui.optionMaturity =
       oldest && Number.isFinite(oldest.expiration_ts)
@@ -1007,6 +1084,7 @@ watch(
       ui.optionStrike = "";
       return;
     }
+    if (strikes.some(strike => strike.value === ui.optionStrike)) return;
     const latestIndexClose = getLatestIndexClose(data.index[ui.resolutionKey] || []);
     ui.optionStrike = getClosestStrikeValue(strikes, latestIndexClose);
   },
@@ -1109,7 +1187,7 @@ watch(
           />
         </div>
 
-        <div v-if="!isAllMaturities" class="field">
+        <div class="field">
           <label for="option-strike">Strike</label>
           <StyledSelectMenu
             id="option-strike"
@@ -1176,9 +1254,13 @@ watch(
         <div v-if="settingsOpen" class="settingsDropdown">
           <div class="settingsTitle">Chart settings</div>
           <div class="settingsHint">
-            Historical data points: {{ requestedMaxPoints.toLocaleString() }}
+            Historical data points: {{ (isConeMode ? maxPointsToFetch : requestedMaxPoints).toLocaleString() }}
+          </div>
+          <div v-if="isConeMode" class="settingsHint">
+            Auto-sized: ⅔ lookback · ⅓ lookahead.
           </div>
           <input
+            v-else
             v-model.number="ui.maxPoints"
             class="settingsSlider"
             type="range"
@@ -1187,10 +1269,41 @@ watch(
             :max="MAX_HISTORY_POINT_LIMIT"
             step="10"
           />
-          <div class="settingsRange">
+          <div v-if="!isConeMode" class="settingsRange">
             <span>{{ MIN_HISTORY_POINT_LIMIT }}</span>
             <span>{{ MAX_HISTORY_POINT_LIMIT }}</span>
           </div>
+          <label v-if="ui.mode === 'breakeven'" class="settingsConeToggle" :title="coneModeTooltip">
+            <span>Theta cone</span>
+            <input v-model="ui.coneMode" type="checkbox" role="switch" aria-describedby="cone-setting-hint" :title="coneModeTooltip" :aria-description="coneModeTooltip" />
+          </label>
+          <div v-if="ui.mode === 'breakeven'" id="cone-setting-hint" class="settingsHint">
+            Break-evens by holding period, including time decay.
+          </div>
+          <template v-if="isConeMode">
+            <label class="settingsConeToggle" title="Measure each break-even move from today’s spot. In all maturities, markers follow the longest displayed cone.">
+              <span>Day markers from spot</span>
+              <input v-model="ui.showDayMarkers" type="checkbox" role="switch" aria-describedby="day-markers-hint" />
+            </label>
+            <div id="day-markers-hint" class="settingsHint">
+              Total move from current spot at each holding period.
+              <span v-if="isAllMaturities">Markers follow the longest displayed expiry.</span>
+            </div>
+            <label class="settingsConeToggle" :title="INITIAL_HEDGE_TOOLTIP">
+              <span>Hedge initial delta</span>
+              <input
+                v-model="ui.hedgeInitialDelta"
+                type="checkbox"
+                role="switch"
+                aria-describedby="initial-hedge-hint"
+                :title="INITIAL_HEDGE_TOOLTIP"
+                :aria-description="INITIAL_HEDGE_TOOLTIP"
+              />
+            </label>
+            <div id="initial-hedge-hint" class="settingsHint">
+              Fixed hedge at entry; no rebalancing.
+            </div>
+          </template>
           <template v-if="ui.mode === 'straddle'">
             <div class="settingsHint settingsHint--secondary">
               Circle size: {{ chartCircleSize.toFixed(1) }}
@@ -1212,6 +1325,10 @@ watch(
         </div>
       </div>
 
+      <p v-if="isConeMode && !ui.loading && coneUnavailableCount" class="coneNote" role="status">
+        {{ coneUnavailableCount }} cone(s) unavailable: missing prices, expired maturity,
+        or premium outside the model’s supported range.
+      </p>
       <OptionPnlChart
         v-if="ui.mode === 'straddle'"
         ref="chartRef"
@@ -1226,9 +1343,13 @@ watch(
         ref="breakEvenChartRef"
         :actual-data="breakEvenActualData"
         :projected-data="breakEvenProjectedData"
-        :break-even-low="isAllMaturities ? null : breakEvenMetrics?.breakEvenLow"
-        :break-even-high="isAllMaturities ? null : breakEvenMetrics?.breakEvenHigh"
-        :break-even-levels="allMaturityBreakEvenLevels"
+        :break-even-low="isAllMaturities || isConeMode ? null : breakEvenMetrics?.breakEvenLow"
+        :break-even-high="isAllMaturities || isConeMode ? null : breakEvenMetrics?.breakEvenHigh"
+        :break-even-levels="chartBreakEvenLevels"
+        :range-bands="thetaCones"
+        :range-measurements="coneDayMarkers"
+        :price-formatter="formatChartPrice"
+        :time-domain="coneTimeDomain"
         :current-index="breakEvenCurrentIndex"
         :expiry-ts="isAllMaturities ? null : selectedMaturityTs"
         :title="breakEvenTitle"
@@ -1241,6 +1362,30 @@ watch(
 </template>
 
 <style scoped>
+.settingsConeToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+  margin-bottom: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settingsConeToggle input {
+  accent-color: #7dd3fc;
+  cursor: pointer;
+}
+
+.coneNote {
+  margin: 0;
+  padding: 12px 52px 0 16px;
+  color: #fbbf24;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 :global(:root) {
   --color-bg: #0a0b0e;
   --color-surface: #131316;

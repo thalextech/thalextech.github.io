@@ -11,7 +11,11 @@ const props = defineProps({
   breakEvenHigh: { type: Number, default: null },
   breakEvenLevels: { type: Array, default: () => [] },
   referenceLevels: { type: Array, default: () => [] },
+  rangeBands: { type: Array, default: () => [] },
+  rangeMeasurements: { type: Array, default: () => [] },
+  timeDomain: { type: Array, default: null },
   priceLabelsOnRight: { type: Boolean, default: false },
+  priceFormatter: { type: Function, default: d3.format(",.0f") },
   breakEvenLowLabel: { type: String, default: "BE Low" },
   breakEvenHighLabel: { type: String, default: "BE High" },
   breakEvenLowTooltip: { type: String, default: "Lower terminal index price at which expiry profit is zero, before fees." },
@@ -153,10 +157,16 @@ function render() {
   const svgEl = svgRef.value;
   if (!svgEl) return;
   const svg = d3.select(svgEl);
+  const formatPrice = props.priceFormatter;
   svg.selectAll("*").remove();
   svg.on("click.priceLevels", null);
 
   const levels = props.breakEvenLevels.filter(level => Number.isFinite(level?.value));
+  const rangeBands = props.rangeBands.map(band => ({
+    ...band,
+    points: (band.points || []).filter(point => point?.date instanceof Date &&
+      Number.isFinite(point.low) && Number.isFinite(point.high)),
+  }));
   const referenceLevels = props.referenceLevels.filter(level => Number.isFinite(level?.value));
   const bounds = props.fitContainer && window.matchMedia("(min-width: 960px)").matches
     ? svgEl.getBoundingClientRect() : null;
@@ -228,7 +238,7 @@ function render() {
     return;
   }
 
-  const firstDate = actual[0].date;
+  let firstDate = actual[0].date;
   const lastActualDate = actual[actual.length - 1].date;
   const expiryDate = Number.isFinite(props.expiryTs)
     ? new Date(props.expiryTs * 1000)
@@ -241,6 +251,18 @@ function render() {
     if (levelDate > maxDate) maxDate = levelDate;
   }
 
+  for (const series of [...levels, ...rangeBands]) {
+    for (const point of series.points || []) {
+      if (point.date instanceof Date && point.date > maxDate) maxDate = point.date;
+    }
+  }
+
+  if (props.timeDomain?.length === 2 && props.timeDomain.every(date =>
+    date instanceof Date && Number.isFinite(date.getTime())) &&
+    props.timeDomain[1] > props.timeDomain[0]) {
+    [firstDate, maxDate] = props.timeDomain;
+  }
+
   const yValues = [];
   for (const point of actual) {
     if (Number.isFinite(point.value)) yValues.push(point.value);
@@ -249,6 +271,14 @@ function render() {
   }
   if (Number.isFinite(props.breakEvenLow)) yValues.push(props.breakEvenLow);
   if (Number.isFinite(props.breakEvenHigh)) yValues.push(props.breakEvenHigh);
+  for (const level of levels) {
+    for (const point of level.points || []) {
+      if (Number.isFinite(point.value)) yValues.push(point.value);
+    }
+  }
+  for (const band of rangeBands) {
+    for (const point of band.points) yValues.push(point.low, point.high);
+  }
   yValues.push(...levels.map(level => level.value));
   yValues.push(...referenceLevels.map(level => level.value));
   if (Number.isFinite(props.currentIndex)) yValues.push(props.currentIndex);
@@ -288,8 +318,19 @@ function render() {
     .call(axisStyle);
 
   g.append("g")
-    .call(d3.axisLeft(y).ticks(5).tickSize(0).tickPadding(15).tickFormat(d3.format(",.0f")))
+    .call(d3.axisLeft(y).ticks(5).tickSize(0).tickPadding(15).tickFormat(formatPrice))
     .call(axisStyle);
+
+  const bandArea = d3.area()
+    .x(point => x(point.date))
+    .y0(point => y(point.low))
+    .y1(point => y(point.high));
+  g.append("g").attr("class", "rangeBands")
+    .selectAll("path").data(rangeBands, band => band.id).join("path")
+    .attr("d", band => bandArea(band.points))
+    .attr("fill", band => band.color || "#7dd3fc")
+    .attr("fill-opacity", band => band.opacity ?? 0.06)
+    .attr("pointer-events", "none");
 
   const line = d3
     .line()
@@ -366,15 +407,67 @@ function render() {
     ? x(new Date(level.expiryTs * 1000))
     : innerWidth;
   const levelOpacity = level => Number.isFinite(level?.opacity) ? level.opacity : 0.7;
-  levelLines.append("line")
-    .attr("x1", 0).attr("x2", levelEndX)
-    .attr("y1", level => y(level.value)).attr("y2", level => y(level.value))
+  // Levels may supply a dated path; other consumers retain horizontal lines.
+  const levelPath = level => level.points?.length
+    ? d3.line().x(point => x(point.date)).y(point => y(point.value))(level.points)
+    : `M0,${y(level.value)}H${levelEndX(level)}`;
+  levelLines.append("path")
+    .attr("d", levelPath).attr("fill", "none")
     .attr("stroke", level => level.color).attr("stroke-width", props.breakEvenStrokeWidth)
     .attr("opacity", levelOpacity);
-  levelLines.append("line")
-    .attr("x1", 0).attr("x2", levelEndX)
-    .attr("y1", level => y(level.value)).attr("y2", level => y(level.value))
+  levelLines.append("path")
+    .attr("d", levelPath).attr("fill", "none")
     .attr("stroke", "transparent").attr("stroke-width", 12);
+
+  const measurements = props.rangeMeasurements.filter(marker =>
+    marker?.date instanceof Date && [marker.low, marker.high, marker.referenceValue].every(Number.isFinite));
+  const measurementGroup = g.append("g").attr("class", "rangeMeasurements");
+  for (const marker of measurements) {
+    const markerX = x(marker.date);
+    // Keep labels at the final expiry inside the plot, clear of right-edge prices.
+    const atRightEdge = markerX > innerWidth - 60;
+    const markerLabelX = atRightEdge ? markerX - 10 : markerX;
+    const markerLabelAnchor = atRightEdge ? "end" : "middle";
+    const referenceY = y(marker.referenceValue);
+    const group = measurementGroup.append("g").attr("role", "img");
+    const signedMove = value => `${value < marker.referenceValue ? "−" : "+"}${formatPrice(Math.abs(value - marker.referenceValue))}`;
+    const description = `${marker.label} from today’s spot: upper break-even ${formatPrice(marker.high)} (${signedMove(marker.high)}), lower break-even ${formatPrice(marker.low)} (${signedMove(marker.low)}).`;
+    group.attr("aria-label", description).attr("tabindex", 0)
+      .on("pointerenter", event => showTooltip(event, description))
+      .on("pointerleave", hideTooltip)
+      .on("focus", event => showTooltip(event, description))
+      .on("blur", hideTooltip)
+      .on("keydown", dismissTooltipOnEscape);
+    group.append("title").text(description);
+    group.append("line")
+      .attr("x1", markerX).attr("x2", markerX)
+      .attr("y1", y(marker.high) - 24).attr("y2", y(marker.low) + 24)
+      .attr("stroke", "transparent").attr("stroke-width", 16);
+    for (const [value, color, labelY] of [
+      [marker.high, "#22c55e", y(marker.high) - 10],
+      [marker.low, "#ef4444", y(marker.low) + 22],
+    ]) {
+      group.append("line")
+        .attr("x1", markerX).attr("x2", markerX)
+        .attr("y1", referenceY).attr("y2", y(value))
+        .attr("stroke", color).attr("stroke-opacity", 0.7)
+        .attr("stroke-width", 1.2).attr("stroke-dasharray", "3,5");
+      group.append("circle").attr("cx", markerX).attr("cy", y(value))
+        .attr("r", 3.5).attr("fill", color);
+      group.append("text").attr("x", markerLabelX).attr("y", labelY)
+        .attr("text-anchor", markerLabelAnchor).attr("fill", color)
+        .style("font-family", CHART_FONT_FAMILY).style("font-size", "14px")
+        .attr("paint-order", "stroke").attr("stroke", props.backgroundColor).attr("stroke-width", 4)
+        .text(signedMove(value));
+    }
+    group.append("circle").attr("cx", markerX).attr("cy", referenceY)
+      .attr("r", 2.5).attr("fill", "#d1d5db");
+    group.append("text").attr("x", markerLabelX).attr("y", referenceY - 10)
+      .attr("text-anchor", markerLabelAnchor).attr("fill", "#d1d5db")
+      .style("font-family", CHART_FONT_FAMILY).style("font-size", "13px")
+      .attr("paint-order", "stroke").attr("stroke", props.backgroundColor).attr("stroke-width", 4)
+      .text(marker.label);
+  }
 
   g.append("g")
     .attr("class", "referencePriceLevels")
@@ -386,7 +479,6 @@ function render() {
     .attr("stroke", level => level.color)
     .attr("stroke-width", 1);
 
-  const formatPrice = d3.format(",.0f");
   const rightX = innerWidth - 8;
   const currentLabelX = innerWidth + 12;
   const hasCompactBreakEvenRange =
@@ -642,7 +734,11 @@ watch(
     props.breakEvenHigh,
     props.breakEvenLevels,
     props.referenceLevels,
+    props.rangeBands,
+    props.rangeMeasurements,
+    props.timeDomain,
     props.priceLabelsOnRight,
+    props.priceFormatter,
     props.breakEvenLowLabel,
     props.breakEvenHighLabel,
     props.breakEvenLowTooltip,
