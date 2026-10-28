@@ -11,6 +11,7 @@ const APP_ORDER = [
   "Dollar Bars",
   "Roll PnL",
   "Basis",
+  "Term Structure",
   "Subjective Valuation",
 ];
 

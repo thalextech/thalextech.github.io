@@ -1,0 +1,3 @@
+title: "Term Structure"
+description: "Compare live BTC and ETH IV with historical curves and realized volatility over matching lookback windows."
+image: "/images/term-structure.svg"
