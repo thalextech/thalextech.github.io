@@ -13,9 +13,10 @@ import { getAvailableStraddles } from "./straddle-selection.js";
 import { coneExpiryMarkerLabel, coneMarkerLabel, coneMarkerOffsets } from "./cone-markers.js";
 import StyledSelectMenu from "./components/StyledSelectMenu.vue";
 import OptionPnlChart from "./components/OptionPnlChart.vue";
+import PnlAttribution from "./components/PnlAttribution.vue";
+import { buildStraddlePnlHistory } from "./pnl-history.js";
 import StraddleBreakEvenChart from "./components/StraddleBreakEvenChart.vue";
 import {
-  computeGreeksPnlSeries,
   fetchIndexHistory,
   fetchInstruments,
   fetchMarkHistory,
@@ -78,6 +79,7 @@ const data = reactive({
 });
 const allMaturityMarks = ref({});
 const chartRef = ref(null);
+const pnlRange = ref(null);
 const breakEvenChartRef = ref(null);
 const settingsMenuRef = ref(null);
 const settingsButtonRef = ref(null);
@@ -668,72 +670,18 @@ const mainSeries = computed(() => {
   return result.slice(-maxPointsToFetch.value);
 });
 
-const straddlePnlSeries = computed(() => {
-  const callMark = data.callMark[ui.resolutionKey] || [];
-  const putMark = data.putMark[ui.resolutionKey] || [];
-  const index = data.index[ui.resolutionKey] || [];
-  const callInstrument = selectedCallInstrument.value;
-  const putInstrument = selectedPutInstrument.value;
-  if (
-    !callMark.length ||
-    !putMark.length ||
-    !index.length ||
-    !callInstrument ||
-    !putInstrument
-  ) {
-    return [];
-  }
-
-  const callSeries = computeGreeksPnlSeries({
-    mark: callMark,
-    index,
-    instrument: callInstrument,
+const straddlePnlHistory = computed(() => {
+  const series = mainSeries.value;
+  const from = pnlRange.value?.from ?? series[0]?.ts;
+  const to = pnlRange.value?.to ?? series.at(-1)?.ts;
+  return buildStraddlePnlHistory({
+    index: (data.index[ui.resolutionKey] || []).filter(row => row.ts >= from && row.ts <= to),
+    callMark: data.callMark[ui.resolutionKey] || [],
+    putMark: data.putMark[ui.resolutionKey] || [],
+    callInstrument: selectedCallInstrument.value,
+    putInstrument: selectedPutInstrument.value,
+    intervalSeconds: RESOLUTION_CONFIG[ui.resolutionKey].interval_seconds,
   });
-  const putSeries = computeGreeksPnlSeries({
-    mark: putMark,
-    index,
-    instrument: putInstrument,
-  });
-  if (!callSeries.length || !putSeries.length) return [];
-
-  const sumNullable = (a, b) => {
-    const hasA = Number.isFinite(a);
-    const hasB = Number.isFinite(b);
-    if (!hasA && !hasB) return null;
-    return (hasA ? a : 0) + (hasB ? b : 0);
-  };
-
-  const putByTs = new Map(
-    putSeries
-      .filter((row) => row && Number.isFinite(row.ts))
-      .map((row) => [row.ts, row]),
-  );
-
-  const merged = [];
-  for (const callPoint of callSeries) {
-    const ts = callPoint?.ts;
-    if (!Number.isFinite(ts)) continue;
-    const putPoint = putByTs.get(ts);
-    if (!putPoint) continue;
-
-    merged.push({
-      ts,
-      date: new Date(ts * 1000),
-      PL: sumNullable(callPoint.PL, putPoint.PL),
-      delta_PL: sumNullable(callPoint.delta_PL, putPoint.delta_PL),
-      gamma_theta_PL: sumNullable(
-        callPoint.gamma_theta_PL,
-        putPoint.gamma_theta_PL,
-      ),
-      vega_PL: sumNullable(callPoint.vega_PL, putPoint.vega_PL),
-      residual_PL: sumNullable(callPoint.residual_PL, putPoint.residual_PL),
-    });
-  }
-
-  return merged
-    .filter((point) => point.date >= MIN_DATA_DATE)
-    .sort((a, b) => a.ts - b.ts)
-    .slice(-maxPointsToFetch.value);
 });
 
 async function loadAllMaturities() {
@@ -1239,7 +1187,7 @@ watch(
 
     <div v-if="ui.error" class="error">{{ ui.error }}</div>
 
-    <div class="chartPanel">
+    <div class="chartPanel" :class="{ 'chartPanel--straddle': ui.mode === 'straddle' }">
       <div class="settingsWrap settingsWrap--chart" ref="settingsMenuRef">
         <button
           ref="settingsButtonRef"
@@ -1329,15 +1277,27 @@ watch(
         {{ coneUnavailableCount }} cone(s) unavailable: missing prices, expired maturity,
         or premium outside the model’s supported range.
       </p>
-      <OptionPnlChart
+      <div
         v-if="ui.mode === 'straddle'"
-        ref="chartRef"
-        :data="mainSeries"
-        :option-pnl-data="straddlePnlSeries"
-        :option-instrument-name="optionInstrumentName"
-        :circle-size="chartCircleSize"
-        :loading="ui.loading"
-      />
+        class="straddleWorkspace"
+        :class="{ 'straddleWorkspace--selected': pnlRange }"
+      >
+        <OptionPnlChart
+          ref="chartRef"
+          :data="mainSeries"
+          :option-instrument-name="optionInstrumentName"
+          @select-range="pnlRange = $event"
+          :compact="Boolean(pnlRange)"
+          :circle-size="chartCircleSize"
+          :loading="ui.loading"
+        />
+        <aside v-if="pnlRange" class="pnlPane" aria-label="Selected straddle P&L">
+          <PnlAttribution
+            :history="straddlePnlHistory"
+            :loading="ui.loading"
+          />
+        </aside>
+      </div>
       <StraddleBreakEvenChart
         v-else
         ref="breakEvenChartRef"
@@ -1362,6 +1322,37 @@ watch(
 </template>
 
 <style scoped>
+.straddleWorkspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.straddleWorkspace--selected {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.pnlPane {
+  min-width: 0;
+  border-left: 1px solid #23232a;
+  background: #0a0b0e;
+}
+
+.straddleWorkspace :deep(.chartWrap) {
+  border-radius: 0;
+}
+
+@media (max-width: 900px) {
+  .straddleWorkspace--selected {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pnlPane {
+    border-left: 0;
+    border-top: 1px solid #23232a;
+  }
+}
+
 .settingsConeToggle {
   display: flex;
   align-items: center;
@@ -1480,6 +1471,12 @@ watch(
   border-radius: 8px;
   background: #08080a;
   overflow: hidden;
+}
+
+.chartPanel--straddle {
+  border: 0;
+  border-radius: 0;
+  background: #0a0b0e;
 }
 
 .settingsWrap {

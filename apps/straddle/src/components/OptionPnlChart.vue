@@ -5,12 +5,13 @@ import { exportChartToPng } from "../../../../lib/export-png.js";
 
 const props = defineProps({
   data: { type: Array, default: () => [] },
-  optionPnlData: { type: Array, default: () => [] },
   optionInstrumentName: { type: String, default: "" },
   circleSize: { type: Number, default: 4 },
+  compact: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
 });
 
+const emit = defineEmits(["select-range"]);
 const svgRef = ref(null);
 const tooltipRef = ref(null);
 const gradientId = `iv-gradient-${Math.random().toString(16).slice(2)}`;
@@ -18,14 +19,11 @@ const SVG_FONT_FAMILY =
   '"Helvetica Neue", Helvetica, -apple-system, sans-serif';
 
 const layout = {
-  mainWidth: 860,
-  detailWidth: 420,
-  panelGap: 36,
+  mainWidth: 1316,
   height: 620,
   margin: { top: 86, right: 38, bottom: 54, left: 74 },
 };
 const MAIN_TOP_INSET = 28;
-const DETAIL_TOP_INSET = 28;
 const LEGEND_TOP_OFFSET = 14;
 
 const TEXT_STYLES = {
@@ -33,28 +31,10 @@ const TEXT_STYLES = {
   axisLabel: { fill: "#70767d", size: "11px", weight: 600 },
   mainTitle: { fill: "#e8eaed", size: "16px", weight: 600 },
   mainSubtitle: { fill: "#70767d", size: "11px" },
-  detailTitle: { fill: "#e8eaed", size: "13px", weight: 600 },
-  detailSubtitle: { fill: "#70767d", size: "11px" },
-  detailMetric: { fill: "#70767d", size: "11px", weight: 400 },
-  detailLegend: { fill: "#70767d", size: "10px", weight: 500 },
   legendTitle: { fill: "#70767d", size: "11px" },
   legendLabel: { fill: "#70767d", size: "10px" },
   noData: { fill: "#70767d", size: "12px" },
-  detailMessage: { fill: "#70767d", size: "11px" },
 };
-
-const DETAIL_SERIES_CONFIG = [
-  { key: "total", label: "Total", color: "#94b3fd", strokeWidth: 2.2 },
-  { key: "delta", label: "Delta", color: "#ffb703", strokeWidth: 1.6 },
-  {
-    key: "gammaTheta",
-    label: "Gamma + Theta",
-    color: "#8ecae6",
-    strokeWidth: 1.6,
-  },
-  { key: "vega", label: "Vega", color: "#ff6b6b", strokeWidth: 1.6 },
-  { key: "residual", label: "Residual", color: "#7c7f8f", strokeWidth: 1.2 },
-];
 
 const chartState = {
   gradient: null,
@@ -75,20 +55,6 @@ const chartState = {
   legendMinText: null,
   legendMaxText: null,
   legendVisible: false,
-  detailGroup: null,
-  detailLayer: null,
-  detailXAxisGroup: null,
-  detailYAxisGroup: null,
-  detailXAxisLabel: null,
-  detailYAxisLabel: null,
-  detailTitleText: null,
-  detailSubtitleText: null,
-  detailMetricText: null,
-  detailRoiText: null,
-  detailMessageText: null,
-  detailLegendGroup: null,
-  detailSeriesGroup: null,
-  detailAreaPath: null,
   currentXScale: null,
   currentYScale: null,
   noDataText: null,
@@ -107,14 +73,9 @@ const HOVER_RELEASE_HITBOX_PX = 14;
 const TAP_SELECT_HITBOX_PX = 22;
 const TOOLTIP_HITBOX_PX = 18;
 const TOOLTIP_FADE_DELAY_MS = 1000;
-const LAYOUT_TRANSITION_MS = 160;
 let hoveredDatum = null;
 let selectedDatums = [];
 let selectedRange = null;
-let detailActive = false;
-let lineRevealTimer = null;
-let lineRevealPending = false;
-let hiddenDetailSeriesKeys = new Set();
 let suppressClearClick = false;
 let tooltipDatum = null;
 let lastPointerInMain = null;
@@ -236,16 +197,6 @@ const syncSelectionWithData = (data) => {
   updateSelectedRange();
 };
 
-const toggleDetailSeries = (key) => {
-  if (!key) return;
-  if (hiddenDetailSeriesKeys.has(key)) {
-    hiddenDetailSeriesKeys.delete(key);
-  } else {
-    hiddenDetailSeriesKeys.add(key);
-  }
-  render();
-};
-
 const handleChartClick = (event) => {
   if (suppressClearClick) {
     suppressClearClick = false;
@@ -295,18 +246,7 @@ const axisStyle = (axisG) => {
 const formatDate = d3.utcFormat("%d %b %y %H:%M");
 const formatIndex = d3.format(",.2f");
 const formatIndexAxis = d3.format(",.0f");
-const formatPnl = d3.format("$,.0f");
 const formatVol = d3.format(".1%");
-
-const scheduleLineReveal = () => {
-  lineRevealPending = true;
-  if (lineRevealTimer) clearTimeout(lineRevealTimer);
-  lineRevealTimer = setTimeout(() => {
-    lineRevealPending = false;
-    lineRevealTimer = null;
-    updateSelectionLine();
-  }, LAYOUT_TRANSITION_MS);
-};
 
 const applySelectionStyles = () => {
   if (!chartState.pointsGroup) return;
@@ -333,11 +273,6 @@ const updateSelectionLine = () => {
   const y = chartState.currentYScale;
   const label = chartState.selectionLabel;
   if (!line || !x || !y || !label) return;
-  if (lineRevealPending) {
-    line.attr("display", "none");
-    label.attr("display", "none");
-    return;
-  }
 
   let lineStart = null;
   let lineEnd = null;
@@ -631,54 +566,6 @@ const ensureChartElements = () => {
     );
   }
 
-  if (!chartState.detailGroup) {
-    chartState.detailGroup = svg.append("g").style("opacity", 0);
-    chartState.detailTitleText = appendText(
-      chartState.detailGroup,
-      "detailTitle",
-      { anchor: "middle" },
-    );
-    chartState.detailSubtitleText = appendText(
-      chartState.detailGroup,
-      "detailSubtitle",
-      { anchor: "middle" },
-    );
-    chartState.detailMetricText = appendText(
-      chartState.detailGroup,
-      "detailMetric",
-      { anchor: "end" },
-    );
-    chartState.detailRoiText = appendText(
-      chartState.detailGroup,
-      "detailMetric",
-      { anchor: "start" },
-    );
-    chartState.detailLegendGroup = chartState.detailGroup.append("g");
-    chartState.detailLayer = chartState.detailGroup.append("g");
-    chartState.detailXAxisGroup = chartState.detailLayer.append("g");
-    chartState.detailYAxisGroup = chartState.detailLayer.append("g");
-    chartState.detailSeriesGroup = chartState.detailLayer.append("g");
-    chartState.detailAreaPath = chartState.detailSeriesGroup
-      .append("path")
-      .attr("class", "detail-area")
-      .attr("fill", "#94b3fd")
-      .attr("fill-opacity", 0.16)
-      .attr("stroke", "none")
-      .attr("display", "none");
-    chartState.detailMessageText = appendText(
-      chartState.detailLayer,
-      "detailMessage",
-      { anchor: "middle" },
-    );
-    chartState.detailXAxisLabel = appendAxisLabel(
-      chartState.detailLayer,
-      "Date (UTC)",
-    );
-    chartState.detailYAxisLabel = appendAxisLabel(
-      chartState.detailLayer,
-      "Cumulative P&L ($)",
-    );
-  }
 
   return svg;
 };
@@ -707,40 +594,13 @@ function render() {
   if (!svg) return;
 
   const { height, margin } = layout;
-  const fullWidth = layout.mainWidth + layout.panelGap + layout.detailWidth;
   syncSelectionWithData(data);
-  if (hoveredDatum && !data.includes(hoveredDatum)) {
-    hoveredDatum = null;
-  }
-  const hasSelectionRange = Boolean(
-    selectedRange &&
-      Number.isFinite(selectedRange.from) &&
-      Number.isFinite(selectedRange.to),
-  );
-  const isDetailActive = selectedDatums.length === 2 || hasSelectionRange;
-  const animateLayout = isDetailActive !== detailActive;
-  detailActive = isDetailActive;
-  if (animateLayout && isDetailActive) {
-    scheduleLineReveal();
-  } else if (!isDetailActive) {
-    if (lineRevealTimer) clearTimeout(lineRevealTimer);
-    lineRevealTimer = null;
-    lineRevealPending = false;
-  }
-  const panelGap = isDetailActive ? layout.panelGap : 0;
-  const mainWidth = isDetailActive
-    ? Math.round((fullWidth - panelGap) / 2)
-    : fullWidth;
-  const detailWidth = isDetailActive
-    ? Math.max(0, fullWidth - panelGap - mainWidth)
-    : layout.detailWidth;
-  const width = fullWidth;
+  emit("select-range", selectedDatums.length === 2 ? { ...selectedRange } : null);
+  if (hoveredDatum && !data.includes(hoveredDatum)) hoveredDatum = null;
+  const mainWidth = props.compact ? 640 : layout.mainWidth;
+  const width = mainWidth;
   const innerWidth = mainWidth - margin.left - margin.right;
   const innerHeight = height - margin.top - margin.bottom;
-  const withLayoutTransition = (selection) =>
-    animateLayout
-      ? selection.interrupt().transition().duration(LAYOUT_TRANSITION_MS)
-      : selection.interrupt();
 
   svg.attr("viewBox", `0 0 ${width} ${height}`).attr("role", "img");
   chartState.background
@@ -750,12 +610,10 @@ function render() {
     .attr("height", height);
 
   chartState.mainTitleText
-    .call(withLayoutTransition)
     .attr("x", mainWidth / 2)
     .attr("y", 30)
     .text(mainTitle.value);
   chartState.mainSubtitleText
-    .call(withLayoutTransition)
     .attr("x", mainWidth / 2)
     .attr("y", 54)
     .text(subtitle.value);
@@ -772,7 +630,6 @@ function render() {
       .join("circle");
     chartState.legendGroup.attr("display", "none");
     chartState.legendVisible = false;
-    chartState.detailGroup?.attr("display", "none");
     hideTooltip();
     return;
   }
@@ -780,74 +637,10 @@ function render() {
   chartState.noDataText.attr("visibility", "hidden");
   chartState.legendVisible = true;
   chartState.legendGroup.interrupt().attr("display", null).attr("opacity", 1);
-  chartState.detailGroup.attr("display", null);
 
   chartState.mainGroup.attr(
     "transform",
     `translate(${margin.left},${margin.top})`,
-  );
-
-  const detailOffsetX = mainWidth + panelGap;
-  const detailInnerWidth = detailWidth - margin.left - margin.right;
-  let detailRangeLabel = "Select two points";
-  let rangeStart = null;
-  let rangeEnd = null;
-  if (selectedDatums.length === 2) {
-    const first = selectedDatums[0]?.date;
-    const second = selectedDatums[1]?.date;
-    if (first instanceof Date && second instanceof Date) {
-      rangeStart = first <= second ? first : second;
-      rangeEnd = first <= second ? second : first;
-    }
-  }
-  if (!rangeStart && hasSelectionRange) {
-    const startTs = Math.min(selectedRange.from, selectedRange.to);
-    const endTs = Math.max(selectedRange.from, selectedRange.to);
-    rangeStart = new Date(startTs * 1000);
-    rangeEnd = new Date(endTs * 1000);
-  }
-  if (rangeStart instanceof Date && rangeEnd instanceof Date) {
-    const msPerDay = 24 * 60 * 60 * 1000;
-    const days = (rangeEnd - rangeStart) / msPerDay;
-    detailRangeLabel = `${formatDate(rangeStart)} - ${formatDate(rangeEnd)} (${days.toFixed(
-      1,
-    )} days)`;
-  }
-  chartState.detailGroup
-    .call(withLayoutTransition)
-    .attr("transform", `translate(${detailOffsetX},0)`)
-    .style("opacity", isDetailActive ? 1 : 0);
-  chartState.detailLayer.attr(
-    "transform",
-    `translate(${margin.left},${margin.top})`,
-  );
-  chartState.detailTitleText
-    .attr("x", detailWidth / 2)
-    .attr("y", 30)
-    .text("Greeks P&L");
-  chartState.detailSubtitleText
-    .attr("x", detailWidth / 2)
-    .attr("y", 54)
-    .text(detailRangeLabel);
-  chartState.detailMetricText
-    .attr("x", detailWidth / 2 - 8)
-    .attr("y", 72)
-    .attr("text-anchor", "end");
-  chartState.detailRoiText
-    .attr("x", detailWidth / 2 + 8)
-    .attr("y", 72)
-    .attr("text-anchor", "start");
-
-  const legendLineLength = 18;
-  const legendLabelOffset = 6;
-  const legendRowGap = 20;
-  const legendColGap = 130;
-  const legendCols = 3;
-  const detailLegendX = margin.left;
-  const detailLegendY = 92;
-  chartState.detailLegendGroup.attr(
-    "transform",
-    `translate(${detailLegendX},${detailLegendY})`,
   );
 
   const validDates = [];
@@ -895,7 +688,7 @@ function render() {
 
   const axisTitlePadding = 10;
 
-  const mainTickCount = isDetailActive ? 5 : 10;
+  const mainTickCount = props.compact ? 5 : 10;
   const xAxis = d3
     .axisBottom(x)
     .ticks(mainTickCount)
@@ -908,342 +701,36 @@ function render() {
     .tickPadding(10)
     .tickFormat(formatIndexAxis);
 
-  const xAxisSelection = withLayoutTransition(chartState.xAxisGroup)
+  const xAxisSelection = chartState.xAxisGroup
     .attr("transform", `translate(0,${innerHeight})`)
     .call(xAxis);
-  const yAxisSelection = withLayoutTransition(chartState.yAxisGroup).call(
+  const yAxisSelection = chartState.yAxisGroup.call(
     yAxis,
   );
-  if (animateLayout) {
-    xAxisSelection.selection().call(axisStyle);
-    yAxisSelection.selection().call(axisStyle);
-  } else {
-    xAxisSelection.call(axisStyle);
-    yAxisSelection.call(axisStyle);
-  }
-  withLayoutTransition(chartState.mainXAxisLabel)
+  xAxisSelection.call(axisStyle);
+  yAxisSelection.call(axisStyle);
+  chartState.mainXAxisLabel
     .attr("x", innerWidth / 2)
     .attr("y", innerHeight + 42 + axisTitlePadding);
-  withLayoutTransition(chartState.mainYAxisLabel)
+  chartState.mainYAxisLabel
     .attr("transform", "rotate(-90)")
     .attr("x", -innerHeight / 2)
     .attr("y", -52 - axisTitlePadding);
 
   updateSelectionLine();
 
-  const renderDetailWindow = (selection, range) => {
-    let start = null;
-    let end = null;
-    if (selection && selection.length === 2) {
-      const firstDate = selection[0]?.date;
-      const secondDate = selection[1]?.date;
-      if (firstDate instanceof Date && secondDate instanceof Date) {
-        start = firstDate <= secondDate ? firstDate : secondDate;
-        end = firstDate <= secondDate ? secondDate : firstDate;
-      }
-    }
-    if (!start && range && Number.isFinite(range.from) && Number.isFinite(range.to)) {
-      start = new Date(Math.min(range.from, range.to) * 1000);
-      end = new Date(Math.max(range.from, range.to) * 1000);
-    }
-    if (!(start instanceof Date) || !(end instanceof Date)) {
-      chartState.detailSeriesGroup
-        .selectAll("path.detail-line")
-        .attr("display", "none");
-      chartState.detailAreaPath?.attr("display", "none");
-      chartState.detailXAxisGroup.attr("display", "none");
-      chartState.detailYAxisGroup.attr("display", "none");
-      chartState.detailXAxisLabel.attr("display", "none");
-      chartState.detailYAxisLabel.attr("display", "none");
-      chartState.detailLegendGroup.attr("display", "none");
-      chartState.detailMessageText.attr("display", "none");
-      chartState.detailMetricText.attr("display", "none");
-      chartState.detailRoiText.attr("display", "none");
-      return;
-    }
-    const window = data
-      .filter(
-        (point) =>
-          point.date instanceof Date &&
-          point.date >= start &&
-          point.date <= end,
-      )
-      .sort((a, b) => a.date - b.date);
-
-    const pnlWindow = props.optionPnlData.filter(
-      (point) =>
-        point.date instanceof Date &&
-        point.date >= start &&
-        point.date <= end,
-    );
-
-    if (!pnlWindow.length) {
-      chartState.detailLegendGroup.attr("display", "none");
-      chartState.detailSeriesGroup
-        .selectAll("path.detail-line")
-        .attr("display", "none");
-      chartState.detailAreaPath?.attr("display", "none");
-      chartState.detailXAxisGroup.attr("display", "none");
-      chartState.detailYAxisGroup.attr("display", "none");
-      chartState.detailXAxisLabel.attr("display", "none");
-      chartState.detailYAxisLabel.attr("display", "none");
-      chartState.detailMetricText.attr("display", "none");
-      chartState.detailRoiText.attr("display", "none");
-      chartState.detailMessageText
-        .attr("x", detailInnerWidth / 2)
-        .attr("y", innerHeight / 2)
-        .attr("display", null)
-        .text(
-          props.optionInstrumentName
-            ? "No option P&L data for this range."
-            : "Select an option instrument to see Greeks P&L.",
-        );
-      return;
-    }
-
-    const cumulative = {
-      total: 0,
-      delta: 0,
-      gammaTheta: 0,
-      vega: 0,
-      residual: 0,
-    };
-    const seriesByKey = {
-      total: [],
-      delta: [],
-      gammaTheta: [],
-      vega: [],
-      residual: [],
-    };
-
-    pnlWindow.forEach((point, index) => {
-      const date = point.date;
-
-      // The first point marks the start of our range (t=0).
-      // We set it to zero and skip its P&L values, because point.PL
-      // represents the interval *ending* at this timestamp (before our window).
-      if (index === 0) {
-        seriesByKey.total.push({ date, value: 0 });
-        seriesByKey.delta.push({ date, value: 0 });
-        seriesByKey.gammaTheta.push({ date, value: 0 });
-        seriesByKey.vega.push({ date, value: 0 });
-        seriesByKey.residual.push({ date, value: 0 });
-        return;
-      }
-
-      // Accumulate P&L for all points after the first
-      const deltaPL = Number.isFinite(point.delta_PL) ? point.delta_PL : 0;
-      const gammaThetaPL = Number.isFinite(point.gamma_theta_PL)
-        ? point.gamma_theta_PL
-        : 0;
-      const vegaPL = Number.isFinite(point.vega_PL) ? point.vega_PL : 0;
-      const residualPL = Number.isFinite(point.residual_PL)
-        ? point.residual_PL
-        : 0;
-      const totalPL = Number.isFinite(point.PL)
-        ? point.PL
-        : deltaPL + gammaThetaPL + vegaPL + residualPL;
-
-      cumulative.delta += deltaPL;
-      cumulative.gammaTheta += gammaThetaPL;
-      cumulative.vega += vegaPL;
-      cumulative.residual += residualPL;
-      cumulative.total += totalPL;
-
-      seriesByKey.total.push({ date, value: cumulative.total });
-      seriesByKey.delta.push({ date, value: cumulative.delta });
-      seriesByKey.gammaTheta.push({ date, value: cumulative.gammaTheta });
-      seriesByKey.vega.push({ date, value: cumulative.vega });
-      seriesByKey.residual.push({ date, value: cumulative.residual });
-    });
-
-    const seriesList = DETAIL_SERIES_CONFIG.map((series) => ({
-      ...series,
-      values: seriesByKey[series.key] || [],
-    }));
-
-    const allDates = [];
-    const allValues = [];
-    for (const series of seriesList) {
-      for (const d of series.values) {
-        allDates.push(d.date);
-        allValues.push(d.value);
-      }
-    }
-    const xDomain = d3.extent(allDates);
-    const [rawMin, rawMax] = d3.extent(allValues);
-    let yMin = rawMin ?? 0;
-    let yMax = rawMax ?? 0;
-    yMin = Math.min(yMin, 0);
-    yMax = Math.max(yMax, 0);
-    if (yMin === yMax) {
-      const pad = yMin === 0 ? 0.0001 : Math.abs(yMin) * 0.1;
-      yMin -= pad;
-      yMax += pad;
-    }
-
-    const detailX = d3.scaleUtc().domain(xDomain).range([0, detailInnerWidth]);
-    const detailY = d3
-      .scaleLinear()
-      .domain([yMin, yMax])
-      .nice()
-      .range([innerHeight, DETAIL_TOP_INSET]);
-    const detailXAxis = d3
-      .axisBottom(detailX)
-      .ticks(4)
-      .tickSize(0)
-      .tickPadding(10);
-    const detailYAxis = d3
-      .axisLeft(detailY)
-      .ticks(5)
-      .tickSize(0)
-      .tickPadding(10)
-      .tickFormat(formatPnl);
-
-    chartState.detailXAxisGroup
-      .attr("transform", `translate(0,${innerHeight})`)
-      .call(detailXAxis)
-      .call(axisStyle)
-      .attr("display", null);
-    chartState.detailYAxisGroup
-      .call(detailYAxis)
-      .call(axisStyle)
-      .attr("display", null);
-    chartState.detailXAxisLabel
-      .attr("x", detailInnerWidth / 2)
-      .attr("y", innerHeight + 42 + axisTitlePadding)
-      .attr("display", null);
-    chartState.detailYAxisLabel
-      .attr("transform", "rotate(-90)")
-      .attr("x", -innerHeight / 2)
-      .attr("y", -52 - axisTitlePadding)
-      .attr("display", null);
-
-    const line = d3
-      .line()
-      .x((d) => detailX(d.date))
-      .y((d) => detailY(d.value))
-      .curve(d3.curveMonotoneX);
-
-    const isHiddenSeries = (key) => hiddenDetailSeriesKeys.has(key);
-    const totalConfig =
-      DETAIL_SERIES_CONFIG.find((series) => series.key === "total") ||
-      DETAIL_SERIES_CONFIG[0];
-    const totalSeries = seriesByKey.total;
-    const totalHidden = isHiddenSeries("total");
-    if (totalSeries.length && chartState.detailAreaPath && !totalHidden) {
-      const zeroY = detailY(0);
-      const area = d3
-        .area()
-        .x((d) => detailX(d.date))
-        .y0(zeroY)
-        .y1((d) => detailY(d.value))
-        .curve(d3.curveMonotoneX);
-      chartState.detailAreaPath
-        .attr("d", area(totalSeries))
-        .attr("fill", totalConfig.color)
-        .attr("fill-opacity", 0.18)
-        .attr("display", null);
-    } else {
-      chartState.detailAreaPath?.attr("display", "none");
-    }
-
-    const seriesPaths = chartState.detailSeriesGroup
-      .selectAll("path.detail-line")
-      .data(seriesList, (d) => d.key)
-      .join((enter) =>
-        enter
-          .append("path")
-          .attr("class", "detail-line")
-          .attr("fill", "none")
-          .attr("stroke-linecap", "round"),
-      );
-
-    seriesPaths
-      .attr("stroke", (d) => d.color)
-      .attr("stroke-width", (d) => d.strokeWidth || 1.6)
-      .attr("d", (d) => line(d.values))
-      .attr("display", (d) => (d.values.length ? null : "none"))
-      .attr("stroke-opacity", (d) => (isHiddenSeries(d.key) ? 0.16 : 1));
-
-    const legendItems = chartState.detailLegendGroup
-      .selectAll("g.detail-legend-item")
-      .data(seriesList, (d) => d.key)
-      .join((enter) => {
-        const item = enter.append("g").attr("class", "detail-legend-item");
-        item.append("line").attr("stroke-linecap", "round");
-        item.append("text");
-        return item;
-      });
-
-    legendItems.attr("transform", (d, i) => {
-      const col = i % legendCols;
-      const row = Math.floor(i / legendCols);
-      return `translate(${col * legendColGap},${row * legendRowGap})`;
-    });
-    legendItems
-      .select("line")
-      .attr("x1", 0)
-      .attr("y1", 0)
-      .attr("x2", legendLineLength)
-      .attr("y2", 0)
-      .attr("stroke", (d) => d.color)
-      .attr("stroke-width", (d) => d.strokeWidth || 1.6)
-      .attr("stroke-opacity", (d) => (isHiddenSeries(d.key) ? 0.28 : 1));
-    legendItems
-      .select("text")
-      .attr("x", legendLineLength + legendLabelOffset)
-      .attr("y", 3)
-      .call((text) => applyTextStyle(text, "detailLegend"))
-      .text((d) => d.label)
-      .attr("fill-opacity", (d) => (isHiddenSeries(d.key) ? 0.45 : 1));
-
-    legendItems
-      .attr("role", "button")
-      .style("cursor", "pointer")
-      .attr("opacity", (d) => (isHiddenSeries(d.key) ? 0.6 : 1))
-      .on("click", (event, d) => {
-        event.stopPropagation();
-        toggleDetailSeries(d.key);
-      });
-
-    chartState.detailLegendGroup.attr("display", null);
-    chartState.detailMessageText.attr("display", "none");
-
-    const totalLabel = Number.isFinite(cumulative.total)
-      ? formatPnl(cumulative.total)
-      : "n/a";
-    chartState.detailMetricText
-      .text(`Total P&L: ${totalLabel}`)
-      .attr("display", null);
-
-    const initialOptionMark = window[0]?.option_mark_price;
-    if (
-      Number.isFinite(cumulative.total) &&
-      Number.isFinite(initialOptionMark) &&
-      initialOptionMark !== 0
-    ) {
-      const roi = cumulative.total / initialOptionMark;
-      chartState.detailRoiText
-        .text(`ROI: ${formatVol(roi)}`)
-        .attr("display", null);
-    } else {
-      chartState.detailRoiText.attr("display", "none");
-    }
-  };
-
   const mainPoints = chartState.pointsGroup
     .selectAll("circle.main-point")
     .data(data, (d) => (d.date ? d.date.getTime() : d.index_price_close));
 
-  const handlePointSelect = (event, datum, fromNearestTap = false) => {
+  const handlePointSelect = (event, datum) => {
     event.stopPropagation();
     if (event.type === "pointerdown") {
       event.preventDefault();
     }
-    if (fromNearestTap) {
-      suppressClearClick = true;
-    }
+    // Opening the pane resizes the chart before pointerup. The following
+    // click can consequently target the background instead of this circle.
+    suppressClearClick = true;
     if (selectedDatums.includes(datum)) return;
     if (selectedDatums.length < 2) {
       selectedDatums = [...selectedDatums, datum];
@@ -1306,7 +793,7 @@ function render() {
     if (target?.closest?.("circle.main-point")) return;
     const nearest = findNearestDatumForTap(event);
     if (!nearest) return;
-    handlePointSelect(event, nearest, true);
+    handlePointSelect(event, nearest);
   });
 
   const pointUpdate = mainPoints
@@ -1346,10 +833,7 @@ function render() {
     })
     .on("pointerdown", (event, datum) => handlePointSelect(event, datum));
 
-  const pointPosition = animateLayout
-    ? pointUpdate.transition().duration(LAYOUT_TRANSITION_MS)
-    : pointUpdate;
-  pointPosition
+  pointUpdate
     .attr("cx", (d) => x(d.date))
     .attr("cy", (d) => y(d.index_price_close));
 
@@ -1365,7 +849,6 @@ function render() {
       .raise();
   }
 
-  renderDetailWindow(selectedDatums, selectedRange);
 
   const gradientStops = hasValidExtent
     ? [
@@ -1389,7 +872,7 @@ function render() {
   const legendHeight = 10;
   const legendX = mainWidth - margin.right - legendWidth;
   const legendY = margin.top - LEGEND_TOP_OFFSET;
-  withLayoutTransition(chartState.legendGroup).attr(
+  chartState.legendGroup.attr(
     "transform",
     `translate(${legendX},${legendY})`,
   );
@@ -1418,9 +901,9 @@ function render() {
 watch(
   () => [
     props.data,
-    props.optionPnlData,
     props.optionInstrumentName,
     props.circleSize,
+    props.compact,
   ],
   () => render(),
   { deep: false },
