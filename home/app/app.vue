@@ -1,86 +1,44 @@
 <script lang="ts" setup>
-const APP_ORDER = [
-  "Backtest",
-  "Simulator",
-  "Combo PnL",
-  "Straddle",
-  "Combo Greeks",
-  "Greeks",
-  "Option PnL",
-  "Break Even",
-  "Dollar Bars",
-  "Roll PnL",
-  "Basis",
-  "Term Structure",
-  "Subjective Valuation",
-];
+const router = useRouter();
+const inResearch = computed(() => router.currentRoute.value.path.startsWith("/research"));
 
-const { data: apps } = await useAsyncData(() => queryCollection("apps").all(), {
-  transform: (rows) =>
-    [...rows].sort((a, b) => {
-      const ai = APP_ORDER.indexOf(a.title);
-      const bi = APP_ORDER.indexOf(b.title);
-      if (ai !== -1 && bi !== -1) return ai - bi;
-      if (ai !== -1) return -1;
-      if (bi !== -1) return 1;
-      return a.title.localeCompare(b.title);
-    }),
-});
-
-useHead({
-  htmlAttrs: { class: "dark text-default bg-black" },
-});
+useHead({ htmlAttrs: { class: "dark text-default bg-black" } });
 </script>
 
 <template>
-  <UContainer class="py-20">
-    <header class="mb-10 flex items-center">
-      <a
-        href="https://thalex.com/"
-        target="_blank"
-        rel="noopener"
-        aria-label="Thalex"
-        class="inline-flex items-center"
-      >
-        <img
-          src="/images/LOGO_THALEX_WHITE.svg"
-          alt="Thalex"
-          class="h-9 w-auto"
-        />
-      </a>
-      <a
-        href="https://thalex.com/"
-        target="_blank"
-        rel="noopener"
-        class="ml-10 text-xl text-neutral-400 hover:text-white transition-colors"
-      >
-        thalex.com
-      </a>
-    </header>
-    <UPageGrid>
-      <UPageCard
-        v-for="app in apps"
-        :key="app.id"
-        :title="app.title"
-        :description="app.description"
-        :to="app.path"
-        target="_blank"
-        variant="subtle"
-        :ui="{ root: 'bg-neutral-950 ring-neutral-900', container: 'lg:flex' }"
-      >
-        <div
-          v-if="app.image"
-          class="mt-4 flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg bg-black"
+  <UApp>
+    <UContainer class="py-10 sm:py-20">
+      <a href="#main-content" class="skip-link">Skip to content</a>
+      <header class="mb-10 flex flex-wrap items-center gap-x-10 gap-y-4">
+        <a
+          href="https://thalex.com/"
+          target="_blank"
+          rel="noopener"
+          aria-label="Thalex"
+          class="inline-flex items-center"
         >
-          <img
-            :src="app.image"
-            :alt="`${app.title} preview`"
-            class="h-full w-full object-cover"
-            loading="lazy"
-            decoding="async"
-          />
-        </div>
-      </UPageCard>
-    </UPageGrid>
-  </UContainer>
+          <img src="/images/LOGO_THALEX_WHITE.svg" alt="Thalex" class="h-9 w-auto" />
+        </a>
+        <a
+          href="https://thalex.com/"
+          target="_blank"
+          rel="noopener"
+          class="text-xl text-neutral-400 hover:text-white transition-colors"
+        >
+          thalex.com
+        </a>
+      </header>
+      <nav aria-label="Main navigation" class="catalogue-nav mb-10">
+        <NuxtLink to="/" :aria-current="!inResearch ? 'page' : undefined" :class="{ selected: !inResearch }">
+          Apps
+        </NuxtLink>
+        <NuxtLink to="/research/" :aria-current="inResearch ? 'page' : undefined" :class="{ selected: inResearch }">
+          Research
+        </NuxtLink>
+      </nav>
+      <main id="main-content">
+        <NuxtPage />
+      </main>
+    </UContainer>
+  </UApp>
 </template>

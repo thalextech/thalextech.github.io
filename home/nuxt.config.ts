@@ -9,11 +9,30 @@ export default defineNuxtConfig({
     '@nuxt/eslint',
     '@nuxt/fonts'
   ],
-  css: ['~/assets/css/main.css'],
+  css: ['katex/dist/katex.min.css', '~/assets/css/main.css'],
+  content: {
+    build: {
+      markdown: {
+        remarkPlugins: {
+          'remark-math': { options: { singleDollarTextMath: false } },
+        },
+        rehypePlugins: {
+          'rehype-katex': {},
+        },
+      },
+    },
+  },
   nitro: {
     prerender: {
-      routes: ["/"],
-      crawlLinks: false
+      routes: ["/", "/research/"],
+      crawlLinks: true,
+      // Second-screen apps are built separately by build_apps.sh.
+      ignore: [(route) => !(
+        ["/", "/200.html", "/404.html", "/_payload.json"].includes(route)
+        || route === "/research"
+        || route.startsWith("/research/")
+        || route.startsWith("/__nuxt_content/")
+      )],
     }
   }
 })

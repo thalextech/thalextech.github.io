@@ -4,6 +4,16 @@ import {resolve} from "path";
 
 export default defineContentConfig({
   collections: {
+    research: defineCollection({
+      type: 'page',
+      source: 'research/**/*.md',
+      schema: z.object({
+        date: z.string(),
+        category: z.string().optional(),
+        image: z.string().optional(),
+        tags: z.array(z.string()).default([]),
+      }),
+    }),
     apps: defineCollection({
       type: 'page',
       source: {
