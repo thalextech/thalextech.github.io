@@ -7,6 +7,7 @@ export const emptyArchive = () => ({
   checked: new Map(),
   checkedIndex: [],
   warning: "",
+  sourceThrough: { index: null, marks: null },
 });
 
 export function missingHourRanges(from, to, known, checked = []) {
@@ -115,6 +116,12 @@ export async function loadHistoryCache(
       manifest.timestampBasis !== "bar-start"
     )
       throw new Error("Unsupported historical cache");
+    for (const boundary of Object.values(manifest.sourceThrough || {}))
+      if (
+        boundary != null &&
+        (!Number.isFinite(boundary) || boundary % 3600 !== 0)
+      )
+        throw new Error("Invalid Parquet coverage boundary");
     const index = await read(manifest.index);
     for (const row of index.rows) {
       if (
@@ -124,7 +131,14 @@ export async function loadHistoryCache(
       )
         archive.index.set(row[0], row);
     }
+    archive.sourceThrough.index =
+      manifest.sourceThrough?.index ??
+      [...archive.index.keys()].reduce(
+        (latest, ts) => Math.max(latest ?? 0, ts + 3600),
+        null,
+      );
     onArchive(archive);
+    let marksThrough = null;
     for (const expiry of expiries) {
       const filename = manifest.expiries[String(expiry)];
       if (!filename) continue;
@@ -139,23 +153,25 @@ export async function loadHistoryCache(
           !Array.isArray(i.rows)
         )
           throw new Error("Invalid cached instrument");
+        const rows = i.rows.filter(
+          (r) => r.length === 2 && r.every(Number.isFinite) && r[1] > 0,
+        );
+        for (const [ts] of rows)
+          marksThrough = Math.max(marksThrough ?? 0, ts + 3600);
         archive.marks.set(i.name, {
           name: i.name,
           expiry,
           strike: i.strike,
           side: i.side,
-          rows: new Map(
-            i.rows.filter(
-              (r) => r.length === 2 && r.every(Number.isFinite) && r[1] > 0,
-            ),
-          ),
+          rows: new Map(rows),
         });
       }
       onArchive(archive);
     }
+    archive.sourceThrough.marks = manifest.sourceThrough?.marks ?? marksThrough;
   } catch (error) {
     signal?.throwIfAborted();
-    archive.warning = `Parquet cache unavailable or incomplete (${error.message}); missing history will be fetched from Thalex.`;
+    archive.warning = `Parquet cache unavailable or incomplete (${error.message}); missing history will be fetched from Thalex within the requested lookback.`;
   }
   // Cache only successfully decoded archive state; API supplements remain session-local.
   archives.set(asset, archive);

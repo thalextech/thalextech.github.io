@@ -1,5 +1,12 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 import TermStructureChart from "./components/TermStructureChart.vue";
 import StyledSelectMenu from "../../../lib/components/StyledSelectMenu.vue";
 import ChartSettings from "./components/ChartSettings.vue";
@@ -21,8 +28,7 @@ import {
 } from "./forward-volatility.js";
 
 const asset = ref("BTC"),
-  slice = ref("atm"),
-  mode = ref("scatter");
+  slice = ref("atm");
 const source = ref("mark");
 const volatilityView = ref("iv");
 const detailLabel = computed(() =>
@@ -32,20 +38,22 @@ const detailLabel = computed(() =>
 );
 const expiries = ref([]),
   referenceTime = ref(null);
-const colorScheme = ref("redblue"),
-  showRealized = ref(true);
+const showRealized = ref(true);
 const indexBars = shallowRef([]),
   coverage = ref(null);
 const live = shallowRef([]),
   history = shallowRef([]);
 const loading = ref(false),
+  historyLoading = ref(false),
+  historyWarnings = ref([]),
   phase = ref(""),
   progress = ref(0),
   error = ref(""),
   warnings = ref([]);
 const chart = ref(null),
   historyReady = ref(false);
-let controller;
+let controller, historyController;
+let currentChain = [];
 const selectedLive = computed(() => selectLiveQuotes(live.value, source.value));
 const bookFallbackCount = computed(
   () =>
@@ -113,6 +121,56 @@ const rowLabel = (point) =>
     ? `${point.startExpiry == null ? "Now" : expiryLabel(point.startExpiry)} → ${expiryLabel(point.expiry)}`
     : expiryLabel(point.expiry);
 
+async function loadHistory(chain, nextAsset, asOf, onProgress = () => {}) {
+  historyController?.abort();
+  const current = new AbortController();
+  historyController = current;
+  const parentSignal = controller?.signal;
+  const cancel = () => current.abort();
+  parentSignal?.addEventListener("abort", cancel, { once: true });
+  if (parentSignal?.aborted) current.abort();
+  const { signal } = current;
+  const active = () => !signal.aborted;
+  historyLoading.value = true;
+  historyWarnings.value = [];
+  try {
+    const past = await fetchHistoricalQuotes(chain, nextAsset, {
+      signal,
+      asOf,
+      slice: slice.value,
+      onProgress,
+      onUpdate: (data) => {
+        if (!active()) return;
+        history.value = data.quotes;
+        indexBars.value = data.indexBars;
+        if (data.quotes.length) historyReady.value = true;
+      },
+    });
+    if (!active()) return;
+    history.value = past.quotes;
+    indexBars.value = past.indexBars;
+    coverage.value = past.coverage;
+    historyReady.value = true;
+    if (past.rateLimitWarning)
+      historyWarnings.value.push(past.rateLimitWarning);
+    if (past.warning) historyWarnings.value.push(past.warning);
+    if (past.failures.length)
+      historyWarnings.value.push(
+        `${past.failures.length} option histories failed. Available cached history is still shown; refresh to retry.`,
+      );
+    if (!past.quotes.length)
+      historyWarnings.value.push("No historical IV observations returned.");
+  } catch (error) {
+    if (active())
+      historyWarnings.value.push(
+        `History update failed: ${error.message || error}. Any history already loaded remains visible.`,
+      );
+  } finally {
+    parentSignal?.removeEventListener("abort", cancel);
+    if (historyController === current) historyLoading.value = false;
+  }
+}
+
 async function load(nextAsset = asset.value) {
   const switchingAsset = nextAsset !== asset.value;
   controller?.abort();
@@ -123,6 +181,7 @@ async function load(nextAsset = asset.value) {
   loading.value = true;
   error.value = "";
   warnings.value = [];
+  currentChain = [];
   if (switchingAsset) {
     live.value = [];
     history.value = [];
@@ -140,6 +199,7 @@ async function load(nextAsset = asset.value) {
     signal.throwIfAborted();
     if (!chain.length)
       throw new Error(`No live ${nextAsset} option expiries returned`);
+    currentChain = chain;
     expiries.value = [...new Set(chain.map((i) => i.expiry))].sort(
       (a, b) => a - b,
     );
@@ -170,23 +230,15 @@ async function load(nextAsset = asset.value) {
         (completed.live + completed.history) / (2 * chain.length);
     };
     update("live", 0);
-    const [snapshot, past] = await Promise.allSettled([
+    const [snapshot] = await Promise.allSettled([
       fetchLiveQuotes(chain, {
         signal,
         onProgress: (done) => update("live", done),
         onQuotes: publishLive,
       }),
-      fetchHistoricalQuotes(chain, nextAsset, {
-        signal,
-        asOf: referenceTime.value,
-        onProgress: (done) => update("history", done),
-        onUpdate: (data) => {
-          if (!active()) return;
-          history.value = data.quotes;
-          indexBars.value = data.indexBars;
-          if (data.quotes.length) historyReady.value = true;
-        },
-      }),
+      loadHistory(chain, nextAsset, referenceTime.value, (done) =>
+        update("history", done),
+      ),
     ]);
     signal.throwIfAborted();
     if (snapshot.status === "fulfilled") {
@@ -202,27 +254,6 @@ async function load(nextAsset = asset.value) {
           "No fresh live IVs returned. Historical observations remain visible; refresh to retry.",
         );
     } else error.value = snapshot.reason.message || String(snapshot.reason);
-    if (past.status === "fulfilled") {
-      if (
-        past.value.rateLimitWarning &&
-        !warnings.value.includes(past.value.rateLimitWarning)
-      )
-        warnings.value.push(past.value.rateLimitWarning);
-      history.value = past.value.quotes;
-      indexBars.value = past.value.indexBars;
-      coverage.value = past.value.coverage;
-      historyReady.value = true;
-      if (past.value.warning) warnings.value.push(past.value.warning);
-      if (past.value.failures.length)
-        warnings.value.push(
-          `${past.value.failures.length} option histories failed. Available cached history is still shown; refresh to retry.`,
-        );
-      if (!past.value.quotes.length)
-        warnings.value.push("No historical IV observations returned.");
-    } else
-      warnings.value.push(
-        `History update failed: ${past.reason.message || String(past.reason)}. Any history already loaded remains visible.`,
-      );
   } catch (e) {
     if (active()) error.value = e.message || String(e);
   } finally {
@@ -230,7 +261,14 @@ async function load(nextAsset = asset.value) {
   }
 }
 onMounted(() => load());
-onBeforeUnmount(() => controller?.abort());
+watch(slice, () => {
+  if (currentChain.length)
+    void loadHistory(currentChain, asset.value, referenceTime.value);
+});
+onBeforeUnmount(() => {
+  controller?.abort();
+  historyController?.abort();
+});
 </script>
 
 <template>
@@ -282,28 +320,8 @@ onBeforeUnmount(() => controller?.abort());
             ]"
           />
         </div>
-        <div class="modeToggle" role="group" aria-label="Chart mode">
-          <button
-            type="button"
-            class="modeToggleButton"
-            :class="{ active: mode === 'scatter' }"
-            :aria-pressed="mode === 'scatter'"
-            @click="mode = 'scatter'"
-          >
-            Scatter
-          </button>
-          <button
-            type="button"
-            class="modeToggleButton"
-            :class="{ active: mode === 'lines' }"
-            :aria-pressed="mode === 'lines'"
-            @click="mode = 'lines'"
-          >
-            Lines
-          </button>
-        </div>
         <button class="saveButton" type="button" @click="load()">
-          {{ loading ? "Restart fetch" : "Refresh" }}
+          {{ loading || historyLoading ? "Restart fetch" : "Refresh" }}
         </button>
         <button
           class="saveButton"
@@ -318,7 +336,6 @@ onBeforeUnmount(() => controller?.abort());
 
     <section class="chartPanel" aria-label="Volatility term structure">
       <ChartSettings
-        v-model:color-scheme="colorScheme"
         v-model:show-realized="showRealized"
         :forward="volatilityView === 'forward'"
       />
@@ -330,11 +347,9 @@ onBeforeUnmount(() => controller?.abort());
         :asset="asset"
         :slice-label="sliceLabel"
         :source-label="sourceLabel"
-        :mode="mode"
         :view="volatilityView"
         :snapshot-time="snapshotTime"
-        :loading="loading"
-        :color-scheme="colorScheme"
+        :loading="loading || historyLoading"
         :realized="showRealized ? realized : []"
       />
     </section>
@@ -485,7 +500,8 @@ onBeforeUnmount(() => controller?.abort());
         mode, RV uses the most recent history matching each interval’s duration:
         T₁ → T₂ ahead uses the latest T₂ − T₁ hours, rounded up to whole hours,
         using direct OHLC observations. The lookbacks overlap and all end at the
-        same latest completed hour. Missing or invalid bars are skipped. At least
+        same latest completed hour. Missing or invalid bars are skipped. At
+        least
         {{ RV_MIN_COVERAGE * 100 }}% of each window’s hours must be valid. RV is
         estimated from the available bars across the full requested window;
         missing hours are not counted as zero volatility. Coverage is shown in
@@ -512,14 +528,19 @@ onBeforeUnmount(() => controller?.abort());
         currently listed expiry (about 83 days); book-mid percentiles compare
         against mark history. API supplements use currently listed strikes;
         cached history also retains older strikes for live expiries; newer
-        expiries have shorter coverage. Historical lines join matching UTC hours
-        and break at missing expiries. Refresh is manual.
+        expiries have shorter coverage. Dots show hourly observations with
+        horizontal jitter only. Live quotes refresh manually.
       </p>
       <p>
         Historical cache is generated from the backtest’s canonical Parquet
-        closing IV and index OHLC, then supplemented only at missing hours.
-        Cache and differential responses are merged by instrument and UTC bar
-        start; successful API additions are reused for this browser session.
+        closing IV and index OHLC. API backfill covers the gap from the latest
+        available Parquet bars to the latest completed hour, within the chart’s
+        lookback. Older Parquet gaps are left as supplied. ATM updates fetch the
+        strikes around each hour’s spot, trying neighbours if quotes are
+        unavailable. Delta updates fetch the selected option side. Changing
+        slice updates missing history. Cache and differential responses are
+        merged by instrument and UTC bar start; successful API additions are
+        reused for this browser session.
       </p>
       <a
         href="https://thalex.com/historical-data"
@@ -532,21 +553,36 @@ onBeforeUnmount(() => controller?.abort());
       <p v-if="loading" role="status">
         {{ phase }} · {{ Math.round(progress * 100) }}%
       </p>
+      <p v-else-if="historyLoading" role="status">
+        Updating selected slice history…
+      </p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <p v-for="warning in warnings" :key="warning">{{ warning }}</p>
+      <p v-for="warning in [...warnings, ...historyWarnings]" :key="warning">
+        {{ warning }}
+      </p>
       <p v-if="source === 'book' && bookFallbackCount">
-        {{ bookFallbackCount }} options have no usable two-sided book midpoint and
-        use exchange mark IV instead.
+        {{ bookFallbackCount }} options have no usable two-sided book midpoint
+        and use exchange mark IV instead.
       </p>
       <p
-        v-if="volatilityView === 'forward' && !loading && series.unavailable.length"
+        v-if="
+          volatilityView === 'forward' &&
+          !loading &&
+          !historyLoading &&
+          series.unavailable.length
+        "
       >
-        {{ series.unavailable.length }} current forward intervals are unavailable
-        because an adjacent expiry is missing or the total variance decreases.
-        Gaps are left unfilled.
+        {{ series.unavailable.length }} current forward intervals are
+        unavailable because an adjacent expiry is missing or the total variance
+        decreases. Gaps are left unfilled.
       </p>
       <p
-        v-if="showRealized && indexBars.length && realized.some((p) => p.iv == null)"
+        v-if="
+          showRealized &&
+          !historyLoading &&
+          indexBars.length &&
+          realized.some((p) => p.iv == null)
+        "
       >
         {{ realized.filter((p) => p.iv == null).length }} realized-volatility
         windows are unavailable because valid hourly OHLC coverage is below

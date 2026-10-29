@@ -1,4 +1,6 @@
 // Thalex's external contracts end here. Chart/domain code only sees normalized quotes.
+import { planAtmHistory } from "./atm-history-plan.js";
+import { SLICES } from "./volatility.js";
 import { fetchStreamSnapshot, normalizeTicker } from "./live-quotes.js";
 import {
   loadHistoryCache,
@@ -115,7 +117,14 @@ async function historyRows(endpoint, field, params, signal) {
   while (to >= params.from) {
     const result = await request(
       endpoint,
-      { ...params, to, count: HISTORY_LIMIT },
+      {
+        ...params,
+        to,
+        count: Math.min(
+          HISTORY_LIMIT,
+          Math.ceil((to - params.from + 1) / HOUR),
+        ),
+      },
       signal,
     );
     if (result.no_data === true && result[field] === undefined) break;
@@ -162,11 +171,14 @@ export async function fetchHistoricalQuotes(
     onUpdate,
     asOf = Date.now() / 1000,
     archive,
+    slice = "atm",
   } = {},
 ) {
   const end = Math.floor(asOf / HOUR) * HOUR;
   const to = end - 1,
     from = end - HISTORY_LIMIT * HOUR;
+  const spec = SLICES.find((s) => s.value === slice);
+  if (!spec) throw new Error(`Unknown volatility slice: ${slice}`);
   const longestHours = Math.max(
     1,
     Math.ceil((Math.max(...chain.map((i) => i.expiry)) - asOf) / HOUR),
@@ -182,12 +194,19 @@ export async function fetchHistoricalQuotes(
   const cache =
     archive || (await loadHistoryCache(asset, expiries, signal, publish));
   publish(cache);
+  // The immutable Parquet boundaries survive session additions. A failed request
+  // must not move the boundary forward and hide a hole on the next refresh.
+  const updateFrom = Math.max(from, cache.sourceThrough?.marks ?? from);
+  const indexUpdateFrom = Math.max(
+    indexFrom,
+    cache.sourceThrough?.index ?? indexFrom,
+  );
   const params = { resolution: "1h" };
   let apiIndexRows = 0,
     apiMarkRows = 0;
   const cachedIndexRows = cache.index.size;
   for (const range of missingHourRanges(
-    indexFrom,
+    indexUpdateFrom,
     to,
     cache.index,
     cache.checkedIndex,
@@ -232,53 +251,115 @@ export async function fetchHistoricalQuotes(
     (n, i) => n + i.rows.size,
     0,
   );
-  const remaining = new Map(
+  const byExpiry = new Map(
     expiries.map((expiry) => [
       expiry,
-      chain.filter((i) => i.expiry === expiry).length,
+      chain.filter((i) => i.expiry === expiry),
     ]),
   );
   await pool(
-    [...chain].sort((a, b) => a.expiry - b.expiry || a.strike - b.strike),
-    6,
-    async (instrument) => {
-      try {
-        if (!cache.marks.has(instrument.name))
-          cache.marks.set(instrument.name, { ...instrument, rows: new Map() });
-        const stored = cache.marks.get(instrument.name);
-        const checked = cache.checked.get(instrument.name) || [];
-        cache.checked.set(instrument.name, checked);
-        const instrumentFrom = Math.max(from, instrument.listedAt ?? from);
-        for (const range of missingHourRanges(
-          instrumentFrom,
-          to,
-          // IV observations without a matching index bar cannot be used.
-          // Skip confirmed index gaps instead of querying every option for them.
-          { has: (ts) => stored.rows.has(ts) || !spots.has(ts) },
-          checked,
-        )) {
-          const rows = await historyRows(
-            "mark_price_historical_data",
-            "mark",
-            { ...params, ...range, instrument_name: instrument.name },
-            signal,
-          );
-          for (const row of rows) {
-            if (Number.isFinite(row[8]) && row[8] > 0) {
-              stored.rows.set(row[0], row[8]);
-              apiMarkRows++;
-            }
-          }
-          checked.push({ ...range, expires: Date.now() + 60000 });
-        }
-      } catch (error) {
+    [...byExpiry.values()],
+    2,
+    async (instruments) => {
+      // Publish only after the expiry's selected inputs have been checked.
+      // Empty responses can move the ATM bracket outward in another round.
+      const checkedAt = Date.now();
+      while (true) {
         signal?.throwIfAborted();
-        if (error.isRateLimit) rateLimitWarning = error.message;
-        failures.push(`${instrument.name}: ${error.message}`);
+        const plan =
+          slice === "atm"
+            ? planAtmHistory(
+                instruments,
+                cache,
+                spots,
+                updateFrom,
+                to,
+                checkedAt,
+              )
+            : instruments
+                .filter((i) => i.side === spec.side)
+                .map((instrument) => ({
+                  instrument,
+                  hours: new Set(
+                    [...spots.keys()].filter(
+                      (ts) =>
+                        ts >=
+                          Math.max(
+                            updateFrom,
+                            instrument.listedAt ?? updateFrom,
+                          ) && ts <= to,
+                    ),
+                  ),
+                }));
+        const requests = plan.flatMap(({ instrument, hours }) => {
+          const stored = cache.marks.get(instrument.name);
+          const checked = cache.checked.get(instrument.name) || [];
+          const missing = [...hours].filter(
+            (ts) =>
+              !stored?.rows.has(ts) &&
+              !checked.some(
+                (r) =>
+                  ts >= r.from &&
+                  ts <= r.to &&
+                  (r.expires == null || r.expires > checkedAt),
+              ),
+          );
+          if (!missing.length) return [];
+          // One bounded envelope per instrument avoids a separate request whenever
+          // spot crosses back and forth between strikes. Extra returned hours are reusable.
+          return [
+            {
+              instrument,
+              from: Math.min(...missing),
+              to: Math.max(...missing) + HOUR - 1,
+            },
+          ];
+        });
+        if (!requests.length) break;
+        let failed = false;
+        await pool(
+          requests,
+          4,
+          async ({ instrument, from, to }) => {
+            try {
+              if (!cache.marks.has(instrument.name))
+                cache.marks.set(instrument.name, {
+                  ...instrument,
+                  rows: new Map(),
+                });
+              const stored = cache.marks.get(instrument.name);
+              const rows = await historyRows(
+                "mark_price_historical_data",
+                "mark",
+                { ...params, from, to, instrument_name: instrument.name },
+                signal,
+              );
+              for (const row of rows) {
+                if (Number.isFinite(row[8]) && row[8] > 0) {
+                  stored.rows.set(row[0], row[8]);
+                  apiMarkRows++;
+                }
+              }
+              if (!cache.checked.has(instrument.name))
+                cache.checked.set(instrument.name, []);
+              cache.checked
+                .get(instrument.name)
+                .push({ from, to, expires: Date.now() + 60000 });
+            } catch (error) {
+              signal?.throwIfAborted();
+              // A failed request is not evidence that this strike has no data.
+              // Stop expanding this expiry and let a later refresh retry it.
+              failed = true;
+              if (error.isRateLimit) rateLimitWarning = error.message;
+              failures.push(`${instrument.name}: ${error.message}`);
+            }
+          },
+          signal,
+        );
+        if (failed || slice !== "atm") break;
       }
-      onProgress(++done, chain.length);
-      remaining.set(instrument.expiry, remaining.get(instrument.expiry) - 1);
-      if (remaining.get(instrument.expiry) === 0) publish(cache);
+      onProgress((done += instruments.length), chain.length);
+      publish(cache);
     },
     signal,
   );

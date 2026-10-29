@@ -8,6 +8,7 @@ import {
   HOUR,
 } from "./market-data.js";
 import { emptyArchive } from "./history-cache.js";
+import { buildTermStructure } from "./volatility.js";
 const chain = [
   {
     name: "BTC-TEST-C",
@@ -54,7 +55,19 @@ test("history pages backwards, joins exact index timestamps and labels completed
     quotes.map((q) => q.spot),
     [100, 101],
   );
-  assert.ok(calls.every((url) => url.searchParams.get("count") === "2000"));
+  assert.ok(
+    calls.every((url) => {
+      const hours = Math.ceil(
+        (Number(url.searchParams.get("to")) -
+          Number(url.searchParams.get("from")) +
+          1) /
+          HOUR,
+      );
+      return (
+        Number(url.searchParams.get("count")) === Math.min(HISTORY_LIMIT, hours)
+      );
+    }),
+  );
 });
 test("explicit no_data is accepted; malformed history is reported as a partial failure", async (t) => {
   const ts = Math.floor(Date.now() / 1000 / HOUR) * HOUR - HOUR;
@@ -175,28 +188,38 @@ test("cached history plus API tail merges once, retains cached strikes and is re
   assert.equal(calls.length, 2);
 });
 
-test("index pagination retains more than 2,000 hours when long-expiry RV requires it", async (t) => {
+test("long-expiry RV backfills from the Parquet boundary and leaves older source gaps untouched", async (t) => {
   const end = Math.floor(Date.now() / 1000 / HOUR) * HOUR;
   const requiredHours = 2100;
   const active = [
     { ...chain[0], expiry: end + requiredHours * HOUR, listedAt: end },
   ];
+  const archive = emptyArchive();
+  for (let ts = end - requiredHours * HOUR; ts < end - HOUR; ts += HOUR)
+    archive.index.set(ts, [ts, 100, 101, 99, 100]);
+  archive.sourceThrough = { index: end - HOUR, marks: end - HOUR };
+  // An older Parquet gap is left untouched; the gap after Parquet still updates.
+  archive.index.delete(end - 100 * HOUR);
+  const calls = [];
   t.mock.method(globalThis, "fetch", async (input) => {
-    const url = new URL(input),
-      to = Number(url.searchParams.get("to"));
-    const last = Math.floor(to / HOUR) * HOUR;
-    const from = Math.max(end - requiredHours * HOUR, last - 1999 * HOUR);
-    const index = [];
-    for (let ts = from; ts <= last; ts += HOUR)
-      index.push([ts, 100, 101, 99, 100]);
-    return { ok: true, json: async () => ({ result: { index } }) };
+    const url = new URL(input);
+    calls.push(url);
+    assert.equal(Number(url.searchParams.get("from")), end - HOUR);
+    return {
+      ok: true,
+      json: async () => ({
+        result: { index: [[end - HOUR, 100, 101, 99, 100]] },
+      }),
+    };
   });
   const result = await fetchHistoricalQuotes(active, "BTC", {
-    archive: emptyArchive(),
+    archive,
     asOf: end,
   });
-  assert.equal(result.indexBars.length, requiredHours);
+  assert.equal(calls.length, 1);
+  assert.equal(result.indexBars.length, requiredHours - 1);
   assert.equal(result.indexBars[0].ts, end - requiredHours * HOUR);
+  assert.equal(result.warning, "");
 });
 
 test("cached history publishes before network requests, then updates after each expiry completes", async (t) => {
@@ -237,7 +260,10 @@ test("cached history publishes before network requests, then updates after each 
     onUpdate: (data) => updates.push(data.quotes),
   });
   assert.equal(updates[0].length, 2);
-  assert.ok(updates.some((quotes) => quotes.length === 3));
+  assert.ok(
+    updates.length >= 4,
+    "initial snapshot, each completed expiry and final snapshot publish",
+  );
   assert.equal(updates.at(-1).length, 4);
 });
 
@@ -268,4 +294,340 @@ test("missing index hours do not trigger unusable per-option history requests", 
   assert.equal(result.quotes.length, 1999);
   await fetchHistoricalQuotes(chain, "BTC", { archive, asOf: end });
   assert.equal(calls.length, 1);
+});
+
+test("ATM fetches hourly brackets only, preserves the full cached window and reuses session additions", async (t) => {
+  const end = Math.floor(Date.now() / 1000 / HOUR) * HOUR;
+  const from = end - 72 * HOUR;
+  const active = [80, 90, 100, 110, 120, 130].flatMap((strike) =>
+    ["C", "P"].map((side) => ({
+      name: `${strike}-${side}`,
+      expiry: end + 86400,
+      strike,
+      side,
+    })),
+  );
+  const archive = emptyArchive(),
+    full = [];
+  archive.sourceThrough = { index: end, marks: from };
+  for (let ts = end - HISTORY_LIMIT * HOUR; ts < end; ts += HOUR) {
+    const spot = ts === from + HOUR ? 105 : 95;
+    archive.index.set(ts, [ts, spot, spot, spot, spot]);
+    for (const instrument of active) {
+      const iv = instrument.strike / 250 + (instrument.side === "P" ? 0.02 : 0);
+      full.push({ ...instrument, ts: ts + HOUR, iv, spot });
+      if (ts >= from) continue;
+      if (!archive.marks.has(instrument.name))
+        archive.marks.set(instrument.name, { ...instrument, rows: new Map() });
+      archive.marks.get(instrument.name).rows.set(ts, iv);
+    }
+  }
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(input);
+    calls.push(url);
+    const instrument = active.find(
+      (i) => i.name === url.searchParams.get("instrument_name"),
+    );
+    assert.ok(instrument, "index is already cached");
+    const first = Number(url.searchParams.get("from"));
+    const last = Number(url.searchParams.get("to"));
+    assert.ok(first >= from && last < end);
+    const mark = [];
+    for (let ts = first; ts <= last; ts += HOUR)
+      mark.push(
+        bar(ts, instrument.strike / 250 + (instrument.side === "P" ? 0.02 : 0)),
+      );
+    return { ok: true, json: async () => ({ result: { mark } }) };
+  });
+  const result = await fetchHistoricalQuotes(active, "BTC", {
+    archive,
+    asOf: end,
+  });
+  assert.equal(
+    calls.length,
+    6,
+    "three required strikes, both sides, one request per instrument",
+  );
+  assert.deepEqual(
+    new Set(calls.map((url) => url.searchParams.get("instrument_name"))),
+    new Set(["90-C", "90-P", "100-C", "100-P", "110-C", "110-P"]),
+  );
+  const expected = buildTermStructure({
+    live: [],
+    history: full,
+    expiries: [active[0].expiry],
+  }).history;
+  const actual = buildTermStructure({
+    live: [],
+    history: result.quotes,
+    expiries: [active[0].expiry],
+  }).history;
+  assert.deepEqual(
+    actual,
+    expected,
+    "selected inputs reproduce full-chain ATM, including older cached history",
+  );
+  assert.equal(actual.length, HISTORY_LIMIT);
+  await fetchHistoricalQuotes(active, "BTC", { archive, asOf: end });
+  assert.equal(
+    calls.length,
+    6,
+    "same-session refresh makes no repeated history requests",
+  );
+});
+
+test("empty ATM brackets expand to usable neighbours instead of silently clamping", async (t) => {
+  const end = Math.floor(Date.now() / 1000 / HOUR) * HOUR,
+    ts = end - HOUR;
+  const active = [80, 90, 100, 110].map((strike) => ({
+    name: String(strike),
+    expiry: end + 86400,
+    strike,
+    side: "C",
+    listedAt: ts,
+  }));
+  const archive = emptyArchive();
+  archive.index.set(ts, [ts, 95, 95, 95, 95]);
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(input);
+    if (url.pathname.endsWith("index_price_historical_data"))
+      return { ok: true, json: async () => ({ result: {} }) };
+    const name = url.searchParams.get("instrument_name");
+    calls.push(name);
+    return {
+      ok: true,
+      json: async () => ({
+        result: {
+          mark: ["90", "100"].includes(name)
+            ? []
+            : [bar(ts, name === "80" ? 0.4 : 0.6)],
+        },
+      }),
+    };
+  });
+  const result = await fetchHistoricalQuotes(active, "BTC", {
+    archive,
+    asOf: end,
+  });
+  assert.deepEqual(calls, ["90", "100", "80", "110"]);
+  const [point] = buildTermStructure({
+    live: [],
+    history: result.quotes,
+    expiries: [active[0].expiry],
+  }).history;
+  assert.equal(point.clamped, false);
+  assert.ok(Math.abs(point.iv - Math.sqrt((0.4 ** 2 + 0.6 ** 2) / 2)) < 1e-12);
+});
+
+test("delta selection fetches only its side and reuses cached ATM inputs", async (t) => {
+  const end = Math.floor(Date.now() / 1000 / HOUR) * HOUR,
+    ts = end - HOUR;
+  const active = [80, 90, 100, 110].flatMap((strike) =>
+    ["C", "P"].map((side) => ({
+      name: `${strike}-${side}`,
+      expiry: end + 86400,
+      strike,
+      side,
+      listedAt: ts,
+    })),
+  );
+  const archive = emptyArchive();
+  archive.index.set(ts, [ts, 95, 95, 95, 95]);
+  // The preceding ATM selection already fetched its two put inputs.
+  for (const instrument of active.filter((i) =>
+    ["90-P", "100-P"].includes(i.name),
+  ))
+    archive.marks.set(instrument.name, {
+      ...instrument,
+      rows: new Map([[ts, 0.4]]),
+    });
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(input);
+    if (url.pathname.endsWith("index_price_historical_data"))
+      return { ok: true, json: async () => ({ result: {} }) };
+    calls.push(url.searchParams.get("instrument_name"));
+    return {
+      ok: true,
+      json: async () => ({ result: { mark: [bar(ts, 0.4)] } }),
+    };
+  });
+  await fetchHistoricalQuotes(active, "BTC", {
+    archive,
+    asOf: end,
+    slice: "25p",
+  });
+  assert.deepEqual(calls, ["80-P", "110-P"]);
+  await fetchHistoricalQuotes(active, "BTC", {
+    archive,
+    asOf: end,
+    slice: "10p",
+  });
+  assert.equal(
+    calls.length,
+    2,
+    "another put delta reuses the same side's history",
+  );
+});
+
+test("without Parquet coverage, backfill is bounded by the requested lookback", async (t) => {
+  const end = Math.floor(Date.now() / 1000 / HOUR) * HOUR;
+  const first = end - HISTORY_LIMIT * HOUR;
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(input);
+    calls.push(url);
+    const from = Number(url.searchParams.get("from"));
+    assert.ok(from >= first);
+    assert.ok(Number(url.searchParams.get("count")) <= HISTORY_LIMIT);
+    const result = url.pathname.endsWith("index_price_historical_data")
+      ? { index: [[first, 100, 100, 100, 100]] }
+      : { mark: [bar(first, 0.4)] };
+    return { ok: true, json: async () => ({ result }) };
+  });
+  const result = await fetchHistoricalQuotes(chain, "BTC", {
+    archive: emptyArchive(),
+    asOf: end,
+  });
+  assert.equal(result.quotes.length, 1);
+  assert.equal(result.warning, "");
+});
+
+test("a failed bracket request does not widen or get remembered as empty", async (t) => {
+  const end = Math.floor(Date.now() / 1000 / HOUR) * HOUR,
+    ts = end - HOUR;
+  const active = [80, 90, 100, 110].map((strike) => ({
+    name: String(strike),
+    expiry: end + 86400,
+    strike,
+    side: "C",
+    listedAt: ts,
+  }));
+  const archive = emptyArchive();
+  archive.index.set(ts, [ts, 95, 95, 95, 95]);
+  const calls = [];
+  let fail = true;
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(input);
+    if (url.pathname.endsWith("index_price_historical_data"))
+      return { ok: true, json: async () => ({ result: {} }) };
+    const name = url.searchParams.get("instrument_name");
+    calls.push(name);
+    if (fail && name === "90") return { ok: false, status: 400 };
+    return {
+      ok: true,
+      json: async () => ({ result: { mark: [bar(ts, 0.4)] } }),
+    };
+  });
+  const result = await fetchHistoricalQuotes(active, "BTC", {
+    archive,
+    asOf: end,
+  });
+  assert.deepEqual(calls, ["90", "100"]);
+  assert.equal(result.failures.length, 1);
+  assert.equal(archive.checked.has("90"), false);
+  fail = false;
+  const retry = await fetchHistoricalQuotes(active, "BTC", {
+    archive,
+    asOf: end,
+  });
+  assert.deepEqual(calls, ["90", "100", "90"]);
+  assert.equal(retry.failures.length, 0);
+});
+
+test("gaps inside Parquet history remain untouched when the subsequent tail is cached", async (t) => {
+  const end = Math.floor(Date.now() / 1000 / HOUR) * HOUR;
+  const from = end - HISTORY_LIMIT * HOUR,
+    gap = end - 100 * HOUR;
+  const archive = emptyArchive(),
+    rows = new Map();
+  for (let ts = from; ts < end; ts += HOUR) {
+    archive.index.set(ts, [ts, 100, 100, 100, 100]);
+    if (ts !== gap) rows.set(ts, 0.4);
+  }
+  archive.marks.set(chain[0].name, { ...chain[0], rows });
+  archive.sourceThrough = { index: end, marks: end - HOUR };
+  t.mock.method(globalThis, "fetch", async () => {
+    assert.fail("gaps inside Parquet history must not trigger API requests");
+  });
+  const result = await fetchHistoricalQuotes(chain, "BTC", {
+    archive,
+    asOf: end,
+  });
+  assert.equal(result.quotes.length, HISTORY_LIMIT - 1);
+  assert.equal(result.failures.length, 0);
+  assert.equal(result.coverage.apiMarkRows, 0);
+});
+
+test("backfill spans the entire Parquet-to-present gap with separate index/IV boundaries and newly listed expiries", async (t) => {
+  const end = Math.floor(Date.now() / 1000 / HOUR) * HOUR;
+  const from = end - HISTORY_LIMIT * HOUR;
+  const indexThrough = end - 7 * 24 * HOUR,
+    marksThrough = end - 8 * 24 * HOUR;
+  const active = [
+    { name: "existing", expiry: end + 86400, strike: 100, side: "C" },
+    {
+      name: "new-expiry",
+      expiry: end + 2 * 86400,
+      strike: 100,
+      side: "C",
+      listedAt: end - 6 * 24 * HOUR,
+    },
+  ];
+  const archive = emptyArchive();
+  archive.sourceThrough = { index: indexThrough, marks: marksThrough };
+  const rows = new Map();
+  for (let ts = from; ts < indexThrough; ts += HOUR)
+    archive.index.set(ts, [ts, 100, 100, 100, 100]);
+  for (let ts = from; ts < marksThrough; ts += HOUR) rows.set(ts, 0.4);
+  archive.marks.set("existing", { ...active[0], rows });
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (input) => {
+    const url = new URL(input);
+    calls.push(url);
+    const from = Number(url.searchParams.get("from")),
+      to = Number(url.searchParams.get("to"));
+    const isIndex = url.pathname.endsWith("index_price_historical_data");
+    const first = isIndex
+      ? indexThrough
+      : url.searchParams.get("instrument_name") === "new-expiry"
+        ? active[1].listedAt
+        : marksThrough;
+    assert.equal(
+      from,
+      first,
+      "backfill starts immediately after the actual Parquet coverage, or at listing",
+    );
+    assert.equal(to, end - 1);
+    const rows = [];
+    for (let ts = from; ts <= to; ts += HOUR)
+      rows.push(isIndex ? [ts, 100, 100, 100, 100] : bar(ts, 0.4));
+    return {
+      ok: true,
+      json: async () => ({ result: { [isIndex ? "index" : "mark"]: rows } }),
+    };
+  });
+  const result = await fetchHistoricalQuotes(active, "BTC", {
+    archive,
+    asOf: end,
+  });
+  assert.equal(calls.length, 3);
+  assert.equal(result.indexBars.length, HISTORY_LIMIT);
+  assert.equal(
+    result.quotes.filter((q) => q.expiry === active[0].expiry).length,
+    HISTORY_LIMIT,
+  );
+  assert.equal(
+    result.quotes.filter((q) => q.expiry === active[1].expiry).length,
+    6 * 24,
+  );
+  assert.deepEqual(
+    archive.sourceThrough,
+    { index: indexThrough, marks: marksThrough },
+    "API additions do not move source boundaries",
+  );
+  await fetchHistoricalQuotes(active, "BTC", { archive, asOf: end });
+  assert.equal(calls.length, 3, "completed tail is reused in memory");
 });

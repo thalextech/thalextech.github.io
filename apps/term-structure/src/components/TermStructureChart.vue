@@ -2,7 +2,6 @@
 import * as d3 from "d3";
 import { onMounted, ref, watch } from "vue";
 import { exportChartToPng } from "../../../../lib/export-png.js";
-import { COLOR_SCHEMES, historyColor } from "../chart-colors.js";
 const props = defineProps({
   current: Array,
   expiries: { type: Array, default: () => [] },
@@ -10,11 +9,9 @@ const props = defineProps({
   asset: String,
   sliceLabel: String,
   sourceLabel: String,
-  mode: String,
   view: { type: String, default: "iv" },
   snapshotTime: Number,
   loading: Boolean,
-  colorScheme: { type: String, default: "redblue" },
   realized: { type: Array, default: () => [] },
 });
 const svgRef = ref(null);
@@ -65,41 +62,8 @@ function draw() {
       .attr("fill", "#70767d")
       .attr("font-size", 11)
       .text(
-        `${props.mode === "lines" ? (COLOR_SCHEMES.find((s) => s.value === props.colorScheme)?.label || "") + ": older → newer" : `Dots: hourly ${props.view === "forward" ? "forward vol" : "IV"} · Horizontal jitter only`} · ${stamp(new Date(oldest * 1000))} — ${stamp(new Date(newest * 1000))}`,
+        `Dots: hourly ${props.view === "forward" ? "forward vol" : "IV"} · Horizontal jitter only · ${stamp(new Date(oldest * 1000))} — ${stamp(new Date(newest * 1000))}`,
       );
-    if (props.mode === "lines") {
-      const gradient = svg
-        .append("defs")
-        .append("linearGradient")
-        .attr("id", "term-history-palette");
-      for (let i = 0; i <= 20; i++)
-        gradient
-          .append("stop")
-          .attr("offset", `${i * 5}%`)
-          .attr("stop-color", historyColor(props.colorScheme, i / 20));
-      svg
-        .append("rect")
-        .attr("x", W - margin.right - 140)
-        .attr("y", 102)
-        .attr("width", 140)
-        .attr("height", 4)
-        .attr("fill", "url(#term-history-palette)");
-      svg
-        .append("text")
-        .attr("x", W - margin.right - 140)
-        .attr("y", 97)
-        .attr("fill", "#70767d")
-        .attr("font-size", 9)
-        .text("Older");
-      svg
-        .append("text")
-        .attr("x", W - margin.right)
-        .attr("y", 97)
-        .attr("text-anchor", "end")
-        .attr("fill", "#70767d")
-        .attr("font-size", 9)
-        .text("Newer");
-    }
   }
   if (
     !props.current.length &&
@@ -194,64 +158,25 @@ function draw() {
     );
 
   const historyLayer = svg.append("g");
-  if (props.mode === "scatter") {
-    const jitterWidth = Math.min(x.step() * 0.14, 20);
-    // Stable decorative jitter: timestamps never change vertical observations.
-    const jitter = (p) =>
-      ((Math.sin(p.ts * 0.013 + p.expiry * 0.007) * 43758.5453) % 1) *
-      jitterWidth;
-    historyLayer
-      .selectAll("circle")
-      .data(props.history)
-      .join("circle")
-      .attr("cx", (p) => x(p.expiry) + jitter(p))
-      .attr("cy", (p) => y(p.iv))
-      .attr("r", 2.4)
-      .attr("fill", "#ffffff")
-      .attr("fill-opacity", 0.18)
-      .append("title")
-      .text(
-        (p) =>
-          `${periodLabel(p.expiry)} · ${(p.iv * 100).toFixed(2)}%\nHourly close: ${stamp(new Date(p.ts * 1000))}${p.clamped ? "\nNearest-strike ATM fallback in an IV input" : ""}`,
-      );
-  } else {
-    const curves = [...d3.group(props.history, (p) => p.ts)].sort(
-      (a, b) => a[0] - b[0],
+  const jitterWidth = Math.min(x.step() * 0.14, 20);
+  // Stable decorative jitter: timestamps never change vertical observations.
+  const jitter = (p) =>
+    ((Math.sin(p.ts * 0.013 + p.expiry * 0.007) * 43758.5453) % 1) *
+    jitterWidth;
+  historyLayer
+    .selectAll("circle")
+    .data(props.history)
+    .join("circle")
+    .attr("cx", (p) => x(p.expiry) + jitter(p))
+    .attr("cy", (p) => y(p.iv))
+    .attr("r", 2.4)
+    .attr("fill", "#ffffff")
+    .attr("fill-opacity", 0.18)
+    .append("title")
+    .text(
+      (p) =>
+        `${periodLabel(p.expiry)} · ${(p.iv * 100).toFixed(2)}%\nHourly close: ${stamp(new Date(p.ts * 1000))}${p.clamped ? "\nNearest-strike ATM fallback in an IV input" : ""}`,
     );
-    const times = d3.extent(curves, (p) => p[0]);
-    const color = d3.scaleSequential(
-      times[0] === times[1] ? [times[0] - 1, times[1]] : times,
-      (t) => historyColor(props.colorScheme, t),
-    );
-    const line = d3
-      .line()
-      .defined((p) => p != null)
-      .x((p) => x(p.expiry))
-      .y((p) => y(p.iv))
-      .curve(d3.curveMonotoneX);
-    for (const [ts, points] of curves) {
-      const byExpiry = new Map(points.map((p) => [p.expiry, p]));
-      historyLayer
-        .append("path")
-        .attr("d", line(expiries.map((e) => byExpiry.get(e))))
-        .attr("fill", "none")
-        .attr("stroke", color(ts))
-        .attr("stroke-width", 1)
-        .attr("stroke-opacity", 0.13)
-        .append("title")
-        .text(`Hourly curve: ${stamp(new Date(ts * 1000))}`);
-    }
-    // Singleton observations remain visible when no adjacent expiry existed that hour.
-    historyLayer
-      .selectAll("circle")
-      .data(props.history)
-      .join("circle")
-      .attr("cx", (p) => x(p.expiry))
-      .attr("cy", (p) => y(p.iv))
-      .attr("r", 1)
-      .attr("fill", (p) => color(p.ts))
-      .attr("fill-opacity", 0.08);
-  }
   const line = d3
     .line()
     .defined((p) => p != null)
@@ -368,13 +293,11 @@ watch(
     props.current,
     props.expiries,
     props.history,
-    props.mode,
     props.view,
     props.asset,
     props.sliceLabel,
     props.sourceLabel,
     props.loading,
-    props.colorScheme,
     props.realized,
   ],
   draw,
@@ -383,7 +306,7 @@ defineExpose({
   exportPng: () =>
     exportChartToPng({
       element: svgRef.value,
-      filename: `${props.asset}-${props.sliceLabel.replaceAll(/[^a-z0-9]/gi, "-")}-term-structure-${props.view}-${props.mode}.png`,
+      filename: `${props.asset}-${props.sliceLabel.replaceAll(/[^a-z0-9]/gi, "-")}-term-structure-${props.view}-scatter.png`,
       background: "#0a0b0e",
       scale: 3,
       // Export only the SVG; page controls, details and data-status footnotes stay outside it.
@@ -403,7 +326,7 @@ defineExpose({
     <svg
       ref="svgRef"
       role="img"
-      :aria-label="`${asset} ${sliceLabel} ${view === 'forward' ? 'forward volatility' : 'IV'} term structure with ${mode === 'scatter' ? 'historical dot clouds' : 'historical curves'}`"
+      :aria-label="`${asset} ${sliceLabel} ${view === 'forward' ? 'forward volatility' : 'IV'} term structure with historical dot clouds`"
     ></svg>
   </div>
 </template>

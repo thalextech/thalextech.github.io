@@ -58,6 +58,7 @@ for (const asset of ["BTC", "ETH"]) {
   };
   const index = new Map(),
     expiries = new Map();
+  let marksThrough = null;
   const indexFiles = files.filter((n) =>
     new RegExp(`^${asset}USD_index_1h_\\d{6}\\.parquet$`).test(n),
   );
@@ -83,7 +84,11 @@ for (const asset of ["BTC", "ETH"]) {
         row.index_price_low,
         row.index_price_close,
       ].map(Number);
-      if (values.every(Number.isFinite) && values[0] + 3600 <= now)
+      if (
+        values.every(Number.isFinite) &&
+        values.slice(1).every((v) => v > 0) &&
+        values[0] + 3600 <= now
+      )
         index.set(values[0], values);
     }
   }
@@ -98,6 +103,14 @@ for (const asset of ["BTC", "ETH"]) {
         iv = Number(row.iv_close),
         name = String(row.instrument_name || "");
       const spec = parseName(name);
+      if (
+        spec &&
+        Number.isFinite(ts) &&
+        Number.isFinite(iv) &&
+        iv > 0 &&
+        ts + 3600 <= now
+      )
+        marksThrough = Math.max(marksThrough ?? 0, ts + 3600);
       if (
         !spec ||
         spec.expiry <= now ||
@@ -122,6 +135,12 @@ for (const asset of ["BTC", "ETH"]) {
     asset,
     resolution: 3600,
     timestampBasis: "bar-start",
+    // Exclusive end of actual source bars, independent of the build time or
+    // whether a currently listed expiry already has a Parquet shard.
+    sourceThrough: {
+      index: indexRows.length ? indexRows.at(-1)[0] + 3600 : null,
+      marks: marksThrough,
+    },
     ivBasis: "close",
     index: await write("index", { rows: indexRows }),
     expiries: {},

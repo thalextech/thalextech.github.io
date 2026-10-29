@@ -75,8 +75,7 @@ body {
 }
 
 .field,
-.underlyingToggle,
-.modeToggle {
+.underlyingToggle {
   height: 36px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
@@ -84,8 +83,7 @@ body {
 }
 
 .field:hover,
-.underlyingToggle:hover,
-.modeToggle:hover {
+.underlyingToggle:hover {
   border-color: var(--color-border-strong);
 }
 
@@ -139,34 +137,6 @@ body {
   background: rgba(255, 255, 255, 0.08);
   color: var(--color-text);
   font-weight: 500;
-}
-
-.modeToggle {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-}
-
-.modeToggleButton {
-  height: 30px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--color-text-muted);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.modeToggleButton + .modeToggleButton {
-  border-left: 0;
-}
-
-.modeToggleButton.active {
-  background: rgba(255, 255, 255, 0.1);
-  color: var(--color-text);
 }
 
 .saveButton {
