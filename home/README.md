@@ -27,10 +27,36 @@ Tables scroll horizontally on small screens. Articles use `$$expression$$` for
 inline equations and `$$` on separate lines for display equations. Single-dollar
 amounts remain ordinary text. Equations render at build time with KaTeX.
 
+### Term structure embed
+
+Insert the shared term structure chart between paragraphs with an MDC block:
+
+```markdown
+::research-term-structure{snapshot="btc-options-2026-10-29" focus-expiry="2026-11-06"}
+::
+```
+
+The optional `view="forward"` opens in forward-volatility mode. `focus-expiry`
+selects the initially highlighted maturity; Reset restores the author's view.
+Readers can inspect curve points with a pointer or keyboard, switch IV/forward
+views, toggle the historical-RV reference and save a PNG. The live app opens
+separately so it does not replace the article's dated inputs.
+
+Named snapshots live in `app/research/term-structure/*.json`. Each specifies an
+asset, ISO UTC valuation time, source note, and points with ISO UTC expiry and
+decimal `iv`/`rv` values. The first snapshot is transcribed from the article table,
+with approximate RV and no original hourly history. It makes no market-data
+requests. Forward IV uses the standalone app's total-variance calculation;
+forward RV is omitted because it cannot be reconstructed from that table.
+
+`ResearchTermStructure.vue` owns the article controls and snapshot mapping. It
+reuses `apps/term-structure`'s chart and forward-volatility calculation, without
+importing the app screen or its global CSS. The Vite dedupe setting makes these
+cross-project imports use the home project's Vue and D3 dependencies.
+
 `npm run generate` pre-renders both collections and follows article links so that
-direct article URLs work on GitHub Pages. Chart embeds are outside this initial
-navigation and article-formatting change; the first article preserves its supplied
-dated figures and sources.
+direct article URLs work on GitHub Pages. The chart mounts in the browser; the
+article's original table remains available before JavaScript loads.
 
 Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
 

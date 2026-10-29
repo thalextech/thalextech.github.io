@@ -10,6 +10,10 @@ export default defineNuxtConfig({
     '@nuxt/fonts'
   ],
   css: ['katex/dist/katex.min.css', '~/assets/css/main.css'],
+  vite: {
+    // Research embeds reuse Vue/D3 components owned by the standalone apps.
+    resolve: { dedupe: ['vue', 'd3'] },
+  },
   content: {
     build: {
       markdown: {

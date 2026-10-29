@@ -1,0 +1,17 @@
+{
+  "id": "btc-options-2026-10-29",
+  "asset": "BTC",
+  "valuationTime": "2026-10-29T10:31:00Z",
+  "source": "Published article table",
+  "note": "Values transcribed from this article, rounded as published. The article's valuation reference is 29 October 2026, 10:31 UTC; expiries use 08:00 UTC. Historical RV references are approximate. Original hourly observations were not supplied.",
+  "points": [
+    { "expiry": "2026-10-30T08:00:00Z", "iv": 0.290, "rv": 0.318 },
+    { "expiry": "2026-10-31T08:00:00Z", "iv": 0.281, "rv": 0.291 },
+    { "expiry": "2026-11-06T08:00:00Z", "iv": 0.361, "rv": 0.300 },
+    { "expiry": "2026-11-13T08:00:00Z", "iv": 0.356, "rv": 0.318 },
+    { "expiry": "2026-11-27T08:00:00Z", "iv": 0.352, "rv": 0.311 },
+    { "expiry": "2026-12-25T08:00:00Z", "iv": 0.361, "rv": 0.335 },
+    { "expiry": "2027-03-26T08:00:00Z", "iv": 0.378, "rv": 0.383 },
+    { "expiry": "2027-06-25T08:00:00Z", "iv": 0.388, "rv": 0.390 }
+  ]
+}

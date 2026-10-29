@@ -1,6 +1,6 @@
 <script setup>
 import * as d3 from "d3";
-import { onMounted, ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { exportChartToPng } from "../../../../lib/export-png.js";
 const props = defineProps({
   current: Array,
@@ -13,17 +13,26 @@ const props = defineProps({
   snapshotTime: Number,
   loading: Boolean,
   realized: { type: Array, default: () => [] },
+  subtitle: { type: String, default: "" },
+  realizedLabel: { type: String, default: "" },
+  fitContainer: { type: Boolean, default: false },
+  highlightExpiry: { type: Number, default: null },
 });
+const emit = defineEmits(["inspect"]);
 const svgRef = ref(null);
-const W = 1280,
-  H = 600,
-  margin = { top: 114, right: 44, bottom: 82, left: 78 };
+const containerRef = ref(null);
+const containerWidth = ref(1280);
+let resizeObserver;
+const margin = { top: 114, right: 44, bottom: 82, left: 78 };
 const date = d3.utcFormat("%d %b %y"),
   stamp = d3.utcFormat("%d %b %Y %H:%M UTC");
 function draw() {
   if (!svgRef.value) return;
+  const W = props.fitContainer ? Math.max(760, containerWidth.value) : 1280;
+  const H = props.fitContainer ? 480 : 600;
   const svg = d3.select(svgRef.value);
   svg.selectAll("*").remove();
+  svg.style("width", props.fitContainer ? `${W}px` : null);
   svg
     .attr("viewBox", `0 0 ${W} ${H}`)
     .attr(
@@ -50,7 +59,7 @@ function draw() {
     .attr("fill", "#70767d")
     .attr("font-size", 12)
     .text(
-      `${props.snapshotTime ? stamp(new Date(props.snapshotTime * 1000)) : "Awaiting live quotes"} · Solid white: ${props.view === "forward" ? "forward vol from " : ""}${props.sourceLabel.toLowerCase()} · History: ${props.view === "forward" ? "hourly forwards" : "hourly marks"}`,
+      props.subtitle || `${props.snapshotTime ? stamp(new Date(props.snapshotTime * 1000)) : "Awaiting live quotes"} · Solid white: ${props.view === "forward" ? "forward vol from " : ""}${props.sourceLabel.toLowerCase()} · History: ${props.view === "forward" ? "hourly forwards" : "hourly marks"}`,
     );
   if (props.history.length) {
     const [oldest, newest] = d3.extent(props.history, (p) => p.ts);
@@ -137,6 +146,15 @@ function draw() {
     .call(d3.axisBottom(x).tickFormat(periodLabel).tickSize(0).tickPadding(13));
   axis.select(".domain").remove();
   axis.selectAll("text").attr("fill", "#70767d").attr("font-size", 12);
+  if (props.fitContainer && props.view === "forward") {
+    axis.selectAll(".tick text").each(function () {
+      const text = d3.select(this);
+      const [start, end] = text.text().split(" → ");
+      text.text("");
+      text.append("tspan").attr("x", 0).text(`${start} →`);
+      text.append("tspan").attr("x", 0).attr("dy", "1.3em").text(end);
+    });
+  }
   svg
     .append("text")
     .attr("x", margin.left)
@@ -220,17 +238,17 @@ function draw() {
       .append("title")
       .text(
         (p) =>
-          `${periodLabel(p.expiry)} · RV ${(p.iv * 100).toFixed(2)}%\nGarman–Klass · ${p.count}/${p.hours} hourly bars (${(p.coverage * 100).toFixed(2)}%)${p.partial ? "\nEstimated from available bars; missing hours skipped" : ""}\n${stamp(new Date(p.start * 1000))} — ${stamp(new Date(p.end * 1000))}`,
+          p.tooltip || `${periodLabel(p.expiry)} · RV ${(p.iv * 100).toFixed(2)}%\nGarman–Klass · ${p.count}/${p.hours} hourly bars (${(p.coverage * 100).toFixed(2)}%)${p.partial ? "\nEstimated from available bars; missing hours skipped" : ""}\n${stamp(new Date(p.start * 1000))} — ${stamp(new Date(p.end * 1000))}`,
       );
     svg
       .append("text")
-      .attr("data-export-label", "Dashed: realized volatility")
+      .attr("data-export-label", props.realizedLabel || "Dashed: realized volatility")
       .attr("x", margin.left)
       .attr("y", H - 20)
       .attr("fill", "#70767d")
       .attr("font-size", 11)
       .text(
-        `Dashed: ${props.view === "forward" ? "duration-matched trailing" : "matched-window"} RV · ${props.realized.filter((p) => p.iv != null).length}/${props.realized.length} ${props.view === "forward" ? "intervals" : "expiries"}`,
+        props.realizedLabel || `Dashed: ${props.view === "forward" ? "duration-matched trailing" : "matched-window"} RV · ${props.realized.filter((p) => p.iv != null).length}/${props.realized.length} ${props.view === "forward" ? "intervals" : "expiries"}`,
       );
   }
   const currentByExpiry = new Map(props.current.map((p) => [p.expiry, p]));
@@ -249,13 +267,27 @@ function draw() {
     .attr("fill", "none")
     .attr("stroke", "#f5f5f7")
     .attr("stroke-width", 2.5);
-  const current = svg.append("g").selectAll("g").data(props.current).join("g");
+  const pointTooltip = (p) => p.tooltip || `${periodLabel(p.expiry)} · Live ${(p.iv * 100).toFixed(2)}%\n${p.count} historical observations · ${p.rank == null ? "No rank" : p.rank.toFixed(1) + " percentile"}${p.clamped ? "\nNearest-strike ATM fallback in an IV input" : ""}`;
+  const current = svg.append("g").selectAll("g").data(props.current).join("g")
+    .attr("tabindex", props.fitContainer ? 0 : null)
+    .attr("role", props.fitContainer ? "img" : null)
+    .attr("aria-label", props.fitContainer ? pointTooltip : null)
+    .on("pointerenter", (_, p) => emit("inspect", p.expiry))
+    .on("click", (_, p) => emit("inspect", p.expiry))
+    .on("focus", (_, p) => emit("inspect", p.expiry));
   current
     .append("circle")
     .attr("cx", (p) => x(p.expiry))
     .attr("cy", (p) => y(p.iv))
-    .attr("r", 5)
-    .attr("fill", "#fff")
+    .attr("r", 14)
+    .attr("fill", "transparent");
+  current
+    .append("circle")
+    .attr("data-current-point", "")
+    .attr("cx", (p) => x(p.expiry))
+    .attr("cy", (p) => y(p.iv))
+    .attr("r", (p) => p.expiry === props.highlightExpiry ? 7 : 5)
+    .attr("fill", (p) => p.expiry === props.highlightExpiry ? "#85a5ff" : "#fff")
     .attr("stroke", "#0a0b0e")
     .attr("stroke-width", 2);
   current
@@ -272,10 +304,7 @@ function draw() {
     .text((p) => `${(p.iv * 100).toFixed(1)}%`);
   current
     .append("title")
-    .text(
-      (p) =>
-        `${periodLabel(p.expiry)} · Live ${(p.iv * 100).toFixed(2)}%\n${p.count} historical observations · ${p.rank == null ? "No rank" : p.rank.toFixed(1) + " percentile"}${p.clamped ? "\nNearest-strike ATM fallback in an IV input" : ""}`,
-    );
+    .text(pointTooltip);
   if (!props.history.length)
     svg
       .append("text")
@@ -287,7 +316,16 @@ function draw() {
       .attr("font-size", 11)
       .text(props.loading ? "History loading…" : "No history available");
 }
-onMounted(draw);
+onMounted(() => {
+  draw();
+  if (props.fitContainer && typeof ResizeObserver !== "undefined") {
+    resizeObserver = new ResizeObserver(([entry]) => {
+      containerWidth.value = Math.round(entry.contentRect.width);
+    });
+    resizeObserver.observe(containerRef.value);
+  }
+});
+onBeforeUnmount(() => resizeObserver?.disconnect());
 watch(
   () => [
     props.current,
@@ -297,11 +335,21 @@ watch(
     props.asset,
     props.sliceLabel,
     props.sourceLabel,
+    props.subtitle,
+    props.snapshotTime,
+    props.realizedLabel,
+    props.fitContainer,
+    containerWidth.value,
     props.loading,
     props.realized,
   ],
   draw,
 );
+watch(() => props.highlightExpiry, () => {
+  d3.select(svgRef.value).selectAll("[data-current-point]")
+    .attr("r", (p) => p.expiry === props.highlightExpiry ? 7 : 5)
+    .attr("fill", (p) => p.expiry === props.highlightExpiry ? "#85a5ff" : "#fff");
+});
 defineExpose({
   exportPng: () =>
     exportChartToPng({
@@ -322,11 +370,11 @@ defineExpose({
 });
 </script>
 <template>
-  <div class="chart-scroll">
+  <div ref="containerRef" class="chart-scroll">
     <svg
       ref="svgRef"
-      role="img"
-      :aria-label="`${asset} ${sliceLabel} ${view === 'forward' ? 'forward volatility' : 'IV'} term structure with historical dot clouds`"
+      :role="fitContainer ? 'group' : 'img'"
+      :aria-label="`${asset} ${sliceLabel} ${view === 'forward' ? 'forward volatility' : 'IV'} term structure${history?.length ? ' with historical dot clouds' : ''}`"
     ></svg>
   </div>
 </template>

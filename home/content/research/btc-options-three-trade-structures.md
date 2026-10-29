@@ -36,6 +36,9 @@ The short straddle has **two management outcomes**, not two separate trade recom
 
 ATM IV and the historical-RV reference below are read from the supplied term-structure chart. Historical RV on the chart is **not** a forward forecast.
 
+::research-term-structure{snapshot="btc-options-2026-10-29" focus-expiry="2026-11-06"}
+::
+
 | Expiry | ATM IV | Historical RV reference | IV − RV |
 |---|---:|---:|---:|
 | 30 Oct | 29.0% | ~31.8% | −2.8 pts |
