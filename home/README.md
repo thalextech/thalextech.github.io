@@ -27,7 +27,21 @@ Tables scroll horizontally on small screens. Articles use `$$expression$$` for
 inline equations and `$$` on separate lines for display equations. Single-dollar
 amounts remain ordinary text. Equations render at build time with KaTeX.
 
-### Term structure embed
+### Published app frame (current article trial)
+
+The first article now uses a frame of the full published app:
+
+```markdown
+::term-structure-app
+::
+```
+
+This loads `https://thalextech.github.io/term-structure/` directly, including its
+own controls and data loading. Reload app reloads the published page. The frame
+has a fixed height and the full app retains its own scrolling. The source-based
+chart block below remains available as an alternative for comparison.
+
+### Source-based term structure embed
 
 Insert the shared term structure chart between paragraphs with an MDC block:
 
