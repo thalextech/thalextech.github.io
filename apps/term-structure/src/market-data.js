@@ -57,6 +57,7 @@ export async function fetchLiveQuotes(
 ) {
   let quotes = [];
   const failures = [];
+  const unavailable = new Map();
   let rateLimitWarning = null;
   try {
     quotes = await fetchStreamSnapshot(chain, {
@@ -64,6 +65,7 @@ export async function fetchLiveQuotes(
       WebSocketImpl,
       signal,
       timeoutMs: streamTimeoutMs,
+      onUnavailable: (name, error) => unavailable.set(name, error.message),
       onQuotes: (rows) => {
         onQuotes(rows);
         onProgress(rows.length, chain.length);
@@ -73,10 +75,13 @@ export async function fetchLiveQuotes(
     signal?.throwIfAborted();
   }
   const streamed = new Set(quotes.map((q) => q.name));
-  let done = quotes.length;
+  for (const name of streamed) unavailable.delete(name);
+  for (const [name, message] of unavailable) failures.push(`${name}: ${message}`);
+  let done = quotes.length + unavailable.size;
+  onProgress(done, chain.length);
   await pool(
     chain
-      .filter((i) => !streamed.has(i.name))
+      .filter((i) => !streamed.has(i.name) && !unavailable.has(i.name))
       .sort((a, b) => a.expiry - b.expiry || a.strike - b.strike),
     8,
     async (instrument) => {
@@ -102,7 +107,7 @@ export async function fetchLiveQuotes(
     failures,
     rateLimitWarning,
     transport:
-      streamed.size === chain.length
+      streamed.size + unavailable.size === chain.length
         ? "websocket"
         : streamed.size
           ? "mixed"
@@ -119,7 +124,9 @@ async function historyRows(endpoint, field, params, signal) {
       endpoint,
       {
         ...params,
-        to,
+        // Missing-hour ranges are inclusive internally; Thalex's `to` is
+        // exclusive. Ending at HH:59:59 drops that entire hourly candle.
+        to: to + 1,
         count: Math.min(
           HISTORY_LIMIT,
           Math.ceil((to - params.from + 1) / HOUR),
@@ -169,6 +176,7 @@ export async function fetchHistoricalQuotes(
     onProgress = () => {},
     onIndex = () => {},
     onUpdate,
+    onActivity = () => {},
     asOf = Date.now() / 1000,
     archive,
     slice = "atm",
@@ -203,14 +211,32 @@ export async function fetchHistoricalQuotes(
   );
   const params = { resolution: "1h" };
   let apiIndexRows = 0,
-    apiMarkRows = 0;
+    apiMarkRows = 0,
+    completedChecks = 0,
+    completedExpiries = 0;
   const cachedIndexRows = cache.index.size;
+  const cachedMarkRows = [...cache.marks.values()].reduce(
+    (n, i) => n + i.rows.size,
+    0,
+  );
+  const activeChecks = new Map();
+  const reportActivity = (stage) => onActivity({
+    stage,
+    active: [...activeChecks.values()],
+    completedChecks,
+    completedExpiries,
+    totalExpiries: expiries.length,
+    coverage: { cachedIndexRows, cachedMarkRows, apiIndexRows, apiMarkRows },
+  });
+  reportActivity("index");
   for (const range of missingHourRanges(
     indexUpdateFrom,
     to,
     cache.index,
     cache.checkedIndex,
   )) {
+    activeChecks.set("index", { name: `${asset}USD index`, ...range });
+    reportActivity("index");
     const rows = await historyRows(
       "index_price_historical_data",
       "index",
@@ -228,6 +254,9 @@ export async function fetchHistoricalQuotes(
       }
     }
     cache.checkedIndex.push({ ...range, expires: Date.now() + 60000 });
+    activeChecks.delete("index");
+    completedChecks++;
+    reportActivity("index");
     publish(cache);
   }
   const index = [...cache.index.values()]
@@ -247,10 +276,7 @@ export async function fetchHistoricalQuotes(
   const failures = [];
   let rateLimitWarning = null;
   let done = 0;
-  const cachedMarkRows = [...cache.marks.values()].reduce(
-    (n, i) => n + i.rows.size,
-    0,
-  );
+  reportActivity("marks");
   const byExpiry = new Map(
     expiries.map((expiry) => [
       expiry,
@@ -321,6 +347,8 @@ export async function fetchHistoricalQuotes(
           requests,
           4,
           async ({ instrument, from, to }) => {
+            activeChecks.set(instrument.name, { name: instrument.name, from, to });
+            reportActivity("marks");
             try {
               if (!cache.marks.has(instrument.name))
                 cache.marks.set(instrument.name, {
@@ -352,6 +380,10 @@ export async function fetchHistoricalQuotes(
               failed = true;
               if (error.isRateLimit) rateLimitWarning = error.message;
               failures.push(`${instrument.name}: ${error.message}`);
+            } finally {
+              activeChecks.delete(instrument.name);
+              completedChecks++;
+              if (!signal?.aborted) reportActivity("marks");
             }
           },
           signal,
@@ -360,11 +392,14 @@ export async function fetchHistoricalQuotes(
       }
       onProgress((done += instruments.length), chain.length);
       publish(cache);
+      completedExpiries++;
+      reportActivity("marks");
     },
     signal,
   );
   const { quotes } = snapshot(cache);
   publish(cache);
+  reportActivity("complete");
   return {
     quotes,
     indexBars,

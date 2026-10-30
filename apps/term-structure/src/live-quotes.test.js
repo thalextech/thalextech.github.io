@@ -31,22 +31,14 @@ class FakeSocket extends EventTarget {
     FakeSocket.onSend(this);
   }
   emit(tickers) {
-    for (const [name, row] of Object.entries(tickers))
-      this.dispatchEvent(
-        new MessageEvent("message", {
-          data: JSON.stringify({
-            channel_name: `ticker.${name}.1000ms`,
-            notification: {
-              mark_timestamp: row[0],
-              index: row[2],
-              forward: row[3],
-              iv: row[4],
-              best_bid_price: row[5]?.[0],
-              best_ask_price: row[6]?.[0],
-            },
-          }),
+    this.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          channel_name: "lwt_options.BTCUSD.all.1000ms",
+          notification: { tickers },
         }),
-      );
+      }),
+    );
   }
   close() {
     this.closed = true;
@@ -73,8 +65,37 @@ test("bulk ticker chunks publish progressively; empty books preserve mark IV", a
   assert.equal(FakeSocket.last.request.method, "public/subscribe");
   assert.deepEqual(
     FakeSocket.last.request.params.channels,
-    chain.map((i) => `ticker.${i.name}.1000ms`),
+    ["lwt_options.BTCUSD.all.1000ms"],
   );
+});
+test("a complete bulk snapshot needs no per-option REST requests", async (t) => {
+  FakeSocket.onSend = socket => socket.emit(Object.fromEntries(chain.map(i => [i.name, row()])));
+  t.mock.method(globalThis, "fetch", () => assert.fail("bulk snapshot must not fetch REST tickers"));
+  const result = await fetchLiveQuotes(chain, { WebSocketImpl: FakeSocket });
+  assert.equal(result.transport, "websocket");
+  assert.equal(result.quotes.length, chain.length);
+  assert.deepEqual(result.failures, []);
+});
+test("stale and invalid streamed marks stay unavailable without REST fan-out", async (t) => {
+  const stale = row();
+  stale[0] -= 300;
+  FakeSocket.onSend = socket => socket.emit({ [chain[0].name]: stale, [chain[1].name]: null });
+  t.mock.method(globalThis, "fetch", () => assert.fail("known unavailable marks must not be retried through REST"));
+  const result = await fetchLiveQuotes(chain, { WebSocketImpl: FakeSocket });
+  assert.deepEqual(result.quotes, []);
+  assert.equal(result.failures.length, 2);
+  assert.match(result.failures[0], /two minutes/);
+  assert.match(result.failures[1], /Invalid live ticker/);
+  assert.equal(result.transport, "websocket");
+  assert.equal(FakeSocket.last.closed, true);
+});
+test("bulk snapshot ignores other instruments and retains valid quotes when later chunks arrive", async () => {
+  FakeSocket.onSend = socket => {
+    socket.emit({ "BTC-OTHER-C": row(), [chain[0].name]: row() });
+    queueMicrotask(() => socket.emit({ [chain[1].name]: row(0.6) }));
+  };
+  const result = await fetchStreamSnapshot(chain, { WebSocketImpl: FakeSocket, url: "wss://example.test" });
+  assert.deepEqual(result.map(q => q.name), chain.map(i => i.name));
 });
 test("REST fills only names missing from a partial stream", async (t) => {
   FakeSocket.onSend = (socket) => {

@@ -152,12 +152,18 @@ export function buildTermStructure({
   limit = 2000,
   expiries,
 }) {
+  const current = buildCurrentSeries(live, slice);
+  const observations = buildHistoricalSeries({ history, slice, limit, expiries: expiries || current.map(p => p.expiry) });
+  return { current: rankCurrentCurve(current, observations), history: observations };
+}
+
+export function buildCurrentSeries(live, slice = "atm") {
   const liveGroups = new Map();
   for (const q of live) {
     if (!liveGroups.has(q.expiry)) liveGroups.set(q.expiry, []);
     liveGroups.get(q.expiry).push(q);
   }
-  const current = [...liveGroups]
+  return [...liveGroups]
     .sort((a, b) => a[0] - b[0])
     .flatMap(([expiry, quotes]) => {
       const point = interpolateSlice(quotes, slice);
@@ -165,7 +171,10 @@ export function buildTermStructure({
         ? [{ expiry, ts: Math.max(...quotes.map((q) => q.ts)), ...point }]
         : [];
     });
-  const liveExpiries = new Set(expiries || current.map((p) => p.expiry));
+}
+
+export function buildHistoricalSeries({ history, slice = "atm", limit = 2000, expiries }) {
+  const liveExpiries = new Set(expiries);
   const groups = new Map();
   for (const q of history) {
     if (!liveExpiries.has(q.expiry)) continue;
@@ -181,11 +190,7 @@ export function buildTermStructure({
     if (!byExpiry.has(expiry)) byExpiry.set(expiry, []);
     byExpiry.get(expiry).push({ expiry, ts, ...point });
   }
-  const observations = [...byExpiry.values()].flatMap((rows) =>
+  return [...byExpiry.values()].flatMap((rows) =>
     rows.sort((a, b) => a.ts - b.ts).slice(-limit),
   );
-  return {
-    current: rankCurrentCurve(current, observations),
-    history: observations,
-  };
 }

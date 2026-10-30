@@ -18,6 +18,34 @@ const chain = [
   },
 ];
 const bar = (ts, iv) => [ts, 1, 1, 1, 1, iv, iv, iv, iv];
+test("exclusive API boundaries include the latest complete hour in both index and IV backfill", async t => {
+  const end = Math.floor(Date.now() / 1000 / HOUR) * HOUR;
+  const latest = end - HOUR;
+  const archive = emptyArchive();
+  archive.sourceThrough = { index: latest, marks: latest };
+  archive.index.set(latest - HOUR, [latest - HOUR, 100, 100, 100, 100]);
+  archive.marks.set(chain[0].name, { ...chain[0], rows: new Map([[latest - HOUR, 0.4]]) });
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async input => {
+    const url = new URL(input);
+    calls.push(url);
+    const from = Number(url.searchParams.get("from"));
+    const exclusiveEnd = Math.floor(Number(url.searchParams.get("to")) / HOUR) * HOUR;
+    const isIndex = url.pathname.endsWith("index_price_historical_data");
+    const rows = [];
+    for (let ts = from; ts + HOUR <= exclusiveEnd; ts += HOUR)
+      rows.push(isIndex ? [ts, 100, 100, 100, 100] : bar(ts, 0.5));
+    return { ok: true, json: async () => ({ result: { [isIndex ? "index" : "mark"]: rows } }) };
+  });
+  const result = await fetchHistoricalQuotes(chain, "BTC", { archive, asOf: end + 1200 });
+  assert.equal(result.indexBars.at(-1).ts + HOUR, end, "index reaches the last complete close");
+  assert.equal(Math.max(...result.quotes.map(point => point.ts)), end, "IV reaches the same close");
+  assert.deepEqual(result.failures, []);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(url => Number(url.searchParams.get("to")) === end));
+  assert.ok(result.quotes.every(point => point.ts <= end), "the current incomplete hour stays excluded");
+});
+
 test("history pages backwards, joins exact index timestamps and labels completed bar closes", async (t) => {
   const to = Math.floor(Date.now() / 1000 / HOUR) * HOUR - 1;
   const from = to + 1 - HISTORY_LIMIT * HOUR;
@@ -29,7 +57,7 @@ test("history pages backwards, joins exact index timestamps and labels completed
     let result;
     if (url.pathname.endsWith("index_price_historical_data"))
       result =
-        end === to
+        end === to + 1
           ? { index: [[from + HOUR, 100, 100, 100, 101]] }
           : { index: [[from, 100, 100, 100, 100]] };
     else
@@ -59,8 +87,7 @@ test("history pages backwards, joins exact index timestamps and labels completed
     calls.every((url) => {
       const hours = Math.ceil(
         (Number(url.searchParams.get("to")) -
-          Number(url.searchParams.get("from")) +
-          1) /
+          Number(url.searchParams.get("from"))) /
           HOUR,
       );
       return (
@@ -75,7 +102,7 @@ test("explicit no_data is accepted; malformed history is reported as a partial f
   t.mock.method(globalThis, "fetch", async (input) => {
     const url = new URL(input);
     const result = url.pathname.endsWith("index_price_historical_data")
-      ? Number(url.searchParams.get("to")) < ts
+      ? Number(url.searchParams.get("to")) <= ts
         ? { no_data: true }
         : { index: [[ts, 100, 100, 100, 100]] }
       : payload;
@@ -243,6 +270,7 @@ test("cached history publishes before network requests, then updates after each 
       rows: new Map([[end - 2 * HOUR, 0.4]]),
     });
   const updates = [];
+  const activities = [];
   t.mock.method(globalThis, "fetch", async (input) => {
     assert.ok(
       updates.length > 0,
@@ -258,6 +286,7 @@ test("cached history publishes before network requests, then updates after each 
     archive,
     asOf: end,
     onUpdate: (data) => updates.push(data.quotes),
+    onActivity: (data) => activities.push(data),
   });
   assert.equal(updates[0].length, 2);
   assert.ok(
@@ -265,6 +294,18 @@ test("cached history publishes before network requests, then updates after each 
     "initial snapshot, each completed expiry and final snapshot publish",
   );
   assert.equal(updates.at(-1).length, 4);
+  const checking = activities.find(data => data.active.length);
+  assert.ok(checking, "history activity is visible before an expiry finishes");
+  assert.equal(checking.active[0].from, end - HOUR);
+  assert.equal(checking.active[0].to, end - 1);
+  assert.ok(active.some(instrument => instrument.name === checking.active[0].name));
+  const complete = activities.at(-1);
+  assert.equal(complete.stage, "complete");
+  assert.equal(complete.completedChecks, 2);
+  assert.equal(complete.completedExpiries, 2);
+  assert.deepEqual(complete.active, []);
+  assert.equal(complete.coverage.apiMarkRows, 2);
+  assert.equal(complete.coverage.cachedMarkRows, 2);
 });
 
 test("missing index hours do not trigger unusable per-option history requests", async (t) => {
@@ -332,9 +373,9 @@ test("ATM fetches hourly brackets only, preserves the full cached window and reu
     assert.ok(instrument, "index is already cached");
     const first = Number(url.searchParams.get("from"));
     const last = Number(url.searchParams.get("to"));
-    assert.ok(first >= from && last < end);
+    assert.ok(first >= from && last <= end);
     const mark = [];
-    for (let ts = first; ts <= last; ts += HOUR)
+    for (let ts = first; ts < last; ts += HOUR)
       mark.push(
         bar(ts, instrument.strike / 250 + (instrument.side === "P" ? 0.02 : 0)),
       );
@@ -600,9 +641,9 @@ test("backfill spans the entire Parquet-to-present gap with separate index/IV bo
       first,
       "backfill starts immediately after the actual Parquet coverage, or at listing",
     );
-    assert.equal(to, end - 1);
+    assert.equal(to, end);
     const rows = [];
-    for (let ts = from; ts <= to; ts += HOUR)
+    for (let ts = from; ts < to; ts += HOUR)
       rows.push(isIndex ? [ts, 100, 100, 100, 100] : bar(ts, 0.4));
     return {
       ok: true,

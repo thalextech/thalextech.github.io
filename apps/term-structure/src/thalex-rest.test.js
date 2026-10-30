@@ -128,7 +128,7 @@ test("refresh adapts to a tighter upstream budget instead of repeating 429s at t
   assert.ok(starts.slice(3).every((ts, i) => ts - starts[i + 2] >= 250));
 });
 
-test("concurrent refresh queues share 100 burst calls then evenly paced starts", async () => {
+test("concurrent refresh queues pace every REST start, including on first load", async () => {
   let time = 0,
     finished = false;
   const timers = [],
@@ -161,8 +161,8 @@ test("concurrent refresh queues share 100 burst calls then evenly paced starts",
   }
   await pending;
   assert.equal(starts.length, 140);
-  assert.ok(starts.slice(0, 100).every((ts) => ts === 0));
-  assert.ok(starts.slice(100).every((ts, i) => ts - starts[i + 99] >= 125));
+  assert.equal(starts[0], 0);
+  assert.ok(starts.slice(1).every((ts, i) => ts - starts[i] >= 125));
 });
 test("identical in-flight requests share one call, with cancellation scoped to their signal", async () => {
   let complete,

@@ -64,7 +64,7 @@ export function sharedBudgetStore(key) {
 
 export class ThalexTokenBucket {
   constructor({
-    capacity = 100,
+    capacity = 1,
     refillPerSecond = 8,
     store,
     now = Date.now,
@@ -115,7 +115,9 @@ export class ThalexTokenBucket {
     loaded.burstRemaining = Math.max(
       0,
       Math.min(
-        this.capacity,
+        // Saved state has already served a request. Discard old burst credit
+        // when capacity drops to one, preserving the next start deadline.
+        this.capacity - 1,
         Number.isFinite(loaded.burstRemaining)
           ? loaded.burstRemaining
           : loaded.tokens,

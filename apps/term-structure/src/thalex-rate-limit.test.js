@@ -41,16 +41,16 @@ test("100-request burst is followed by spaced starts, including after idle time"
   await bucket.take();
   assert.equal(time.now(), before + 100);
 });
-test("two clients/reloads share the initial burst and subsequent pacing", async () => {
+test("two clients/reloads pace requests from the first call", async () => {
   const time = clock(),
     shared = store();
   const first = new ThalexTokenBucket({ ...time, store: shared }),
     second = new ThalexTokenBucket({ ...time, store: shared });
   const start = time.now();
-  for (let i = 0; i < 100; i++) await (i % 2 ? first : second).take();
+  for (let i = 0; i < 10; i++) await (i % 2 ? first : second).take();
   const reloaded = new ThalexTokenBucket({ ...time, store: shared });
   await reloaded.take();
-  assert.equal(time.now(), start + 125);
+  assert.equal(time.now(), start + 1250);
 });
 test("429 cooldown drains the bucket and resumes at refill rate, including other clients", async () => {
   const time = clock(),
@@ -75,7 +75,7 @@ test("repeated shared failures open the circuit rather than sending every queued
   await bucket.take();
   assert.equal(time.now(), start + 30125);
 });
-test("default pacing preserves 100 burst starts then leaves headroom below 10/s", async () => {
+test("default pacing has no initial burst and leaves headroom below 10/s", async () => {
   const time = clock(),
     bucket = new ThalexTokenBucket(time),
     starts = [];
@@ -83,14 +83,28 @@ test("default pacing preserves 100 burst starts then leaves headroom below 10/s"
     await bucket.take();
     starts.push(time.now());
   }
-  assert.ok(starts.slice(0, 100).every((ts) => ts === starts[0]));
-  assert.equal(starts.at(-1) - starts[0], 12500);
-  assert.ok(starts.slice(100).every((ts, i) => ts - starts[i + 99] >= 125));
+  assert.equal(starts.at(-1) - starts[0], 24875);
+  assert.ok(starts.slice(1).every((ts, i) => ts - starts[i] >= 125));
   time.advance(60000);
   const idleEnd = time.now();
   await bucket.take();
   await bucket.take();
   assert.equal(time.now(), idleEnd + 125);
+});
+test("a saved 100-token allowance is clamped on upgrade instead of bursting again", async () => {
+  const time = clock(), shared = store();
+  const old = new ThalexTokenBucket({ ...time, store: shared, capacity: 100 });
+  await old.take();
+  const previousStart = time.now();
+  const upgraded = new ThalexTokenBucket({ ...time, store: shared });
+  const starts = [];
+  for (let i = 0; i < 4; i++) {
+    await upgraded.take();
+    starts.push(time.now());
+  }
+  assert.equal(starts[0] - previousStart, 125);
+  assert.ok(starts.slice(1).every((ts, i) => ts - starts[i] >= 125));
+  assert.ok(shared.load().tokens <= 1);
 });
 test("legacy saved budget migrates without replenishing spent burst credit", async () => {
   const time = clock(),

@@ -31,18 +31,28 @@ export function normalizeTicker(instrument, ticker) {
 
 export function fetchStreamSnapshot(
   chain,
-  { url, WebSocketImpl, signal, onQuotes = () => {}, timeoutMs = 8000 },
+  {
+    url,
+    WebSocketImpl,
+    signal,
+    onQuotes = () => {},
+    onUnavailable = () => {},
+    timeoutMs = 8000,
+  },
 ) {
   signal?.throwIfAborted();
   if (!WebSocketImpl || !url || !chain.length) return Promise.resolve([]);
   const instruments = new Map(chain.map((i) => [i.name, i]));
-  const channels = new Map(chain.map((i) => [`ticker.${i.name}.1000ms`, i]));
+  const channels = new Set(
+    chain.map((i) => `lwt_options.${i.name.split("-")[0]}USD.all.1000ms`),
+  );
   return new Promise((resolve, reject) => {
     let socket,
       timer,
       settleTimer,
       settled = false;
     const quotes = new Map();
+    const received = new Set();
     const cleanup = () => {
       clearTimeout(timer);
       clearTimeout(settleTimer);
@@ -69,7 +79,7 @@ export function fetchStreamSnapshot(
         JSON.stringify({
           id: 1,
           method: "public/subscribe",
-          params: { channels: [...channels.keys()] },
+          params: { channels: [...channels] },
         }),
       );
     const message = (event) => {
@@ -88,22 +98,35 @@ export function fetchStreamSnapshot(
         finish();
         return;
       }
-      const instrument = channels.get(body.channel_name);
-      if (!instrument || !body.notification) return;
-      const previousCount = quotes.size;
-      try {
-        quotes.set(
-          instrument.name,
-          normalizeTicker(instrument, body.notification),
-        );
-      } catch {
-        return; /* Missing/stale marks are retried through REST. */
+      if (!channels.has(body.channel_name) || !body.notification?.tickers) return;
+      const previousCount = received.size;
+      for (const [name, row] of Object.entries(body.notification.tickers)) {
+        const instrument = instruments.get(name);
+        if (!instrument) continue;
+        received.add(name);
+        try {
+          if (!Array.isArray(row)) throw new Error("Invalid live ticker");
+          quotes.set(
+            name,
+            normalizeTicker(instrument, {
+              mark_timestamp: row[0],
+              index: row[2],
+              forward: row[3],
+              iv: row[4],
+              best_bid_price: row[5]?.[0],
+              best_ask_price: row[6]?.[0],
+            }),
+          );
+        } catch (error) {
+          quotes.delete(name);
+          onUnavailable(name, error);
+        }
       }
       onQuotes([...quotes.values()]);
-      if (quotes.size === instruments.size) finish();
-      else if (quotes.size > previousCount) {
+      if (received.size === instruments.size) finish();
+      else if (received.size > previousCount) {
         clearTimeout(settleTimer);
-        settleTimer = setTimeout(() => finish(), 500);
+        settleTimer = setTimeout(() => finish(), 1500);
       }
     };
     try {

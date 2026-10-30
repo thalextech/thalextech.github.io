@@ -211,6 +211,14 @@ export function createThalexClient({
 }
 
 const budgetKey = exchangeApi;
+const sharedBucket = new ThalexTokenBucket({ store: sharedBudgetStore(budgetKey) });
+export function getThalexQueueStatus() {
+  const state = sharedBucket.state();
+  return {
+    blockedUntil: Math.max(state.blockedUntil, state.circuitUntil),
+    ratePerSecond: state.ratePerSecond,
+  };
+}
 export const requestThalex = createThalexClient({
-  bucket: new ThalexTokenBucket({ store: sharedBudgetStore(budgetKey) }),
+  bucket: sharedBucket,
 });

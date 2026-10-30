@@ -34,12 +34,16 @@ function realizedWindows(windows, bars, asOf) {
     const start = end - toHours * HOUR;
     const windowEnd = end - fromHours * HOUR;
     let variance = 0,
-      count = 0;
+      count = 0,
+      dataStart = null,
+      dataEnd = null;
     for (let ts = start; ts < windowEnd; ts += HOUR) {
       const value = byTs.get(ts);
       if (value != null) {
         variance += value;
         count++;
+        dataStart ??= ts;
+        dataEnd = ts + HOUR;
       }
     }
     const coverage = hours > 0 ? count / hours : 0;
@@ -48,6 +52,8 @@ function realizedWindows(windows, bars, asOf) {
       startExpiry,
       start,
       end: windowEnd,
+      dataStart,
+      dataEnd,
       hours,
       count,
       coverage,

@@ -103,7 +103,7 @@ body {
   position: relative;
   min-height: 620px;
   margin: 10px 36px 16px 28px;
-  border: 1px solid #23232a;
+  border: 0;
   border-radius: 8px;
   background: #08080a;
   overflow: hidden;

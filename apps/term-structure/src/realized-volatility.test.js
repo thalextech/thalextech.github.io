@@ -17,6 +17,8 @@ test("Garman–Klass uses all OHLC fields and calendar-hour annualization", () =
   const [point] = realizedByExpiry([end + 2 * HOUR], rows, end);
   assert.ok(Math.abs(point.iv - Math.sqrt(expected * 365.25 * 24)) < 1e-12);
   assert.equal(point.hours, 2);
+  assert.equal(point.dataStart, end - 2 * HOUR);
+  assert.equal(point.dataEnd, end);
 });
 test("lookbacks match each forward horizon, round upward and exclude incomplete/future bars", () => {
   const asOf = end + HOUR / 2;
@@ -79,6 +81,10 @@ test("99% coverage is accepted but materially shorter histories stay unavailable
   assert.ok(
     realizedByExpiry([end + hours * HOUR], full.slice(1), end)[0].iv > 0,
   );
+  const partial = realizedByExpiry([end + hours * HOUR], full.slice(1), end)[0];
+  assert.equal(partial.start, end - hours * HOUR);
+  assert.equal(partial.dataStart, end - (hours - 1) * HOUR, "actual RV source range excludes the missing first bar");
+  assert.equal(partial.dataEnd, end);
   assert.equal(
     realizedByExpiry([end + hours * HOUR], full.slice(2), end)[0].iv,
     null,
