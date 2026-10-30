@@ -1187,7 +1187,7 @@ watch(
 
     <div v-if="ui.error" class="error">{{ ui.error }}</div>
 
-    <div class="chartPanel" :class="{ 'chartPanel--straddle': ui.mode === 'straddle' }">
+    <div class="chartPanel">
       <div class="settingsWrap settingsWrap--chart" ref="settingsMenuRef">
         <button
           ref="settingsButtonRef"
@@ -1467,16 +1467,10 @@ watch(
   position: relative;
   min-height: 620px;
   margin: 10px 36px 16px 28px;
-  border: 1px solid #23232a;
-  border-radius: 8px;
-  background: #08080a;
-  overflow: hidden;
-}
-
-.chartPanel--straddle {
   border: 0;
   border-radius: 0;
-  background: #0a0b0e;
+  background: var(--color-bg);
+  overflow: hidden;
 }
 
 .settingsWrap {
