@@ -1,4 +1,5 @@
 <script setup>
+import { createLiveTermStructureLoader } from "../../research/live-term-structure.js";
 import TermStructureChart from "../../../../apps/term-structure/src/components/TermStructureChart.vue";
 import { toForwardTermStructure } from "../../../../apps/term-structure/src/forward-volatility.js";
 
@@ -11,13 +12,57 @@ const props = defineProps({
   snapshot: { type: String, required: true },
   view: { type: String, default: "iv", validator: (value) => ["iv", "forward"].includes(value) },
   focusExpiry: { type: String, default: "" },
+  mode: { type: String, default: "live", validator: (value) => ["live", "snapshot"].includes(value) },
 });
 const saved = computed(() => Object.values(snapshots).find((data) => data.id === props.snapshot));
 const selectedView = ref(props.view);
+const mode = ref(props.mode);
+const asset = ref(saved.value?.asset || "BTC");
+const live = shallowRef(null);
+const liveLoading = ref(false);
+const liveError = ref("");
+const loadLive = createLiveTermStructureLoader();
+let controller, refreshTimer;
+const isLive = computed(() => mode.value === "live");
+const liveReady = computed(() => isLive.value && live.value?.asset === asset.value);
+const displayAsset = computed(() => isLive.value ? asset.value : saved.value?.asset);
+const source = computed(() => isLive.value ? "Thalex live marks" : saved.value?.source);
+async function refresh() {
+  if (!isLive.value) return;
+  controller?.abort();
+  const request = new AbortController();
+  controller = request;
+  liveLoading.value = true;
+  liveError.value = "";
+  try {
+    const result = await loadLive(asset.value, { signal: request.signal });
+    if (!request.signal.aborted) live.value = result;
+  } catch (error) {
+    if (!request.signal.aborted) liveError.value = error.message || "Live quotes could not be loaded.";
+  } finally {
+    if (controller === request) liveLoading.value = false;
+  }
+}
+function updateSelection() {
+  controller?.abort();
+  liveLoading.value = false;
+  liveError.value = "";
+  selectedExpiry.value = null;
+  if (isLive.value) void refresh();
+}
+onMounted(() => {
+  if (isLive.value) void refresh();
+  refreshTimer = setInterval(() => {
+    if (isLive.value && !liveLoading.value && document.visibilityState === "visible") void refresh();
+  }, 60_000);
+});
+watch([mode, asset], updateSelection);
+onBeforeUnmount(() => { controller?.abort(); clearInterval(refreshTimer); });
 const showRealized = ref(true);
 const selectedExpiry = ref(null);
 const chart = ref(null);
 const exportError = ref("");
+const fullAppUrl = import.meta.dev ? "https://thalextech.github.io/term-structure/" : "/term-structure/";
 // Stable inputs prevent selection updates from redrawing (and unfocusing) SVG points.
 const noHistory = Object.freeze([]);
 const initialExpiry = computed(() => {
@@ -26,12 +71,15 @@ const initialExpiry = computed(() => {
   const selected = data.points.find((point) => point.expiry.slice(0, 10) === props.focusExpiry) || data.points[0];
   return Date.parse(selected.expiry) / 1000;
 });
-const activeExpiry = computed(() => selectedExpiry.value ?? initialExpiry.value);
-const asOf = computed(() => Date.parse(saved.value?.valuationTime) / 1000);
-const valuationLabel = computed(() => saved.value ? new Intl.DateTimeFormat("en-GB", {
+const activeExpiry = computed(() => {
+  const preferred = selectedExpiry.value ?? initialExpiry.value;
+  return current.value.some((point) => point.expiry === preferred) ? preferred : current.value[0]?.expiry;
+});
+const asOf = computed(() => isLive.value ? liveReady.value ? live.value.asOf : NaN : Date.parse(saved.value?.valuationTime) / 1000);
+const valuationLabel = computed(() => Number.isFinite(asOf.value) ? new Intl.DateTimeFormat("en-GB", {
   day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC",
-}).format(new Date(saved.value.valuationTime)) + " UTC" : "");
-const term = computed(() => ({
+}).format(new Date(asOf.value * 1000)) + " UTC" : "Awaiting fresh quotes");
+const articleTerm = computed(() => ({
   current: (saved.value?.points || []).map((point) => ({
     expiry: Date.parse(point.expiry) / 1000,
     ts: asOf.value,
@@ -41,7 +89,9 @@ const term = computed(() => ({
   })),
   history: noHistory,
 }));
-const expiries = computed(() => term.value.current.map((point) => point.expiry));
+const term = computed(() => isLive.value ? liveReady.value ? live.value.term : { current: noHistory, history: noHistory } : articleTerm.value);
+const expiries = computed(() => liveReady.value ? live.value.expiries : term.value.current.map((point) => point.expiry));
+const chartSubtitle = computed(() => isLive.value ? `${valuationLabel.value} snapshot · Thalex live marks · Refreshes every 60 seconds` : `${valuationLabel.value} valuation reference · ${saved.value?.source} · Rounded inputs`);
 const forward = computed(() => toForwardTermStructure(term.value, expiries.value, asOf.value));
 const formatDate = (seconds) => new Intl.DateTimeFormat("en-GB", {
   day: "numeric", month: "short", year: "2-digit", timeZone: "UTC",
@@ -52,14 +102,14 @@ const periodLabel = (point) => selectedView.value === "forward"
   : formatDate(point.expiry);
 const current = computed(() => (selectedView.value === "forward" ? forward.value.current : term.value.current).map((point) => ({
   ...point,
-  tooltip: `${periodLabel(point)} · ${selectedView.value === "forward" ? "Forward IV" : "Article ATM IV"} ${formatVol(point.iv)}\n${saved.value?.source}; rounded inputs. Valuation reference: ${valuationLabel.value}.`,
+  tooltip: `${periodLabel(point)} · ${selectedView.value === "forward" ? "Forward IV" : isLive.value ? "Live ATM IV" : "Article ATM IV"} ${formatVol(point.iv)}\n${source.value}; ${isLive.value ? "live snapshot" : "rounded inputs"}. Valuation reference: ${valuationLabel.value}.`,
 })));
 const realized = computed(() => (saved.value?.points || []).map((point) => ({
   expiry: Date.parse(point.expiry) / 1000,
   iv: point.rv,
   tooltip: `${formatDate(Date.parse(point.expiry) / 1000)} · Approximate historical RV ${formatVol(point.rv)}\nReference transcribed from the article; original OHLC bars were not supplied.`,
 })));
-const displayedRealized = computed(() => selectedView.value === "iv" && showRealized.value ? realized.value : noHistory);
+const displayedRealized = computed(() => !isLive.value && selectedView.value === "iv" && showRealized.value ? realized.value : noHistory);
 const inspected = computed(() => current.value.find((point) => point.expiry === activeExpiry.value));
 const inspectedRv = computed(() => realized.value.find((point) => point.expiry === activeExpiry.value)?.iv);
 const gapLabel = computed(() => {
@@ -67,6 +117,8 @@ const gapLabel = computed(() => {
   return `${gap >= 0 ? "+" : ""}${gap.toFixed(1)} pts`;
 });
 function reset() {
+  mode.value = props.mode;
+  asset.value = saved.value?.asset || "BTC";
   selectedView.value = props.view;
   showRealized.value = true;
   selectedExpiry.value = null;
@@ -83,36 +135,50 @@ async function savePng() {
   <figure v-if="saved" class="term-embed" aria-label="Interactive article term structure">
     <header class="embed-header">
       <div>
-        <p class="embed-eyebrow">Article snapshot · {{ saved.asset }}</p>
+        <p class="embed-eyebrow">{{ isLive ? "Live market" : "Article snapshot" }} · {{ displayAsset }}</p>
         <p class="embed-title">Explore the term structure</p>
       </div>
-      <a href="/term-structure/" target="_blank" rel="noopener">Open live app ↗</a>
+      <a :href="fullAppUrl" target="_blank" rel="noopener">Open live app ↗</a>
     </header>
     <div class="embed-controls">
+      <div class="embed-switch" role="group" aria-label="Data source">
+        <button type="button" :aria-pressed="isLive" @click="mode = 'live'">Live market</button>
+        <button type="button" :aria-pressed="!isLive" @click="mode = 'snapshot'">Article snapshot</button>
+      </div>
+      <div v-if="isLive" class="embed-switch" role="group" aria-label="Underlying">
+        <button v-for="coin in ['BTC', 'ETH']" :key="coin" type="button" :aria-pressed="asset === coin" @click="asset = coin">{{ coin }}</button>
+      </div>
       <div class="embed-switch" role="group" aria-label="Volatility view">
         <button type="button" :aria-pressed="selectedView === 'iv'" @click="selectedView = 'iv'">Expiry IV</button>
         <button type="button" :aria-pressed="selectedView === 'forward'" @click="selectedView = 'forward'">Forward vol</button>
       </div>
-      <label v-if="selectedView === 'iv'" class="rv-toggle">
+      <label v-if="!isLive && selectedView === 'iv'" class="rv-toggle">
         <input v-model="showRealized" type="checkbox" /> Historical RV reference
       </label>
       <div class="embed-actions">
+        <button v-if="isLive" type="button" :disabled="liveLoading" @click="refresh">{{ liveLoading ? 'Refreshing…' : 'Refresh' }}</button>
         <button type="button" @click="reset">Reset</button>
         <button type="button" @click="savePng">Save PNG</button>
       </div>
     </div>
+    <p v-if="isLive" class="live-status" role="status">
+      {{ liveLoading ? 'Loading fresh Thalex quotes…' : liveReady ? `Last refreshed ${new Date(live.refreshedAt * 1000).toLocaleTimeString('en-GB', {timeZone: 'UTC'})} UTC · Auto-refresh every 60 seconds` : 'Live quotes not yet available.' }}
+      <span v-if="liveError">{{ liveError }} {{ liveReady ? 'Showing the last successful snapshot.' : 'Use Refresh to retry, or select Article snapshot.' }}</span>
+      <span v-else-if="liveReady && live.warning">{{ live.warning }}</span>
+    </p>
     <ClientOnly>
       <TermStructureChart
         ref="chart"
         :current="current"
         :expiries="expiries"
         :history="noHistory"
-        :asset="saved.asset"
+        :asset="displayAsset"
         slice-label="ATM"
-        :source-label="saved.source"
+        :source-label="source"
         :view="selectedView"
         :snapshot-time="asOf"
-        :subtitle="`${valuationLabel} valuation reference · ${saved.source} · Rounded inputs`"
+        :subtitle="chartSubtitle"
+        :loading="liveLoading"
         realized-label="Dashed: approximate historical RV reference"
         :realized="displayedRealized"
         :highlight-expiry="activeExpiry"
@@ -126,15 +192,16 @@ async function savePng() {
     <div v-if="inspected" class="embed-inspector" aria-live="polite" aria-atomic="true">
       <div><span>{{ selectedView === 'iv' ? 'Selected expiry' : 'Selected interval' }}</span><strong>{{ periodLabel(inspected) }}</strong></div>
       <div><span>{{ selectedView === 'iv' ? 'ATM IV' : 'Forward IV' }}</span><strong>{{ formatVol(inspected.iv) }}</strong></div>
-      <template v-if="selectedView === 'iv' && showRealized">
+      <template v-if="!isLive && selectedView === 'iv' && showRealized">
         <div><span>Historical RV ≈</span><strong>{{ formatVol(inspectedRv) }}</strong></div>
         <div><span>IV − RV ≈</span><strong>{{ gapLabel }}</strong></div>
       </template>
     </div>
     <figcaption>
       <p>Hover over a curve marker, or focus it with Tab, to inspect a maturity. On narrow screens, scroll the chart horizontally.</p>
-      <p>{{ saved.note }}</p>
-      <p v-if="selectedView === 'forward'">Forward volatility uses adjacent-expiry total-variance differences. Duration-matched forward RV and historical dot clouds are unavailable from the supplied table.</p>
+      <p v-if="isLive">Live Thalex data may differ from the dated figures discussed in this article. Refresh requests a new snapshot; visible live charts also refresh every 60 seconds. Historical dot clouds and RV are available in the full app.</p>
+      <p v-else>{{ saved.note }}</p>
+      <p v-if="!isLive && selectedView === 'forward'">Forward volatility uses adjacent-expiry total-variance differences. Duration-matched forward RV and historical dot clouds are unavailable from the supplied table.</p>
       <p v-if="selectedView === 'forward' && forward.unavailable.length">{{ forward.unavailable.length }} interval(s) omitted because a leg is missing or forward variance is negative.</p>
       <p v-if="exportError" role="alert">{{ exportError }}</p>
     </figcaption>
@@ -155,6 +222,9 @@ async function savePng() {
 .term-embed button:hover { color: white; }
 .term-embed button[aria-pressed="true"] { color: white; background: #333; }
 .term-embed button:focus-visible, .term-embed input:focus-visible { outline: 2px solid #85a5ff; outline-offset: 3px; }
+.live-status { padding: .7rem 1.25rem; font-size: .7rem; color: #a3a3a3; border-bottom: 1px solid #23232a; }
+.live-status span { display: block; margin-top: .4rem; color: #e0ad68; }
+.term-embed button:disabled { opacity: .5; cursor: wait; }
 .rv-toggle { display: flex; gap: .5rem; align-items: center; color: #a3a3a3; cursor: pointer; }
 .rv-toggle input { accent-color: #85a5ff; }
 .embed-actions { display: flex; margin-left: auto; gap: .25rem; }

@@ -36,6 +36,12 @@ Insert the shared term structure chart between paragraphs with an MDC block:
 ::
 ```
 
+Embeds now open in live mode, load fresh Thalex ATM quotes, and refresh every
+60 seconds while visible. Refresh requests a new snapshot immediately. BTC/ETH
+switches cancel the previous request; failed refreshes retain the last successful
+curve with an error message and its timestamp. Choose Article snapshot to return
+to the publication values. Use `mode="snapshot"` to open in the dated view instead.
+
 The optional `view="forward"` opens in forward-volatility mode. `focus-expiry`
 selects the initially highlighted maturity; Reset restores the author's view.
 Readers can inspect curve points with a pointer or keyboard, switch IV/forward
@@ -45,8 +51,7 @@ separately so it does not replace the article's dated inputs.
 Named snapshots live in `app/research/term-structure/*.json`. Each specifies an
 asset, ISO UTC valuation time, source note, and points with ISO UTC expiry and
 decimal `iv`/`rv` values. The first snapshot is transcribed from the article table,
-with approximate RV and no original hourly history. It makes no market-data
-requests. Forward IV uses the standalone app's total-variance calculation;
+with approximate RV and no original hourly history. The dated mode makes no market-data requests. Forward IV uses the standalone app's total-variance calculation;
 forward RV is omitted because it cannot be reconstructed from that table.
 
 `ResearchTermStructure.vue` owns the article controls and snapshot mapping. It

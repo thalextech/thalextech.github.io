@@ -11,6 +11,11 @@ export default defineNuxtConfig({
   ],
   css: ['katex/dist/katex.min.css', '~/assets/css/main.css'],
   vite: {
+    define: {
+      // Nuxt's BASE_URL is its asset directory, not the standalone app's base.
+      'import.meta.env.VITE_THALEX_API_BASE': JSON.stringify(process.env.VITE_THALEX_API_BASE || (process.env.NODE_ENV === 'development' ? '/thalex-api' : 'https://thalex.com/api/v2/public')),
+      'import.meta.env.VITE_THALEX_WS_URL': JSON.stringify(process.env.VITE_THALEX_WS_URL || (!process.env.VITE_THALEX_API_BASE ? 'wss://thalex.com/ws/api/v2' : '')),
+    },
     // Research embeds reuse Vue/D3 components owned by the standalone apps.
     resolve: { dedupe: ['vue', 'd3'] },
   },
@@ -27,6 +32,9 @@ export default defineNuxtConfig({
     },
   },
   nitro: {
+    devProxy: {
+      '/thalex-api': { target: 'https://thalex.com/api/v2/public', changeOrigin: true },
+    },
     prerender: {
       routes: ["/", "/research/"],
       crawlLinks: true,
